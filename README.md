@@ -6,7 +6,52 @@ Each developer runs one `agentlink serve` node; their Claude Code or Codex sessi
 
 `reference/relay/` is AgentWorkforce/relay at tag v12.2.2 (commit f0c5dc1), Apache-2.0, kept for reading only.
 
-## Build
+## Desktop app (recommended)
+
+`agentlink-tray.exe` is the whole thing in one program: a tray icon that runs the node, a settings
+page and an inbox page in your browser, and an optional agent that answers requests for you.
+
+### Install
+
+```powershell
+go build -ldflags "-H=windowsgui" -o bin/agentlink-tray.exe ./cmd/agentlink-tray
+```
+
+Copy `agentlink-tray.exe` anywhere and double-click it. Both people need ZeroTier (or another
+VPN) joined to the same network.
+
+### First run (both people)
+
+1. Start `agentlink-tray.exe`; the settings page opens. Later use the tray icon, "Open settings".
+2. Fill in your name, your ZeroTier IP with a port (e.g. `10.147.20.5:7420`), and the other
+   person's name and ZeroTier IP:port.
+3. One person clicks **Generate**, **Copy**, and sends the secret to the other privately; the
+   other pastes it. The secret must be identical on both computers.
+4. Choose a handler (below), optionally tick "Start agentlink when I sign in", click **Save**.
+   The tray menu shows "<peer> connected" once both sides are saved.
+
+Settings, including the secret, live in `%APPDATA%\agentlink\config.json` (per user, never in a
+repo); messages in `%APPDATA%\agentlink\data`, the log in `%APPDATA%\agentlink\agentlink.log`.
+Autostart is the `agentlink` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+
+### Handler agent
+
+When a request arrives (a message that is not a reply) and the handler is not "None", the app
+runs the agent in the working folder with the message as the prompt, one request at a time,
+and sends the agent's final answer back as a reply. After 10 minutes it gives up and replies
+with an error. With "None (manual)" you read and answer in the inbox page.
+
+- Claude Code: `claude -p --output-format text --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --permission-mode dontAsk --permission-prompts none --strict-mcp-config --no-session-persistence`
+- Codex: `codex exec --sandbox read-only --skip-git-repo-check --ephemeral --color never --output-last-message <tmp> -`
+
+The prompt goes through stdin, never through a shell. **Read-only:** the agent can read and
+search but cannot edit files or run commands. It can still read files it can reach (Codex's
+read-only sandbox is not limited to the working folder), and its answer goes to the other
+person, so only pair with someone you trust with that folder.
+
+## CLI
+
+### Build
 
 ```powershell
 go build -o bin/agentlink.exe ./cmd/agentlink
@@ -50,7 +95,9 @@ expires, and exits 1 on errors.
 - `peers` — the only node names allowed to connect. Nodes dial each other and keep one session per peer.
 
 Loopback examples: `examples/node-a.json`, `examples/node-b.json`. `scripts/e2e-local.ps1`
-builds the binary, starts both, sends a→b, replies b→a and stops them.
+builds the binary, starts both, sends a→b, replies b→a and stops them. `scripts/e2e-worker.ps1`
+runs two tray apps headless (`-no-tray`) with a fake agent and checks the automatic reply;
+`-RealClaude` uses the installed `claude` instead.
 
 ## Waking a Claude Code session
 
@@ -81,3 +128,6 @@ After handling the messages (and replying with `send --reply-to`), start `wait` 
 - There is no TLS: message bodies travel in clear text, relying on ZeroTier's encryption.
 - The control API listens on loopback only and rejects browser requests (`Origin` header) and
   non-loopback `Host` headers, but any local process on the machine can use it.
+- The tray app's web pages share that address. Their API calls need a random per-run token that
+  is embedded in the page and must come from the same origin, so other websites cannot read or
+  change settings or send messages; the pages refuse to be framed.
