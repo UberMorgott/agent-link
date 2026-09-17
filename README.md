@@ -30,10 +30,14 @@ VPN) joined to the same network.
 1. Start `agentlink-tray.exe`; the settings page opens. Later use the tray icon, "Open settings".
 2. Fill in your name, your ZeroTier IP with a port (e.g. `10.147.20.5:7420`), and the other
    person's name and ZeroTier IP:port.
-3. One person clicks **Generate**, **Copy**, and sends the secret to the other privately; the
-   other pastes it. The secret must be identical on both computers.
-4. Choose a handler (below), optionally tick "Start agentlink when I sign in", click **Save**.
-   The tray menu shows "<peer> connected" once both sides are saved.
+3. One person clicks **Создать**, **Скопировать**, and sends the secret to the other privately;
+   the other pastes it. The secret must be identical on both computers.
+4. Choose a handler (below), optionally tick "Запускать agentlink при входе в Windows", click
+   **Сохранить**. The tray menu shows "<peer> connected" and the pages "связь есть: <peer>"
+   once both sides are saved.
+
+The two web pages are in Russian; every visible string lives in `internal/app/strings.go`, so a
+second language means a second map, not a page rewrite.
 
 Settings, including the secret, live in `%APPDATA%\agentlink\config.json` (per user, never in a
 repo); messages in `%APPDATA%\agentlink\data`, the log in `%APPDATA%\agentlink\agentlink.log`.
@@ -43,8 +47,9 @@ Autostart is the `agentlink` value under `HKCU\Software\Microsoft\Windows\Curren
 
 When a request arrives (a message that is not a reply) and the handler is not "None", the app
 runs the agent in the working folder with the message as the prompt, one request at a time,
-and sends the agent's final answer back as a reply. With "None (manual)" you read and answer in
-the inbox page.
+and sends the agent's final answer back as a reply. With "Никто, отвечаю сам" you read and
+answer in the inbox page, where each question is shown with its answer, its direction
+(«Исходящее»/«Входящее») and both node names.
 
 Jobs are durable. Each request is recorded in `data\jobs\<id>.json` before it is acknowledged
 and moves `queued` → `running` → `completed` | `failed` (with attempts, timestamps and the
