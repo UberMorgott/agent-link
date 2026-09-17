@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="agentlink-token" content="{{TOKEN}}">
+<title>agentlink settings</title>
+<link rel="stylesheet" href="/ui/static/style.css">
+</head>
+<body>
+<nav><strong>agentlink</strong> <a href="/ui/settings" class="active">Settings</a> <a href="/ui/inbox">Inbox</a> <span id="status"></span></nav>
+<main>
+<h1>Settings</h1>
+<form id="form">
+  <fieldset>
+    <legend>This computer</legend>
+    <label>My name <input name="node" required placeholder="alice" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}"></label>
+    <label>My address (ZeroTier IP:port) <input name="listen" required placeholder="10.147.20.5:7420"></label>
+  </fieldset>
+  <fieldset>
+    <legend>The other person</legend>
+    <label>Their name <input name="peer_name" required placeholder="bob" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}"></label>
+    <label>Their address (ZeroTier IP:port) <input name="peer_addr" required placeholder="10.147.20.9:7420"></label>
+    <label>Shared secret (must be identical on both computers)
+      <span class="row"><input name="secret" id="secret" type="password" required minlength="16" autocomplete="off">
+      <button type="button" id="show">Show</button>
+      <button type="button" id="generate">Generate</button>
+      <button type="button" id="copy">Copy</button></span>
+    </label>
+    <label>Shared areas (comma separated, optional) <input name="areas" placeholder="dev, design"></label>
+  </fieldset>
+  <fieldset>
+    <legend>Answering requests</legend>
+    <label>Handler agent
+      <select name="handler">
+        <option value="none">None (manual)</option>
+        <option value="claude">Claude Code</option>
+        <option value="codex">Codex</option>
+      </select>
+    </label>
+    <label>Working folder <input name="work_dir" placeholder="C:\Projects\my-game"></label>
+    <p class="hint">Incoming requests run the chosen agent in this folder, read-only, and its answer is sent back automatically.</p>
+    <label class="check"><input type="checkbox" name="autostart"> Start agentlink when I sign in to Windows</label>
+  </fieldset>
+  <button type="submit">Save</button>
+  <p id="result" role="status"></p>
+</form>
+</main>
+<script src="/ui/static/common.js"></script>
+<script src="/ui/static/settings.js"></script>
+</body>
+</html>

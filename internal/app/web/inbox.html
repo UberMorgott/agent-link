@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="agentlink-token" content="{{TOKEN}}">
+<title>agentlink inbox</title>
+<link rel="stylesheet" href="/ui/static/style.css">
+</head>
+<body>
+<nav><strong>agentlink</strong> <a href="/ui/settings">Settings</a> <a href="/ui/inbox" class="active">Inbox</a> <span id="status"></span></nav>
+<main>
+<h1>Inbox</h1>
+<form id="send">
+  <label>To <input name="to" id="to" required></label>
+  <label>Message <textarea name="body" id="body" rows="4" required></textarea></label>
+  <input type="hidden" name="reply_to" id="reply_to">
+  <p id="replying" hidden>Replying to <code id="reply_id"></code> <button type="button" id="cancel_reply">Cancel</button></p>
+  <button type="submit">Send</button>
+  <p id="result" role="status"></p>
+</form>
+<ul id="messages"></ul>
+</main>
+<script src="/ui/static/common.js"></script>
+<script src="/ui/static/inbox.js"></script>
+</body>
+</html>
