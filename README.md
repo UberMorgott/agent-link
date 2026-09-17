@@ -123,6 +123,13 @@ fails it, that no agent processes are left, and that a restart keeps the inbox. 
 With a non-default `-config` the app never touches the autostart entry, and `POST /ui/api/quit`
 (token-guarded, the same path as the tray's Quit) exits it.
 
+`scripts/demo-local.ps1` is the same two-people setup but as a live demo, not a test: it starts
+`morgott` and `nikita` with their settings under `$env:TEMP\agentlink-demo`, API ports 7530/7531,
+peers on loopback, area `demo`, both answering with real Claude Code read-only over `-WorkDir`
+(default `E:\DEV\CodeDungeon`). It proves the round trip with one real question, prints both
+`/ui/inbox` URLs and leaves the apps running with their tray icons. Stop them from a tray icon's
+Quit or with `scripts/demo-local.ps1 -Stop`.
+
 ## Waking a Claude Code session
 
 Run `wait` as a background shell command. When a message arrives the command exits, the
