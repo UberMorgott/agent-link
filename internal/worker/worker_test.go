@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +30,15 @@ func TestMain(m *testing.M) {
 		}
 		_, _ = os.Stdout.WriteString(out)
 	case "sleep":
+		time.Sleep(time.Minute)
+	case "tree":
+		// A long-lived child, like the node process behind an agent's .cmd shim.
+		child := exec.Command(os.Args[0])
+		child.Env = append(os.Environ(), "AGENTLINK_FAKE_AGENT=sleep")
+		if err := child.Start(); err != nil {
+			os.Exit(4)
+		}
+		_ = os.WriteFile(os.Getenv("AGENTLINK_FAKE_PIDFILE"), []byte(strconv.Itoa(child.Process.Pid)), 0o600)
 		time.Sleep(time.Minute)
 	case "fail":
 		_, _ = os.Stderr.WriteString("boom")

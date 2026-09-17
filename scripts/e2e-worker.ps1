@@ -2,12 +2,16 @@
 # End-to-end loopback run of the desktop app: two agentlink-tray nodes in
 # -no-tray mode, node-b answers requests with a fake echo agent, node-a sends a
 # request and must receive the automatic reply.
-# -RealClaude runs the installed `claude` CLI instead of the fake agent (one real smoke).
+# -RealClaude / -RealCodex run the installed `claude` / `codex` CLI instead of the fake agent (one real smoke).
 [CmdletBinding()]
-param([int]$TimeoutSeconds = 30, [switch]$RealClaude)
+param([int]$TimeoutSeconds = 0, [switch]$RealClaude, [switch]$RealCodex)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+if ($RealClaude -and $RealCodex) { throw 'use -RealClaude or -RealCodex, not both' }
+$real = $RealClaude -or $RealCodex
+if ($TimeoutSeconds -le 0) { $TimeoutSeconds = if ($real) { 300 } else { 30 } }
 
 $root = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $root 'bin'
@@ -28,11 +32,11 @@ if (Test-Path $data) { Remove-Item -Recurse -Force $data }
 $secret = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
 $work = New-Item -ItemType Directory -Force (Join-Path $data 'work')
 Set-Content -Path (Join-Path $work 'note.txt') -Value 'kiwi'
-$prompt = if ($RealClaude) { 'Read note.txt in the current folder. Reply with only the word pong followed by the word in that file.' } else { 'ping from node-a' }
+$prompt = if ($real) { 'Read note.txt in the current folder. Reply with only the word pong followed by the word in that file.' } else { 'ping from node-a' }
 
 $nodes = @{
     'node-a' = @{ listen = '127.0.0.1:7431'; api = '127.0.0.1:7531'; peer = 'node-b'; peerAddr = '127.0.0.1:7432'; handler = 'none' }
-    'node-b' = @{ listen = '127.0.0.1:7432'; api = '127.0.0.1:7532'; peer = 'node-a'; peerAddr = '127.0.0.1:7431'; handler = 'claude' }
+    'node-b' = @{ listen = '127.0.0.1:7432'; api = '127.0.0.1:7532'; peer = 'node-a'; peerAddr = '127.0.0.1:7431'; handler = $(if ($RealCodex) { 'codex' } else { 'claude' }) }
 }
 foreach ($name in $nodes.Keys) {
     $n = $nodes[$name]
@@ -41,7 +45,7 @@ foreach ($name in $nodes.Keys) {
         node = $name; listen = $n.listen; peer_name = $n.peer; peer_addr = $n.peerAddr; secret = $secret
         areas = @(); handler = $n.handler; work_dir = $work.FullName; autostart = $false; api = $n.api
     }
-    if ($name -eq 'node-b' -and -not $RealClaude) { $settings.handler_command = @($fake) }
+    if ($name -eq 'node-b' -and -not $real) { $settings.handler_command = @($fake) }
     $n.config = Join-Path $dir 'config.json'
     $settings | ConvertTo-Json | Set-Content -Path $n.config
     # A CLI config pointing at the same control API, for send/wait.
@@ -79,8 +83,8 @@ try {
     if ($lines.Count -ne 1) { throw "node-a received $($lines.Count) messages" }
     Write-Host "received: $($lines[0])"
     $reply = $lines[0] | ConvertFrom-Json
-    $wantBody = if ($RealClaude) { $reply.body } else { 'echo: ping from node-a' }
-    if ($reply.from -ne 'node-b' -or $reply.reply_to -ne $id -or $reply.body -ne $wantBody) {
+    $wantBody = if ($real) { 'pong kiwi' } else { 'echo: ping from node-a' }
+    if ($reply.from -ne 'node-b' -or $reply.reply_to -ne $id -or $reply.body.Trim().TrimEnd('.').ToLowerInvariant() -ne $wantBody) {
         throw 'node-a got the wrong auto-reply'
     }
 
