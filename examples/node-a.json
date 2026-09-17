@@ -1,0 +1,11 @@
+{
+  "node": "node-a",
+  "listen": "127.0.0.1:7421",
+  "api": "127.0.0.1:7521",
+  "data_dir": "../.data/node-a",
+  "secret_env": "AGENTLINK_SECRET",
+  "areas": ["dev"],
+  "peers": [
+    { "name": "node-b", "addr": "127.0.0.1:7422" }
+  ]
+}
