@@ -90,7 +90,8 @@ func (s *store) saveInbound(m Message) (bool, error) {
 	if _, ok := s.inbox[m.ID]; ok {
 		return false, nil
 	}
-	r := &inboxRecord{Message: m, ReceivedAt: time.Now().UTC()}
+	// Status updates are never handed to wait: they only refine the inbox view.
+	r := &inboxRecord{Message: m, Delivered: m.Kind == KindStatus, ReceivedAt: time.Now().UTC()}
 	if err := writeJSON(s.inboxPath(m.ID), r); err != nil {
 		return false, err
 	}
@@ -130,16 +131,39 @@ func (s *store) claimUndelivered() ([]Message, error) {
 	return out, nil
 }
 
-// recent lists inbound, queued and sent messages, newest first.
+// recent lists inbound, queued and sent messages, newest first. Status updates
+// are folded into the outbound request they refer to.
 func (s *store) recent(limit int) ([]Entry, error) {
 	var out []Entry
+	// progress[peer/request id]: the latest status update and the latest reply.
+	type progress struct{ status, reply *Message }
+	byRequest := map[string]*progress{}
 	s.mu.Lock()
 	for _, r := range s.inbox {
+		m := r.Message
+		if m.ReplyTo != "" {
+			key := m.From + "/" + m.ReplyTo
+			p := byRequest[key]
+			if p == nil {
+				p = &progress{}
+				byRequest[key] = p
+			}
+			slot := &p.reply
+			if m.Kind == KindStatus {
+				slot = &p.status
+			}
+			if *slot == nil || m.CreatedAt.After((*slot).CreatedAt) {
+				*slot = &r.Message
+			}
+		}
+		if m.Kind == KindStatus {
+			continue
+		}
 		status := "pending"
 		if r.Delivered {
 			status = "delivered"
 		}
-		out = append(out, Entry{Direction: "in", Status: status, Peer: r.Message.From, Message: r.Message})
+		out = append(out, Entry{Direction: "in", Status: status, Peer: m.From, Message: m})
 	}
 	s.mu.Unlock()
 	for _, box := range []struct{ dir, status string }{{"outbox", "queued"}, {"sent", "sent"}} {
@@ -156,7 +180,19 @@ func (s *store) recent(limit int) ([]Entry, error) {
 				return nil, err
 			}
 			for _, m := range msgs {
-				out = append(out, Entry{Direction: "out", Status: box.status, Peer: p.Name(), Message: m})
+				e := Entry{Direction: "out", Status: box.status, Peer: p.Name(), Message: m}
+				if pr := byRequest[p.Name()+"/"+m.ID]; pr != nil && m.IsRequest() {
+					switch {
+					case pr.reply != nil:
+						e.JobStatus, e.Answer = pr.reply.JobStatus, pr.reply.Body
+					case pr.status != nil:
+						e.JobStatus = pr.status.JobStatus
+					}
+				}
+				if m.Kind == KindStatus {
+					continue
+				}
+				out = append(out, e)
 			}
 		}
 	}

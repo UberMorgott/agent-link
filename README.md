@@ -38,8 +38,18 @@ Autostart is the `agentlink` value under `HKCU\Software\Microsoft\Windows\Curren
 
 When a request arrives (a message that is not a reply) and the handler is not "None", the app
 runs the agent in the working folder with the message as the prompt, one request at a time,
-and sends the agent's final answer back as a reply. After 10 minutes it gives up and replies
-with an error. With "None (manual)" you read and answer in the inbox page.
+and sends the agent's final answer back as a reply. With "None (manual)" you read and answer in
+the inbox page.
+
+Jobs are durable. Each request is recorded in `data\jobs\<id>.json` before it is acknowledged
+and moves `queued` → `running` → `completed` | `failed` (with attempts, timestamps and the
+error). The sender gets small status updates (`queued`, `running`) and a final reply whose
+`job_status` is `completed` or `failed`; its inbox page shows each request's latest status and
+answer. A duplicate request id never runs twice. Queued jobs survive quit, crash and settings
+changes and resume in order. A job cut off while running (quit, crash, settings save) runs once
+more on the next start; cut off again, it fails with a reply. An agent error or the 10-minute
+timeout fails the job at once, without a retry. Switching the handler to "None" fails jobs that
+were still waiting, with the reply "no handler configured".
 
 - Claude Code: `claude -p --output-format text --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --permission-mode dontAsk --permission-prompts none --strict-mcp-config --no-session-persistence`
 - Codex: `codex exec --sandbox read-only --skip-git-repo-check --ephemeral --color never --output-last-message <tmp> -`
@@ -71,7 +81,9 @@ agentlink inbox --config node.json --limit 20              # recent in/out, non-
 
 `wait` exits 0 after printing every undelivered inbound message (they are then marked
 delivered), exits 2 with no output when `--timeout` (seconds or a Go duration, `0` = forever)
-expires, and exits 1 on errors.
+expires, and exits 1 on errors. It returns requests and replies only: a handler's `queued` /
+`running` status updates never wake it, so a waiting session sees just the final reply (check
+its `job_status`: `completed` or `failed`). Progress is visible in `inbox`.
 
 ## Config
 
@@ -100,8 +112,9 @@ runs two tray apps headless (`-no-tray`) with a fake agent and checks the automa
 `-RealClaude` / `-RealCodex` use the installed `claude` / `codex` instead.
 `scripts/e2e-tray.ps1` plays both people on one machine: two tray apps with their own settings
 folders (`-config`) and API ports (`-api`), set up, messaged and quit through the web UI
-endpoints; it also checks the "interrupted" reply on a save during a job, that no agent processes
-are left, and that a restart keeps the inbox. `-Address <ip>` binds the peers to e.g. the ZeroTier IP.
+endpoints; it also quits and restarts b in the middle of three slow jobs (all complete, job 1
+runs twice, the others once), checks that a save during a job retries it once and a second save
+fails it, that no agent processes are left, and that a restart keeps the inbox. `-Address <ip>` binds the peers to e.g. the ZeroTier IP.
 With a non-default `-config` the app never touches the autostart entry, and `POST /ui/api/quit`
 (token-guarded, the same path as the tray's Quit) exits it.
 
@@ -120,7 +133,11 @@ After handling the messages (and replying with `send --reply-to`), start `wait` 
 
 - Sent messages are written to `outbox/<peer>/` first and removed only when the peer ACKs, so an
   offline peer gets them on the next connection; unACKed messages are resent periodically.
-- Inbound messages are persisted before the ACK and deduplicated by id, so resends are idempotent.
+- Inbound messages are persisted, and requests recorded as handler jobs, before the ACK; both
+  are deduplicated by id, so resends are idempotent. Status updates and handler replies use ids
+  derived from the request, so re-sending them after a crash is deduplicated too.
+- Status updates are `kind: "status"` messages; a node without that field treats them as empty
+  replies, so update both sides together.
 - `wait` marks messages delivered as it returns them; a `wait` killed mid-response can lose that
   batch from `wait` (it stays visible in `inbox`).
 

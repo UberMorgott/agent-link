@@ -17,10 +17,10 @@ func TestTimeoutKillsProcessTree(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	t.Setenv("AGENTLINK_FAKE_PIDFILE", pidFile)
 	rec := newRecorder()
-	w := New(fakeAgent(t, "tree").Runner(), rec.send, t.TempDir(), 2*time.Second, nil)
+	w := newWorker(t, fakeAgent(t, "tree").Runner(), rec, t.TempDir(), 2*time.Second)
 	start(t, w)
-	w.Offer(msg(id1, "hang with a child"))
-	if got := rec.wait(t, 1)[0]; !strings.Contains(got.body, "timed out") {
+	accept(t, w, msg(id1, "hang with a child"))
+	if got := rec.wait(t, 1)[0]; !strings.Contains(got.Body, "timed out") {
 		t.Fatalf("reply = %+v", got)
 	}
 	data, err := os.ReadFile(pidFile)

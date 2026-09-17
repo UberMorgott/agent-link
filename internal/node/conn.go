@@ -125,8 +125,9 @@ func (n *Node) readLoop(pc *peerConn, sc *bufio.Scanner) {
 	}
 }
 
-// receive persists an inbound message and ACKs it. Duplicates are ACKed
-// without being stored again. It returns false when the connection must close.
+// receive persists an inbound message, runs the inbound hook and ACKs it.
+// Duplicates are not stored again but still pass the hook, which is
+// idempotent. It returns false when the connection must close.
 func (n *Node) receive(pc *peerConn, m *Message) bool {
 	if m == nil || !validID(m.ID) || m.From != pc.peer {
 		n.log.Warn("rejected message", "peer", pc.peer)
@@ -138,9 +139,12 @@ func (n *Node) receive(pc *peerConn, m *Message) bool {
 		return true // no ACK: the sender retries
 	}
 	if isNew {
-		n.log.Info("message received", "from", m.From, "id", m.ID)
-		if n.onInbound != nil {
-			n.onInbound(*m)
+		n.log.Info("message received", "from", m.From, "id", m.ID, "kind", m.Kind, "job_status", m.JobStatus)
+	}
+	if n.onInbound != nil {
+		if err := n.onInbound(*m); err != nil {
+			n.log.Error("inbound hook", "id", m.ID, "err", err)
+			return true // no ACK: the sender retries
 		}
 	}
 	return pc.write(frame{Type: "ack", ID: m.ID}) == nil

@@ -37,7 +37,7 @@ type Node struct {
 	backoffMax       time.Duration
 	handshakeTimeout time.Duration
 
-	onInbound func(Message)
+	onInbound func(Message) error
 }
 
 // New opens the node's data directory. log may be nil.
@@ -77,9 +77,12 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	return n, nil
 }
 
-// SetInboundHook registers fn to be called once for every newly stored inbound
-// message. It must be set before Serve or Run, and fn must not block.
-func (n *Node) SetInboundHook(fn func(Message)) { n.onInbound = fn }
+// SetInboundHook registers fn to be called for every inbound message after it
+// is persisted and before it is ACKed, including resent duplicates (a crash
+// may have hit between persisting and fn), so fn must be idempotent by id.
+// When fn fails the message is not ACKed and the sender resends it. It must be
+// set before Serve or Run, and fn must not block for long.
+func (n *Node) SetInboundHook(fn func(Message) error) { n.onInbound = fn }
 
 // Serve runs the peer listener, the peer dialers and the control API until ctx
 // is cancelled. apiLn must be bound to a loopback address.
@@ -145,13 +148,30 @@ func (n *Node) Connected(peer string) bool {
 // Send queues a message to a node name or to "area:NAME". Area messages fan
 // out to every peer that announced the area.
 func (n *Node) Send(to, body, replyTo string) (Message, error) {
-	if body == "" {
+	return n.SendMessage(Message{To: to, Body: body, ReplyTo: replyTo})
+}
+
+// SendMessage queues m like Send. An empty ID gets a random one; From and
+// CreatedAt are always set here. A status update needs a ReplyTo and may have
+// no body. Re-sending the same ID is safe: the receiver deduplicates by id.
+func (n *Node) SendMessage(m Message) (Message, error) {
+	switch {
+	case m.Kind != "" && m.Kind != KindStatus:
+		return Message{}, fmt.Errorf("invalid kind %q", m.Kind)
+	case m.Kind == KindStatus && m.ReplyTo == "":
+		return Message{}, errors.New("status update without reply_to")
+	case m.Body == "" && m.Kind != KindStatus:
 		return Message{}, errors.New("empty body")
+	case m.ReplyTo != "" && !validID(m.ReplyTo):
+		return Message{}, fmt.Errorf("invalid reply_to %q", m.ReplyTo)
+	case m.ID != "" && !validID(m.ID):
+		return Message{}, fmt.Errorf("invalid id %q", m.ID)
 	}
-	if replyTo != "" && !validID(replyTo) {
-		return Message{}, fmt.Errorf("invalid reply_to %q", replyTo)
+	if m.ID == "" {
+		m.ID = newID()
 	}
-	m := Message{ID: newID(), From: n.cfg.Node, To: to, Body: body, ReplyTo: replyTo, CreatedAt: time.Now().UTC()}
+	m.From, m.Area, m.CreatedAt = n.cfg.Node, "", time.Now().UTC()
+	to := m.To
 	var recipients []string
 	if area, ok := strings.CutPrefix(to, AreaPrefix); ok {
 		m.Area = area

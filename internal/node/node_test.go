@@ -3,10 +3,12 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -317,29 +319,100 @@ func TestAPIRejectsForeignOrigin(t *testing.T) {
 	}
 }
 
-func TestInboundHookFiresOncePerNewMessage(t *testing.T) {
+// The hook runs before the ACK: a failing hook withholds it, so the sender
+// resends and the hook sees the (already stored) message again.
+func TestInboundHookGatesAck(t *testing.T) {
 	lnA, lnB := listen(t), listen(t)
 	a := newTestNode(t, "a", testSecret, nil, t.TempDir(), lnA, map[string]net.Listener{"b": lnB})
 	b := newTestNode(t, "b", testSecret, nil, t.TempDir(), lnB, map[string]net.Listener{"a": lnA})
-	got := make(chan Message, 10)
-	b.SetInboundHook(func(m Message) { got <- m })
+	var mu sync.Mutex
+	calls := 0
+	b.SetInboundHook(func(m Message) error {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if calls == 1 {
+			return errors.New("disk full")
+		}
+		return nil
+	})
 	a.start(t)
 	b.start(t)
-	sent, err := a.Send("b", "hook me", "")
+	if _, err := a.Send("b", "hook me", ""); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "ack after the hook succeeded", func() bool { p, _ := a.store.pending("b"); return len(p) == 0 })
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("hook calls = %d, want 2 (failed, then the resend)", calls)
+	}
+}
+
+// Status updates are stored and deduplicated, never returned by wait, and
+// fold into the sender's inbox entry for the request with the final answer.
+func TestStatusUpdatesFoldIntoRequest(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	req, err := a.Send("b", "do it", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case m := <-got:
-		if m.ID != sent.ID || m.Body != "hook me" {
-			t.Fatalf("hook got %+v", m)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("hook not called")
+	if code, msgs := waitHTTP(t, b, "10s"); code != http.StatusOK || len(msgs) != 1 {
+		t.Fatalf("request wait = %d %+v", code, msgs)
 	}
-	select {
-	case m := <-got:
-		t.Fatalf("hook called twice: %+v", m)
-	case <-time.After(700 * time.Millisecond): // longer than resendAfter
+	latest := func() Entry {
+		entries, err := a.Recent(0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if e.Kind == KindStatus {
+				t.Fatalf("status update listed: %+v", e)
+			}
+			if e.Direction == "out" && e.ID == req.ID {
+				return e
+			}
+		}
+		t.Fatal("request not listed")
+		return Entry{}
+	}
+	for _, st := range []string{JobQueued, JobRunning} {
+		m := Message{ID: DerivedID(req.ID, st), To: "a", ReplyTo: req.ID, Kind: KindStatus, JobStatus: st}
+		for range 2 { // a resend of the same update is a duplicate
+			if _, err := b.SendMessage(m); err != nil {
+				t.Fatal(err)
+			}
+		}
+		eventually(t, st+" seen by the sender", func() bool { return latest().JobStatus == st })
+	}
+	if _, err := b.SendMessage(Message{To: "a", ReplyTo: req.ID, Kind: KindStatus}); err != nil {
+		t.Fatal(err) // bodiless status is allowed
+	}
+	if _, err := b.SendMessage(Message{To: "a", ReplyTo: req.ID}); err == nil {
+		t.Fatal("bodiless reply accepted")
+	}
+	if code, msgs := waitHTTP(t, a, "500ms"); code != http.StatusNoContent {
+		t.Fatalf("status update woke wait: %d %+v", code, msgs)
+	}
+	if _, err := b.SendMessage(Message{To: "a", ReplyTo: req.ID, Body: "done", JobStatus: JobCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	code, msgs := waitHTTP(t, a, "10s")
+	if code != http.StatusOK || len(msgs) != 1 || msgs[0].JobStatus != JobCompleted || msgs[0].Body != "done" {
+		t.Fatalf("final reply wait = %d %+v", code, msgs)
+	}
+	if e := latest(); e.JobStatus != JobCompleted || e.Answer != "done" {
+		t.Fatalf("request entry = %+v", e)
+	}
+	count := 0
+	a.store.mu.Lock()
+	for _, r := range a.store.inbox {
+		if r.Message.Kind == KindStatus {
+			count++
+		}
+	}
+	a.store.mu.Unlock()
+	if count != 3 {
+		t.Fatalf("stored status updates = %d, want 3 (duplicates dropped)", count)
 	}
 }

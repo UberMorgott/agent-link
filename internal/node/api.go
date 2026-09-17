@@ -20,7 +20,8 @@ type SendRequest struct {
 // APIHandler serves the loopback control API:
 //
 //	POST /send               SendRequest -> Message
-//	GET  /wait?timeout=30s   200 []Message (marked delivered) or 204 on timeout; 0 waits forever
+//	GET  /wait?timeout=30s   200 []Message (marked delivered) or 204 on timeout; 0 waits forever.
+//	                         Requests and replies only: status updates never wake it.
 //	GET  /inbox?limit=50     200 []Entry
 func (n *Node) APIHandler() http.Handler {
 	mux := http.NewServeMux()

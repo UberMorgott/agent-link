@@ -22,10 +22,17 @@ function render(entries) {
     head.className = "head";
     const who = e.direction === "in" ? "from " + e.from : "to " + (e.area ? "area:" + e.area + " / " : "") + e.peer;
     head.textContent = new Date(e.created_at).toLocaleString() + " - " + who + " - " + e.status +
+      (e.job_status ? " - " + e.job_status : "") +
       (e.reply_to ? " - reply to " + e.reply_to.slice(0, 8) : "");
     const body = document.createElement("pre");
     body.textContent = e.body;
     li.append(head, body);
+    if (e.direction === "out" && e.answer) {
+      const answer = document.createElement("pre");
+      answer.className = "answer";
+      answer.textContent = e.answer;
+      li.append(answer);
+    }
     if (e.direction === "in" && !e.reply_to) {
       const btn = document.createElement("button");
       btn.type = "button";

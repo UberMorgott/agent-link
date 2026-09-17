@@ -179,16 +179,26 @@ func (a *App) startNode() error {
 	if err != nil {
 		return err
 	}
+	// The job store always opens: with no handler, jobs left from an earlier
+	// handler fail with a reply, and new requests stay manual (no hook).
+	var run worker.Runner
+	cmd, hasHandler := a.s.Command()
+	if hasHandler {
+		run = cmd.Runner()
+	}
+	w, err := worker.New(run, n.SendMessage, cfg.DataDir, a.s.WorkDir, a.HandlerTimeout, a.log)
+	if err != nil {
+		return err
+	}
+	if hasHandler {
+		n.SetInboundHook(w.Accept)
+	}
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	if cmd, ok := a.s.Command(); ok {
-		w := worker.New(cmd.Runner(), n.Send, a.s.WorkDir, a.HandlerTimeout, a.log)
-		n.SetInboundHook(w.Offer)
-		a.wg.Go(func() { w.Run(ctx) })
-	}
+	a.wg.Go(func() { w.Run(ctx) })
 	a.wg.Go(func() { n.Run(ctx, ln) })
 	a.n, a.stop = n, cancel
 	a.log.Info("node started", "node", cfg.Node, "listen", ln.Addr(), "handler", a.s.Handler)
