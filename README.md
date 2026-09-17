@@ -64,6 +64,9 @@ search but cannot edit files or run commands. It can still read files it can rea
 read-only sandbox is not limited to the working folder), and its answer goes to the other
 person, so only pair with someone you trust with that folder.
 
+`docs/agent-usage.md` is the short version for a coding agent that wants to use the link itself:
+how to find the config path, ask the other machine a question and read the answer.
+
 ## CLI
 
 ### Build
