@@ -1,0 +1,821 @@
+#!/bin/bash
+set -e
+
+# Agent Relay Installer
+# Usage: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+#
+# Options (set as environment variables):
+#   AGENT_RELAY_VERSION              - Specific version to install (default: latest)
+#   AGENT_RELAY_INSTALL_DIR          - Installation directory (default: ~/.agentworkforce/relay)
+#   AGENT_RELAY_BIN_DIR              - Binary directory (default: ~/.local/bin)
+#   AGENT_RELAY_TELEMETRY_DISABLED   - Disable anonymous install telemetry (default: false)
+
+REPO_RELAY="AgentWorkforce/relay"
+VERSION="${AGENT_RELAY_VERSION:-latest}"
+INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-$HOME/.agentworkforce/relay}"
+BIN_DIR="${AGENT_RELAY_BIN_DIR:-$HOME/.local/bin}"
+ORIGINAL_PATH="${PATH:-}"
+STANDALONE_FAILURE_REASON=""
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+info() { echo -e "${BLUE}[info]${NC} $1"; }
+success() { echo -e "${GREEN}[✓]${NC} $1"; }
+warn() { echo -e "${YELLOW}[warn]${NC} $1"; }
+error() {
+    echo -e "${RED}[error]${NC} $1"
+    # Track failure if telemetry is initialized
+    if [ -n "$INSTALL_ID" ]; then
+        # Escape special characters for JSON (newlines, quotes, backslashes)
+        local escaped_error
+        escaped_error=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+        track_event "install_failed" ", \"error\": \"$escaped_error\""
+    fi
+    exit 1
+}
+step() { echo -e "\n${CYAN}${BOLD}$1${NC}"; }
+
+# Telemetry (respects AGENT_RELAY_TELEMETRY_DISABLED)
+POSTHOG_API_KEY="phc_2uDu01GtnLABJpVkWw4ri1OgScLU90aEmXmDjufGdqr"
+POSTHOG_HOST="https://us.i.posthog.com"
+INSTALL_ID=""
+INSTALL_METHOD=""
+
+telemetry_enabled() {
+    # Respect opt-out
+    if [ "${AGENT_RELAY_TELEMETRY_DISABLED:-}" = "1" ] || [ "${AGENT_RELAY_TELEMETRY_DISABLED:-}" = "true" ]; then
+        return 1
+    fi
+    # Also check DO_NOT_TRACK (standard env var)
+    if [ "${DO_NOT_TRACK:-}" = "1" ]; then
+        return 1
+    fi
+    return 0
+}
+
+generate_install_id() {
+    # Generate a random ID for this install session
+    if command -v uuidgen &> /dev/null; then
+        INSTALL_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+    elif [ -f /proc/sys/kernel/random/uuid ]; then
+        INSTALL_ID=$(cat /proc/sys/kernel/random/uuid)
+    else
+        # Fallback: use timestamp + random
+        INSTALL_ID="install-$(date +%s)-$RANDOM"
+    fi
+}
+
+track_event() {
+    if ! telemetry_enabled; then
+        return 0
+    fi
+
+    local event="$1"
+    local extra_props="${2:-}"
+
+    # Send async (don't block install)
+    (curl -sS --max-time 5 -X POST "${POSTHOG_HOST}/capture/" \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"api_key\": \"${POSTHOG_API_KEY}\",
+            \"event\": \"${event}\",
+            \"distinct_id\": \"${INSTALL_ID}\",
+            \"properties\": {
+                \"platform\": \"${PLATFORM:-unknown}\",
+                \"version\": \"${VERSION:-unknown}\",
+                \"method\": \"${INSTALL_METHOD:-unknown}\",
+                \"os\": \"${OS:-unknown}\",
+                \"arch\": \"${ARCH:-unknown}\",
+                \"has_node\": \"${HAS_NODE:-false}\"${extra_props}
+            }
+        }" > /dev/null 2>&1 &) || true
+}
+
+safe_remove_path() {
+    local target="$1"
+    if [ -L "$target" ] || [ -f "$target" ]; then
+        rm -f "$target"
+    fi
+}
+
+write_executable_file() {
+    local target="$1"
+    local temp="${target}.tmp.$$"
+
+    mkdir -p "$(dirname "$target")"
+    safe_remove_path "$temp"
+    cat > "$temp"
+    chmod +x "$temp"
+    mv -f "$temp" "$target"
+}
+
+install_binary_launcher() {
+    local target_binary="$1"
+
+    write_executable_file "$BIN_DIR/agent-relay" << WRAPPER
+#!/usr/bin/env bash
+exec "$target_binary" "\$@"
+WRAPPER
+}
+
+install_node_launcher() {
+    local target_dir="$1"
+
+    write_executable_file "$BIN_DIR/agent-relay" << WRAPPER
+#!/usr/bin/env bash
+cd "$target_dir" && exec node dist/src/cli/index.js "\$@"
+WRAPPER
+}
+
+prepend_bin_dir_to_path() {
+    case ":${PATH:-}:" in
+        *":$BIN_DIR:"*) ;;
+        *) export PATH="$BIN_DIR${PATH:+:$PATH}" ;;
+    esac
+}
+
+resolve_command_in_path() {
+    local command_name="$1"
+    local path_value="${2:-$PATH}"
+    PATH="$path_value" command -v "$command_name" 2>/dev/null || true
+}
+
+record_standalone_failure() {
+    local message="$1"
+    STANDALONE_FAILURE_REASON="$message"
+    warn "$message"
+    safe_remove_path "$BIN_DIR/agent-relay"
+    safe_remove_path "$INSTALL_DIR/bin/agent-relay"
+}
+
+# Detect OS and architecture
+detect_platform() {
+    OS="$(uname -s)"
+    ARCH="$(uname -m)"
+
+    case "$OS" in
+        Linux*)  OS="linux" ;;
+        Darwin*) OS="darwin" ;;
+        *)       error "Unsupported OS: $OS" ;;
+    esac
+
+    case "$ARCH" in
+        x86_64|amd64)  ARCH="x64" ;;
+        arm64|aarch64) ARCH="arm64" ;;
+        *)             error "Unsupported architecture: $ARCH" ;;
+    esac
+
+    PLATFORM="${OS}-${ARCH}"
+    info "Detected platform: $PLATFORM"
+}
+
+# Get latest version from GitHub
+get_latest_version() {
+    if [ "$VERSION" = "latest" ]; then
+        # Use GitHub token if available (avoids rate limiting)
+        local auth_header=""
+        if [ -n "${GITHUB_TOKEN:-}" ]; then
+            auth_header="-H \"Authorization: token $GITHUB_TOKEN\""
+        fi
+
+        VERSION=$(eval curl -fsSL $auth_header "https://api.github.com/repos/$REPO_RELAY/releases/latest" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+        if [ -z "$VERSION" ]; then
+            error "Failed to fetch latest version"
+        fi
+    fi
+    # Remove tag prefix (e.g., "openclaw-v3.1.10" -> "3.1.10", "v3.1.10" -> "3.1.10")
+    VERSION="${VERSION#openclaw-}"
+    VERSION="${VERSION#v}"
+    info "Installing version: $VERSION"
+}
+
+# Check if Node.js is available
+check_node() {
+    if command -v node &> /dev/null; then
+        NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
+        if [ "$NODE_VERSION" -ge 22 ]; then
+            HAS_NODE=true
+            info "Node.js $(node -v) detected"
+            return 0
+        fi
+    fi
+    HAS_NODE=false
+    return 1
+}
+
+# Download broker binary (Rust broker for workflow/SDK agent spawning)
+download_broker_binary() {
+    step "Downloading broker binary..."
+
+    local binary_name="agent-relay-broker-${PLATFORM}"
+    local download_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}"
+    local target_path="$INSTALL_DIR/bin/agent-relay-broker"
+
+    mkdir -p "$INSTALL_DIR/bin"
+    mkdir -p "$BIN_DIR"
+
+    if curl -fsSL "$download_url" -o "$target_path" 2>/dev/null; then
+        chmod +x "$target_path"
+        strip_quarantine "$target_path"
+        # Verify binary works (Rust clap binary supports --help)
+        if "$target_path" --help &>/dev/null; then
+            # Also install to BIN_DIR so it's discoverable on PATH
+            safe_remove_path "$BIN_DIR/agent-relay-broker"
+            cp "$target_path" "$BIN_DIR/agent-relay-broker"
+            chmod +x "$BIN_DIR/agent-relay-broker"
+            success "Downloaded broker binary (workflow agent spawning)"
+            return 0
+        else
+            warn "broker binary failed verification"
+            rm -f "$target_path"
+            return 1
+        fi
+    else
+        warn "No prebuilt broker binary for $PLATFORM"
+        return 1
+    fi
+}
+
+# Check if a command exists
+has_command() {
+    command -v "$1" &> /dev/null
+}
+
+# Prepare a downloaded macOS binary so Gatekeeper does not kill it during
+# first execution.
+strip_quarantine() {
+    if [ "$OS" = "darwin" ]; then
+        if has_command xattr; then
+            xattr -d com.apple.quarantine "$1" 2>/dev/null || true
+        fi
+        if has_command codesign; then
+            codesign --remove-signature "$1" >/dev/null 2>&1 || true
+            codesign --force --sign - "$1" >/dev/null 2>&1 || true
+        fi
+    fi
+}
+
+# Download relay-acp binary for Zed editor integration
+download_relay_acp() {
+    step "Downloading relay-acp binary (Zed editor integration)..."
+
+    local binary_name="relay-acp-${PLATFORM}"
+    local compressed_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}.gz"
+    local uncompressed_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}"
+    local target_path="$BIN_DIR/relay-acp"
+    local temp_file="/tmp/relay-acp-download-$$"
+
+    mkdir -p "$BIN_DIR"
+
+    # Setup cleanup trap for temp files
+    trap 'rm -f "${temp_file}.gz" "${temp_file}"' EXIT
+
+    # Try compressed binary first
+    if has_command gunzip; then
+        if curl -fsSL "$compressed_url" -o "${temp_file}.gz" 2>/dev/null; then
+            local is_gzip=false
+            if has_command file; then
+                file "${temp_file}.gz" 2>/dev/null | grep -q "gzip" && is_gzip=true
+            else
+                head -c 2 "${temp_file}.gz" 2>/dev/null | od -An -tx1 | grep -q "1f 8b" && is_gzip=true
+            fi
+
+            if [ "$is_gzip" = true ]; then
+                if gunzip -c "${temp_file}.gz" > "$target_path" 2>/dev/null; then
+                    rm -f "${temp_file}.gz"
+                    chmod +x "$target_path"
+                    strip_quarantine "$target_path"
+
+                    if "$target_path" --help &>/dev/null; then
+                        success "Downloaded relay-acp binary (Zed ACP bridge)"
+                        trap - EXIT
+                        return 0
+                    else
+                        warn "relay-acp binary failed verification, trying uncompressed..."
+                        rm -f "$target_path"
+                    fi
+                else
+                    rm -f "${temp_file}.gz" "$target_path"
+                fi
+            else
+                rm -f "${temp_file}.gz"
+            fi
+        fi
+    fi
+
+    # Fall back to uncompressed binary
+    if curl -fsSL "$uncompressed_url" -o "$target_path" 2>/dev/null; then
+        local file_size
+        file_size=$(stat -f%z "$target_path" 2>/dev/null || stat -c%s "$target_path" 2>/dev/null || echo "0")
+
+        if [ "$file_size" -gt 1000000 ]; then
+            chmod +x "$target_path"
+            strip_quarantine "$target_path"
+
+            if "$target_path" --help &>/dev/null; then
+                success "Downloaded relay-acp binary (Zed ACP bridge)"
+                trap - EXIT
+                return 0
+            else
+                rm -f "$target_path"
+            fi
+        else
+            rm -f "$target_path"
+        fi
+    fi
+
+    trap - EXIT
+    info "No relay-acp binary available for $PLATFORM"
+    return 1
+}
+
+# Install ACP bridge for Zed editor integration (fallback to npm if binary not available)
+install_acp_bridge() {
+    # Try binary first
+    if download_relay_acp; then
+        return 0
+    fi
+
+    # Fall back to npm if Node.js is available
+    if check_node; then
+        info "Installing ACP bridge via npm..."
+        if npm install -g @agent-relay/acp-bridge@"$VERSION" 2>/dev/null || npm install -g @agent-relay/acp-bridge 2>/dev/null; then
+            success "Installed relay-acp via npm (Zed ACP bridge)"
+            return 0
+        fi
+    fi
+
+    warn "relay-acp not available (Zed editor integration won't work)"
+    return 1
+}
+
+# Download with progress indicator
+download_with_progress() {
+    local url="$1"
+    local output="$2"
+
+    if [ -t 1 ]; then
+        # TTY available - show progress bar
+        curl -fSL --progress-bar "$url" -o "$output"
+    else
+        # No TTY - silent download
+        curl -fsSL "$url" -o "$output"
+    fi
+}
+
+# Download standalone agent-relay binary (no Node.js required)
+download_standalone_binary() {
+    step "Checking for standalone binary..."
+
+    local binary_name="agent-relay-${PLATFORM}"
+    local compressed_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}.gz"
+    local uncompressed_url="https://github.com/$REPO_RELAY/releases/download/v${VERSION}/${binary_name}"
+    local target_path="$INSTALL_DIR/bin/agent-relay"
+    local temp_file="/tmp/agent-relay-download-$$"
+    local verify_log="/tmp/agent-relay-verify-$$.log"
+
+    mkdir -p "$INSTALL_DIR/bin"
+    mkdir -p "$BIN_DIR"
+    safe_remove_path "$target_path"
+
+    # Setup cleanup trap for temp files
+    trap 'rm -f "${temp_file}.gz" "${temp_file}" "${verify_log}"' EXIT
+
+    # Try compressed binary first (faster download, ~60-70% smaller)
+    # Only if gunzip is available
+    if has_command gunzip; then
+        if curl -fsSL "$compressed_url" -o "${temp_file}.gz" 2>/dev/null; then
+            # Check if we got a valid gzip file (not an error page)
+            # Use file command if available, otherwise check magic bytes
+            local is_gzip=false
+            if has_command file; then
+                file "${temp_file}.gz" 2>/dev/null | grep -q "gzip" && is_gzip=true
+            else
+                # Check gzip magic bytes (1f 8b)
+                head -c 2 "${temp_file}.gz" 2>/dev/null | od -An -tx1 | grep -q "1f 8b" && is_gzip=true
+            fi
+
+            if [ "$is_gzip" = true ]; then
+                # Decompress
+                if gunzip -c "${temp_file}.gz" > "$target_path" 2>/dev/null; then
+                    rm -f "${temp_file}.gz"
+                    chmod +x "$target_path"
+                    strip_quarantine "$target_path"
+
+                    # Verify the binary works
+                    if "$target_path" --version >"$verify_log" 2>&1; then
+                        install_binary_launcher "$target_path"
+                        prepend_bin_dir_to_path
+                        success "Downloaded standalone agent-relay binary"
+                        trap - EXIT  # Clear trap
+                        return 0
+                    else
+                        local verify_output=""
+                        verify_output=$(head -n 1 "$verify_log" 2>/dev/null || true)
+                        record_standalone_failure "Standalone binary verification failed for $target_path${verify_output:+: $verify_output}. Trying uncompressed binary..."
+                    fi
+                else
+                    warn "Decompression failed, trying uncompressed binary..."
+                    rm -f "${temp_file}.gz" "$target_path"
+                fi
+            else
+                info "Compressed binary not available, trying uncompressed..."
+                rm -f "${temp_file}.gz"
+            fi
+        else
+            info "Compressed binary not available, trying uncompressed..."
+            rm -f "${temp_file}.gz"
+        fi
+    else
+        info "gunzip not available, trying uncompressed binary..."
+    fi
+
+    # Fall back to uncompressed binary
+    info "Downloading standalone binary..."
+
+    if curl -fsSL "$uncompressed_url" -o "$target_path" 2>/dev/null; then
+        # Check file size - error pages are typically small (<1MB)
+        local file_size
+        file_size=$(stat -f%z "$target_path" 2>/dev/null || stat -c%s "$target_path" 2>/dev/null || echo "0")
+
+        if [ "$file_size" -gt 1000000 ]; then
+            chmod +x "$target_path"
+            strip_quarantine "$target_path"
+
+            # Verify the binary works
+            if "$target_path" --version >"$verify_log" 2>&1; then
+                install_binary_launcher "$target_path"
+                prepend_bin_dir_to_path
+                success "Downloaded standalone agent-relay binary (no Node.js required!)"
+                trap - EXIT  # Clear trap
+                return 0
+            else
+                local verify_output=""
+                verify_output=$(head -n 1 "$verify_log" 2>/dev/null || true)
+                record_standalone_failure "Standalone binary verification failed for $target_path${verify_output:+: $verify_output}"
+            fi
+        else
+            info "Uncompressed binary not available (file too small: ${file_size} bytes)"
+            rm -f "$target_path"
+        fi
+    fi
+
+    trap - EXIT  # Clear trap
+    info "No standalone binary available for $PLATFORM, falling back to npm"
+    return 1
+}
+
+# Install via npm (fallback or primary method)
+install_via_npm() {
+    step "Installing via npm..."
+
+    if ! check_node; then
+        error "Node.js 22+ is required for npm installation. Please install Node.js first:
+
+  macOS:   brew install node
+  Linux:   curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs
+
+Or use nvm: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash"
+    fi
+
+    # Install agent-relay globally
+    info "Installing agent-relay..."
+
+    # Try installation - capture output and exit code separately
+    local npm_log="/tmp/npm-install-$$.log"
+    local npm_exit=0
+
+    # npm registry metadata propagates before the tarball CDN does, so a
+    # freshly-published version may 404 for a short window.  Retry a few
+    # times with backoff before falling through to the unversioned install.
+    local max_attempts=6
+    local attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        npm_exit=0
+        npm install -g agent-relay@"$VERSION" > "$npm_log" 2>&1 || npm_exit=$?
+        if [ $npm_exit -eq 0 ]; then
+            break
+        fi
+        if grep -q "E404" "$npm_log" 2>/dev/null && [ $attempt -lt $max_attempts ]; then
+            info "Package not yet available on npm CDN, retrying in 10s... (attempt $attempt/$max_attempts)"
+            sleep 10
+            attempt=$((attempt + 1))
+        else
+            break
+        fi
+    done
+
+    if [ $npm_exit -ne 0 ]; then
+        # Versioned install failed, try without version (latest)
+        npm install -g agent-relay >> "$npm_log" 2>&1 || npm_exit=$?
+    fi
+
+    if [ $npm_exit -ne 0 ]; then
+        # Show the error output
+        cat "$npm_log"
+
+        # Check if it's a native module compilation failure
+        if grep -q "Unable to detect compiler type\|node-gyp\|prebuild-install\|gyp ERR" "$npm_log" 2>/dev/null; then
+            warn "Native module compilation failed. This is usually due to missing build tools."
+            echo ""
+            echo "Please install build tools and try again:"
+            echo ""
+            if [ "$OS" = "darwin" ]; then
+                echo "  xcode-select --install"
+            elif command -v apt-get &> /dev/null; then
+                echo "  sudo apt-get install build-essential python3"
+            elif command -v dnf &> /dev/null; then
+                echo "  sudo dnf install gcc gcc-c++ make python3"
+            elif command -v apk &> /dev/null; then
+                echo "  apk add build-base python3"
+            else
+                echo "  Install gcc, g++, make, and python3"
+            fi
+            echo ""
+            echo "Retrying installation with optional native modules disabled..."
+            if npm install -g --ignore-scripts agent-relay@"$VERSION" 2>/dev/null || npm install -g --ignore-scripts agent-relay 2>/dev/null; then
+                warn "Installed with native module compilation skipped"
+                rm -f "$npm_log"
+            else
+                rm -f "$npm_log"
+                error "Installation failed. Please install build tools and try again."
+            fi
+        else
+            rm -f "$npm_log"
+            error "npm installation failed. Please check the error messages above."
+        fi
+    else
+        rm -f "$npm_log"
+    fi
+
+    local npm_agent_relay=""
+    local npm_prefix=""
+    npm_prefix=$(npm prefix -g 2>/dev/null || true)
+    if [ -n "$npm_prefix" ] && [ -x "$npm_prefix/bin/agent-relay" ] && [ "$npm_prefix/bin/agent-relay" != "$BIN_DIR/agent-relay" ]; then
+        npm_agent_relay="$npm_prefix/bin/agent-relay"
+    else
+        npm_agent_relay=$(resolve_command_in_path agent-relay "$ORIGINAL_PATH")
+    fi
+    if [ -n "$npm_agent_relay" ] && [ "$npm_agent_relay" != "$BIN_DIR/agent-relay" ]; then
+        install_binary_launcher "$npm_agent_relay"
+        prepend_bin_dir_to_path
+    fi
+
+    # Install ACP bridge for Zed editor integration
+    install_acp_bridge || true
+
+    # Download broker binary for workflow/SDK agent spawning
+    download_broker_binary || true
+
+    success "Installed via npm"
+}
+
+# Install from source (for development or when npm fails)
+install_from_source() {
+    step "Installing from source..."
+
+    if ! check_node; then
+        error "Node.js 22+ is required for source installation"
+    fi
+
+    mkdir -p "$INSTALL_DIR"
+
+    if command -v git &> /dev/null; then
+        if [ -d "$INSTALL_DIR/.git" ]; then
+            info "Updating existing installation..."
+            cd "$INSTALL_DIR" && git fetch && git checkout "v$VERSION" 2>/dev/null || git pull
+        else
+            info "Cloning repository..."
+            rm -rf "$INSTALL_DIR"
+            git clone --depth 1 --branch "v$VERSION" "https://github.com/$REPO_RELAY.git" "$INSTALL_DIR" 2>/dev/null || \
+            git clone --depth 1 "https://github.com/$REPO_RELAY.git" "$INSTALL_DIR"
+        fi
+    else
+        info "Downloading source tarball..."
+        curl -fsSL "https://github.com/$REPO_RELAY/archive/v$VERSION.tar.gz" -o /tmp/relay.tar.gz 2>/dev/null || \
+        curl -fsSL "https://github.com/$REPO_RELAY/archive/main.tar.gz" -o /tmp/relay.tar.gz
+        rm -rf "$INSTALL_DIR"
+        mkdir -p "$INSTALL_DIR"
+        tar -xzf /tmp/relay.tar.gz -C "$INSTALL_DIR" --strip-components=1
+        rm /tmp/relay.tar.gz
+    fi
+
+    cd "$INSTALL_DIR"
+
+    # Install dependencies and build
+    info "Installing dependencies..."
+    if command -v pnpm &> /dev/null; then
+        pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+    else
+        npm ci 2>/dev/null || npm install
+    fi
+
+    info "Building..."
+    npm run build
+
+    # Create wrapper script
+    install_node_launcher "$INSTALL_DIR"
+    prepend_bin_dir_to_path
+
+    success "Installed from source"
+}
+
+# Setup PATH
+setup_path() {
+    local path_value="${1:-$PATH}"
+
+    if [[ ":$path_value:" != *":$BIN_DIR:"* ]]; then
+        warn "Add to your PATH by running:"
+        echo ""
+        echo "  export PATH=\"$BIN_DIR:\$PATH\""
+        echo ""
+        echo "  # Or add to your shell profile:"
+        echo "  echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc  # for bash"
+        echo "  echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc   # for zsh"
+        echo ""
+    fi
+}
+
+# Verify installation
+verify_installation() {
+    step "Verifying installation..."
+
+    prepend_bin_dir_to_path
+
+    local installed_path="$BIN_DIR/agent-relay"
+    local installed_version=""
+    local original_path_command=""
+
+    if [ -x "$installed_path" ] && installed_version=$("$installed_path" --version 2>/dev/null); then
+        success "agent-relay $installed_version installed successfully at $installed_path"
+
+        original_path_command=$(resolve_command_in_path agent-relay "$ORIGINAL_PATH")
+        if [ -n "$original_path_command" ] && [ "$original_path_command" != "$installed_path" ]; then
+            local original_version
+            original_version=$("$original_path_command" --version 2>/dev/null || echo "unknown")
+            warn "Another agent-relay ($original_version) at $original_path_command shadows the newly installed $installed_version at $installed_path"
+            echo "  Run this in your current shell:"
+            echo "    export PATH=\"$BIN_DIR:\$PATH\""
+            echo "  Then add the same line to ~/.zshrc or ~/.bashrc so the new launcher wins."
+        elif [[ ":$ORIGINAL_PATH:" != *":$BIN_DIR:"* ]]; then
+            setup_path "$ORIGINAL_PATH"
+        fi
+        return 0
+    fi
+
+    if command -v agent-relay &> /dev/null; then
+        installed_version=$(agent-relay --version 2>/dev/null || echo "unknown")
+        success "agent-relay $installed_version installed successfully!"
+        return 0
+    fi
+
+    error "Installation verification failed. Expected a working launcher at $installed_path"
+}
+
+# Print usage instructions
+print_usage() {
+    echo ""
+    echo -e "${BOLD}Quick Start:${NC}"
+    echo ""
+    echo "  # Start the local broker (detached so this terminal stays free)"
+    echo "  agent-relay up --background"
+    echo ""
+    echo "  # Check status"
+    echo "  agent-relay status"
+    echo ""
+    echo "  # Stop the broker"
+    echo "  agent-relay down"
+    echo ""
+    echo -e "${BOLD}Documentation:${NC} https://github.com/AgentWorkforce/relay"
+    echo ""
+}
+
+# Main installation flow
+main() {
+    echo ""
+    echo -e "${YELLOW}${BOLD}⚡ Agent Relay${NC} Installer"
+    echo ""
+
+    # Initialize telemetry
+    generate_install_id
+
+    detect_platform
+    get_latest_version
+
+    # Track install started
+    track_event "install_started"
+
+    # Try installation methods in order of preference:
+    # 1. Standalone binary (no dependencies required!)
+    # 2. npm (if Node.js available)
+    # 3. source (fallback)
+
+    # Try standalone binary first - works without Node.js
+    if download_standalone_binary; then
+        INSTALL_METHOD="binary"
+        # Download broker binary for workflow/SDK agent spawning
+        download_broker_binary || true
+        # Install ACP bridge for Zed editor (requires Node.js)
+        install_acp_bridge || true
+        verify_installation && print_usage && track_event "install_completed" && exit 0
+    fi
+
+    # Fall back to npm if Node.js is available
+    if [ -n "$STANDALONE_FAILURE_REASON" ]; then
+        info "Falling back to npm/source install after standalone verification cleanup."
+    fi
+
+    if check_node; then
+        INSTALL_METHOD="npm"
+        install_via_npm && verify_installation && print_usage && track_event "install_completed" && exit 0
+        warn "npm installation failed, trying source..."
+        INSTALL_METHOD="source"
+        install_from_source && verify_installation && print_usage && track_event "install_completed" && exit 0
+    else
+        echo ""
+        if [ -n "$STANDALONE_FAILURE_REASON" ]; then
+            warn "Standalone install was cleaned up after verification failed."
+            echo "  $STANDALONE_FAILURE_REASON"
+            echo "  Install Node.js 22+ to use the npm fallback, then rerun this installer."
+            echo ""
+        fi
+        warn "No standalone binary available and Node.js not found."
+        echo ""
+        echo -e "${BOLD}Options:${NC}"
+        echo ""
+        echo "  1. Wait for standalone binaries (coming soon for your platform)"
+        echo ""
+        echo "  2. Install Node.js 22+ using one of these methods:"
+        echo ""
+        echo "     # Using nvm (recommended - works on macOS and Linux)"
+        echo "     curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash"
+        echo "     source ~/.bashrc  # or ~/.zshrc"
+        echo "     nvm install 22"
+        echo ""
+
+        if [ "$OS" = "darwin" ]; then
+            echo "     # macOS - Official installer"
+            echo "     https://nodejs.org/en/download"
+            echo ""
+            echo "     # macOS - via Homebrew (if installed)"
+            echo "     brew install node"
+        elif [ "$OS" = "linux" ]; then
+            # Detect package manager
+            if command -v apt-get &> /dev/null; then
+                echo "     # Ubuntu/Debian"
+                echo "     curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -"
+                echo "     sudo apt-get install -y nodejs"
+            elif command -v dnf &> /dev/null; then
+                echo "     # Fedora/RHEL"
+                echo "     sudo dnf install nodejs npm"
+            elif command -v pacman &> /dev/null; then
+                echo "     # Arch Linux"
+                echo "     sudo pacman -S nodejs npm"
+            elif command -v apk &> /dev/null; then
+                echo "     # Alpine Linux"
+                echo "     apk add nodejs npm"
+            else
+                echo "     # Download from nodejs.org"
+                echo "     https://nodejs.org/en/download"
+            fi
+        fi
+
+        echo ""
+        echo "Then re-run this installer."
+        track_event "install_failed" ", \"error\": \"no_nodejs_or_binary\""
+        exit 1
+    fi
+}
+
+# Handle command line arguments
+case "${1:-}" in
+    --help|-h)
+        echo "Agent Relay Installer"
+        echo ""
+        echo "Usage: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash"
+        echo ""
+        echo "Environment variables:"
+        echo "  AGENT_RELAY_VERSION              Specific version to install (default: latest)"
+        echo "  AGENT_RELAY_INSTALL_DIR          Installation directory (default: ~/.agentworkforce/relay)"
+        echo "  AGENT_RELAY_BIN_DIR              Binary directory (default: ~/.local/bin)"
+        echo "  AGENT_RELAY_TELEMETRY_DISABLED   Disable anonymous install telemetry (default: false)"
+        echo ""
+        echo "Telemetry: This installer collects anonymous usage data to improve the product."
+        echo "           Set AGENT_RELAY_TELEMETRY_DISABLED=1 or DO_NOT_TRACK=1 to opt out."
+        exit 0
+        ;;
+    --version|-v)
+        echo "Installer for Agent Relay"
+        echo "Repository: https://github.com/AgentWorkforce/relay"
+        exit 0
+        ;;
+esac
+
+main "$@"

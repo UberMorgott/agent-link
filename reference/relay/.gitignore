@@ -1,0 +1,102 @@
+# Dependencies
+node_modules/
+
+# Build output
+.build
+dist/
+ui-dist/
+
+# Release binaries (created by scripts/build-bun.sh)
+.release/
+
+# Bundled binaries (downloaded/built at install time)
+bin/tmux
+bin/agent-relay-test
+
+# Rust build artifacts
+target/
+
+# TypeScript build info (if enabled later)
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+.claude/settings.local.json
+.claude/worktrees/
+.gemini/settings.json
+
+# Relay runtime artifacts
+*.sock
+*.pid
+
+# Local test artifacts
+.agent-relay-test-*/
+.tmp/
+.tmp-*/
+
+# Git worktrees (development only)
+.worktrees/
+
+# Coverage output
+coverage/
+.npm-cache
+
+.next
+
+# Next.js build output
+**/out/
+
+.env.local
+.env
+.env.production
+codex.toml
+
+# Turborepo
+.turbo/
+.build-standalone/
+bin/agent-relay-bundle
+bin/agent-relay-standalone
+
+# SDK bundled broker binary (built/downloaded at install time)
+packages/sdk/bin/agent-relay-broker*
+packages/harness-driver/bin/agent-relay-broker*
+packages/broker-sdk/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+.agentworkforce/relay/
+.relay/
+.agent-relay/
+.relayflow/pr-proof-input.json
+
+.msd/
+/workflows/*
+.workflow-artifacts/*
+!/workflows/ci/
+!/workflows/refactor/
+!/workflows/relayauth-integration/
+!/workflows/cloud-connect/
+!/workflows/verify-features.ts
+!/workflows/audit-feature-manifest.ts
+!/workflows/pr-proof.ts
+
+# Eval harness JSON reports (generated per run)
+tests/integration/broker/evals-reports/
+
+# Per-harness runtime config written during eval/agent runs — contains live
+# workspace keys and agent tokens; must never be committed.
+/opencode.json

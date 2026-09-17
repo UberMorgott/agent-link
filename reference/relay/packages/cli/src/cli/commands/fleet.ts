@@ -1,0 +1,1439 @@
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+
+import { InvalidArgumentError, type Command } from 'commander';
+import { findProjectRoot } from '@agent-relay/config';
+import {
+  CloudFleetSandboxProvisionError,
+  deleteCloudFleetSandbox,
+  ensureCloudFleetSandbox,
+  materializeCloudRelayfileRepository,
+  resolveWorkspaceByKey,
+  type CloudFleetSandboxProviderId,
+  type CloudRelayfileRepositoryMaterialization,
+  type EnsureCloudFleetSandboxResult,
+} from '@agent-relay/cloud';
+import { HarnessDriverClient } from '@agent-relay/harness-driver';
+import {
+  createWorkspaceClient,
+  RelayPlacementError,
+  type RelayWorkspaceThinClient,
+  type RelayNode,
+} from '@agent-relay/sdk';
+
+import { withDefaults, type CoreDependencies } from './core.js';
+import {
+  buildRows,
+  collectWithRetry,
+  formatPretty,
+  readRemoteLiveAgents,
+  readLocalBrokerMaps,
+  type FleetNodeContribution,
+  type RosterAgent,
+} from './fleet-agent.js';
+import { readBrokerConnection } from '../lib/broker-lifecycle.js';
+import { spawnAgentWithClient } from '../lib/client-factory.js';
+import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
+import { isAvailableFleetNode } from '../lib/fleet-live-agents.js';
+import { declaredWorkforceMetadata } from '../lib/registration-metadata.js';
+import { redactSecrets } from '../lib/redact.js';
+import { attributableReleaseReason } from '../lib/release-reason.js';
+import { resolveSandboxRepository, type SandboxRepositorySelection } from '../lib/sandbox-repo.js';
+import { spawnPlacementReceipt } from '../lib/spawn-lifecycle.js';
+import {
+  resolveAgentToken,
+  resolveWorkspaceSelection,
+  persistWorkspaceRelaycastTarget,
+  resolveWorkspaceKeyWithSource,
+  resolveWorkspaceTransport,
+  type SdkClientOptions,
+} from '../lib/sdk-client.js';
+import {
+  addSdkOptions,
+  printJson,
+  runSdk,
+  sdkOptionsFromOpts,
+  withSdkDefaults,
+  type SdkCommandDeps,
+} from '../lib/sdk-command.js';
+
+const SERVE_REPLACEMENT_MESSAGE =
+  "'fleet serve' has been replaced. Run 'relay node up' (with an optional --config <file>); " +
+  "for Cloud-managed nodes run 'relay cloud enroll --token <token>' first.";
+
+const FLEET_CLIS = new Set(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode']);
+const CLOUD_SANDBOX_ID_PATTERN =
+  /^sbx_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function spawnInvocationWithPlacement(invocation: Record<string, unknown>): Record<string, unknown> {
+  return { ...invocation, placement: spawnPlacementReceipt(invocation) };
+}
+
+function assertSandboxRepositoryRevision(
+  sandbox: EnsureCloudFleetSandboxResult,
+  selection: SandboxRepositorySelection | undefined
+): void {
+  if (!selection) return;
+  const expected = { [selection.repository]: selection.revision };
+  if (sandbox.outcome === 'provisioning_timeout') {
+    throw new Error(
+      `Sandbox node '${sandbox.nodeName}' did not become ready within ${sandbox.waitedMs}ms; the repository revision was not verified.`
+    );
+  }
+  const actual = sandbox.repoRevisions?.[selection.repository];
+  if (actual !== selection.revision || Object.keys(sandbox.repoRevisions ?? {}).length !== 1) {
+    throw new Error(
+      `Cloud did not echo the requested repository revision for ${selection.repository}; update Cloud before retrying this sandbox launch.`
+    );
+  }
+  // Keep the shape check explicit at the CLI boundary too: injected/test
+  // implementations and older Cloud clients must not bypass the attestation.
+  if (JSON.stringify(sandbox.repoRevisions) !== JSON.stringify(expected)) {
+    throw new Error(`Cloud returned an unexpected repository revision for ${selection.repository}.`);
+  }
+}
+
+function pathContains(parent: string, child: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return (
+    relative === '' ||
+    (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
+}
+
+function liveRelayfileMountPaths(
+  materialization: CloudRelayfileRepositoryMaterialization,
+  requested: readonly string[] | undefined
+): string[] {
+  const contentRoot = materialization.contentRoot;
+  const sentinelRoot = path.posix.dirname(materialization.sentinelPath);
+  const requestedPaths = requested ?? [];
+  if (requestedPaths.length > 13) {
+    throw new Error(
+      '--sandbox-relayfile-path accepts at most 13 paths when a live repository, its source metadata, and workspace skills are mounted.'
+    );
+  }
+  const contentAncestor = requestedPaths.find((candidate) => {
+    const root = candidate
+      .trim()
+      .replace(/\/\*\*$/, '')
+      .replace(/\/$/, '');
+    return contentRoot === root || contentRoot.startsWith(`${root}/`);
+  });
+  if (contentAncestor && contentAncestor.trim() !== `${contentRoot}/**`) {
+    throw new Error(
+      `Relayfile path ${JSON.stringify(contentAncestor)} contains the repository source root; omit it so Relay can mount ${contentRoot}/** as a decoded working tree.`
+    );
+  }
+  return [...new Set([`${contentRoot}/**`, `${sentinelRoot}/**`, '/.skills/**', ...requestedPaths])];
+}
+
+function liveRelayfileWorkerCwd(
+  mountRoot: string,
+  materialization: CloudRelayfileRepositoryMaterialization,
+  relativeCwd: string
+): string {
+  const root = mountRoot.replace(/\/+$/, '') || '/';
+  const sourceRoot = `${root === '/' ? '' : root}${materialization.contentRoot}`;
+  return relativeCwd ? `${sourceRoot}/${relativeCwd}` : sourceRoot;
+}
+
+function mountedRelayfilePath(mountRoot: string, remotePath: string): string {
+  const root = mountRoot.replace(/\/+$/, '') || '/';
+  return `${root === '/' ? '' : root}${remotePath}`;
+}
+
+// The targeted spawn path (relay.messaging.placement.spawn) returns an
+// invocation whose `placement` is the SDK's own evidence object
+// (`state: 'accepted' | 'ready'`, `confirmed`). `spawnPlacementReceipt`
+// derives a *different* lifecycle receipt from top-level invocation fields
+// (`state: SpawnLifecycleState`, `dispatchState`, ...) — replacing the SDK
+// placement with it would silently downgrade a confirmed `accepted` result
+// to `unconfirmed_may_be_running` under `--no-confirm`. Preserve the SDK
+// placement and only augment it with the normalized `dispatchState` and
+// `invocationId`.
+function spawnInvocationWithMergedPlacement(invocation: Record<string, unknown>): Record<string, unknown> {
+  const receipt = spawnPlacementReceipt(invocation);
+  const sdkPlacement =
+    invocation.placement !== null && typeof invocation.placement === 'object'
+      ? (invocation.placement as Record<string, unknown>)
+      : undefined;
+  const invocationId = typeof receipt.invocationId === 'string' ? receipt.invocationId : undefined;
+  return {
+    ...invocation,
+    placement: {
+      ...(sdkPlacement ?? {}),
+      dispatchState: receipt.dispatchState,
+      ...(invocationId ? { invocationId } : {}),
+    },
+  };
+}
+
+function throwForTerminalSpawnFailure(invocation: Record<string, unknown>): void {
+  const placement = spawnPlacementReceipt(invocation);
+  if (placement.state !== 'failed') return;
+  const invocationId = typeof placement.invocationId === 'string' ? placement.invocationId : undefined;
+  const message =
+    typeof invocation.error === 'string' && invocation.error.trim()
+      ? invocation.error
+      : 'Fleet spawn invocation reported a terminal failure.';
+  throw new RelayPlacementError('spawn_failed', message, {
+    capability: typeof invocation.capability === 'string' ? invocation.capability : 'spawn',
+    attempts: 1,
+    ...(invocationId ? { invocationId } : {}),
+    state: 'failed',
+    dispatchState: placement.dispatchState as 'dispatched' | 'not_dispatched' | 'unknown',
+    receipt: invocation,
+  });
+}
+
+export interface FleetCommandDependencies {
+  core: CoreDependencies;
+  sdk: SdkCommandDeps;
+  cwd: () => string;
+  connectLocalBroker: (cwd: string) => Promise<HarnessDriverClient>;
+  createFleetWorkspaceClient: (options: SdkClientOptions) => RelayWorkspaceThinClient;
+  resolveWorkspaceSelection: typeof resolveWorkspaceSelection;
+  resolveSandboxRepository: typeof resolveSandboxRepository;
+  findProjectRoot: typeof findProjectRoot;
+  resolveWorkspaceByKey: typeof resolveWorkspaceByKey;
+  persistWorkspaceRelaycastTarget: typeof persistWorkspaceRelaycastTarget;
+  ensureCloudFleetSandbox: typeof ensureCloudFleetSandbox;
+  materializeCloudRelayfileRepository: typeof materializeCloudRelayfileRepository;
+  deleteCloudFleetSandbox: typeof deleteCloudFleetSandbox;
+  log: (...args: unknown[]) => void;
+  warn: (...args: unknown[]) => void;
+  error: (...args: unknown[]) => void;
+  exit: (code: number) => never;
+}
+
+function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): FleetCommandDependencies {
+  const core = overrides.core ?? withDefaults();
+  const sdk = overrides.sdk ?? withSdkDefaults();
+  return {
+    core,
+    sdk,
+    cwd: () => process.cwd(),
+    connectLocalBroker: async (cwd) => connectProjectBrokerClient(cwd),
+    createFleetWorkspaceClient: (options) => {
+      const { workspaceKey, baseUrl } = resolveWorkspaceTransport(options);
+      return createWorkspaceClient({ workspaceKey, baseUrl });
+    },
+    resolveWorkspaceSelection,
+    resolveSandboxRepository,
+    findProjectRoot,
+    resolveWorkspaceByKey,
+    persistWorkspaceRelaycastTarget,
+    ensureCloudFleetSandbox,
+    materializeCloudRelayfileRepository,
+    deleteCloudFleetSandbox,
+    log: (...args: unknown[]) => console.log(...args),
+    warn: (...args: unknown[]) => console.warn(...args),
+    error: (...args: unknown[]) => console.error(...args),
+    exit: core.exit,
+    ...overrides,
+  };
+}
+
+export function registerFleetCommands(
+  program: Command,
+  overrides: Partial<FleetCommandDependencies> = {}
+): void {
+  const deps = withFleetDefaults(overrides);
+  const group = program.command('fleet').description('Inspect and manage Agent Relay fleet nodes');
+
+  // `fleet serve` has moved to `relay node up`. Keep a hidden stub so existing
+  // invocations fail loudly with migration guidance instead of an "unknown
+  // command" error. `allowUnknownOption` lets it swallow the old serve flags.
+  group
+    .command('serve', { hidden: true })
+    .argument('[file]')
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .action(() => {
+      deps.error(SERVE_REPLACEMENT_MESSAGE);
+      deps.exit(1);
+    });
+
+  addSdkOptions(
+    group
+      .command('nodes')
+      .description('List fleet nodes in the workspace')
+      .option('--capability <name>', 'Filter by capability name')
+      .option('--name <name>', 'Filter by node name')
+      .option('--all', 'Include offline and direct history records')
+  ).action(async (options: Record<string, unknown>) => {
+    await runSdk(deps.sdk, async () => {
+      warnIfInferredFromProjectSession(options, deps.warn);
+      const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+      const nodes = await relay.nodes.list({
+        capability: options.capability as string | undefined,
+        name: options.name as string | undefined,
+      });
+      const liveNodes = nodes.filter(isAvailableFleetNode);
+      const historyNodes = nodes.filter((node) => !isAvailableFleetNode(node));
+      const visibleNodes = options.all === true ? [...liveNodes, ...historyNodes] : liveNodes;
+      const hiddenCount = historyNodes.length;
+      if (hiddenCount > 0 && options.all !== true) {
+        deps.warn(
+          `${hiddenCount} offline or non-fleet records hidden. ` +
+            'Run `agent-relay fleet nodes --all` to include history.'
+        );
+      }
+      printJson(deps.sdk, {
+        nodes: visibleNodes,
+      });
+    });
+  });
+
+  // `fleet agent list` — the fleet-wide answer to `node agent list --pretty`.
+  // See relay#1553 for the gap this fills and packages/cli/src/cli/commands/
+  // fleet-agent.ts for the join logic (three name spaces, per-node contributions).
+  const agent = group.command('agent').description('Inspect agents across the fleet');
+  addSdkOptions(
+    agent
+      .command('list')
+      .description('List agents on every reachable fleet node, joined against the workspace roster')
+      .option('--pretty', 'Render as a human-readable table')
+      .option('--json', 'Render JSON output (default; explicit so the flag advertised in --help works)')
+      .option('--node <name>', 'Return only this node and its live broker agents')
+      .option('--all', 'Include offline/history nodes the way `fleet nodes --all` does')
+  ).action(async (options: Record<string, unknown>) => {
+    await runFleetAgentList(deps, options);
+  });
+
+  addSdkOptions(
+    group
+      .command('spawn')
+      .description('Spawn locally by default, or select a fleet node or Cloud sandbox explicitly')
+      .argument('<cli>', 'AI CLI to launch', parseFleetCli)
+      .requiredOption('--name <name>', 'Worker agent name')
+      .requiredOption('--task <text>', 'Initial task instructions')
+      .option('--auto-place', 'Request automatic eligible-node placement in the Relay workspace')
+      .option('--node <name>', 'Target a specific fleet node')
+      .option('--target-node <name>', 'Alias for --node')
+      .option(
+        '--sandbox',
+        'Provision a fresh Cloud sandbox and spawn with a live Relayfile workspace/repository mount'
+      )
+      .option(
+        '--checkout',
+        'Materialize the current Git checkout at its exact pushed HEAD (static; requires --sandbox)'
+      )
+      .option(
+        '--sandbox-name <name>',
+        'Explicit sandbox node name (custom unless --sandbox-id requires matching fleet-sandbox-<UUID>)'
+      )
+      .option('--sandbox-id <id>', 'Reuse a caller-declared sbx_<UUID> identity for an exact replay')
+      .option('--workspace-id <id>', 'Explicit Relay workspace identity required for sandbox provisioning')
+      .option('--sandbox-provider <provider>', 'Sandbox provider: daytona, e2b, or agent37')
+      .option(
+        '--sandbox-relayfile-path <path...>',
+        'Mount only these Relayfile subtrees (each path must end in /**)'
+      )
+      .option('--no-sandbox-relayfile', 'Provision the sandbox without mounting Relayfile')
+      .option('--channel <name>', 'Channel for the worker to join')
+      .option('--persona <persona>', 'Worker persona (automatic placement)')
+      .option('--model <model>', 'Model powering the worker')
+      .option(
+        '--cwd <path>',
+        'Working directory: defaults to the caller directory for local spawn; maps a local repo-relative path with --sandbox; otherwise selects a path on the remote node'
+      )
+      .option('--organization <organization>', 'Declared organization for workforce reporting')
+      .option('--project <project>', 'Declared project for workforce reporting')
+      .option('--workstream <workstream>', 'Declared workstream for workforce reporting')
+      .option('--role <role>', 'Declared role for workforce reporting')
+      .option('--objective <objective>', 'Declared objective (defaults to --task when omitted)')
+      .option('--session-ref <reference>', 'Session reference for a resumable targeted spawn')
+      .option(
+        '--no-confirm',
+        'Report a targeted spawn as soon as the node accepts it, without waiting for the node to confirm the agent actually launched'
+      )
+      .option(
+        '--confirm-timeout <ms>',
+        'How long a targeted spawn waits for the node to confirm the launch',
+        '120000'
+      )
+  ).action(async (cli: string, options: Record<string, unknown>) => {
+    await runSdk(deps.sdk, async () => {
+      const clientOptions = sdkOptionsFromOpts(options);
+      const name = requiredText(options.name, 'Worker name');
+      const task = requiredText(options.task, 'Task');
+      let targetNode = optionalText(options.targetNode, 'Target node') ?? optionalText(options.node, 'Node');
+      const useSandbox = options.sandbox === true;
+      // Explicit hosted credentials/transport and personas retain their legacy
+      // automatic-placement contract. Ambient credentials and a persisted
+      // Cloud target must never turn a flag-free local spawn into a remote one.
+      const automaticPlacement =
+        options.autoPlace === true ||
+        ['workspaceKey', 'token', 'baseUrl', 'persona'].some((key) => options[key] !== undefined);
+      if (options.autoPlace === true && (useSandbox || targetNode)) {
+        throw new Error('--auto-place cannot be combined with --sandbox, --node, or --target-node.');
+      }
+      if (useSandbox || targetNode || automaticPlacement) {
+        warnIfInferredFromProjectSession(options, deps.warn);
+      }
+      const checkoutRepository = options.checkout === true;
+      const sandboxName = optionalText(options.sandboxName, 'Sandbox name');
+      const sandboxIdOption = optionalText(options.sandboxId, 'Sandbox ID');
+      // An explicit sandbox identity is a retained/replayable resource. Never
+      // delete it as collateral when a later verification or dispatch step
+      // fails; only clean up sandboxes whose identity this invocation minted.
+      const shouldCleanupSandbox = sandboxIdOption === undefined;
+      const explicitWorkspaceId = optionalText(options.workspaceId, 'Workspace ID');
+      if (sandboxIdOption !== undefined && !CLOUD_SANDBOX_ID_PATTERN.test(sandboxIdOption)) {
+        throw new Error('--sandbox-id must match lowercase sbx_<UUID> using an RFC 4122 UUID.');
+      }
+      const sandboxProviderText = optionalText(options.sandboxProvider, 'Sandbox provider');
+      const sandboxProvider: CloudFleetSandboxProviderId | undefined =
+        sandboxProviderText === undefined
+          ? undefined
+          : sandboxProviderText === 'daytona' ||
+              sandboxProviderText === 'e2b' ||
+              sandboxProviderText === 'agent37'
+            ? sandboxProviderText
+            : undefined;
+      if (sandboxProviderText !== undefined && sandboxProvider === undefined) {
+        throw new Error('--sandbox-provider must be daytona, e2b, or agent37.');
+      }
+      const mountSandboxRelayfile = options.sandboxRelayfile !== false;
+      const sandboxRelayfilePaths = optionalTextList(options.sandboxRelayfilePath, 'Sandbox Relayfile path');
+      if (useSandbox && targetNode) {
+        throw new Error('--sandbox cannot be combined with --node or --target-node.');
+      }
+      if (!useSandbox && sandboxName) {
+        throw new Error('--sandbox-name requires --sandbox.');
+      }
+      if (!useSandbox && checkoutRepository) {
+        throw new Error('--checkout requires --sandbox.');
+      }
+      if (!useSandbox && sandboxIdOption) {
+        throw new Error('--sandbox-id requires --sandbox.');
+      }
+      if (!useSandbox && explicitWorkspaceId) {
+        throw new Error('--workspace-id requires --sandbox.');
+      }
+      if (!useSandbox && sandboxProvider) {
+        throw new Error('--sandbox-provider requires --sandbox.');
+      }
+      if (!useSandbox && options.sandboxRelayfile === false) {
+        throw new Error('--no-sandbox-relayfile requires --sandbox.');
+      }
+      if (!useSandbox && sandboxRelayfilePaths) {
+        throw new Error('--sandbox-relayfile-path requires --sandbox.');
+      }
+      if (!mountSandboxRelayfile && sandboxRelayfilePaths) {
+        throw new Error('--sandbox-relayfile-path cannot be combined with --no-sandbox-relayfile.');
+      }
+      const channel = optionalText(options.channel, 'Channel');
+      const model = optionalText(options.model, 'Model');
+      const requestedCwd = optionalText(options.cwd, 'Worker cwd');
+      let workerCwd = requestedCwd;
+      const organization = optionalText(options.organization, 'Organization');
+      const project = optionalText(options.project, 'Project');
+      const workstream = optionalText(options.workstream, 'Workstream');
+      const role = optionalText(options.role, 'Role');
+      const objective = optionalText(options.objective, 'Objective');
+      const sessionRef = optionalText(options.sessionRef, 'Session reference');
+      const registrationMetadata = declaredWorkforceMetadata(
+        { organization, project, workstream, role, objective },
+        task
+      );
+      const confirmTimeoutText = optionalText(options.confirmTimeout, 'Confirm timeout') ?? '120000';
+      const confirmTimeoutMs = Number(confirmTimeoutText);
+      if (!Number.isFinite(confirmTimeoutMs) || confirmTimeoutMs <= 0) {
+        throw new Error('--confirm-timeout must be a positive number of milliseconds.');
+      }
+
+      let sandbox: EnsureCloudFleetSandboxResult | undefined;
+      let sandboxRepository: SandboxRepositorySelection | undefined;
+      let liveRepository: CloudRelayfileRepositoryMaterialization | undefined;
+      let attachProjectRoot: string | undefined;
+      let workspaceRelay: ReturnType<FleetCommandDependencies['sdk']['createWorkspaceRelay']> | undefined;
+      let relaycastClientOptions = clientOptions;
+      let legacyWorkspaceClientOptions = clientOptions;
+      if (useSandbox) {
+        const coreProjectRoot = deps.core.getProjectPaths().projectRoot;
+        const hasExplicitProjectOverride = Boolean(
+          deps.core.env?.AGENT_RELAY_PROJECT?.trim() || process.env.AGENT_RELAY_PROJECT?.trim()
+        );
+        if (checkoutRepository || mountSandboxRelayfile) {
+          // AGENT_RELAY_PROJECT selects the workspace namespace, while static
+          // checkout and live Relayfile source inference remain anchored to
+          // the actual Git tree. This also lets --cwd point at a sibling
+          // checkout when explicitly asked.
+          const repositoryRootHint = hasExplicitProjectOverride ? process.cwd() : coreProjectRoot;
+          sandboxRepository = deps.resolveSandboxRepository(repositoryRootHint, requestedCwd);
+          if (checkoutRepository && !sandboxRepository) {
+            throw new Error('--checkout requires a GitHub checkout with a clean, pushed commit.');
+          }
+          if (checkoutRepository && sandboxRepository) {
+            workerCwd = sandboxRepository.workerCwd;
+          } else if (sandboxRepository) {
+            // Relative/local --cwd values were consumed by repository
+            // inference and must be remapped beneath the remote live source
+            // root after Cloud returns its provider-specific mount path.
+            workerCwd =
+              requestedCwd && /^\/(?:srv\/agent-workforce|workspace)(?:\/|$)/.test(requestedCwd)
+                ? requestedCwd
+                : undefined;
+          }
+        }
+        const localRequestedCwd =
+          sandboxRepository &&
+          requestedCwd &&
+          !/^\/(?:srv\/agent-workforce|workspace)(?:\/|$)/.test(requestedCwd)
+            ? path.resolve(process.cwd(), requestedCwd)
+            : undefined;
+        // With --checkout, `--cwd` selects both the local checkout subdirectory
+        // and its Relay project namespace. Resolve an intentional nested pin
+        // before mapping that path to the static remote checkout; only
+        // placement-safe Git identity crosses the Cloud boundary.
+        const workspaceProjectRoot = hasExplicitProjectOverride
+          ? coreProjectRoot
+          : localRequestedCwd
+            ? deps.findProjectRoot(localRequestedCwd)
+            : sandboxRepository && pathContains(sandboxRepository.projectRoot, coreProjectRoot)
+              ? coreProjectRoot
+              : (sandboxRepository?.projectRoot ?? coreProjectRoot);
+        if (path.resolve(workspaceProjectRoot) !== path.resolve(coreProjectRoot)) {
+          attachProjectRoot = workspaceProjectRoot;
+        }
+        const sandboxClientOptions = {
+          ...clientOptions,
+          projectRoot: workspaceProjectRoot,
+        };
+        relaycastClientOptions = sandboxClientOptions;
+        // Cloud must be the first network authority for a sandbox invocation.
+        // A canonical Relaycast info call would both leak the workspace key and
+        // make it impossible to prove that Cloud's isolated target is the one
+        // subsequently used for registration and dispatch.
+        const workspaceSelection = deps.resolveWorkspaceSelection({
+          ...sandboxClientOptions,
+        });
+        legacyWorkspaceClientOptions = {
+          ...sandboxClientOptions,
+          ...(sandboxProvider === 'agent37' ? {} : { ignorePersistedRelaycastTarget: true }),
+        };
+        let relayWorkspaceId = explicitWorkspaceId ?? workspaceSelection?.workspaceId?.trim();
+        // Older/rebound project pins contain only the canonical key. Resolve
+        // that exact selection with Cloud using a POST body, never a key URL
+        // or an ambient active workspace. Successful target persistence below
+        // records the identity for the next invocation.
+        if (
+          !relayWorkspaceId &&
+          workspaceSelection?.key &&
+          (sandboxProvider === undefined || sandboxProvider === 'agent37')
+        ) {
+          const resolved = await deps.resolveWorkspaceByKey(workspaceSelection.key);
+          relayWorkspaceId = resolved.cloudWorkspaceId;
+        }
+        // Legacy providers remain backward compatible: they may resolve the
+        // workspace from canonical Relaycast. Agent37 may not, because even a
+        // read there mutates rate-limit/presence accounting on the shared
+        // service and defeats the zero-shared-traffic canary proof.
+        if (!relayWorkspaceId && sandboxProvider === undefined) {
+          throw new Error(
+            'Sandbox provisioning without --sandbox-provider requires a persisted Relay workspace identity; run `relay workspace rebind <name>` or pass --workspace-id.'
+          );
+        }
+        if (!relayWorkspaceId && sandboxProvider !== undefined && sandboxProvider !== 'agent37') {
+          workspaceRelay = deps.sdk.createWorkspaceRelay(legacyWorkspaceClientOptions);
+          const workspaceInfo = await workspaceRelay.workspace.info();
+          relayWorkspaceId = workspaceInfo.id?.trim();
+        }
+        if (!relayWorkspaceId) {
+          throw new Error(
+            sandboxProvider === 'agent37'
+              ? 'Agent37 sandbox provisioning requires a persisted Relay workspace identity; run `relay workspace rebind <name>` or pass --workspace-id.'
+              : 'The current Relay workspace did not report an ID for Cloud provisioning.'
+          );
+        }
+        if (
+          explicitWorkspaceId !== undefined &&
+          workspaceSelection?.workspaceId !== undefined &&
+          explicitWorkspaceId !== workspaceSelection.workspaceId.trim()
+        ) {
+          throw new Error('--workspace-id does not match the captured workspace identity.');
+        }
+        if (!checkoutRepository && mountSandboxRelayfile && sandboxRepository) {
+          liveRepository = await deps.materializeCloudRelayfileRepository({
+            workspaceId: relayWorkspaceId,
+            repository: sandboxRepository.repository,
+            revision: sandboxRepository.revision,
+          });
+        }
+        const sandboxId = sandboxIdOption ?? (sandboxName === undefined ? `sbx_${randomUUID()}` : undefined);
+        const deterministicSandboxName =
+          sandboxId === undefined ? undefined : `fleet-sandbox-${sandboxId.slice('sbx_'.length)}`;
+        if (
+          sandboxIdOption !== undefined &&
+          sandboxName !== undefined &&
+          sandboxName !== deterministicSandboxName
+        ) {
+          throw new Error(
+            `--sandbox-name must be '${deterministicSandboxName}' when --sandbox-id is supplied; custom names cannot preserve the one-to-one sandbox identity.`
+          );
+        }
+        const effectiveSandboxName = deterministicSandboxName ?? sandboxName;
+        // The unpinned/Agent37 path deliberately carries the measured heavy
+        // 8 CPU / 16 GiB / 20 GiB profile. Daytona and E2B cannot satisfy that
+        // shape, so an explicit legacy-provider selection must request the
+        // provider-neutral durable profile instead of becoming unroutable by
+        // construction.
+        const workloadProfile =
+          sandboxProvider === undefined || sandboxProvider === 'agent37'
+            ? 'long-running-agent'
+            : 'standard-long-running-agent';
+        try {
+          sandbox = await deps.ensureCloudFleetSandbox({
+            workspaceId: relayWorkspaceId,
+            requiredCapability: `spawn:${cli}`,
+            maxAgents: 1,
+            mountRelayfile: mountSandboxRelayfile,
+            ...(liveRepository
+              ? { relayfilePaths: liveRelayfileMountPaths(liveRepository, sandboxRelayfilePaths) }
+              : sandboxRelayfilePaths === undefined
+                ? {}
+                : { relayfilePaths: sandboxRelayfilePaths }),
+            ...(sandboxId === undefined ? {} : { sandboxId }),
+            forceProvision: true,
+            ...(sandboxProvider === undefined ? {} : { providerId: sandboxProvider }),
+            workloadProfile,
+            waitTimeoutMs: 90_000,
+            ...(effectiveSandboxName === undefined ? {} : { name: effectiveSandboxName }),
+            ...(checkoutRepository && sandboxRepository ? { repos: [sandboxRepository.repository] } : {}),
+            ...(checkoutRepository && sandboxRepository
+              ? { repoRevisions: { [sandboxRepository.repository]: sandboxRepository.revision } }
+              : {}),
+          });
+          assertSandboxRepositoryRevision(sandbox, checkoutRepository ? sandboxRepository : undefined);
+        } catch (error) {
+          if (
+            shouldCleanupSandbox &&
+            error instanceof CloudFleetSandboxProvisionError &&
+            error.confirmedProvisioned &&
+            error.cloudWorkspaceId &&
+            error.sandboxId
+          ) {
+            await deps
+              .deleteCloudFleetSandbox({
+                cloudWorkspaceId: error.cloudWorkspaceId,
+                sandboxId: error.sandboxId,
+                ...(error.providerId === undefined ? {} : { providerId: error.providerId }),
+              })
+              .catch((cleanupError) => {
+                deps.warn(
+                  `Provisioning failed after Cloud confirmed sandbox '${error.sandboxId}', and automatic cleanup failed: ${
+                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+                  }`
+                );
+              });
+          } else if (error instanceof CloudFleetSandboxProvisionError && error.outcomeUnknown) {
+            deps.warn(
+              `Cloud did not return a complete provisioning response. The outcome is unknown; check Cloud Fleet for node '${
+                error.nodeName ?? effectiveSandboxName ?? 'the requested sandbox'
+              }'${
+                sandboxId === undefined ? '' : ` before retrying with --sandbox-id '${sandboxId}'`
+              } so a sandbox is not left running.`
+            );
+          } else if (
+            shouldCleanupSandbox &&
+            error instanceof CloudFleetSandboxProvisionError &&
+            error.cloudWorkspaceId &&
+            error.sandboxId
+          ) {
+            await deps
+              .deleteCloudFleetSandbox({
+                cloudWorkspaceId: error.cloudWorkspaceId,
+                sandboxId: error.sandboxId,
+                ...(error.providerId === undefined ? {} : { providerId: error.providerId }),
+              })
+              .catch((cleanupError) => {
+                deps.warn(
+                  `Provisioning failed after Cloud created sandbox '${error.sandboxId}', and automatic cleanup failed: ${
+                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+                  }`
+                );
+              });
+          }
+          if (shouldCleanupSandbox && sandbox && sandbox.outcome !== 'reused') {
+            await deps
+              .deleteCloudFleetSandbox({
+                cloudWorkspaceId: sandbox.cloudWorkspaceId,
+                sandboxId: sandbox.sandboxId,
+                ...(sandbox.providerId === undefined ? {} : { providerId: sandbox.providerId }),
+              })
+              .catch((cleanupError) => {
+                deps.warn(
+                  `Sandbox repository verification failed and cleanup also failed: ${
+                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+                  }`
+                );
+              });
+          }
+          throw error;
+        }
+        if (sandbox.outcome !== 'provisioning_timeout' && sandbox.relaycastTarget) {
+          // When Cloud returns a closed, server-owned target, apply it for any
+          // provider and outcome before registration, spawn, or launcher release.
+          // Rebuild both credentials and origin before any registration, spawn,
+          // or launcher release, then prove the authenticated client sees the
+          // exact workspace Cloud returned.
+          try {
+            const target = sandbox.relaycastTarget;
+            const returnedRelayWorkspaceId =
+              'relayWorkspaceId' in sandbox ? sandbox.relayWorkspaceId?.trim() : undefined;
+            if (
+              (sandboxProvider === 'agent37' && target.route !== 'agent37-isolated') ||
+              (returnedRelayWorkspaceId !== undefined &&
+                target.workspaceId.trim() !== returnedRelayWorkspaceId) ||
+              (sandbox.outcome === 'provisioned' && !returnedRelayWorkspaceId)
+            ) {
+              throw new Error(
+                sandboxProvider === 'agent37' && target.route !== 'agent37-isolated'
+                  ? 'Explicit Agent37 provisioning requires the isolated Agent37 Relaycast target.'
+                  : 'Cloud returned a Relaycast target for a different workspace.'
+              );
+            }
+            relaycastClientOptions = {
+              ...relaycastClientOptions,
+              workspaceKey: target.relaycastApiKey,
+              baseUrl: target.baseUrl,
+            };
+            workspaceRelay = deps.sdk.createWorkspaceRelay(relaycastClientOptions);
+            const postEnsureWorkspace = await workspaceRelay.workspace.info();
+            const postEnsureWorkspaceId = postEnsureWorkspace.id?.trim();
+            if (
+              !postEnsureWorkspaceId ||
+              (sandbox.outcome === 'provisioned' && postEnsureWorkspaceId !== returnedRelayWorkspaceId) ||
+              postEnsureWorkspaceId !== target.workspaceId.trim()
+            ) {
+              throw new Error(
+                'Cloud returned a Relaycast workspace that could not be verified on the selected gateway.'
+              );
+            }
+            if (!deps.persistWorkspaceRelaycastTarget(workspaceSelection, target)) {
+              throw new Error(
+                'Cloud returned a Relaycast target, but no durable project session is available for follow-up attach.'
+              );
+            }
+          } catch (error) {
+            if (shouldCleanupSandbox && sandbox.outcome === 'provisioned') {
+              await deps
+                .deleteCloudFleetSandbox({
+                  cloudWorkspaceId: sandbox.cloudWorkspaceId,
+                  sandboxId: sandbox.sandboxId,
+                  ...(sandbox.providerId === undefined ? {} : { providerId: sandbox.providerId }),
+                })
+                .catch((cleanupError) => {
+                  deps.warn(
+                    `Relaycast workspace verification failed and sandbox cleanup also failed: ${
+                      cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+                    }`
+                  );
+                });
+            }
+            throw error;
+          }
+        } else if (sandbox.outcome !== 'provisioning_timeout') {
+          // Older non-Agent37 Cloud responses can omit a target. In that
+          // compatibility case, keep every subsequent client on the canonical
+          // workspace selection; a stale persisted Agent37 target must not
+          // leak into registration, dispatch, or launcher release.
+          relaycastClientOptions = legacyWorkspaceClientOptions;
+        }
+        if (sandbox.outcome === 'provisioning_timeout') {
+          if (shouldCleanupSandbox) {
+            await deps
+              .deleteCloudFleetSandbox({
+                cloudWorkspaceId: sandbox.cloudWorkspaceId,
+                sandboxId: sandbox.sandboxId,
+                ...(sandbox.providerId === undefined ? {} : { providerId: sandbox.providerId }),
+              })
+              .catch((error) => {
+                deps.warn(
+                  `The timed-out sandbox could not be cleaned up automatically: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                );
+              });
+          }
+          throw new Error(
+            `Sandbox node '${sandbox.nodeName}' did not become ready within ${sandbox.waitedMs}ms.`
+          );
+        }
+        if (
+          mountSandboxRelayfile &&
+          (sandbox.outcome !== 'provisioned' || sandbox.relayfileMounted !== true)
+        ) {
+          if (shouldCleanupSandbox && sandbox.outcome === 'provisioned') {
+            await deps
+              .deleteCloudFleetSandbox({
+                cloudWorkspaceId: sandbox.cloudWorkspaceId,
+                sandboxId: sandbox.sandboxId,
+                ...(sandbox.providerId === undefined ? {} : { providerId: sandbox.providerId }),
+              })
+              .catch((error) => {
+                deps.warn(
+                  `The unmounted sandbox could not be cleaned up automatically and may still be running: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                );
+              });
+          }
+          throw new Error('Cloud returned a sandbox node without the required Relayfile mount.');
+        }
+        targetNode = sandbox.nodeName;
+        if (
+          liveRepository &&
+          sandboxRepository &&
+          !workerCwd &&
+          sandbox.outcome === 'provisioned' &&
+          sandbox.relayfileMounted
+        ) {
+          workerCwd = liveRelayfileWorkerCwd(
+            sandbox.relayfileMountPath ?? '/workspace',
+            liveRepository,
+            sandboxRepository.repositoryRelativeCwd
+          );
+        }
+        if (!workerCwd && sandbox.outcome === 'provisioned' && sandbox.relayfileMounted) {
+          workerCwd = sandbox.relayfileMountPath ?? '/workspace';
+        }
+      }
+
+      if (targetNode) {
+        let launcherName: string | undefined;
+        try {
+          // Agent tokens are scoped to a Relaycast deployment. Never replay a
+          // canonical token after Cloud has selected the isolated shard; mint
+          // a temporary launcher on the validated target instead.
+          // A sandbox dispatch always mints a launcher on the transport Cloud
+          // selected (or the canonical compatibility transport when an older
+          // non-Agent37 response omitted the target). Ambient agent tokens do
+          // not carry enough provenance to prove they belong to that transport.
+          let agentToken = sandbox ? undefined : resolveAgentToken(clientOptions);
+          if (!agentToken) {
+            workspaceRelay ??= deps.sdk.createWorkspaceRelay(
+              sandbox?.relaycastTarget ? relaycastClientOptions : legacyWorkspaceClientOptions
+            );
+            const pendingLauncherName = `fleet-spawn-launcher-${randomUUID().slice(0, 8)}`;
+            const launcher = await workspaceRelay.workspace.register(
+              {
+                name: pendingLauncherName,
+                metadata: { purpose: 'fleet-spawn-launcher' },
+              },
+              { strict: true }
+            );
+            launcherName = pendingLauncherName;
+            agentToken = launcher.token;
+            if (!agentToken) {
+              throw new Error('The temporary fleet spawn launcher did not receive an agent token.');
+            }
+          }
+
+          // A sandbox launcher token is already scoped to the exact workspace
+          // and Relaycast deployment selected by Cloud. Keep the workspace key
+          // only on `workspaceRelay`, where it mints and releases that token;
+          // passing both authorities to the agent client is rejected by the
+          // SDK and would prevent every sandbox placement from dispatching.
+          const relay = deps.sdk.createAgentRelay(
+            sandbox
+              ? { token: agentToken, baseUrl: relaycastClientOptions.baseUrl }
+              : { ...relaycastClientOptions, token: agentToken }
+          );
+          // Placement alone only proves the node accepted the dispatch. A node
+          // running an obsolete broker advertises `spawn:<cli>` capacity, acks
+          // the invocation and launches nothing, which is indistinguishable from
+          // success here — so wait for the node to confirm unless asked not to.
+          const confirm = options.confirm !== false;
+          const liveSandboxContext =
+            sandbox?.outcome === 'provisioned' && liveRepository && sandboxRepository
+              ? `Agent Relay sandbox context: ${liveRepository.repository} is mounted as a live Relayfile working tree at ${liveRelayfileWorkerCwd(
+                  sandbox.relayfileMountPath ?? '/workspace',
+                  liveRepository,
+                  ''
+                )}. Its exact source revision is ${liveRepository.revision}; the same attestation is recorded at ${mountedRelayfilePath(
+                  sandbox.relayfileMountPath ?? '/workspace',
+                  liveRepository.sentinelPath
+                )}. Workspace skills are under ${mountedRelayfilePath(
+                  sandbox.relayfileMountPath ?? '/workspace',
+                  '/.skills'
+                )}. The Relayfile daemon synchronizes this tree; it intentionally has no .git directory.`
+              : undefined;
+          const invocation = await relay.messaging.placement.spawn({
+            capability: `spawn:${cli}`,
+            node: targetNode,
+            failFast: true,
+            confirm,
+            ...(confirm ? { confirmTimeoutMs: confirmTimeoutMs } : {}),
+            input: {
+              name,
+              cli,
+              task:
+                sandbox &&
+                checkoutRepository &&
+                sandboxRepository &&
+                mountSandboxRelayfile &&
+                sandbox.outcome === 'provisioned'
+                  ? `${task}\n\nAgent Relay sandbox context: Relayfile records are available at ${sandbox.relayfileMountPath ?? '/workspace'}. The source checkout is separate; use ${workerCwd ?? 'the worker checkout'} for repository files and the mount for Relayfile records.`
+                  : liveSandboxContext
+                    ? `${task}\n\n${liveSandboxContext}`
+                    : task,
+              ...(channel ? { channels: [channel] } : {}),
+              ...(model ? { model } : {}),
+              ...(workerCwd ? { worker_cwd: workerCwd } : {}),
+              ...registrationMetadata,
+              ...(sessionRef ? { session_ref: sessionRef } : {}),
+            },
+          });
+          const printableSandbox =
+            (sandbox?.outcome === 'provisioned' || sandbox?.outcome === 'reused') && sandbox.relaycastTarget
+              ? {
+                  ...sandbox,
+                  relaycastTarget: {
+                    route: sandbox.relaycastTarget.route,
+                    baseUrl: sandbox.relaycastTarget.baseUrl,
+                    workspaceId: sandbox.relaycastTarget.workspaceId,
+                  },
+                }
+              : sandbox;
+          printJson(deps.sdk, {
+            ...(sandbox
+              ? {
+                  sandbox: printableSandbox,
+                  attachCommand: sandboxAttachCommand(name, attachProjectRoot),
+                }
+              : {}),
+            invocation: spawnInvocationWithMergedPlacement(invocation as unknown as Record<string, unknown>),
+          });
+        } catch (error) {
+          if (
+            shouldCleanupSandbox &&
+            sandbox?.outcome === 'provisioned' &&
+            !(error instanceof RelayPlacementError && error.state === 'unconfirmed_may_be_running')
+          ) {
+            await deps
+              .deleteCloudFleetSandbox({
+                cloudWorkspaceId: sandbox.cloudWorkspaceId,
+                sandboxId: sandbox.sandboxId,
+                ...(sandbox.providerId === undefined ? {} : { providerId: sandbox.providerId }),
+              })
+              .catch((cleanupError) => {
+                deps.warn(
+                  `Spawn failed and the sandbox could not be cleaned up automatically: ${
+                    cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+                  }`
+                );
+              });
+          }
+          throw error;
+        } finally {
+          if (launcherName && workspaceRelay) {
+            await workspaceRelay.workspace
+              .release({
+                name: launcherName,
+                reason: 'Temporary fleet spawn launcher completed',
+                deleteAgent: true,
+              })
+              .catch((error) => {
+                deps.warn(
+                  `Temporary launcher cleanup failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`
+                );
+              });
+          }
+        }
+        return;
+      }
+
+      if (sessionRef) {
+        throw new Error('--session-ref requires --node or --target-node.');
+      }
+      const persona = optionalText(options.persona, 'Persona');
+      if (!automaticPlacement) {
+        if (organization || project || workstream || role || objective) {
+          throw new Error('Workforce metadata requires --auto-place, --node, or --sandbox.');
+        }
+        const callerCwd = deps.cwd();
+        const localCwd = path.resolve(callerCwd, requestedCwd ?? '.');
+        const local = await deps.connectLocalBroker(deps.findProjectRoot(callerCwd));
+        try {
+          await spawnAgentWithClient(local, {
+            name,
+            cli,
+            task,
+            channels: [channel ?? 'general'],
+            ...(model ? { model } : {}),
+            // A broker can be shared by nested packages. Never inherit its
+            // startup directory when the caller requested a local checkout.
+            cwd: localCwd,
+          });
+          printJson(deps.sdk, { local: { name, cli, cwd: localCwd } });
+        } finally {
+          local.disconnect();
+        }
+        return;
+      }
+      const workspace = deps.createFleetWorkspaceClient(clientOptions);
+      const invocation = await workspace.agents.spawn({
+        name,
+        cli,
+        task,
+        ...(channel ? { channel } : {}),
+        ...(persona ? { persona } : {}),
+        ...(model || workerCwd || Object.keys(registrationMetadata).length > 0
+          ? {
+              metadata: {
+                ...(model ? { model } : {}),
+                ...(workerCwd ? { worker_cwd: workerCwd } : {}),
+                ...registrationMetadata,
+              },
+            }
+          : {}),
+      });
+      throwForTerminalSpawnFailure(invocation);
+      printJson(deps.sdk, { invocation: spawnInvocationWithPlacement(invocation) });
+    });
+  });
+
+  addSdkOptions(
+    group
+      .command('release')
+      .description('Release a spawned fleet agent')
+      .argument('<name>', 'Worker agent name')
+      .option('--reason <reason>', 'Release reason')
+      .option('--delete-agent', 'Permanently delete the agent after release')
+  ).action(async (name: string, options: Record<string, unknown>) => {
+    await runSdk(deps.sdk, async () => {
+      warnIfInferredFromProjectSession(options, deps.warn);
+      const workspace = deps.createFleetWorkspaceClient(sdkOptionsFromOpts(options));
+      const reason = attributableReleaseReason(
+        optionalText(options.reason, 'Reason'),
+        process.env.RELAY_AGENT_NAME ?? 'agent-relay fleet CLI',
+        'fleet agent released'
+      );
+      const released = await workspace.agents.release({
+        name: requiredText(name, 'Worker name'),
+        reason,
+        deleteAgent: options.deleteAgent === true,
+      });
+      printJson(deps.sdk, released);
+    });
+  });
+
+  addSdkOptions(group.command('config').description('Show workspace fleet node configuration')).action(
+    async (options: Record<string, unknown>) => {
+      await runSdk(deps.sdk, async () => {
+        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+        printJson(deps.sdk, await relay.workspace.fleetNodes.get());
+      });
+    }
+  );
+
+  addSdkOptions(group.command('enable').description('Enable fleet nodes for the workspace')).action(
+    async (options: Record<string, unknown>) => {
+      await runSdk(deps.sdk, async () => {
+        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+        printJson(deps.sdk, await relay.workspace.fleetNodes.set(true));
+      });
+    }
+  );
+
+  addSdkOptions(group.command('disable').description('Disable fleet nodes for the workspace')).action(
+    async (options: Record<string, unknown>) => {
+      await runSdk(deps.sdk, async () => {
+        const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+        printJson(deps.sdk, await relay.workspace.fleetNodes.set(false));
+      });
+    }
+  );
+
+  addSdkOptions(
+    group.command('inherit').description('Use the deployment default for workspace fleet nodes')
+  ).action(async (options: Record<string, unknown>) => {
+    await runSdk(deps.sdk, async () => {
+      const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+      printJson(deps.sdk, await relay.workspace.fleetNodes.inherit());
+    });
+  });
+
+  addSdkOptions(
+    group.command('status').description('Show local broker status and this node’s provider attachment')
+  ).action(async (options: Record<string, unknown>) => {
+    try {
+      await runFleetStatus(deps, options);
+    } catch (error) {
+      deps.error(error instanceof Error ? error.message : String(error));
+      deps.exit(1);
+    }
+  });
+}
+
+function parseFleetCli(value: string): string {
+  const cli = value.trim().toLowerCase();
+  if (!FLEET_CLIS.has(cli)) {
+    throw new InvalidArgumentError(
+      `unsupported CLI "${value}"; expected one of: ${[...FLEET_CLIS].join(', ')}`
+    );
+  }
+  return cli;
+}
+
+function requiredText(value: unknown, label: string): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) {
+    throw new Error(`${label} is required.`);
+  }
+  return text;
+}
+
+function optionalText(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  return requiredText(value, label);
+}
+
+function optionalTextList(value: unknown, label: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${label} is required.`);
+  }
+  const normalized = value.map((entry) => requiredText(entry, label));
+  return [...new Set(normalized)];
+}
+
+/** Quote untrusted names in the copy-pasteable attach command printed on success. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function sandboxAttachCommand(name: string, projectRoot: string | undefined): string {
+  const attach = `agent-relay node agent attach ${shellQuote(name)} --mode drive`;
+  return projectRoot ? `cd ${shellQuote(projectRoot)} && ${attach}` : attach;
+}
+
+/**
+ * Warn (on stderr, so it never pollutes the JSON on stdout) when the workspace
+ * key was inferred from the project's persisted session rather than named
+ * explicitly. Surfacing the source lets the operator override with
+ * `--workspace-key`/`--wk` or `RELAY_WORKSPACE_KEY` for a one-off query.
+ * Resolution errors are swallowed: the SDK call below reports the real failure.
+ */
+function warnIfInferredFromProjectSession(
+  options: Record<string, unknown>,
+  warn: (...args: unknown[]) => void
+): void {
+  let source: string;
+  try {
+    source = resolveWorkspaceKeyWithSource(sdkOptionsFromOpts(options)).source;
+  } catch {
+    return;
+  }
+  if (source === 'project') {
+    warn(
+      'Note: using the workspace session pinned to this project. ' +
+        'Pass --workspace-key/--wk or set RELAY_WORKSPACE_KEY to override for this command.'
+    );
+  }
+}
+
+/**
+ * Assemble the local broker's contribution from the raw per-half results.
+ * `sessionError` is a hard failure (broker session lookup blew up) — it
+ * degrades to a full ERROR row so the operator can see the local machine
+ * itself is unreachable. `liveError` / `inventoryError` are partial and are
+ * preserved into the contribution so `buildRows` can render one map with a
+ * `(?)` marker on the missing half instead of dropping both.
+ */
+function buildLocalContribution(
+  node: RelayNode,
+  input: {
+    liveAgents?: Awaited<ReturnType<HarnessDriverClient['listAgents']>>;
+    liveError?: string;
+    inventoryAgents?: Awaited<ReturnType<HarnessDriverClient['listFleetInventory']>>['agents'];
+    inventoryError?: string;
+    sessionError?: string;
+    retried?: boolean;
+    note?: string;
+  }
+): FleetNodeContribution {
+  if (input.sessionError) {
+    return {
+      node,
+      isLocal: true,
+      error: input.note ? `${input.note}: ${input.sessionError}` : input.sessionError,
+      ...(input.retried ? { retried: true } : {}),
+    };
+  }
+  return {
+    node,
+    isLocal: true,
+    ...(input.liveAgents !== undefined ? { liveAgents: input.liveAgents } : {}),
+    ...(input.liveError ? { liveError: input.liveError } : {}),
+    ...(input.inventoryAgents !== undefined ? { inventoryAgents: input.inventoryAgents } : {}),
+    ...(input.inventoryError ? { inventoryError: input.inventoryError } : {}),
+    ...(input.retried ? { retried: true } : {}),
+  };
+}
+
+/**
+ * Fan-out for `fleet agent list`. Reads `nodes.list()` for the roster of
+ * reachable fleet nodes, `agents.list()` for the workspace agent registry,
+ * and — when this machine has a running local broker — both the live worker
+ * map and the fleet_inventory snapshot from it. Remote live names arrive in
+ * the node heartbeat capabilities returned by the same `nodes.list()` call.
+ * A node is never dropped from the output.
+ *
+ * The pure join lives in {@link ./fleet-agent.ts} so it can be tested against
+ * fixtures without wiring up the SDK.
+ */
+async function runFleetAgentList(
+  deps: FleetCommandDependencies,
+  options: Record<string, unknown>
+): Promise<void> {
+  await runSdk(deps.sdk, async () => {
+    warnIfInferredFromProjectSession(options, deps.warn);
+    const clientOptions = sdkOptionsFromOpts(options);
+    const relay = deps.sdk.createWorkspaceRelay(clientOptions);
+    const requestedNodeName = typeof options.node === 'string' && options.node ? options.node : undefined;
+
+    // Enumerate fleet nodes exactly the way `fleet nodes` does. `nodes.list()`
+    // failure is fatal — nothing to reconcile against.
+    const nodes = await relay.nodes.list({
+      ...(requestedNodeName ? { name: requestedNodeName } : {}),
+    });
+    const includeAll = options.all === true;
+    const visibleNodes = (includeAll ? nodes : nodes.filter(isAvailableFleetNode)).filter(
+      (node) => !requestedNodeName || node.name === requestedNodeName
+    );
+
+    // The workspace roster is separately fetched; a failure here is degraded
+    // rather than fatal — the presence column just marks fewer rows as
+    // roster-matched and warns.
+    let roster: RosterAgent[] = [];
+    // A targeted query must be a real filter, not a node row followed by
+    // unrelated workspace sediment. It also avoids an unnecessary D1 roster
+    // read on the path operators use to inspect one remote node.
+    if (!requestedNodeName) {
+      try {
+        // Default to online-only. `--all` opens it up to the workspace's
+        // full record set (>1600 today, most stale/offline) so a scripted diff
+        // has the option, without making the default output unreadable. This
+        // mirrors what `fleet nodes` does with node history.
+        const relayAgents = await relay.agents.list(includeAll ? {} : { status: 'online' });
+        roster = relayAgents.map((entry) => ({
+          name: entry.name,
+          ...(entry.status ? { status: entry.status } : {}),
+          ...(entry.lastSeenAt ? { lastSeenAt: entry.lastSeenAt } : {}),
+          ...(entry.metadata ? { metadata: entry.metadata } : {}),
+        }));
+      } catch (error) {
+        deps.warn(
+          `roster unavailable (${error instanceof Error ? error.message : String(error)}); ` +
+            'PRESENCE column will not report roster membership.'
+        );
+      }
+    } else {
+      // A targeted `--node` listing intentionally skips the workspace roster
+      // fetch, so the PRESENCE column cannot label roster membership on the
+      // returned rows. Say so explicitly; a silent absence would look like a
+      // confirmed negative result and let the same agent appear with
+      // different PRESENCE values across `--node` and non-`--node` runs.
+      deps.warn(
+        'roster not queried for a targeted --node listing; PRESENCE reports node-local liveness only ' +
+          'and does not prove absence from the workspace roster.'
+      );
+    }
+
+    // Local broker (this machine): read /api/spawned and /api/fleet-inventory.
+    // The broker's node_name identifies which entry in `visibleNodes` is us.
+    const paths = deps.core.getProjectPaths();
+    const conn = readBrokerConnection(paths.dataDir);
+    let localNodeName: string | undefined;
+    let localLive: Awaited<ReturnType<HarnessDriverClient['listAgents']>> | undefined;
+    let localInventory: Awaited<ReturnType<HarnessDriverClient['listFleetInventory']>>['agents'] | undefined;
+    let localLiveError: string | undefined;
+    let localInventoryError: string | undefined;
+    /** Whole-session failure (session lookup blew up before either map ran). */
+    let localSessionError: string | undefined;
+    let localRetried = false;
+
+    if (conn) {
+      const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
+      try {
+        const session = await client.getSession();
+        localNodeName = session.node_name ?? undefined;
+        // `readLocalBrokerMaps` uses Promise.allSettled so a failure in one
+        // half never discards the other. `collectWithRetry` retries the pair
+        // once as a unit; a per-half retry policy is more code for no
+        // observable win when both halves hit the same broker.
+        const result = await collectWithRetry('local broker', () => readLocalBrokerMaps(client));
+        if (result.ok) {
+          localLive = result.value.liveAgents;
+          localLiveError = result.value.liveError;
+          localInventory = result.value.inventoryAgents;
+          localInventoryError = result.value.inventoryError;
+          localRetried = result.retried;
+        } else {
+          // Both halves failed as a unit — record it as a session error so
+          // the contribution below renders an explicit ERROR row rather than
+          // silently pretending both maps were empty.
+          localSessionError = result.error;
+          localRetried = result.retried;
+        }
+      } catch (error) {
+        localSessionError = `local broker: ${error instanceof Error ? error.message : String(error)}`;
+      } finally {
+        client.disconnect();
+      }
+    }
+
+    // Assemble per-node contributions. Brokers encode the live WorkerName set
+    // in reserved heartbeat capabilities. This path is independent of agent
+    // registration and adds no API call beyond nodes.list(): no workspace
+    // roster and no node-binding read.
+    const contributions: FleetNodeContribution[] = [];
+    for (const node of visibleNodes) {
+      if (localNodeName && node.name === localNodeName) {
+        contributions.push(
+          buildLocalContribution(node, {
+            liveAgents: localLive,
+            liveError: localLiveError,
+            inventoryAgents: localInventory,
+            inventoryError: localInventoryError,
+            sessionError: localSessionError,
+            retried: localRetried,
+          })
+        );
+        continue;
+      }
+
+      const remote = readRemoteLiveAgents(node);
+      if (remote.supported) {
+        contributions.push({
+          node,
+          isLocal: false,
+          remoteAgents: remote.agents,
+          ...(remote.warning ? { remoteWarning: remote.warning } : {}),
+        });
+      } else {
+        contributions.push({
+          node,
+          isLocal: false,
+          remoteError: 'broker heartbeat does not publish live agent names',
+        });
+      }
+    }
+
+    // Guarantee the local machine appears somewhere in the output even if
+    // `nodes.list()` filtered its record out or the workspace never saw it.
+    // Dropping the local machine's contribution silently was one of the
+    // review findings on the first pass — this is the third-state discipline
+    // applied to the local node itself, not just to per-agent rows.
+    const localNodeIsInScope =
+      requestedNodeName === undefined || (localNodeName !== undefined && requestedNodeName === localNodeName);
+    if (
+      localNodeIsInScope &&
+      (localNodeName || localSessionError || conn) &&
+      !contributions.some((c) => c.isLocal)
+    ) {
+      const syntheticNodeName =
+        localNodeName ?? (process.env.AGENT_RELAY_BROKER_NAME?.trim() || undefined) ?? '(local broker)';
+      // Keep the authoritative roster metadata when the node was filtered from
+      // the default visible set. This preserves a known offline/degraded
+      // control-plane state while still showing node-local workers.
+      const knownLocalNode = nodes.find((node) => node.name === syntheticNodeName);
+      const syntheticNode: RelayNode = knownLocalNode ?? {
+        name: syntheticNodeName,
+        status: 'unknown',
+        capabilities: [],
+      };
+      contributions.unshift(
+        buildLocalContribution(syntheticNode, {
+          liveAgents: localLive,
+          liveError: localLiveError,
+          inventoryAgents: localInventory,
+          inventoryError: localInventoryError,
+          sessionError: localSessionError,
+          retried: localRetried,
+          note: 'local broker not in visible node list',
+        })
+      );
+    }
+
+    const now = new Date();
+    const output = buildRows({ contributions, roster }, now);
+
+    if (options.pretty === true) {
+      deps.log(formatPretty(output));
+      return;
+    }
+    printJson(deps.sdk, {
+      generatedAt: now.toISOString(),
+      localNode: localNodeName ?? null,
+      perNode: output.perNode,
+      unplacedRoster: output.unplacedRoster,
+      errors: output.errors,
+    });
+  });
+}
+
+async function runFleetStatus(
+  deps: FleetCommandDependencies,
+  options: Record<string, unknown>
+): Promise<void> {
+  const paths = deps.core.getProjectPaths();
+  const conn = readBrokerConnection(paths.dataDir);
+
+  let broker: Record<string, unknown> = { running: false };
+  let nodeName: string | undefined;
+  if (conn) {
+    const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
+    try {
+      const session = await client.getSession();
+      nodeName = session.node_name;
+      broker = {
+        running: true,
+        url: conn.url,
+        pid: conn.pid,
+        workspaceKey: session.workspace_key,
+        brokerVersion: session.broker_version,
+        protocolVersion: session.protocol_version,
+        nodeId: session.node_id,
+        nodeName: session.node_name,
+      };
+    } catch (error) {
+      broker = {
+        running: false,
+        url: conn.url,
+        pid: conn.pid,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      client.disconnect();
+    }
+  }
+
+  // Provider attachment (per-provider liveness) is owned by the engine now, not a
+  // local status file; read this node's record from the nodes API.
+  let node: unknown;
+  if (nodeName) {
+    try {
+      const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
+      const nodes = await relay.nodes.list({ name: nodeName });
+      node = nodes[0] ?? { available: false, reason: `no node named "${nodeName}" in the workspace` };
+    } catch (error) {
+      node = { error: error instanceof Error ? error.message : String(error) };
+    }
+  } else {
+    // A running broker that never reported a node name means the engine lookup
+    // was skipped — say so rather than looking fully checked.
+    node = { available: false, reason: 'broker did not report a node name' };
+  }
+
+  // Redact the node token / workspace key structurally so status output (which a
+  // user may paste into a bug report) never carries a live credential.
+  deps.log(JSON.stringify(redactSecrets({ broker, node }), null, 2));
+}

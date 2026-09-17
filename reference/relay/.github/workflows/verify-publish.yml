@@ -1,0 +1,474 @@
+name: Verify Published Package
+
+# This workflow verifies that the published npm package works correctly
+# across multiple Node.js versions using both global install and npx.
+#
+# Triggered:
+# - Automatically after publish workflow completes
+# - Manually via workflow_dispatch
+# - On PR (for testing the workflow itself)
+
+on:
+  # Intentionally no `pull_request` trigger: these are post-publish
+  # verification tests that install agent-relay from the registry.
+  # After unbundling @agent-relay/* workspace packages, the CLI tarball
+  # can only install once all internal packages have been published at
+  # the matching version — which is not the case during a PR. For
+  # pre-merge testing of this workflow itself, dispatch it manually.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Package version to verify (default: latest)'
+        required: false
+        type: string
+        default: 'latest'
+  workflow_call:
+    inputs:
+      version:
+        description: 'Package version to verify'
+        required: false
+        type: string
+        default: 'latest'
+
+env:
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
+jobs:
+  verify:
+    name: Verify Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.14.0', '24']
+
+    steps:
+      - name: Checkout (for scripts)
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Upgrade npm before global install
+        # `npm install -g` always does a fresh, lockfile-less resolution, so
+        # it's exposed to the same arborist crash (npm/cli#8261) as the
+        # publish workflow's clean reinstall once `agent-relay` pulls in
+        # @agent-relay/harnesses' pi-coding-agent chain. Not failing today
+        # only because the currently-published version predates that
+        # dependency bump — this would break on the next release otherwise.
+        run: npm install -g npm@11.19.1
+
+      - name: Get package spec
+        id: pkg
+        run: |
+          VERSION_INPUT="${{ inputs.version }}"
+          if [ -z "$VERSION_INPUT" ] || [ "$VERSION_INPUT" = "latest" ]; then
+            SPEC="agent-relay"
+          else
+            SPEC="agent-relay@${VERSION_INPUT}"
+          fi
+          echo "spec=$SPEC" >> $GITHUB_OUTPUT
+          echo "Testing: $SPEC"
+
+      - name: Wait for package metadata and tarball
+        if: inputs.version != 'latest'
+        run: |
+          VERSION="${{ inputs.version }}"
+          scripts/post-publish-verify/wait-for-package-tarballs.sh \
+            "${{ steps.pkg.outputs.spec }}" \
+            "@agent-relay/cloud@$VERSION" \
+            "@agent-relay/config@$VERSION" \
+            "@agent-relay/fleet@$VERSION" \
+            "@agent-relay/harness-driver@$VERSION" \
+            "@agent-relay/harnesses@$VERSION" \
+            "@agent-relay/sdk@$VERSION" \
+            "@agent-relay/session@$VERSION" \
+            "@agent-relay/utils@$VERSION" \
+            "@agent-relay/broker-linux-x64@$VERSION"
+
+      # Test 1: Global npm install
+      - name: 'Test: Global npm install'
+        run: |
+          echo "Installing ${{ steps.pkg.outputs.spec }} globally..."
+          scripts/post-publish-verify/retry-command.sh \
+            "Global npm install of ${{ steps.pkg.outputs.spec }}" \
+            npm install -g ${{ steps.pkg.outputs.spec }}
+          # Add npm global bin to PATH
+          echo "$(npm config get prefix)/bin" >> $GITHUB_PATH
+
+      - name: 'Test: Global --version'
+        run: |
+          # Ensure npm global bin is in PATH
+          export PATH="$(npm config get prefix)/bin:$PATH"
+          VERSION=$(agent-relay --version)
+          echo "Version output: $VERSION"
+          if echo "$VERSION" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "Version check passed"
+          else
+            echo "Version check failed - no version number found"
+            exit 1
+          fi
+
+      - name: 'Test: Global -V flag'
+        run: |
+          export PATH="$(npm config get prefix)/bin:$PATH"
+          agent-relay -V
+
+      - name: 'Test: Global version command'
+        run: |
+          export PATH="$(npm config get prefix)/bin:$PATH"
+          OUTPUT=$(agent-relay version)
+          echo "$OUTPUT"
+          if echo "$OUTPUT" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "Version command check passed"
+          else
+            exit 1
+          fi
+
+      - name: 'Test: Global --help'
+        run: |
+          export PATH="$(npm config get prefix)/bin:$PATH"
+          agent-relay --help | head -20
+
+      - name: Cleanup global install
+        run: |
+          export PATH="$(npm config get prefix)/bin:$PATH"
+          npm uninstall -g agent-relay
+
+      # Test 2: npx execution
+      # Note: Don't use `--` separator with npx @version syntax - it causes argument parsing issues
+      - name: 'Test: npx --version'
+        run: |
+          echo "npx package spec: ${{ steps.pkg.outputs.spec }}"
+          if [ -z "${{ steps.pkg.outputs.spec }}" ]; then
+            echo "Package spec is empty - failing fast"
+            exit 1
+          fi
+          # Run from a temp dir and force package resolution from spec.
+          # This avoids resolving the local repo package when workflow runs in this repository.
+          TMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          cd "$TMP_DIR"
+          VERSION=$(npx --yes -p "${{ steps.pkg.outputs.spec }}" agent-relay --version 2>&1)
+          echo "npx version output: $VERSION"
+          if echo "$VERSION" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "npx version check passed"
+          else
+            exit 1
+          fi
+
+      - name: 'Test: npx --help'
+        run: |
+          TMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          cd "$TMP_DIR"
+          npx --yes -p "${{ steps.pkg.outputs.spec }}" agent-relay --help | head -20
+
+      - name: 'Test: npx version command'
+        run: |
+          TMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          cd "$TMP_DIR"
+          OUTPUT=$(npx --yes -p "${{ steps.pkg.outputs.spec }}" agent-relay version 2>&1)
+          echo "$OUTPUT"
+          if echo "$OUTPUT" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "npx version command check passed"
+          else
+            exit 1
+          fi
+
+      # Test: broker binary resolution after installing agent-relay.
+      # The broker is delivered as a platform-specific optional-dep of
+      # @agent-relay/harness-driver (itself a regular dep of agent-relay), so
+      # npm hoists both to node_modules/@agent-relay/ at install time.
+      - name: 'Test: broker binary resolves after npm install agent-relay'
+        run: |
+          rm -rf ~/.npm/_npx 2>/dev/null || true
+          TMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          cd "$TMP_DIR"
+          npm init -y --silent >/dev/null
+          npm install --no-audit --no-fund "${{ steps.pkg.outputs.spec }}"
+          node --input-type=module -e "
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
+            import { accessSync, constants } from 'node:fs';
+            const expected = getOptionalDepPackageName();
+            const p = getBrokerBinaryPath();
+            console.log('expected package:', expected);
+            console.log('resolved:', p);
+            if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
+            if (!p.replace(/\\\\/g, '/').includes(expected)) {
+              console.error('FAIL: resolution did not go through the optional-dep package; got', p);
+              process.exit(1);
+            }
+            accessSync(p, constants.X_OK);
+            console.log('OK: resolver returned executable binary from optional-dep package');
+          "
+
+      # Test 3: Local project install
+      - name: 'Test: Local project install'
+        run: |
+          mkdir -p /tmp/test-project
+          cd /tmp/test-project
+          npm init -y
+          "$GITHUB_WORKSPACE/scripts/post-publish-verify/retry-command.sh" \
+            "Local npm install of ${{ steps.pkg.outputs.spec }}" \
+            npm install ${{ steps.pkg.outputs.spec }}
+
+      - name: 'Test: Local npx execution'
+        run: |
+          cd /tmp/test-project
+          VERSION=$(npx agent-relay --version)
+          echo "Local npx version: $VERSION"
+          if echo "$VERSION" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "Local npx check passed"
+          else
+            exit 1
+          fi
+
+      - name: 'Test: Local bin executable'
+        run: |
+          cd /tmp/test-project
+          if [ -x "./node_modules/.bin/agent-relay" ]; then
+            VERSION=$(./node_modules/.bin/agent-relay --version)
+            echo "Local bin version: $VERSION"
+          else
+            echo "Local bin not found or not executable"
+            exit 1
+          fi
+
+      # Test 4: Broker binary resolution via harness driver resolver.
+      # The broker ships as a platform-specific optional-dep package
+      # (@agent-relay/broker-<platform>-<arch>); getBrokerBinaryPath()
+      # is the canonical way harness owners find it.
+      - name: 'Test: broker binary resolves and runs'
+        run: |
+          cd /tmp/test-project
+          node --input-type=module -e "
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
+            import { accessSync, constants } from 'node:fs';
+            import { execFileSync } from 'node:child_process';
+            const expected = getOptionalDepPackageName();
+            const p = getBrokerBinaryPath();
+            console.log('expected package:', expected);
+            console.log('resolved:', p);
+            if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
+            if (!p.replace(/\\\\/g, '/').includes(expected)) {
+              console.error('FAIL: resolution did not go through the optional-dep package; got', p);
+              process.exit(1);
+            }
+            accessSync(p, constants.X_OK);
+            const out = execFileSync(p, ['--help'], { encoding: 'utf8' });
+            if (!out.includes('agent-relay-broker')) {
+              console.error('FAIL: --help output did not mention agent-relay-broker');
+              console.error(out);
+              process.exit(1);
+            }
+            console.log('OK: resolver returned executable broker binary and --help works');
+          "
+
+      - name: Cleanup
+        run: rm -rf /tmp/test-project
+
+  # macOS arm64 verification (runs on all triggers)
+  verify-macos-arm64:
+    name: Verify macOS (arm64)
+    timeout-minutes: 20
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout (for scripts)
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+
+      - name: Upgrade npm before global/local install
+        # This job's "Test: npm install" below is a fresh, lockfile-less
+        # resolution just like the `verify` job's global install — same
+        # npm/cli#8261 arborist crash exposure. `npm install --help` lists
+        # `-g`/`--global` as a flag on the same install operation, so a
+        # local (non-global) install doesn't avoid the bug either.
+        run: npm install -g npm@11.19.1
+
+      - name: Get package spec
+        id: pkg
+        run: |
+          VERSION="${{ inputs.version || 'latest' }}"
+          if [ "$VERSION" = "latest" ]; then
+            SPEC="agent-relay"
+          else
+            SPEC="agent-relay@${VERSION}"
+          fi
+          echo "spec=$SPEC" >> $GITHUB_OUTPUT
+          echo "Testing: $SPEC"
+
+      - name: Wait for package metadata and tarball
+        if: inputs.version != 'latest'
+        run: |
+          VERSION="${{ inputs.version }}"
+          scripts/post-publish-verify/wait-for-package-tarballs.sh \
+            "${{ steps.pkg.outputs.spec }}" \
+            "@agent-relay/cloud@$VERSION" \
+            "@agent-relay/config@$VERSION" \
+            "@agent-relay/fleet@$VERSION" \
+            "@agent-relay/harness-driver@$VERSION" \
+            "@agent-relay/harnesses@$VERSION" \
+            "@agent-relay/sdk@$VERSION" \
+            "@agent-relay/session@$VERSION" \
+            "@agent-relay/utils@$VERSION" \
+            "@agent-relay/broker-darwin-arm64@$VERSION"
+
+      - name: 'Test: npm install'
+        run: |
+          mkdir -p /tmp/test-project
+          cd /tmp/test-project
+          npm init -y
+          "$GITHUB_WORKSPACE/scripts/post-publish-verify/retry-command.sh" \
+            "macOS local npm install of ${{ steps.pkg.outputs.spec }}" \
+            npm install ${{ steps.pkg.outputs.spec }}
+
+      - name: 'Test: CLI version'
+        run: |
+          cd /tmp/test-project
+          VERSION=$(npx agent-relay --version)
+          echo "Version: $VERSION"
+          if echo "$VERSION" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "Version check passed"
+          else
+            exit 1
+          fi
+
+      # Broker resolution on macOS arm64. Under the optional-dep model the
+      # harness driver's resolver finds the binary at
+      # node_modules/@agent-relay/broker-darwin-arm64/bin/agent-relay-broker;
+      # running it also exercises macOS code signing end-to-end.
+      - name: 'Test: broker binary resolves and runs (macOS arm64)'
+        run: |
+          cd /tmp/test-project
+          node --input-type=module -e "
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
+            import { accessSync, constants } from 'node:fs';
+            import { execFileSync } from 'node:child_process';
+            const expected = getOptionalDepPackageName();
+            const p = getBrokerBinaryPath();
+            console.log('expected package:', expected);
+            console.log('resolved:', p);
+            if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
+            if (expected !== '@agent-relay/broker-darwin-arm64') {
+              console.error('FAIL: expected darwin-arm64 optional-dep, got', expected);
+              process.exit(1);
+            }
+            if (!p.includes(expected)) {
+              console.error('FAIL: resolution did not go through the optional-dep package; got', p);
+              process.exit(1);
+            }
+            accessSync(p, constants.X_OK);
+            const out = execFileSync(p, ['--help'], { encoding: 'utf8' });
+            if (!out.includes('agent-relay-broker')) {
+              console.error('FAIL: --help output did not mention agent-relay-broker (possible code signing issue)');
+              console.error(out);
+              process.exit(1);
+            }
+            console.log('OK: darwin-arm64 broker resolves, is executable, and --help works');
+          "
+
+      - name: 'Test: npx agent-relay --version from local install'
+        run: |
+          cd /tmp/test-project
+          VERSION=$(npx agent-relay --version 2>&1)
+          echo "Version: $VERSION"
+          if ! echo "$VERSION" | grep -qE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "ERROR: npx agent-relay --version failed from local install"
+            exit 1
+          fi
+
+      - name: Cleanup
+        run: rm -rf /tmp/test-project
+
+  # Docker-based verification (more isolated)
+  verify-docker:
+    name: Verify Docker (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (for npm view)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+
+      - name: Wait for package metadata and tarball
+        if: inputs.version != 'latest'
+        run: |
+          VERSION="${{ inputs.version }}"
+          scripts/post-publish-verify/wait-for-package-tarballs.sh \
+            "agent-relay@$VERSION" \
+            "@agent-relay/cloud@$VERSION" \
+            "@agent-relay/config@$VERSION" \
+            "@agent-relay/fleet@$VERSION" \
+            "@agent-relay/harness-driver@$VERSION" \
+            "@agent-relay/harnesses@$VERSION" \
+            "@agent-relay/sdk@$VERSION" \
+            "@agent-relay/session@$VERSION" \
+            "@agent-relay/utils@$VERSION" \
+            "@agent-relay/broker-linux-x64@$VERSION"
+
+      - name: Build verification image
+        run: |
+          VERSION="${{ inputs.version || 'latest' }}"
+          docker build \
+            --build-arg NODE_VERSION=${{ matrix.node }} \
+            --build-arg PACKAGE_VERSION=$VERSION \
+            -t agent-relay-verify:node${{ matrix.node }} \
+            -f scripts/post-publish-verify/Dockerfile \
+            scripts/post-publish-verify/
+
+      - name: Run verification
+        run: |
+          docker run --rm agent-relay-verify:node${{ matrix.node }}
+
+  summary:
+    name: Verification Summary
+    needs: [verify, verify-macos-arm64, verify-docker]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Summary
+        run: |
+          echo "## Post-Publish Verification Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Package**: \`agent-relay@${{ inputs.version || 'latest' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Native Tests" >> $GITHUB_STEP_SUMMARY
+          echo "| Node Version | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Node 22 and 24 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### macOS Tests (broker binary)" >> $GITHUB_STEP_SUMMARY
+          echo "| Architecture | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| arm64 (M1/M2) | ${{ needs.verify-macos-arm64.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Docker Tests (Linux)" >> $GITHUB_STEP_SUMMARY
+          echo "| Node Version | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Node 22 and 24 | ${{ needs.verify-docker.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Overall" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.verify.result }}" = "success" ] && [ "${{ needs.verify-macos-arm64.result }}" = "success" ] && [ "${{ needs.verify-docker.result }}" = "success" ]; then
+            echo "✅ All verification tests passed!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Some verification tests failed" >> $GITHUB_STEP_SUMMARY
+          fi

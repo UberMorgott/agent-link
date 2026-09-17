@@ -1,0 +1,26 @@
+# Gitleaks configuration
+# See: https://github.com/gitleaks/gitleaks#configuration
+
+title = "Agent Relay Gitleaks Config"
+
+# Allow specific files/paths
+[allowlist]
+  description = "Allow test files and build artifacts"
+  paths = [
+    # Test files with intentional mock/placeholder secrets
+    '''.*\.test\.ts$''',
+    '''.*\.test\.js$''',
+    '''docker-compose\.test\.yml$''',
+    '''scripts/manual-qa\.sh$''',
+    # Build artifacts (shouldn't be committed but may exist in history)
+    '''\.next/.*''',
+    '''dist/.*''',
+    '''node_modules/.*''',
+  ]
+
+# Allow specific patterns that are known false positives
+[[rules]]
+  id = "allow-redacted-placeholders"
+  description = "Allow REDACTED placeholder values in tests"
+  regex = '''REDACTED'''
+  allowlist = { regexes = ['''REDACTED'''] }

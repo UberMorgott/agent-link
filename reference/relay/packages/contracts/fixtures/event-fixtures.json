@@ -1,0 +1,202 @@
+{
+  "broker_event_kinds": [
+    "relay_inbound",
+    "agent_spawned",
+    "agent_exited",
+    "agent_released",
+    "worker_ready",
+    "agent_idle",
+    "agent_restarting",
+    "agent_restarted",
+    "agent_permanently_dead",
+    "agent_context_low",
+    "agent_blocked_on_send",
+    "delivery_verified",
+    "delivery_failed",
+    "message_delivery_confirmed",
+    "message_delivery_failed",
+    "worker_error"
+  ],
+  "message_lifecycle_states": ["queued", "injected", "verified", "failed", "uncertain"],
+  "contract_events": [
+    {
+      "kind": "relay_inbound",
+      "eventId": "evt_0001",
+      "seq": 101,
+      "timestamp": "2026-02-23T00:00:00.000Z",
+      "payload": {
+        "from": "Lead",
+        "target": "WorkerA",
+        "body": "hello"
+      }
+    },
+    {
+      "kind": "agent_spawned",
+      "eventId": "evt_0002",
+      "seq": 102,
+      "timestamp": "2026-02-23T00:00:01.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "runtime": "pty"
+      }
+    },
+    {
+      "kind": "agent_exited",
+      "eventId": "evt_0003",
+      "seq": 103,
+      "timestamp": "2026-02-23T00:00:02.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "code": 0,
+        "reason": "worker_exited"
+      }
+    },
+    {
+      "kind": "agent_released",
+      "eventId": "evt_0004",
+      "seq": 104,
+      "timestamp": "2026-02-23T00:00:03.000Z",
+      "payload": {
+        "name": "WorkerA"
+      }
+    },
+    {
+      "kind": "worker_ready",
+      "eventId": "evt_0005",
+      "seq": 105,
+      "timestamp": "2026-02-23T00:00:04.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "runtime": "pty"
+      }
+    },
+    {
+      "kind": "agent_idle",
+      "eventId": "evt_0006",
+      "seq": 106,
+      "timestamp": "2026-02-23T00:00:05.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "idleSecs": 45
+      }
+    },
+    {
+      "kind": "agent_restarting",
+      "eventId": "evt_0007",
+      "seq": 107,
+      "timestamp": "2026-02-23T00:00:06.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "attempt": 1
+      }
+    },
+    {
+      "kind": "agent_restarted",
+      "eventId": "evt_0008",
+      "seq": 108,
+      "timestamp": "2026-02-23T00:00:07.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "attempt": 1
+      }
+    },
+    {
+      "kind": "agent_permanently_dead",
+      "eventId": "evt_0009",
+      "seq": 109,
+      "timestamp": "2026-02-23T00:00:08.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "reason": "max_restarts_exceeded"
+      }
+    },
+    {
+      "kind": "delivery_verified",
+      "eventId": "evt_0010",
+      "seq": 110,
+      "timestamp": "2026-02-23T00:00:09.000Z",
+      "payload": {
+        "deliveryId": "del_1",
+        "name": "WorkerA"
+      }
+    },
+    {
+      "kind": "delivery_failed",
+      "eventId": "evt_0011",
+      "seq": 111,
+      "timestamp": "2026-02-23T00:00:10.000Z",
+      "payload": {
+        "deliveryId": "del_2",
+        "name": "WorkerA",
+        "reason": "timeout"
+      }
+    },
+    {
+      "kind": "worker_error",
+      "eventId": "evt_0012",
+      "seq": 112,
+      "timestamp": "2026-02-23T00:00:11.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "code": "worker_unresponsive",
+        "message": "worker output stream stalled"
+      }
+    },
+    {
+      "kind": "message_delivery_confirmed",
+      "eventId": "evt_0013",
+      "seq": 113,
+      "timestamp": "2026-02-23T00:00:12.000Z",
+      "payload": {
+        "deliveryId": "del_3",
+        "name": "WorkerA",
+        "from": "Lead",
+        "to": "WorkerA"
+      }
+    },
+    {
+      "kind": "message_delivery_failed",
+      "eventId": "evt_0014",
+      "seq": 114,
+      "timestamp": "2026-02-23T00:00:13.000Z",
+      "payload": {
+        "deliveryId": "del_4",
+        "name": "WorkerA",
+        "from": "Lead",
+        "to": "WorkerA",
+        "attempts": 10,
+        "lastError": "recipient gone"
+      }
+    },
+    {
+      "kind": "agent_context_low",
+      "eventId": "evt_0015",
+      "seq": 115,
+      "timestamp": "2026-02-23T00:00:14.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "pct": 6
+      }
+    },
+    {
+      "kind": "agent_blocked_on_send",
+      "eventId": "evt_0016",
+      "seq": 116,
+      "timestamp": "2026-02-23T00:00:15.000Z",
+      "payload": {
+        "name": "WorkerA",
+        "blockedSecs": 120,
+        "pendingDeliveryCount": 1
+      }
+    }
+  ],
+  "wave0_timeout_terminal_semantics": {
+    "event_id": "evt_timeout_contract",
+    "target": "worker",
+    "expected_terminal_status": "failed",
+    "late_event_kind": "delivery_ack"
+  },
+  "wave0_broadcast_whitelist": {
+    "required_kinds": ["relay_inbound", "agent_spawned", "agent_exited", "delivery_ack"]
+  }
+}

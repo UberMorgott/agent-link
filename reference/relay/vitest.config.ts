@@ -1,0 +1,110 @@
+import { defineConfig } from 'vitest/config';
+import path from 'node:path';
+
+// Workspace packages that vitest should resolve via their `src/index.ts`
+// instead of falling through to Node's resolver (which requires `dist/`
+// to be built first). Every workspace package under `packages/` that
+// ships TypeScript and is imported as `@agent-relay/<name>` from any
+// test or source file MUST be listed here — otherwise tests will pass
+// in CI (because CI runs `npm run build` first) but fail in fresh
+// local checkouts that haven't been built yet.
+//
+// When you add a new workspace package, add it here too.
+const workspacePackages = [
+  'agent',
+  'cloud',
+  'config',
+  'events',
+  'fleet',
+  'gateway',
+  'github-primitive',
+  'harness-driver',
+  'harnesses',
+  'hooks',
+  'integration-prompts',
+  'memory',
+  'policy',
+  'runtime',
+  'sdk',
+  'session',
+  'slack-primitive',
+  'telemetry',
+  'trajectory',
+  'utils',
+] as const;
+
+const workspaceAliases = workspacePackages.flatMap((packageName) => {
+  const sourceRoot = path.resolve(__dirname, `./packages/${packageName}/src`);
+
+  return [
+    {
+      find: new RegExp(`^@agent-relay/${packageName}/(.+)$`),
+      replacement: `${sourceRoot}/$1`,
+    },
+    {
+      find: `@agent-relay/${packageName}`,
+      replacement: path.resolve(sourceRoot, 'index.ts'),
+    },
+  ];
+});
+
+export default defineConfig({
+  resolve: {
+    alias: [
+      ...workspaceAliases,
+      {
+        find: '@agent-relay/brand/brand.css',
+        replacement: path.resolve(__dirname, './packages/brand/brand.css'),
+      },
+    ],
+  },
+  test: {
+    globals: true,
+    environment: 'node',
+    setupFiles: [path.resolve(__dirname, './vitest.setup.ts')],
+    include: [
+      '.agentworkforce/agents/**/*.test.ts',
+      'tests/fixtures/**/*.test.ts',
+      'tests/integration/ai-sdk-harnesses/**/*.test.ts',
+      'tests/integration/broker/evals/**/*.unit.test.ts',
+      'packages/**/src/**/*.test.ts',
+      'packages/**/src/**/*.test.tsx',
+      'packages/**/tests/**/*.test.ts',
+    ],
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      'packages/sdk-swift/.build/**',
+      'packages/sdk/**', // Uses Node.js test runner, not vitest
+    ],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov', 'html'],
+      all: false,
+      exclude: [
+        '**/*.test.ts',
+        '**/*.test.tsx',
+        '**/dist/**',
+        'packages/sdk-swift/.build/**',
+        'packages/sdk/**', // SDK uses Node.js test runner in tests/integration/broker
+        // Transitively loaded via barrel re-exports but not exercised by the
+        // root test suite. Previously these resolved to dist/*.js and were
+        // excluded via **/dist/**; the src alias migration started reporting
+        // them. Keep them out so the global threshold reflects files we
+        // actually unit-test here.
+        'packages/cloud/src/workflows.ts',
+        'packages/cloud/src/api-client.ts',
+      ],
+      // Thresholds recalibrated for Vitest 4's AST-aware V8 coverage
+      // remapping, which reports a few points lower than v3 on the same
+      // code (more precise statement/branch attribution). These track the
+      // current measured coverage with a small margin.
+      thresholds: {
+        lines: 55,
+        functions: 53,
+        branches: 45,
+        statements: 55,
+      },
+    },
+  },
+});

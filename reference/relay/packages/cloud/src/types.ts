@@ -1,0 +1,292 @@
+import os from 'node:os';
+import path from 'node:path';
+
+export type StoredAuth = {
+  accessToken: string;
+  refreshToken: string;
+  accessTokenExpiresAt: string;
+  refreshTokenExpiresAt?: string;
+  apiUrl: string;
+};
+
+export type CloudAuthErrorCode =
+  | 'AUTH_REFRESH_TIMEOUT'
+  | 'AUTH_REFRESH_EXPIRED'
+  | 'AUTH_BROWSER_REQUIRED'
+  | 'AUTH_DEVICE_FLOW_FAILED'
+  | 'AUTH_ENV_REPROVISION_REQUIRED';
+
+export class CloudAuthError extends Error {
+  constructor(
+    public readonly code: CloudAuthErrorCode,
+    message: string,
+    options?: { cause?: unknown }
+  ) {
+    super(message, options);
+    this.name = 'CloudAuthError';
+  }
+}
+
+export type CloudSession = {
+  auth: StoredAuth;
+  client: import('./api-client.js').CloudApiClient;
+};
+
+export type CloudSessionOptions = {
+  apiUrl?: string;
+  force?: boolean;
+  interactive?: boolean;
+  /**
+   * Force the RFC 8628 device flow instead of the browser flow. Left unset,
+   * the device flow is still chosen automatically on a headless host.
+   */
+  device?: boolean;
+  refreshTimeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+  /** Optional caller policy applied before refreshed credentials use a selected API host. */
+  validateApiUrl?: (apiUrl: string) => void;
+};
+
+export type WhoAmIResponse = {
+  authenticated: boolean;
+  source: 'session' | 'token';
+  subjectType: string | null;
+  scopes: string[];
+  user: {
+    id: string;
+    email: string | null;
+    name: string | null;
+    avatarUrl: string | null;
+  };
+  /**
+   * Null when the user has no active workspace — cloud's `/auth/whoami` returns
+   * `currentOrganization: null, currentWorkspace: null, workspaceRequired: true`
+   * in that case.
+   */
+  currentOrganization: {
+    id: string;
+    slug: string;
+    name: string;
+    role: string;
+    status: string;
+  } | null;
+  currentWorkspace: {
+    id: string;
+    organization_id: string;
+    slug: string;
+    name: string;
+  } | null;
+  workspaceRequired?: boolean;
+};
+
+export type AuthSessionResponse = {
+  sessionId: string;
+  ssh: {
+    host: string;
+    port: number;
+    user: string;
+    password: string;
+  };
+  remoteCommand: string;
+  provider: string;
+  expiresAt: string;
+};
+
+export type WorkspaceCreateResponse = {
+  workspaceId: string;
+  name?: string;
+  relayfileUrl?: string;
+  relaycronUrl?: string;
+  relaycastUrl?: string;
+  relayauthUrl?: string;
+  joinCommand?: string;
+  createdAt?: string;
+};
+
+export type WorkspaceTokenRecord = {
+  workspaceId: string;
+  kind: string;
+  prefix?: string;
+  id?: string;
+  name?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type WorkspaceTokenIssueResponse = {
+  key: string;
+  workspaceToken?: WorkspaceTokenRecord;
+};
+
+export type ActiveWorkspaceUrls = {
+  relayfileUrl?: string;
+  relaycronUrl?: string;
+  relaycastUrl?: string;
+  relayauthUrl?: string;
+  [key: string]: string | undefined;
+};
+
+export type ActiveWorkspaceDescriptor = {
+  name?: string;
+  key: string;
+  cloudWorkspaceId: string;
+  relaycastWorkspaceId: string;
+  relaycastApiKey?: string;
+  relayfileWorkspaceId: string;
+  relayauthWorkspaceId: string;
+  organizationId?: string;
+  slug?: string;
+  urls: ActiveWorkspaceUrls;
+  apiUrl: string;
+  provisioned?: boolean;
+};
+
+export type ProactiveDeploymentResponse = {
+  deploymentId?: string;
+  agentId?: string;
+  workspaceId?: string;
+  status?: string;
+  dashboardUrl?: string;
+  logsUrl?: string;
+  [key: string]: unknown;
+};
+
+export type ProactiveAgentRecord = {
+  id: string;
+  name?: string;
+  displayName?: string;
+  harness?: string;
+  defaultModel?: string;
+  status?: string;
+  credentialStoredAt?: string | null;
+  lastAuthenticatedAt?: string | null;
+  lastUsedAt?: string | null;
+  lastError?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+};
+
+export type WorkspaceSecretRecord = {
+  name: string;
+  value?: string;
+  maskedValue?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+};
+
+export type WorkflowFileType = 'yaml' | 'ts' | 'py';
+export type RelayflowVersion = 'v1' | 'v2';
+
+export type PathSubmission = {
+  name: string;
+  s3CodeKey: string;
+  repoOwner?: string;
+  repoName?: string;
+  pushBranch?: string;
+  pushBase?: string;
+  pushPrBody?: string;
+};
+
+export type RunWorkflowOptions = {
+  apiUrl?: string;
+  fileType?: WorkflowFileType;
+  relayflowVersion?: RelayflowVersion;
+  syncCode?: boolean;
+  resume?: string;
+  startFrom?: string;
+  previousRunId?: string;
+};
+
+export type RunWorkflowResponse = {
+  runId: string;
+  sandboxId?: string;
+  status: string;
+  patches?: Record<
+    string,
+    {
+      s3Key: string;
+      hasChanges?: boolean;
+      pushedTo?: {
+        branch: string;
+        prUrl: string;
+        sha: string;
+        base: { branch: string; sha: string };
+        strategy?: 'contents_api' | 'git_db';
+      };
+      pushError?: {
+        code: string;
+        message: string;
+        observedBaseSha?: string;
+        base?: { branch: string; sha: string };
+      };
+    }
+  >;
+  [key: string]: unknown;
+};
+
+export type WorkflowSchedule = {
+  id: string;
+  relaycronScheduleId: string;
+  userId: string;
+  workspaceId: string;
+  organizationId: string;
+  name: string;
+  description: string | null;
+  scheduleType: 'once' | 'cron';
+  cronExpression: string | null;
+  scheduledAt: string | null;
+  timezone: string;
+  status: string;
+  lastTriggeredRunId: string | null;
+  lastTriggeredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ScheduleWorkflowOptions = {
+  apiUrl?: string;
+  fileType?: WorkflowFileType;
+  relayflowVersion?: 'v1';
+  name?: string;
+  description?: string;
+  cron?: string;
+  at?: string;
+  timezone?: string;
+  envSecrets?: Record<string, string>;
+};
+
+export type WorkflowLogsResponse = {
+  content: string;
+  offset: number;
+  totalSize: number;
+  done: boolean;
+  [key: string]: unknown;
+};
+
+export type SyncPatchResponse = {
+  patch?: string;
+  hasChanges?: boolean;
+  patches?: Record<string, { patch: string; hasChanges: boolean }>;
+  [key: string]: unknown;
+};
+
+export type GetPatchesResponse = {
+  patches: Record<string, { patch: string; hasChanges: boolean }>;
+};
+
+export const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'google', 'cursor', 'opencode', 'droid'] as const;
+
+export const REFRESH_WINDOW_MS = 5 * 60_000;
+export const REFRESH_TOKEN_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_REFRESH_TIMEOUT_MS = 10_000;
+export const AUTH_FILE_PATH = path.join(os.homedir(), '.agentworkforce/relay', 'cloud-auth.json');
+
+export function defaultApiUrl(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CLOUD_API_URL?.trim() || 'https://agentrelay.com/cloud';
+}
+
+export function isSupportedProvider(provider: string): boolean {
+  return SUPPORTED_PROVIDERS.includes(provider as (typeof SUPPORTED_PROVIDERS)[number]);
+}
