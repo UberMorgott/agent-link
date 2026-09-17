@@ -2,6 +2,25 @@
 
 const TOKEN = document.querySelector('meta[name="agentlink-token"]').content;
 
+// STRINGS is the page dictionary served by the app; see internal/app/strings.go.
+const STRINGS = JSON.parse(document.querySelector('meta[name="agentlink-strings"]').content);
+
+// t returns the text for a key; fmt also fills its {name} placeholders.
+function t(key) {
+  return Object.prototype.hasOwnProperty.call(STRINGS, key) ? STRINGS[key] : key;
+}
+
+function fmt(key, vars) {
+  return t(key).replace(/\{(\w+)\}/g, (m, name) => (name in vars ? String(vars[name]) : m));
+}
+
+// applyStrings fills every [data-t] element and the page title.
+function applyStrings(root) {
+  for (const el of (root || document).querySelectorAll("[data-t]")) el.textContent = t(el.dataset.t);
+  const title = document.querySelector('meta[name="agentlink-title"]');
+  if (title) document.title = t(title.content);
+}
+
 async function api(method, path, body) {
   const opts = { method, headers: { "X-Agentlink-Token": TOKEN } };
   if (body !== undefined) {
@@ -24,17 +43,18 @@ async function refreshStatus() {
   try {
     const s = await api("GET", "status");
     let text, cls;
-    if (!s.configured) { text = "not configured"; cls = "off"; }
-    else if (s.error) { text = "error: " + s.error; cls = "off"; }
-    else if (s.connected) { text = s.peer + " connected"; cls = "on"; }
-    else { text = s.peer + " offline"; cls = "off"; }
+    if (!s.configured) { text = t("link.unconfigured"); cls = "off"; }
+    else if (s.error) { text = fmt("link.error", { error: s.error }); cls = "off"; }
+    else if (s.connected) { text = fmt("link.on", { peer: s.peer }); cls = "on"; }
+    else { text = fmt("link.off", { peer: s.peer }); cls = "off"; }
     el.textContent = text;
     el.className = cls;
   } catch (e) {
-    el.textContent = "agentlink is not running";
+    el.textContent = t("link.app_not_running");
     el.className = "off";
   }
 }
 
+applyStrings();
 refreshStatus();
 setInterval(refreshStatus, 3000);

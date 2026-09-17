@@ -43,6 +43,7 @@ func (a *App) URL(page string) string {
 //	GET  /ui/api/settings          settings.Settings
 //	POST /ui/api/settings          settings.Settings -> save, restart node
 //	GET  /ui/api/inbox             []node.Entry
+//	GET  /ui/api/threads           []Thread (inbox entries paired by reply_to)
 //	POST /ui/api/send              node.SendRequest -> node.Message
 //	POST /ui/api/quit              exit the app (same path as the tray's Quit)
 func (a *App) Handler() http.Handler {
@@ -60,6 +61,7 @@ func (a *App) Handler() http.Handler {
 	})
 	api.HandleFunc("POST /ui/api/settings", a.saveSettings)
 	api.HandleFunc("GET /ui/api/inbox", a.inbox)
+	api.HandleFunc("GET /ui/api/threads", a.threads)
 	api.HandleFunc("POST /ui/api/send", a.send)
 	api.HandleFunc("POST /ui/api/quit", func(w http.ResponseWriter, _ *http.Request) {
 		if a.QuitFunc == nil {
@@ -139,7 +141,9 @@ func (a *App) page(name string) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write([]byte(strings.ReplaceAll(string(data), "{{TOKEN}}", a.token)))
+		page := strings.ReplaceAll(string(data), "{{TOKEN}}", a.token)
+		page = strings.ReplaceAll(page, "{{STRINGS}}", stringsAttr())
+		_, _ = w.Write([]byte(page))
 	}
 }
 
@@ -181,6 +185,21 @@ func (a *App) inbox(w http.ResponseWriter, _ *http.Request) {
 		entries = []node.Entry{}
 	}
 	writeJSON(w, entries)
+}
+
+// threads serves the inbox as questions paired with their answers.
+func (a *App) threads(w http.ResponseWriter, _ *http.Request) {
+	n := a.node()
+	if n == nil {
+		writeJSON(w, []Thread{})
+		return
+	}
+	entries, err := n.Recent(200)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, threads(entries))
 }
 
 func (a *App) send(w http.ResponseWriter, r *http.Request) {

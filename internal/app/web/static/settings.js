@@ -19,7 +19,7 @@ document.getElementById("generate").addEventListener("click", () => {
   crypto.getRandomValues(bytes);
   secret.value = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
   secret.type = "text";
-  result.textContent = "New secret generated. Copy it and send it to the other person privately, then Save.";
+  result.textContent = t("settings.secret.generated");
 });
 
 document.getElementById("show").addEventListener("click", () => {
@@ -29,11 +29,11 @@ document.getElementById("show").addEventListener("click", () => {
 document.getElementById("copy").addEventListener("click", async () => {
   try {
     await navigator.clipboard.writeText(secret.value);
-    result.textContent = "Secret copied.";
+    result.textContent = t("settings.secret.copied");
   } catch (_) {
     secret.type = "text";
     secret.select();
-    result.textContent = "Press Ctrl+C to copy the selected secret.";
+    result.textContent = t("settings.secret.copy_manual");
   }
 });
 
@@ -51,14 +51,14 @@ form.addEventListener("submit", async (ev) => {
     work_dir: f.work_dir.value.trim(),
     autostart: f.autostart.checked,
   };
-  result.textContent = "Saving...";
+  result.textContent = t("settings.saving");
   try {
     const r = await api("POST", "settings", body);
-    result.textContent = r.error ? r.error : "Saved. agentlink restarted with the new settings.";
+    result.textContent = r.error ? r.error : t("settings.saved");
     refreshStatus();
   } catch (e) {
-    result.textContent = "Not saved: " + e.message;
+    result.textContent = fmt("settings.save_failed", { error: e.message });
   }
 });
 
-load().catch((e) => { result.textContent = "Could not load settings: " + e.message; });
+load().catch((e) => { result.textContent = fmt("settings.load_failed", { error: e.message }); });

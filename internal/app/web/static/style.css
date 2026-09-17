@@ -23,6 +23,9 @@ button[type=submit] { background: var(--accent); color: #fff; border: 0; border-
 #messages li { border: 1px solid #8884; border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
 #messages li.out { border-left: 4px solid var(--accent); }
 #messages li.in { border-left: 4px solid var(--on); }
+#messages li.empty { border-style: dashed; color: var(--muted); }
 .head { color: var(--muted); font-size: 12px; }
+.head strong { color: inherit; }
 pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0; font: inherit; }
-#messages pre.answer { border-top: 1px dashed currentColor; padding-top: 6px; }
+.tag { display: inline-block; font-size: 12px; font-weight: 600; color: var(--muted); }
+#messages .answer { border-top: 1px dashed #8886; margin-top: 6px; padding-top: 6px; }

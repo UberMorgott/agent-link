@@ -8,36 +8,73 @@ const replyTo = document.getElementById("reply_to");
 function setReply(id, from) {
   replyTo.value = id || "";
   document.getElementById("replying").hidden = !id;
-  document.getElementById("reply_id").textContent = id || "";
+  document.getElementById("replying_text").textContent = id ? fmt("inbox.replying", { id: id.slice(0, 8) }) : "";
   if (from) document.getElementById("to").value = from;
   if (id) document.getElementById("body").focus();
 }
 
-function render(entries) {
+function when(iso) {
+  return new Date(iso).toLocaleString();
+}
+
+function statusText(status) {
+  return fmt("inbox.status", { status: t("status." + status) });
+}
+
+// block renders one labelled piece of text ("Вопрос", "Ответ").
+function block(labelKey, text, cls) {
+  const wrap = document.createElement("div");
+  wrap.className = cls;
+  const label = document.createElement("span");
+  label.className = "tag";
+  label.textContent = t(labelKey);
+  const body = document.createElement("pre");
+  body.textContent = text;
+  wrap.append(label, body);
+  return wrap;
+}
+
+// render draws one row per question, with its answer folded into the same row.
+function render(items) {
   list.replaceChildren();
-  for (const e of entries) {
+  if (!items.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty";
+    empty.textContent = t("inbox.empty");
+    list.append(empty);
+    return;
+  }
+  for (const th of items) {
     const li = document.createElement("li");
-    li.className = e.direction;
+    li.className = th.direction;
     const head = document.createElement("div");
     head.className = "head";
-    const who = e.direction === "in" ? "from " + e.from : "to " + (e.area ? "area:" + e.area + " / " : "") + e.peer;
-    head.textContent = new Date(e.created_at).toLocaleString() + " - " + who + " - " + e.status +
-      (e.job_status ? " - " + e.job_status : "") +
-      (e.reply_to ? " - reply to " + e.reply_to.slice(0, 8) : "");
-    const body = document.createElement("pre");
-    body.textContent = e.body;
-    li.append(head, body);
-    if (e.direction === "out" && e.answer) {
-      const answer = document.createElement("pre");
-      answer.className = "answer";
-      answer.textContent = e.answer;
-      li.append(answer);
+    const dir = document.createElement("strong");
+    dir.textContent = t(th.direction === "in" ? "inbox.dir.in" : "inbox.dir.out");
+    const parts = [fmt("inbox.route", { from: th.from, to: th.to })];
+    if (th.area) parts.push(fmt("inbox.area", { area: th.area }));
+    parts.push(when(th.created_at), statusText(th.status));
+    head.append(dir, document.createTextNode(" · " + parts.join(" · ")));
+    li.append(head, block("inbox.question", th.body, "question"));
+    if (th.answered) {
+      li.append(block("inbox.answer", th.answer, "answer"));
+      if (th.answer_at) {
+        const at = document.createElement("div");
+        at.className = "head";
+        at.textContent = when(th.answer_at);
+        li.append(at);
+      }
+    } else {
+      const none = document.createElement("p");
+      none.className = "hint";
+      none.textContent = t("inbox.no_answer");
+      li.append(none);
     }
-    if (e.direction === "in" && !e.reply_to) {
+    if (th.replyable) {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.textContent = "Reply";
-      btn.addEventListener("click", () => setReply(e.id, e.from));
+      btn.textContent = t("inbox.reply");
+      btn.addEventListener("click", () => setReply(th.id, th.from));
       li.append(btn);
     }
     list.append(li);
@@ -46,9 +83,9 @@ function render(entries) {
 
 async function refresh() {
   try {
-    render(await api("GET", "inbox"));
+    render(await api("GET", "threads"));
   } catch (e) {
-    sendResult.textContent = "Could not load messages: " + e.message;
+    sendResult.textContent = fmt("inbox.load_failed", { error: e.message });
   }
 }
 
@@ -65,10 +102,10 @@ sendForm.addEventListener("submit", async (ev) => {
     await api("POST", "send", body);
     document.getElementById("body").value = "";
     setReply("");
-    sendResult.textContent = "Queued.";
+    sendResult.textContent = t("inbox.sent");
     refresh();
   } catch (e) {
-    sendResult.textContent = "Not sent: " + e.message;
+    sendResult.textContent = fmt("inbox.send_failed", { error: e.message });
   }
 });
 
