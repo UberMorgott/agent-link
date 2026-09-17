@@ -3,6 +3,9 @@
 bin/
 *.exe
 
+# Third-party read-only reference checkout (see README)
+/reference/
+
 # Machine-local configs (examples/ holds the tracked templates)
 *.local.json
 /agentlink.json

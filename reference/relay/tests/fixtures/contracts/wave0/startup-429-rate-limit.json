@@ -1,7 +1,0 @@
-{
-  "ok": false,
-  "error": {
-    "code": "rate_limit_exceeded",
-    "message": "Rate limit exceeded. 60 requests per minute allowed for free plan."
-  }
-}

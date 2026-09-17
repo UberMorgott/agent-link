@@ -4,7 +4,12 @@ Direct agent-to-agent messaging between machines over ZeroTier or a plain IP, wr
 Each developer runs one `agentlink serve` node; their Claude Code or Codex session sends with
 `agentlink send` and gets woken by `agentlink wait`.
 
-`reference/relay/` is AgentWorkforce/relay at tag v12.2.2 (commit f0c5dc1), Apache-2.0, kept for reading only.
+`reference/relay/` is AgentWorkforce/relay at tag v12.2.2 (commit f0c5dc1), Apache-2.0, kept for
+reading only. It is not part of this repository; fetch it yourself if you want it:
+
+```powershell
+git clone --depth 1 --branch v12.2.2 https://github.com/AgentWorkforce/relay.git reference/relay
+```
 
 ## Desktop app (recommended)
 
