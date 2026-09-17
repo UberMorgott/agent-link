@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/UberMorgott/agent-link/internal/settings"
 	"github.com/UberMorgott/agent-link/internal/worker"
@@ -20,7 +21,8 @@ type harness struct {
 	autostart []bool
 }
 
-func newHarness(t *testing.T) *harness {
+// newHarness serves a fresh App; setup runs before the server starts.
+func newHarness(t *testing.T, setup ...func(*App)) *harness {
 	t.Helper()
 	h := &harness{path: filepath.Join(t.TempDir(), "config.json")}
 	a, err := New(h.path, nil)
@@ -28,6 +30,9 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	a.SetAutostart = func(on bool) error { h.autostart = append(h.autostart, on); return nil }
+	for _, f := range setup {
+		f(a)
+	}
 	h.app = a
 	h.srv = httptest.NewServer(a.Handler())
 	t.Cleanup(func() { h.srv.Close(); a.Stop() })
@@ -151,6 +156,45 @@ func TestSaveStartsNodeAndPersists(t *testing.T) {
 	}
 	if st := h.app.Status(); st.Node != "carol" || !st.Running {
 		t.Fatalf("status after resave %+v", st)
+	}
+}
+
+func TestQuitEndpoint(t *testing.T) {
+	noQuit := newHarness(t)
+	if code, _ := noQuit.do(t, http.MethodPost, "/ui/api/quit", "", noQuit.tokenHdr()); code != http.StatusNotImplemented {
+		t.Fatalf("quit without QuitFunc: %d, want 501", code)
+	}
+	quits := make(chan struct{}, 2)
+	h := newHarness(t, func(a *App) { a.QuitFunc = func() { quits <- struct{}{} } })
+	if code, _ := h.do(t, http.MethodPost, "/ui/api/quit", "", nil); code != http.StatusForbidden {
+		t.Fatalf("quit without token: %d", code)
+	}
+	if code, body := h.do(t, http.MethodPost, "/ui/api/quit", "", h.tokenHdr()); code != http.StatusOK {
+		t.Fatalf("quit: %d %s", code, body)
+	}
+	select {
+	case <-quits:
+	case <-time.After(5 * time.Second):
+		t.Fatal("QuitFunc not called")
+	}
+	if len(quits) != 0 {
+		t.Fatal("QuitFunc called without a token")
+	}
+}
+
+func TestSetAPIAddrPersists(t *testing.T) {
+	h := newHarness(t)
+	if err := h.app.SetAPIAddr("0.0.0.0:7520"); err == nil {
+		t.Fatal("non-loopback api accepted")
+	}
+	if err := h.app.SetAPIAddr("127.0.0.1:7599"); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := h.do(t, http.MethodPost, "/ui/api/settings", validJSON(t), h.tokenHdr()); code != http.StatusOK {
+		t.Fatalf("save: %d %s", code, body)
+	}
+	if s, _, err := settings.Load(h.path); err != nil || s.API != "127.0.0.1:7599" {
+		t.Fatalf("persisted api %q err=%v", s.API, err)
 	}
 }
 

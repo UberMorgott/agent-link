@@ -44,8 +44,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	cfgPath := flag.String("config", defPath, "settings file")
-	noTray := flag.Bool("no-tray", false, "run without the tray icon until interrupted (scripts and tests)")
+	cfgPath := flag.String("config", defPath, "settings file; its folder also holds data and the log")
+	apiAddr := flag.String("api", "", "loopback address of the web UI and control API (default from settings, else "+settings.DefaultAPI+")")
+	noTray := flag.Bool("no-tray", false, "run without the tray icon until interrupted or quit via the API (scripts and tests)")
 	flag.Parse()
 
 	logw, err := openLog(filepath.Join(filepath.Dir(*cfgPath), "agentlink.log"))
@@ -59,6 +60,22 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if *apiAddr != "" {
+		if err := a.SetAPIAddr(*apiAddr); err != nil {
+			return err
+		}
+	}
+	// The Run entry starts the executable without flags, so autostart only
+	// makes sense for the default settings file.
+	if filepath.Clean(*cfgPath) != filepath.Clean(defPath) {
+		a.SetAutostart = nil
+	}
+	quitCtx, quit := context.WithCancel(context.Background())
+	defer quit()
+	a.QuitFunc = systray.Quit
+	if *noTray {
+		a.QuitFunc = quit
+	}
 	ln, err := net.Listen("tcp", a.APIAddr())
 	if err != nil {
 		return fmt.Errorf("agentlink is probably already running (%s is taken): %w", a.APIAddr(), err)
@@ -69,7 +86,11 @@ func run() error {
 			log.Error("web UI", "err", err)
 		}
 	}()
-	defer func() { _ = srv.Close() }()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
 
 	if err := a.Start(); err != nil {
 		log.Error("node start", "err", err)
@@ -77,15 +98,17 @@ func run() error {
 	defer a.Stop()
 
 	if *noTray {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		ctx, stop := signal.NotifyContext(quitCtx, os.Interrupt)
 		defer stop()
 		<-ctx.Done()
+		log.Info("quit")
 		return nil
 	}
 	if !a.Configured() {
 		openBrowser(a.URL("settings"))
 	}
 	systray.Run(func() { onReady(a) }, nil)
+	log.Info("quit")
 	return nil
 }
 
@@ -118,7 +141,7 @@ func onReady(a *app.App) {
 			case <-inboxItem.ClickedCh:
 				openBrowser(a.URL("inbox"))
 			case <-quit.ClickedCh:
-				systray.Quit()
+				a.Quit()
 				return
 			}
 		}

@@ -44,6 +44,7 @@ func (a *App) URL(page string) string {
 //	POST /ui/api/settings          settings.Settings -> save, restart node
 //	GET  /ui/api/inbox             []node.Entry
 //	POST /ui/api/send              node.SendRequest -> node.Message
+//	POST /ui/api/quit              exit the app (same path as the tray's Quit)
 func (a *App) Handler() http.Handler {
 	ui := http.NewServeMux()
 	ui.HandleFunc("GET /ui/settings", a.page("web/settings.html"))
@@ -60,6 +61,17 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /ui/api/settings", a.saveSettings)
 	api.HandleFunc("GET /ui/api/inbox", a.inbox)
 	api.HandleFunc("POST /ui/api/send", a.send)
+	api.HandleFunc("POST /ui/api/quit", func(w http.ResponseWriter, _ *http.Request) {
+		if a.QuitFunc == nil {
+			http.Error(w, "quit is not available", http.StatusNotImplemented)
+			return
+		}
+		writeJSON(w, map[string]bool{"quitting": true})
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		a.Quit()
+	})
 	ui.Handle("/ui/api/", a.requireToken(api))
 
 	root := http.NewServeMux()

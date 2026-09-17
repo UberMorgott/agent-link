@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
 	"github.com/UberMorgott/agent-link/internal/settings"
 	"github.com/UberMorgott/agent-link/internal/worker"
@@ -27,6 +28,8 @@ type App struct {
 	SetAutostart func(enable bool) error
 	// HandlerTimeout bounds one agent run.
 	HandlerTimeout time.Duration
+	// QuitFunc ends the program; Quit calls it. Nil makes quitting unavailable.
+	QuitFunc func()
 
 	mu         sync.Mutex
 	s          settings.Settings
@@ -68,6 +71,25 @@ func (a *App) APIAddr() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.s.APIAddr()
+}
+
+// SetAPIAddr overrides the loopback address of the web UI and control API
+// before the server starts; the next save persists it.
+func (a *App) SetAPIAddr(addr string) error {
+	if !config.IsLoopbackAddr(addr) {
+		return fmt.Errorf("api %q must be a loopback host:port", addr)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.s.API = addr
+	return nil
+}
+
+// Quit asks the program to exit through QuitFunc, if set.
+func (a *App) Quit() {
+	if a.QuitFunc != nil {
+		a.QuitFunc()
+	}
 }
 
 // Configured reports whether a settings file exists.
