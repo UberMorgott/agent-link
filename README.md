@@ -97,7 +97,13 @@ expires, and exits 1 on errors.
 Loopback examples: `examples/node-a.json`, `examples/node-b.json`. `scripts/e2e-local.ps1`
 builds the binary, starts both, sends a→b, replies b→a and stops them. `scripts/e2e-worker.ps1`
 runs two tray apps headless (`-no-tray`) with a fake agent and checks the automatic reply;
-`-RealClaude` uses the installed `claude` instead.
+`-RealClaude` / `-RealCodex` use the installed `claude` / `codex` instead.
+`scripts/e2e-tray.ps1` plays both people on one machine: two tray apps with their own settings
+folders (`-config`) and API ports (`-api`), set up, messaged and quit through the web UI
+endpoints; it also checks the "interrupted" reply on a save during a job, that no agent processes
+are left, and that a restart keeps the inbox. `-Address <ip>` binds the peers to e.g. the ZeroTier IP.
+With a non-default `-config` the app never touches the autostart entry, and `POST /ui/api/quit`
+(token-guarded, the same path as the tray's Quit) exits it.
 
 ## Waking a Claude Code session
 
