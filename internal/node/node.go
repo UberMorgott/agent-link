@@ -36,6 +36,8 @@ type Node struct {
 	backoffMin       time.Duration
 	backoffMax       time.Duration
 	handshakeTimeout time.Duration
+
+	onInbound func(Message)
 }
 
 // New opens the node's data directory. log may be nil.
@@ -75,6 +77,10 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	return n, nil
 }
 
+// SetInboundHook registers fn to be called once for every newly stored inbound
+// message. It must be set before Serve or Run, and fn must not block.
+func (n *Node) SetInboundHook(fn func(Message)) { n.onInbound = fn }
+
 // Serve runs the peer listener, the peer dialers and the control API until ctx
 // is cancelled. apiLn must be bound to a loopback address.
 func (n *Node) Serve(ctx context.Context, peerLn, apiLn net.Listener) error {
@@ -85,18 +91,19 @@ func (n *Node) Serve(ctx context.Context, peerLn, apiLn net.Listener) error {
 	defer cancel()
 
 	srv := &http.Server{
-		Handler:           n.apiHandler(),
+		Handler:           n.APIHandler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}
 	apiErr := make(chan error, 1)
 	go func() { apiErr <- srv.Serve(apiLn) }()
+	n.log.Info("control API", "api", apiLn.Addr())
 
-	n.wg.Go(func() { n.acceptLoop(ctx, peerLn) })
-	for name, addr := range n.peers {
-		n.wg.Go(func() { n.dialLoop(ctx, name, addr) })
-	}
-	n.log.Info("serving", "listen", peerLn.Addr(), "api", apiLn.Addr())
+	peersDone := make(chan struct{})
+	go func() {
+		defer close(peersDone)
+		n.Run(ctx, peerLn)
+	}()
 
 	var err error
 	select {
@@ -104,14 +111,29 @@ func (n *Node) Serve(ctx context.Context, peerLn, apiLn net.Listener) error {
 	case err = <-apiErr:
 	}
 	cancel()
-	_ = peerLn.Close()
 	_ = srv.Close()
-	n.wg.Wait()
+	<-peersDone
 	if errors.Is(err, http.ErrServerClosed) {
 		err = nil
 	}
 	return err
 }
+
+// Run serves peers only (listener and dialers) until ctx is cancelled, then
+// closes peerLn. Hosts that serve the control API themselves mount APIHandler.
+func (n *Node) Run(ctx context.Context, peerLn net.Listener) {
+	n.wg.Go(func() { n.acceptLoop(ctx, peerLn) })
+	for name, addr := range n.peers {
+		n.wg.Go(func() { n.dialLoop(ctx, name, addr) })
+	}
+	n.log.Info("serving peers", "listen", peerLn.Addr())
+	<-ctx.Done()
+	_ = peerLn.Close()
+	n.wg.Wait()
+}
+
+// Recent lists inbound, queued and sent messages, newest first.
+func (n *Node) Recent(limit int) ([]Entry, error) { return n.store.recent(limit) }
 
 // Connected reports whether a live session to peer exists.
 func (n *Node) Connected(peer string) bool {

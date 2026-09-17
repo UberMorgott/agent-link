@@ -17,12 +17,12 @@ type SendRequest struct {
 	ReplyTo string `json:"reply_to,omitempty"`
 }
 
-// apiHandler serves the loopback control API:
+// APIHandler serves the loopback control API:
 //
 //	POST /send               SendRequest -> Message
 //	GET  /wait?timeout=30s   200 []Message (marked delivered) or 204 on timeout; 0 waits forever
 //	GET  /inbox?limit=50     200 []Entry
-func (n *Node) apiHandler() http.Handler {
+func (n *Node) APIHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /send", n.handleSend)
 	mux.HandleFunc("GET /wait", n.handleWait)

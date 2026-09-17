@@ -316,3 +316,30 @@ func TestAPIRejectsForeignOrigin(t *testing.T) {
 		t.Fatalf("status %d, want 403", resp.StatusCode)
 	}
 }
+
+func TestInboundHookFiresOncePerNewMessage(t *testing.T) {
+	lnA, lnB := listen(t), listen(t)
+	a := newTestNode(t, "a", testSecret, nil, t.TempDir(), lnA, map[string]net.Listener{"b": lnB})
+	b := newTestNode(t, "b", testSecret, nil, t.TempDir(), lnB, map[string]net.Listener{"a": lnA})
+	got := make(chan Message, 10)
+	b.SetInboundHook(func(m Message) { got <- m })
+	a.start(t)
+	b.start(t)
+	sent, err := a.Send("b", "hook me", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case m := <-got:
+		if m.ID != sent.ID || m.Body != "hook me" {
+			t.Fatalf("hook got %+v", m)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("hook not called")
+	}
+	select {
+	case m := <-got:
+		t.Fatalf("hook called twice: %+v", m)
+	case <-time.After(700 * time.Millisecond): // longer than resendAfter
+	}
+}

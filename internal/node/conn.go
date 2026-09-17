@@ -139,6 +139,9 @@ func (n *Node) receive(pc *peerConn, m *Message) bool {
 	}
 	if isNew {
 		n.log.Info("message received", "from", m.From, "id", m.ID)
+		if n.onInbound != nil {
+			n.onInbound(*m)
+		}
 	}
 	return pc.write(frame{Type: "ack", ID: m.ID}) == nil
 }
