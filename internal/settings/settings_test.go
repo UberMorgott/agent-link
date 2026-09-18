@@ -2,6 +2,7 @@ package settings
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -18,6 +19,20 @@ func valid(t *testing.T) Settings {
 		Node: "alice", Listen: "10.147.20.5:7420", PeerName: "bob", PeerAddr: "10.147.20.9:7420",
 		Code: "ABC123", Areas: []string{"dev"},
 		Handler: worker.HandlerClaude, WorkDir: t.TempDir(),
+	}
+}
+
+func TestValidateRejectsHandlerNotOnPath(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	s := valid(t)
+	s.Handler = worker.HandlerCodex
+	var p *Problem
+	if err := s.Validate(); !errors.As(err, &p) || p.Key != "handler_missing" {
+		t.Fatalf("Validate() = %v, want handler_missing", err)
+	}
+	s.HandlerCommand = []string{"fake"}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("custom command must skip the PATH check: %v", err)
 	}
 }
 

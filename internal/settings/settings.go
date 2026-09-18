@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -230,6 +231,9 @@ func (s Settings) Validate() error {
 	case worker.HandlerClaude, worker.HandlerCodex:
 		if st, err := os.Stat(s.WorkDir); s.WorkDir == "" || err != nil || !st.IsDir() {
 			return problem("work_dir")
+		}
+		if _, err := exec.LookPath(s.Handler); err != nil && len(s.HandlerCommand) == 0 {
+			return problem("handler_missing")
 		}
 	default:
 		return problem("handler")
