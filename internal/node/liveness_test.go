@@ -85,10 +85,15 @@ func TestHeartbeatsKeepIdleSessionAlive(t *testing.T) {
 		n.heartbeatEvery, n.heartbeatTimeout = 50*time.Millisecond, 300*time.Millisecond
 		n.start(t)
 	}
-	eventually(t, "connected", func() bool { return a.Connected("b") && b.Connected("a") })
-	a.mu.Lock()
-	pc := a.conns["b"]
-	a.mu.Unlock()
+	// Both sides dial: until the crossed dials settle, a may briefly hold b's
+	// session, which a's own (preferred, a < b) then replaces by design.
+	var pc *peerConn
+	eventually(t, "a's preferred session", func() bool {
+		a.mu.Lock()
+		pc = a.conns["b"]
+		a.mu.Unlock()
+		return pc != nil && pc.dialer == "a" && b.Connected("a")
+	})
 	time.Sleep(time.Second)
 	a.mu.Lock()
 	same := a.conns["b"] == pc
