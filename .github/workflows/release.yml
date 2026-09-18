@@ -1,0 +1,58 @@
+name: Release
+
+# On a pushed v* tag: vet and test, build the stripped UPX-packed executables
+# and checksums.txt with scripts/release.ps1 (the same script as a local
+# release), attest their build provenance and publish the GitHub release that
+# self-update reads (`gh attestation verify <file> --repo UberMorgott/agent-link`).
+# Windows runner: the tests exercise the Windows process and tray code, and the
+# linux executables cross-compile from here.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write     # create the release and upload assets
+  id-token: write     # OIDC token for the provenance attestation
+  attestations: write # store the attestation
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # Publishing is effectively irreversible, so the release re-verifies the
+      # tagged commit instead of trusting an earlier run.
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Install UPX
+        run: choco install upx --no-progress -y
+
+      - name: Build (stripped, trimpath, UPX-packed) and checksums.txt
+        shell: pwsh
+        run: ./scripts/release.ps1 -Version "$env:GITHUB_REF_NAME"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: 'dist/agentlink*'
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(Get-ChildItem dist -File | ForEach-Object FullName)
+          gh release create "$env:GITHUB_REF_NAME" @assets --repo "$env:GITHUB_REPOSITORY" --title "$env:GITHUB_REF_NAME" --generate-notes
+          if ($LASTEXITCODE) { exit 1 }
