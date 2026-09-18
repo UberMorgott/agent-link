@@ -110,7 +110,7 @@ func DefaultName() string {
 
 // Load reads settings. A missing file returns Defaults, ok=false and no error.
 func Load(path string) (s Settings, ok bool, err error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if errors.Is(err, fs.ErrNotExist) {
 		return Defaults(), false, nil
 	}
@@ -200,7 +200,7 @@ func Save(path string, s Settings) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(s, "", "  ")
+	data, err := json.MarshalIndent(s, "", "  ") //nolint:gosec // G117: this file is where the secret is kept by design, written owner-only below
 	if err != nil {
 		return err
 	}

@@ -234,7 +234,7 @@ func TestPeerMigration(t *testing.T) {
 	if err := Save(path, s); err != nil {
 		t.Fatal(err)
 	}
-	data, _ := os.ReadFile(path)
+	data, _ := os.ReadFile(filepath.Clean(path))
 	if strings.Contains(string(data), "peer_addr") || !strings.Contains(string(data), `"peers"`) {
 		t.Fatalf("saved %s", data)
 	}

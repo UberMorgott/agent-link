@@ -1,6 +1,7 @@
 package selfupdate
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"syscall"
@@ -30,7 +31,8 @@ func Start(exe string, args []string) error {
 		if breakaway {
 			flags |= windows.CREATE_BREAKAWAY_FROM_JOB
 		}
-		cmd := exec.Command(exe, args...) // #nosec G204 -- this program's own path and argv
+		// The relaunched app outlives this one, so no context can end it.
+		cmd := exec.CommandContext(context.Background(), exe, args...) // #nosec G204 -- this program's own path and argv
 		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: flags}
 		if err := cmd.Start(); err != nil {
 			return err

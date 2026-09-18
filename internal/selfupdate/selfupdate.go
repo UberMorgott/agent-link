@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -305,8 +306,8 @@ func replace(files []file) error {
 	}
 	var done []file
 	rollback := func() {
-		for i := len(done) - 1; i >= 0; i-- {
-			_ = rename(OldPath(done[i].path), done[i].path)
+		for _, f := range slices.Backward(done) {
+			_ = rename(OldPath(f.path), f.path)
 		}
 		cleanNew()
 	}
