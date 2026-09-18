@@ -3,6 +3,8 @@
 const form = document.getElementById("form");
 const result = document.getElementById("result");
 const code = document.getElementById("code");
+const workDir = document.getElementById("work_dir");
+const pick = document.getElementById("pick");
 
 // Letters and digits without 0/O and 1/I: 32 symbols, so a byte & 31 is uniform.
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -16,7 +18,38 @@ async function load() {
   form.elements.handler.value = s.handler || "none";
   form.elements.autostart.checked = !!s.autostart;
   if (s.listen || s.api || s.peer_name || (s.areas || []).length) document.getElementById("advanced").open = true;
+  showWorkDir("settings.work_dir.current");
 }
+
+// showWorkDir repeats the chosen folder in full under the field.
+function showWorkDir(key) {
+  const el = document.getElementById("work_dir_shown");
+  const path = workDir.value.trim();
+  el.textContent = path ? fmt(key, { path }) : t("settings.work_dir.empty");
+}
+
+workDir.addEventListener("input", () => showWorkDir("settings.work_dir.current"));
+
+// The tray process opens the native Windows folder dialog: a page cannot see
+// absolute paths on disk.
+pick.addEventListener("click", async () => {
+  pick.disabled = true;
+  result.textContent = t("settings.work_dir.picking");
+  try {
+    const r = await api("POST", "pick-folder", { start: workDir.value.trim() });
+    if (r.path) {
+      workDir.value = r.path;
+      showWorkDir("settings.work_dir.chosen");
+      result.textContent = "";
+    } else {
+      result.textContent = r.message || "";
+    }
+  } catch (e) {
+    result.textContent = e.message;
+  } finally {
+    pick.disabled = false;
+  }
+});
 
 // showMyAddr tells this side's address, the one the other person types in.
 async function showMyAddr() {

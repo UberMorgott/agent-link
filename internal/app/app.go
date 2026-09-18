@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/UberMorgott/agent-link/internal/config"
@@ -32,6 +33,11 @@ type App struct {
 	QuitFunc func()
 	// Ifaces lists network interfaces for ZeroTier detection; replaceable in tests.
 	Ifaces func() []settings.Iface
+	// PickFolder shows the native folder dialog starting at start and returns
+	// the chosen absolute path or ErrPickCancelled; replaceable in tests.
+	PickFolder func(start, title string) (string, error)
+
+	picking atomic.Bool // a folder dialog is open
 
 	mu         sync.Mutex
 	s          settings.Settings
@@ -73,7 +79,7 @@ func New(path string, log *slog.Logger) (*App, error) {
 	return &App{
 		path: path, token: newToken(), log: log, s: s, configured: ok,
 		SetAutostart: setAutostart, HandlerTimeout: worker.DefaultTimeout,
-		Ifaces: settings.SystemIfaces, zeroTier: true,
+		Ifaces: settings.SystemIfaces, PickFolder: pickFolder, zeroTier: true,
 	}, nil
 }
 

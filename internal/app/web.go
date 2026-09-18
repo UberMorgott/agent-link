@@ -45,6 +45,7 @@ func (a *App) URL(page string) string {
 //	GET  /ui/api/inbox             []node.Entry
 //	GET  /ui/api/threads           []Thread (inbox entries paired by reply_to)
 //	POST /ui/api/send              node.SendRequest -> node.Message
+//	POST /ui/api/pick-folder       {"start"} -> native folder dialog -> pickResult
 //	POST /ui/api/quit              exit the app (same path as the tray's Quit)
 func (a *App) Handler() http.Handler {
 	ui := http.NewServeMux()
@@ -63,6 +64,7 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("GET /ui/api/inbox", a.inbox)
 	api.HandleFunc("GET /ui/api/threads", a.threads)
 	api.HandleFunc("POST /ui/api/send", a.send)
+	api.HandleFunc("POST /ui/api/pick-folder", a.pickFolder)
 	api.HandleFunc("POST /ui/api/quit", func(w http.ResponseWriter, _ *http.Request) {
 		if a.QuitFunc == nil {
 			writeError(w, http.StatusNotImplemented, msg("error.internal", nil))
@@ -228,6 +230,51 @@ func (a *App) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, m)
+}
+
+// ErrPickCancelled means the user closed the folder dialog without choosing.
+var ErrPickCancelled = errors.New("folder dialog cancelled")
+
+// ErrPickUnsupported means this platform has no native folder dialog.
+var ErrPickUnsupported = errors.New("folder dialog is not supported on this platform")
+
+type pickResult struct {
+	Path      string `json:"path,omitempty"`
+	Cancelled bool   `json:"cancelled,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
+// pickFolder opens the native folder dialog in this (tray) process: a browser
+// page cannot learn absolute paths. One dialog at a time.
+func (a *App) pickFolder(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Start string `json:"start"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, msg("error.bad_request", nil))
+		return
+	}
+	if a.PickFolder == nil {
+		writeError(w, http.StatusNotImplemented, msg("error.pick_unsupported", nil))
+		return
+	}
+	if !a.picking.CompareAndSwap(false, true) {
+		writeError(w, http.StatusConflict, msg("error.pick_busy", nil))
+		return
+	}
+	defer a.picking.Store(false)
+	path, err := a.PickFolder(strings.TrimSpace(req.Start), msg("settings.work_dir.pick_title", nil))
+	switch {
+	case err == nil:
+		writeJSON(w, pickResult{Path: path})
+	case errors.Is(err, ErrPickCancelled):
+		writeJSON(w, pickResult{Cancelled: true, Message: msg("settings.work_dir.cancelled", nil)})
+	case errors.Is(err, ErrPickUnsupported):
+		writeError(w, http.StatusNotImplemented, msg("error.pick_unsupported", nil))
+	default:
+		a.log.Error("pick folder", "err", err)
+		writeError(w, http.StatusInternalServerError, msg("error.pick", nil))
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

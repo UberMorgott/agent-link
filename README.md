@@ -34,7 +34,9 @@ VPN) joined to the same network.
 4. **Адрес собеседника**: the other person's ZeroTier IP, e.g. `10.147.20.9` (no port needed).
    The page shows your own address under this field ("Ваш адрес для собеседника") — tell it
    to the other person. One side having the other's address is enough to connect.
-5. **Кто отвечает** and **Рабочая папка** (see "Handler agent"), then **Сохранить**. The top
+5. **Кто отвечает** and **Рабочая папка** (see "Handler agent"): press **Выбрать…** next to the
+   folder field and pick the project folder in the Windows folder dialog (the tray app opens it,
+   since a browser page cannot see absolute paths; the field stays editable), then **Сохранить**. The top
    bar shows "связь есть: <name>" once both sides are saved; the other person's name comes
    from the connection.
 

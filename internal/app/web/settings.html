@@ -34,7 +34,11 @@
       </select>
     </label>
     <p class="hint" data-t="settings.handler.hint"></p>
-    <label><span data-t="settings.work_dir.label"></span><input name="work_dir" autocomplete="off"></label>
+    <label><span data-t="settings.work_dir.label"></span>
+      <span class="row"><input name="work_dir" id="work_dir" autocomplete="off" spellcheck="false">
+      <button type="button" id="pick" data-t="settings.work_dir.pick"></button></span>
+    </label>
+    <p class="path" id="work_dir_shown"></p>
     <p class="hint" data-t="settings.work_dir.hint"></p>
   </fieldset>
   <details id="advanced">
