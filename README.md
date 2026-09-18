@@ -59,19 +59,40 @@ Autostart is the `agentlink` value under `HKCU\Software\Microsoft\Windows\Curren
 
 ### Handler agent
 
-The agent CLI has to be installed and logged in on the answering side:
+The agent has to be installed and logged in on the answering side, in any of the ways below.
+The Codex desktop app alone is enough: its own `codex.exe` runs `codex exec` and uses the
+app's login (`%USERPROFILE%\.codex`, or `CODEX_HOME`), so no `npm` and no `codex login`.
 
-- Codex: `npm i -g @openai/codex` (needs Node.js), then `codex login` once.
-- Claude Code: its installer or `npm i -g @anthropic-ai/claude-code`, then run `claude` once to log in.
+The app looks for the agent in this order and runs `<program> --version` on each hit (it must
+answer and name the agent); the first one that does is used. Inside a versioned folder the
+newest version wins (by folder version, else by file time).
 
-**Программа агента** under **Кто отвечает** shows which program will run: found on `PATH`,
-chosen by you, or «не найдена». The tray started from Explorer or autostart often does not see
-a `PATH` entry an installer just added. On save, when the agent is not on `PATH`, the app
-looks in the installers' default places (`%APPDATA%\npm\codex.cmd`, `%APPDATA%\npm\claude.cmd`,
-`%USERPROFILE%\.local\bin\claude.exe`) and remembers a hit ("Найден: <path>"). Otherwise press
-**Указать…** and pick `codex.cmd` / `codex.exe` / `claude.exe` in the Windows file dialog. The
-path is saved as `agent_path` in the config; it replaces only the program, the read-only
-arguments below stay the same.
+| Agent | Install | Program | Source |
+| --- | --- | --- | --- |
+| both | on `PATH` | `codex` / `claude` (a Store alias in `%LOCALAPPDATA%\Microsoft\WindowsApps` is skipped: it starts the desktop app) | — |
+| Codex | `CODEX_CLI_PATH` | the path in that variable | [openai/codex#40700](https://github.com/openai/codex/issues/40700) |
+| Codex | installer (`install.ps1`) | `%CODEX_INSTALL_DIR%\codex.exe`, `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe` | [install.ps1](https://chatgpt.com/codex/install.ps1) |
+| Codex | npm | `%APPDATA%\npm\codex.cmd` | [@openai/codex](https://www.npmjs.com/package/@openai/codex) |
+| Codex | winget `OpenAI.Codex` | `%LOCALAPPDATA%\Microsoft\WinGet\Links\codex.exe` | `winget show OpenAI.Codex` |
+| Codex | desktop app (Store) | `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe` — the app's copy; its `WindowsApps\...\app\resources\codex.exe` cannot be started by the user | seen on a real install, [openai/codex#40700](https://github.com/openai/codex/issues/40700) |
+| Codex | VS Code / Insiders / Cursor / Windsurf extension `openai.chatgpt` | `<editor>\extensions\openai.chatgpt-<ver>*\bin\windows-x86_64\codex.exe` | [openai/codex#43701](https://github.com/openai/codex/issues/43701) |
+| Claude | native installer | `%USERPROFILE%\.local\bin\claude.exe` | [setup docs](https://code.claude.com/docs/en/setup) |
+| Claude | npm | `%APPDATA%\npm\claude.cmd` | [setup docs](https://code.claude.com/docs/en/setup) |
+| Claude | winget `Anthropic.ClaudeCode` | `%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe` | `winget show Anthropic.ClaudeCode` |
+| Claude | Claude desktop app | `%APPDATA%\Claude\claude-code\<ver>\claude.exe` (the app's own `claude.exe` is not the CLI) | seen on a real install, [anthropics/claude-code#62690](https://github.com/anthropics/claude-code/issues/62690) |
+| Claude | VS Code / Insiders / Cursor / Windsurf extension | `<editor>\extensions\anthropic.claude-code-<ver>*\resources\native-binary\claude.exe` | seen on a real install |
+
+`<editor>` is `%USERPROFILE%\.vscode`, `.vscode-insiders`, `.cursor` or `.windsurf`.
+
+**Программа агента** under **Кто отвечает** shows which program will run and how it was
+installed («Найден: приложение Codex — <path>», «Найден: пакет npm — <path>»), «Найдена в
+PATH», a path you chose, or «не найдена». The tray started from Explorer or autostart often does
+not see a `PATH` entry an installer just added. The search runs on save (when no program is set
+or the set one is gone), on **Найти заново**, and when a job finds the saved program gone (an
+app update moved its versioned folder): the job then runs the new one and the new path is saved.
+**Указать…** picks any other `codex.cmd` / `codex.exe` / `claude.exe` in the Windows file
+dialog. The path is saved as `agent_path` in the config; it replaces only the program, the
+read-only arguments below stay the same.
 
 When a request arrives (a message that is not a reply) and the handler is not "None", the app
 runs the agent in the working folder with the message as the prompt, one request at a time,

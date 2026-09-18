@@ -16,13 +16,15 @@ tray icon, a browser settings page, an inbox page and an optional read-only hand
 - ZeroTier (or another VPN) joined to the same network on both machines, and each side's own
   ZeroTier IP known.
 - Go 1.27+ — only to build from source or run the tests. A release binary needs no Go.
-- Claude Code or Codex CLI, logged in — only if this side answers requests automatically. With
-  the handler set to «Никто, отвечаю сам» neither is needed. Codex: `npm i -g @openai/codex`
-  (needs Node.js), then `codex login`. Claude Code: its installer or
-  `npm i -g @anthropic-ai/claude-code`, then `claude` once to log in. It need not be on the
-  tray's `PATH`: on save the app checks `%APPDATA%\npm\codex.cmd`, `%APPDATA%\npm\claude.cmd`
-  and `%USERPROFILE%\.local\bin\claude.exe`, and **Программа агента → Указать…** picks any
-  other location (stored as `agent_path` in the config).
+- Claude Code or Codex, logged in — only if this side answers requests automatically. With
+  the handler set to «Никто, отвечаю сам» neither is needed. Any install works and need not be
+  on the tray's `PATH`: Codex desktop app (its `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe`
+  shares the app's login), Codex installer / npm / winget / `CODEX_CLI_PATH`, Claude Code native
+  installer / npm / winget, Claude desktop app (`%APPDATA%\Claude\claude-code\<ver>\claude.exe`),
+  or a VS Code / Cursor / Windsurf extension's bundled binary. The location table and its sources
+  are in README "Handler agent" and `internal/settings/agent.go` (`locations`); every hit is
+  checked with `--version`. **Программа агента → Найти заново / Указать…** re-runs the search
+  or picks any other program (stored as `agent_path` in the config).
 
 ## Install
 
@@ -97,7 +99,7 @@ Run from the repository root; all must pass before a commit.
 ```powershell
 go test -race ./...
 pwsh -File scripts/e2e-local.ps1     # two CLI nodes on loopback: send, reply, stop
-pwsh -File scripts/e2e-worker.ps1    # two headless tray apps + fake agent; -RealClaude / -RealCodex
+pwsh -File scripts/e2e-worker.ps1    # two headless tray apps + fake agent; -RealClaude / -RealCodex [-AgentPath]
 pwsh -File scripts/e2e-tray.ps1      # both people on one machine through the web UI; restarts, retries
 qgate                                # quality gate; qgate -All when deps or build config changed
 ```
