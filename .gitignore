@@ -9,3 +9,4 @@ bin/
 # Machine-local configs (examples/ holds the tracked templates)
 *.local.json
 /agentlink.json
+/dist/

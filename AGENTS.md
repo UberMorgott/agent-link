@@ -110,6 +110,9 @@ qgate                                # quality gate; qgate -All when deps or bui
   encrypted end to end by agent-link.
 - Do not commit binaries (`bin/`, `*.exe`) or node data (`.data/`); release assets are built and
   attached, not tracked.
+- Release binaries are always stripped and UPX-packed: build them only with
+  `pwsh -File scripts/release.ps1 -Version <x.y.z> [-Publish]` (`-trimpath -ldflags "-s -w"`,
+  `upx --best --lzma`, `upx -t`), never attach a plain `go build` output.
 - `reference/` is an untracked third-party checkout (see README). Read it, never edit it, never
   add it back to git.
 - Conventional commits with explicit paths.
