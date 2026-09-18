@@ -27,7 +27,7 @@ $data = Join-Path $root '.data/e2e-tray'
 function Get-RealState {
     $dir = Join-Path $env:APPDATA 'agentlink'
     $files = if (Test-Path $dir) {
-        Get-ChildItem -Recurse -Force $dir | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }
+        Get-ChildItem -Recurse -Force $dir | ForEach-Object { "$($_.FullName)|$($_.PSIsContainer ? 'dir' : $_.Length)|$($_.LastWriteTimeUtc.Ticks)" }
     } else { 'absent' }
     $run = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name agentlink -ErrorAction SilentlyContinue)?.agentlink
     "$($files -join "`n")`nrun=$run"
