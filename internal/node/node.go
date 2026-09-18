@@ -154,6 +154,13 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		beaconPort: cfg.DiscoveryPort, beaconGroup: net.ParseIP(BeaconGroup).To4(),
 		beaconEvery: BeaconEvery, beaconIfaces: beaconInterfaces,
 	}
+	seen, err := st.loadPAKESeen()
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range seen {
+		n.pakeSeen[name] = true
+	}
 	if n.beaconPort == 0 {
 		n.beaconPort = BeaconPort
 	}

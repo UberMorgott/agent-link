@@ -19,6 +19,7 @@ import (
 //	sent/<peer>/<id>.json    ACKed by the peer
 //	areas.json               last areas each peer announced
 //	members.json             the membership table, tombstones included
+//	pake_seen.json           peer names that authenticated with the PAKE
 //	node_id                  this node's random id
 type store struct {
 	dir string
@@ -256,6 +257,20 @@ func (s *store) loadMembers() ([]Member, error) {
 
 func (s *store) saveMembers(ms []Member) error {
 	return writeJSON(filepath.Join(s.dir, "members.json"), ms)
+}
+
+// loadPAKESeen returns the peer names that have had a PAKE session here.
+func (s *store) loadPAKESeen() ([]string, error) {
+	var names []string
+	err := readJSON(filepath.Join(s.dir, "pake_seen.json"), &names)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return names, err
+}
+
+func (s *store) savePAKESeen(names []string) error {
+	return writeJSON(filepath.Join(s.dir, "pake_seen.json"), names)
 }
 
 func (s *store) inboxPath(id string) string { return filepath.Join(s.dir, "inbox", id+".json") }

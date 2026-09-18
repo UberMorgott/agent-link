@@ -245,3 +245,25 @@ func TestRecordCounterExhausted(t *testing.T) {
 		t.Fatalf("oversized record: %v", err)
 	}
 }
+
+// The names that ran the PAKE survive a restart: the legacy handshake stays
+// refused for them.
+func TestPAKESeenSurvivesRestart(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	eventually(t, "a<->b connected", func() bool { return a.Connected("b") && b.Connected("a") })
+	b.stop()
+	a.stop()
+	cfg := a.cfg
+	cfg.Peers = nil
+	n, err := New(cfg, []byte(testSecret), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loopback := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}
+	if err := n.legacyAllowed(loopback, "b"); !errors.Is(err, ErrLegacyRefused) {
+		t.Fatalf("legacy handshake as b after restart: %v", err)
+	}
+	if err := n.legacyAllowed(loopback, "old"); err != nil {
+		t.Fatalf("legacy handshake as another name: %v", err)
+	}
+}

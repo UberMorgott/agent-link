@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"maps"
 	"net"
 	"slices"
 	"sync"
@@ -122,7 +123,8 @@ func (n *Node) register(pc *peerConn) bool {
 	}
 	n.conns[pc.peer] = pc
 	n.known[pc.peer] = true
-	if pc.pake {
+	firstPAKE := pc.pake && !n.pakeSeen[pc.peer]
+	if firstPAKE {
 		n.pakeSeen[pc.peer] = true
 	}
 	n.problem = nil
@@ -138,9 +140,25 @@ func (n *Node) register(pc *peerConn) bool {
 	if err := n.store.saveAreas(areas); err != nil {
 		n.log.Warn("save areas", "err", err)
 	}
+	if firstPAKE {
+		n.savePAKESeen()
+	}
 	n.log.Info("peer connected", "peer", pc.peer, "dialer", pc.dialer, "areas", pc.areas,
 		"proto", pc.proto, "caps", pc.caps, "app", pc.app, "pake", pc.pake)
 	return true
+}
+
+// savePAKESeen writes the names that have had a PAKE session, so a restart
+// cannot be used to force the legacy handshake on them.
+func (n *Node) savePAKESeen() {
+	n.saveMu.Lock()
+	defer n.saveMu.Unlock()
+	n.mu.Lock()
+	names := slices.Sorted(maps.Keys(n.pakeSeen))
+	n.mu.Unlock()
+	if err := n.store.savePAKESeen(names); err != nil {
+		n.log.Warn("save pake-seen names", "err", err)
+	}
 }
 
 func (n *Node) unregister(pc *peerConn) {
