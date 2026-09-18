@@ -37,6 +37,9 @@ type Settings struct {
 	API      string   `json:"api,omitempty"`    // empty: DefaultAPI; applies on the next start
 	Areas    []string `json:"areas,omitempty"`
 	PeerName string   `json:"peer_name,omitempty"` // empty: learned from the handshake
+	// MaxJobs is how many requests the agent answers at once, 1..worker.MaxMaxJobs;
+	// 0 means worker.DefaultMaxJobs.
+	MaxJobs int `json:"max_jobs,omitempty"`
 
 	// Secret is the long shared secret of configs written before pairing
 	// codes; used only while Code is empty. Never sent to the page.
@@ -209,10 +212,11 @@ func (s Settings) Command() (worker.Command, bool) {
 	if s.Handler == worker.HandlerNone || s.Handler == "" {
 		return worker.Command{}, false
 	}
-	if len(s.HandlerCommand) > 0 {
-		return worker.Command{Name: s.HandlerCommand[0], Args: s.HandlerCommand[1:]}, true
-	}
 	c, ok := worker.ForHandler(s.Handler)
+	if len(s.HandlerCommand) > 0 {
+		// A stand-in for the handler's CLI: same output format, no preamble.
+		return worker.Command{Name: s.HandlerCommand[0], Args: s.HandlerCommand[1:], Format: c.Format}, true
+	}
 	if ok && s.AgentPath != "" {
 		c.Name = s.AgentPath
 	}
@@ -267,6 +271,9 @@ func (s Settings) Validate() error {
 	}
 	if s.API != "" && !config.IsLoopbackAddr(s.API) {
 		return problem("api")
+	}
+	if s.MaxJobs < 0 || s.MaxJobs > worker.MaxMaxJobs {
+		return problem("max_jobs")
 	}
 	for _, a := range s.Areas {
 		if !config.ValidName(a) {

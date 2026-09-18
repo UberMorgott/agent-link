@@ -69,6 +69,18 @@ function render(items) {
       none.className = "hint";
       none.textContent = t("inbox.no_answer");
       li.append(none);
+      if (th.activity) {
+        const now = document.createElement("p");
+        now.className = "activity";
+        now.textContent = fmt("inbox.activity", { activity: th.activity });
+        li.append(now);
+      }
+      if (th.no_news_min) {
+        const silent = document.createElement("p");
+        silent.className = "warn";
+        silent.textContent = fmt("inbox.no_news", { min: String(th.no_news_min) });
+        li.append(silent);
+      }
     }
     if (th.replyable) {
       const btn = document.createElement("button");

@@ -22,7 +22,8 @@ async function load() {
   agentPath.value = s.agent_path || "";
   showAgent();
   form.elements.autostart.checked = !!s.autostart;
-  if (s.listen || s.api || s.peer_name || (s.areas || []).length) document.getElementById("advanced").open = true;
+  form.elements.max_jobs.value = s.max_jobs ? String(s.max_jobs) : "";
+  if (s.listen || s.api || s.peer_name || s.max_jobs || (s.areas || []).length) document.getElementById("advanced").open = true;
   showWorkDir("settings.work_dir.current");
 }
 
@@ -157,6 +158,9 @@ form.addEventListener("submit", async (ev) => {
     api: f.api.value.trim(),
     areas: f.areas.value.split(",").map((a) => a.trim()).filter(Boolean),
     peer_name: f.peer_name.value.trim(),
+    // Empty is the default; anything that is not a whole number is sent as -1
+    // so the server names the field instead of silently using the default.
+    max_jobs: f.max_jobs.value.trim() === "" ? 0 : (/^\d+$/.test(f.max_jobs.value.trim()) ? Number(f.max_jobs.value.trim()) : -1),
     autostart: f.autostart.checked,
   };
   result.textContent = t("settings.saving");

@@ -76,6 +76,8 @@ func TestSaveRejectsInvalid(t *testing.T) {
 		"missing folder": func(s *Settings) { s.WorkDir = filepath.Join(s.WorkDir, "absent") },
 		"bad handler":    func(s *Settings) { s.Handler = "vim" },
 		"public api":     func(s *Settings) { s.API = "0.0.0.0:7520" },
+		"max jobs high":  func(s *Settings) { s.MaxJobs = 5 },
+		"max jobs neg":   func(s *Settings) { s.MaxJobs = -1 },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

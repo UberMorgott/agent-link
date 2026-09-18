@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
@@ -16,8 +17,8 @@ import (
 
 const e2eSecret = "test-secret-0123456789abcdef"
 
-// Two real nodes: the sender sees queued, running and a completed reply for
-// its request, its inbox entry carries the latest status and the answer, and
+// Two real nodes: the sender sees queued, running, the handler's activity and a
+// completed reply for its request, its inbox entry carries the latest status and the answer, and
 // wait returns only the final reply.
 func TestSenderObservesStatusSequence(t *testing.T) {
 	lnA, lnB := listenTCP(t), listenTCP(t)
@@ -25,7 +26,8 @@ func TestSenderObservesStatusSequence(t *testing.T) {
 	b := startNode(t, "b", lnB, "a", lnA)
 
 	release := make(chan struct{})
-	run := func(ctx context.Context, _, prompt string) (string, error) {
+	run := func(ctx context.Context, _, prompt string, progress func(string)) (string, error) {
+		progress("Read docs/index.md")
 		select {
 		case <-release:
 		case <-ctx.Done():
@@ -33,7 +35,7 @@ func TestSenderObservesStatusSequence(t *testing.T) {
 		}
 		return "answer to " + prompt, nil
 	}
-	w, err := New(run, b.n.SendMessage, t.TempDir(), t.TempDir(), 0, nil)
+	w, err := New(run, b.n.SendMessage, t.TempDir(), t.TempDir(), Options{ActivityEvery: 20 * time.Millisecond}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +48,7 @@ func TestSenderObservesStatusSequence(t *testing.T) {
 		defer mu.Unlock()
 		if !ids[m.ID] {
 			ids[m.ID] = true
-			statuses = append(statuses, m.Kind+":"+m.JobStatus)
+			statuses = append(statuses, m.Kind+":"+m.JobStatus+":"+m.Activity)
 		}
 		return nil
 	})
@@ -70,7 +72,10 @@ func TestSenderObservesStatusSequence(t *testing.T) {
 		}
 		return node.Entry{}
 	}
-	eventually(t, "running shown to the sender", func() bool { return entry().JobStatus == node.JobRunning })
+	eventually(t, "activity shown to the sender", func() bool {
+		e := entry()
+		return e.JobStatus == node.JobRunning && e.Activity == "Read docs/index.md"
+	})
 	close(release)
 
 	resp, err := http.Get(a.api.URL + "/wait?timeout=20s")
@@ -88,7 +93,7 @@ func TestSenderObservesStatusSequence(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if want := []string{"status:queued", "status:running", ":completed"}; !slices.Equal(statuses, want) {
+	if want := []string{"status:queued:", "status:running:", "status:running:Read docs/index.md", ":completed:"}; !slices.Equal(statuses, want) {
 		t.Fatalf("sender saw %v, want %v", statuses, want)
 	}
 }

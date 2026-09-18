@@ -23,7 +23,7 @@ func TestRunnerRunsCmdShim(t *testing.T) {
 	}
 	marker := filepath.Join(t.TempDir(), "pwned")
 	prompt := "question & echo x > " + marker + " | %PATH% \"quoted\" ^caret"
-	out, err := Command{Name: shim, Args: []string{"exec", "--sandbox"}}.Runner()(context.Background(), t.TempDir(), prompt)
+	out, err := Command{Name: shim, Args: []string{"exec", "--sandbox"}}.Runner()(context.Background(), t.TempDir(), prompt, nil)
 	if err != nil {
 		t.Fatalf("run %s: %v", shim, err)
 	}

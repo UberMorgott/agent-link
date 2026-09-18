@@ -125,7 +125,7 @@ func TestJobRediscoversMovedAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd, _ := s.Command()
-	_, err := h.app.agentRunner(cmd, "codex", true)(t.Context(), s.WorkDir, "q")
+	_, err := h.app.agentRunner(cmd, "codex", true)(t.Context(), s.WorkDir, "q", nil)
 	if err == nil || !strings.Contains(err.Error(), moved) {
 		t.Fatalf("run: %v, want the rediscovered %s", err, moved)
 	}

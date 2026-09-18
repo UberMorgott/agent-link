@@ -262,6 +262,23 @@ func TestThreadsKeepTheNewestAnswerAndOrder(t *testing.T) {
 	}
 }
 
+// A running question shows the peer agent's activity and the silence mark;
+// an answered one shows neither.
+func TestThreadsCarryActivityAndSilence(t *testing.T) {
+	running, answered := strings.Repeat("a", 32), strings.Repeat("b", 32)
+	live := func(e *node.Entry) { e.Activity, e.NoNewsMin = "Read docs/index.md", 7 }
+	got := threads([]node.Entry{
+		entry("out", running, "morgott", "nikita", "вопрос", at(100), job(node.JobRunning), live),
+		entry("out", answered, "morgott", "nikita", "другой", at(50), job(node.JobCompleted), live, func(e *node.Entry) { e.Answer = "ok" }),
+	})
+	if got[0].Activity != "Read docs/index.md" || got[0].NoNewsMin != 7 {
+		t.Fatalf("running thread: %+v", got[0])
+	}
+	if got[1].Activity != "" || got[1].NoNewsMin != 0 {
+		t.Fatalf("answered thread: %+v", got[1])
+	}
+}
+
 func TestThreadsEndpointServesPairs(t *testing.T) {
 	h := newHarness(t)
 	if code, body := h.do(t, http.MethodGet, "/ui/api/threads", "", h.tokenHdr()); code != http.StatusOK || strings.TrimSpace(body) != "[]" {

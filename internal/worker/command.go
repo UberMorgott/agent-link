@@ -22,6 +22,8 @@ type Command struct {
 	Args []string
 	// Preamble, when set, is written to stdin before the request body.
 	Preamble string
+	// Format is how stdout is parsed: FormatText, FormatClaude or FormatCodex.
+	Format string
 }
 
 // ReplyStyle frames a request for the built-in agents: agent-to-agent traffic
@@ -34,8 +36,6 @@ Reply rules:
 Request:
 `
 
-// Claude runs Claude Code headless with read-only built-in tools only: no
-
 // Handler names accepted in settings.
 const (
 	HandlerNone   = "none"
@@ -46,28 +46,33 @@ const (
 // Claude runs Claude Code headless with read-only built-in tools only: no
 // shell, no edits, no web, no MCP servers, and every other permission denied.
 // dontAsk already denies anything not pre-approved without prompting, so the
-// newer --permission-prompts flag is left out: older CLIs reject it.
+// newer --permission-prompts flag is left out: older CLIs reject it. It
+// streams one JSON event per line (stream-json requires --verbose with -p):
+// tool calls become activity, the result event is the answer.
 var Claude = Command{Name: "claude", Args: []string{
 	"-p",
-	"--output-format", "text",
+	"--output-format", "stream-json",
+	"--verbose",
 	"--tools", "Read,Grep,Glob",
 	"--allowedTools", "Read,Grep,Glob",
 	"--permission-mode", "dontAsk",
 	"--strict-mcp-config",
 	"--no-session-persistence",
-}, Preamble: ReplyStyle}
+}, Preamble: ReplyStyle, Format: FormatClaude}
 
 // Codex runs Codex non-interactively in its read-only sandbox; "-" reads the
-// prompt from stdin.
+// prompt from stdin. --json streams its events (activity); the answer is the
+// last message file.
 var Codex = Command{Name: "codex", Args: []string{
 	"exec",
+	"--json",
 	"--sandbox", "read-only",
 	"--skip-git-repo-check",
 	"--ephemeral",
 	"--color", "never",
 	"--output-last-message", OutputFileArg,
 	"-",
-}, Preamble: ReplyStyle}
+}, Preamble: ReplyStyle, Format: FormatCodex}
 
 // ForHandler returns the command for a handler name.
 func ForHandler(h string) (Command, bool) {
@@ -80,9 +85,10 @@ func ForHandler(h string) (Command, bool) {
 	return Command{}, false
 }
 
-// Runner returns a Runner that executes c.
+// Runner returns a Runner that executes c. Every stdout line is reported to
+// progress as it arrives, with the activity it describes (Format).
 func (c Command) Runner() Runner {
-	return func(ctx context.Context, dir, prompt string) (string, error) {
+	return func(ctx context.Context, dir, prompt string, progress func(activity string)) (string, error) {
 		args := append([]string(nil), c.Args...)
 		outFile := ""
 		for i, a := range args {
@@ -103,24 +109,33 @@ func (c Command) Runner() Runner {
 		cmd := exec.CommandContext(ctx, c.Name, args...)
 		cmd.Dir = filepath.Clean(dir)
 		cmd.Stdin = strings.NewReader(c.Preamble + prompt)
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		out := &stream{format: c.Format, dir: cmd.Dir, onLine: progress}
+		var stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = out, &stderr
 		cmd.WaitDelay = 5 * time.Second
 		prepare(cmd)
-		if err := cmd.Run(); err != nil {
+		err := cmd.Run()
+		out.flush()
+		if err != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
 			}
-			return "", fmt.Errorf("%s: %w: %s", c.Name, err, reason(stderr.String()))
+			why := reason(stderr.String())
+			if out.failure != "" {
+				why = out.failure
+			}
+			return "", fmt.Errorf("%s: %w: %s", c.Name, err, why)
 		}
 		if outFile != "" {
 			data, err := os.ReadFile(outFile)
 			if err != nil {
 				return "", err
 			}
-			return string(data), nil
+			if strings.TrimSpace(string(data)) != "" {
+				return string(data), nil
+			}
 		}
-		return stdout.String(), nil
+		return out.answer()
 	}
 }
 

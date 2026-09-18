@@ -24,6 +24,10 @@ type Thread struct {
 	AnswerAt  *time.Time `json:"answer_at,omitempty"`
 	Answered  bool       `json:"answered"`
 	Replyable bool       `json:"replyable"`
+	// Activity is what the peer's agent is doing on this question right now.
+	Activity string `json:"activity,omitempty"`
+	// NoNewsMin: minutes the peer has been silent about this unanswered question.
+	NoNewsMin int `json:"no_news_min,omitempty"`
 }
 
 // Status values that are not a job status; the job statuses come from node.
@@ -60,6 +64,7 @@ func threads(entries []node.Entry) []Thread {
 		if t := &out[i]; t.AnswerAt == nil || e.CreatedAt.After(*t.AnswerAt) {
 			at := e.CreatedAt
 			t.Answer, t.AnswerAt, t.Answered, t.Replyable = e.Body, &at, true, false
+			t.Activity, t.NoNewsMin = "", 0
 			t.Status = statusAnswered
 			if e.JobStatus != "" {
 				t.Status = e.JobStatus
@@ -83,6 +88,12 @@ func newThread(e node.Entry) Thread {
 	}
 	if e.JobStatus != "" {
 		t.Status = e.JobStatus
+	}
+	if e.Direction == "out" && e.Answer == "" {
+		t.NoNewsMin = e.NoNewsMin
+		if e.JobStatus == node.JobRunning {
+			t.Activity = e.Activity
+		}
 	}
 	// An outbound request whose reply the store already folded in.
 	if e.Answer != "" {

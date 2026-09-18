@@ -45,6 +45,17 @@ func TestMain(m *testing.M) {
 	case "fail":
 		_, _ = os.Stderr.WriteString("boom")
 		os.Exit(3)
+	case "stream-stall":
+		// Claude stream-json: one tool call, then silence.
+		_, _ = os.Stdout.WriteString(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"notes.md"}}]}}` + "\n")
+		time.Sleep(time.Minute)
+	case "stream-steady":
+		// Claude stream-json: an event every 50ms for 3s, then the result.
+		for i := range 60 {
+			_, _ = os.Stdout.WriteString(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{"pattern":"step` + strconv.Itoa(i) + `"}}]}}` + "\n")
+			time.Sleep(50 * time.Millisecond)
+		}
+		_, _ = os.Stdout.WriteString(`{"type":"result","is_error":false,"result":"steady done"}` + "\n")
 	}
 }
 
@@ -113,7 +124,7 @@ func (r *recorder) quiet(t *testing.T) {
 
 func newWorker(t *testing.T, run Runner, rec *recorder, state string, timeout time.Duration) *Worker {
 	t.Helper()
-	w, err := New(run, rec.send, state, t.TempDir(), timeout, nil)
+	w, err := New(run, rec.send, state, t.TempDir(), Options{Timeout: timeout}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +176,8 @@ func TestSuccessRepliesToRequest(t *testing.T) {
 	accept(t, w, msg(id1, "first"))
 	accept(t, w, msg(id2, "second"))
 	got := rec.wait(t, 2)
+	// Two slots: the replies may arrive in either order.
+	slices.SortFunc(got, func(a, b node.Message) int { return strings.Compare(a.Body, b.Body) })
 	want := []struct{ body, replyTo string }{{"echo: first", id1}, {"echo: second", id2}}
 	for i := range want {
 		if got[i].To != "peer" || got[i].Body != want[i].body || got[i].ReplyTo != want[i].replyTo || got[i].JobStatus != node.JobCompleted {
@@ -187,7 +200,7 @@ func TestOutputFileArg(t *testing.T) {
 func TestRepliesAndStatusUpdatesAreIgnored(t *testing.T) {
 	rec := newRecorder()
 	var runs atomic.Int32
-	run := func(context.Context, string, string) (string, error) { runs.Add(1); return "ok", nil }
+	run := func(context.Context, string, string, func(string)) (string, error) { runs.Add(1); return "ok", nil }
 	w := newWorker(t, run, rec, t.TempDir(), 0)
 	start(t, w)
 	reply := msg(id2, "an answer")
@@ -261,31 +274,196 @@ func TestFailure(t *testing.T) {
 	}
 }
 
-func TestSerial(t *testing.T) {
-	var mu sync.Mutex
-	running, maxRunning := 0, 0
-	run := func(ctx context.Context, _, prompt string) (string, error) {
-		mu.Lock()
-		running++
-		maxRunning = max(maxRunning, running)
-		mu.Unlock()
-		time.Sleep(50 * time.Millisecond)
-		mu.Lock()
-		running--
-		mu.Unlock()
+// MaxJobs slots run at once, never more; jobs start in arrival order.
+func TestSlots(t *testing.T) {
+	for _, slots := range []int{1, 2, 3} {
+		t.Run(strconv.Itoa(slots), func(t *testing.T) {
+			var mu sync.Mutex
+			running, maxRunning := 0, 0
+			var started []string
+			run := func(ctx context.Context, _, prompt string, _ func(string)) (string, error) {
+				mu.Lock()
+				running++
+				maxRunning = max(maxRunning, running)
+				started = append(started, prompt)
+				mu.Unlock()
+				time.Sleep(100 * time.Millisecond)
+				mu.Lock()
+				running--
+				mu.Unlock()
+				return prompt, nil
+			}
+			rec := newRecorder()
+			w, err := New(run, rec.send, t.TempDir(), t.TempDir(), Options{MaxJobs: slots}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids := []string{id1, id2, id3, "00000000000000000000000000000004", "00000000000000000000000000000005"}
+			for i, id := range ids {
+				accept(t, w, msg(id, strconv.Itoa(i)))
+			}
+			start(t, w)
+			rec.wait(t, len(ids))
+			mu.Lock()
+			defer mu.Unlock()
+			if maxRunning != slots {
+				t.Fatalf("max concurrent jobs = %d, want %d", maxRunning, slots)
+			}
+			// Claims happen in order under the lock; a slot may record its
+			// start a moment after the next slot, so compare within a window.
+			for i, p := range started {
+				if n, _ := strconv.Atoi(p); n < i-(slots-1) || n > i+(slots-1) {
+					t.Fatalf("start order %v", started)
+				}
+			}
+		})
+	}
+}
+
+// Requests arriving one by one while slots are busy still fill every free slot.
+func TestBurstFillsFreeSlots(t *testing.T) {
+	release := make(chan struct{})
+	var running atomic.Int32
+	run := func(ctx context.Context, _, prompt string, _ func(string)) (string, error) {
+		running.Add(1)
+		defer running.Add(-1)
+		<-release
 		return prompt, nil
 	}
 	rec := newRecorder()
-	w := newWorker(t, run, rec, t.TempDir(), 0)
-	start(t, w)
-	for _, id := range []string{id1, id2, id3} {
-		accept(t, w, msg(id, "p"))
+	w, err := New(run, rec.send, t.TempDir(), t.TempDir(), Options{MaxJobs: 2}, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	start(t, w)
+	accept(t, w, msg(id1, "a"))
+	accept(t, w, msg(id2, "b"))
+	accept(t, w, msg(id3, "c"))
+	eventually(t, "two jobs running", func() bool { return running.Load() == 2 })
+	time.Sleep(100 * time.Millisecond)
+	if n := running.Load(); n != 2 {
+		t.Fatalf("running = %d, want 2", n)
+	}
+	if j, _ := w.Job(id3); j.Status != node.JobQueued {
+		t.Fatalf("third job = %s, want queued", j.Status)
+	}
+	close(release)
 	rec.wait(t, 3)
-	mu.Lock()
-	defer mu.Unlock()
-	if maxRunning != 1 {
-		t.Fatalf("max concurrent jobs = %d, want 1", maxRunning)
+}
+
+// An agent that streams and then stalls is killed by the idle timeout, fails
+// with the idle reason, and does not hold its slot hostage: another job
+// finishes meanwhile.
+func TestIdleTimeoutKillsStalledAgent(t *testing.T) {
+	rec := newRecorder()
+	stall := fakeAgent(t, "stream-stall")
+	stall.Format = FormatClaude
+	run := func(ctx context.Context, dir, prompt string, progress func(string)) (string, error) {
+		if prompt == "quick" {
+			return "quick answer", nil
+		}
+		return stall.Runner()(ctx, dir, prompt, progress)
+	}
+	w, err := New(run, rec.send, t.TempDir(), t.TempDir(), Options{IdleTimeout: 700 * time.Millisecond, ActivityEvery: 50 * time.Millisecond}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start(t, w)
+	began := time.Now()
+	accept(t, w, msg(id1, "stall"))
+	accept(t, w, msg(id2, "quick"))
+	got := rec.wait(t, 2)
+	byID := map[string]node.Message{}
+	for _, m := range got {
+		byID[m.ReplyTo] = m
+	}
+	if m := byID[id2]; m.JobStatus != node.JobCompleted || m.Body != "quick answer" {
+		t.Fatalf("quick reply = %+v", m)
+	}
+	m := byID[id1]
+	if m.JobStatus != node.JobFailed || !strings.HasPrefix(m.Body, "agentlink: "+ErrIdle+" (нет активности 700ms)") {
+		t.Fatalf("stalled reply = %+v", m)
+	}
+	if d := time.Since(began); d > 15*time.Second {
+		t.Fatalf("idle failure took %s", d)
+	}
+	acts := rec.filter(func(m node.Message) bool { return m.ReplyTo == id1 && m.Activity != "" })
+	if len(acts) != 1 || acts[0].Activity != "Read notes.md" || acts[0].JobStatus != node.JobRunning || acts[0].Kind != node.KindStatus {
+		t.Fatalf("activity updates = %+v", acts)
+	}
+}
+
+// An agent that keeps streaming past the idle window is not idle; it finishes
+// under the hard timeout with its streamed answer.
+func TestSteadyStreamOutlivesIdleWindow(t *testing.T) {
+	rec := newRecorder()
+	steady := fakeAgent(t, "stream-steady")
+	steady.Format = FormatClaude
+	// The idle window must exceed the 1s a -race binary sleeps before it exits.
+	w, err := New(steady.Runner(), rec.send, t.TempDir(), t.TempDir(),
+		Options{IdleTimeout: 1500 * time.Millisecond, Timeout: 20 * time.Second, ActivityEvery: 200 * time.Millisecond}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start(t, w)
+	accept(t, w, msg(id1, "go"))
+	got := rec.wait(t, 1)[0]
+	if got.JobStatus != node.JobCompleted || got.Body != "steady done" {
+		t.Fatalf("reply = %+v", got)
+	}
+	acts := rec.filter(func(m node.Message) bool { return m.Activity != "" })
+	// 3s of changing activity (longer under -race), at most one update per 200ms.
+	if len(acts) < 5 || len(acts) > 25 {
+		t.Fatalf("%d activity updates, want 5..25", len(acts))
+	}
+	seen := map[string]bool{}
+	for _, m := range acts {
+		if !strings.HasPrefix(m.Activity, "Grep 'step") || seen[m.ID] {
+			t.Fatalf("activity update %+v", m)
+		}
+		seen[m.ID] = true
+	}
+}
+
+// Activity is sent only when it changed, except for a refresh of an
+// unchanged one after ActivityRefresh; never after the final reply.
+func TestActivityRelayThrottle(t *testing.T) {
+	rec := newRecorder()
+	release := make(chan struct{})
+	run := func(ctx context.Context, _, _ string, progress func(string)) (string, error) {
+		progress("Read a.md")
+		time.Sleep(150 * time.Millisecond)
+		for range 20 {
+			progress("")
+			progress("Read a.md")
+		}
+		<-release
+		return "done", nil
+	}
+	w, err := New(run, rec.send, t.TempDir(), t.TempDir(),
+		Options{ActivityEvery: 30 * time.Millisecond, ActivityRefresh: 400 * time.Millisecond}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start(t, w)
+	accept(t, w, msg(id1, "x"))
+	count := func() int { return len(rec.filter(func(m node.Message) bool { return m.Activity != "" })) }
+	eventually(t, "first activity", func() bool { return count() == 1 })
+	time.Sleep(200 * time.Millisecond)
+	if n := count(); n != 1 {
+		t.Fatalf("unchanged activity sent %d times before the refresh", n)
+	}
+	eventually(t, "refresh", func() bool { return count() == 2 })
+	close(release)
+	rec.wait(t, 1)
+	n := count()
+	time.Sleep(100 * time.Millisecond)
+	if count() != n {
+		t.Fatal("activity sent after the final reply")
+	}
+	all := rec.filter(func(node.Message) bool { return true })
+	if last := all[len(all)-1]; last.Kind != "" || last.JobStatus != node.JobCompleted {
+		t.Fatalf("last message %+v, want the final reply", last)
 	}
 }
 
@@ -295,7 +473,7 @@ func TestDuplicateRequestRunsOnce(t *testing.T) {
 	rec := newRecorder()
 	state := t.TempDir()
 	var runs atomic.Int32
-	run := func(context.Context, string, string) (string, error) { runs.Add(1); return "done", nil }
+	run := func(context.Context, string, string, func(string)) (string, error) { runs.Add(1); return "done", nil }
 	w := newWorker(t, run, rec, state, 0)
 	accept(t, w, msg(id1, "x"))
 	accept(t, w, msg(id1, "x"))
@@ -321,13 +499,16 @@ func TestDuplicateRequestRunsOnce(t *testing.T) {
 func TestCrashBeforeRunResumes(t *testing.T) {
 	rec := newRecorder()
 	state := t.TempDir()
-	run := func(_ context.Context, _, prompt string) (string, error) { return "did " + prompt, nil }
+	run := func(_ context.Context, _, prompt string, _ func(string)) (string, error) { return "did " + prompt, nil }
 	w := newWorker(t, run, rec, state, 0)
 	for i, id := range []string{id2, id1, id3} {
 		accept(t, w, msg(id, strconv.Itoa(i)))
 	}
-	// w never runs: the process died.
-	w2 := newWorker(t, run, rec, state, 0)
+	// w never runs: the process died. One slot, so replies follow start order.
+	w2, err := New(run, rec.send, state, t.TempDir(), Options{MaxJobs: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	start(t, w2)
 	got := rec.wait(t, 3)
 	for i, id := range []string{id2, id1, id3} {
@@ -343,7 +524,7 @@ func TestInterruptRetriesOnceThenFails(t *testing.T) {
 	rec := newRecorder()
 	state := t.TempDir()
 	var runs atomic.Int32
-	run := func(ctx context.Context, _, _ string) (string, error) {
+	run := func(ctx context.Context, _, _ string, _ func(string)) (string, error) {
 		runs.Add(1)
 		<-ctx.Done()
 		return "", ctx.Err()
@@ -402,7 +583,7 @@ func TestUnsentReplyIsResent(t *testing.T) {
 		t.Fatal(err)
 	}
 	var runs atomic.Int32
-	run := func(context.Context, string, string) (string, error) { runs.Add(1); return "again", nil }
+	run := func(context.Context, string, string, func(string)) (string, error) { runs.Add(1); return "again", nil }
 	w2 := newWorker(t, run, rec, state, 0)
 	start(t, w2)
 	got := rec.wait(t, 1)[0]

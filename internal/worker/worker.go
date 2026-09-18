@@ -1,13 +1,15 @@
 // Package worker answers inbound requests by running a local coding agent
-// headless and read-only, one job at a time, and sending its final text back
-// as a reply.
+// headless and read-only, up to MaxJobs at a time, and sending its final text
+// back as a reply.
 //
 // The job queue is durable: every request is recorded in <state dir>/jobs
 // before the node ACKs it, and moves queued -> running -> completed | failed.
-// A job interrupted while running (quit, crash, settings save) runs once more
-// after restart; a second interruption fails it. Timeouts and agent errors fail
-// at once. The sender gets status updates (queued, running) and a final reply
-// that carries completed or failed.
+// Jobs start in arrival order; with several slots they may finish in any
+// order. A job interrupted while running (quit, crash, settings save) runs
+// once more after restart; a second interruption fails it. Timeouts (hard, or
+// idle: no output from the agent) and agent errors fail at once. The sender
+// gets status updates (queued, running, then running with the agent's current
+// activity, throttled) and a final reply that carries completed or failed.
 package worker
 
 import (
@@ -29,8 +31,22 @@ import (
 	"github.com/UberMorgott/agent-link/internal/node"
 )
 
-// DefaultTimeout bounds one agent run.
-const DefaultTimeout = 10 * time.Minute
+// Defaults of Options.
+const (
+	// DefaultTimeout bounds one agent run.
+	DefaultTimeout = 10 * time.Minute
+	// DefaultIdleTimeout fails a run whose agent printed nothing for this long.
+	DefaultIdleTimeout = 3 * time.Minute
+	// DefaultMaxJobs is how many agents run at once.
+	DefaultMaxJobs = 2
+	// MaxMaxJobs is the largest MaxJobs the settings accept.
+	MaxMaxJobs = 4
+	// DefaultActivityEvery is the least time between two activity updates.
+	DefaultActivityEvery = 3 * time.Second
+	// DefaultActivityRefresh re-sends an unchanged activity this often, so the
+	// sender keeps hearing about a job that is still running.
+	DefaultActivityRefresh = 2 * time.Minute
+)
 
 // MaxAttempts is how many times a job may start; only interruptions retry.
 const MaxAttempts = 2
@@ -39,13 +55,50 @@ const MaxAttempts = 2
 const (
 	ErrNoHandler   = "no handler configured"
 	ErrInterrupted = "handler was interrupted twice (the app quit, crashed or settings changed)"
+	// ErrIdle starts the failure of a run stopped by the idle timeout.
+	ErrIdle = "агент завис"
 )
 
-// Runner runs an agent in dir with prompt and returns its final text.
-type Runner func(ctx context.Context, dir, prompt string) (string, error)
+var (
+	errHardTimeout = errors.New("hard timeout")
+	errIdleTimeout = errors.New("idle timeout")
+)
+
+// Runner runs an agent in dir with prompt and returns its final text. It
+// calls progress (never concurrently) for everything the agent prints: with
+// the activity it describes, or "" when it only shows the agent is alive.
+type Runner func(ctx context.Context, dir, prompt string, progress func(activity string)) (string, error)
 
 // SendFunc queues a message; it matches node.Node.SendMessage.
 type SendFunc func(m node.Message) (node.Message, error)
+
+// Options tune a Worker; zero fields take the defaults.
+type Options struct {
+	Timeout         time.Duration
+	IdleTimeout     time.Duration
+	MaxJobs         int
+	ActivityEvery   time.Duration
+	ActivityRefresh time.Duration
+}
+
+func (o Options) withDefaults() Options {
+	if o.Timeout <= 0 {
+		o.Timeout = DefaultTimeout
+	}
+	if o.IdleTimeout <= 0 {
+		o.IdleTimeout = DefaultIdleTimeout
+	}
+	if o.MaxJobs <= 0 {
+		o.MaxJobs = DefaultMaxJobs
+	}
+	if o.ActivityEvery <= 0 {
+		o.ActivityEvery = DefaultActivityEvery
+	}
+	if o.ActivityRefresh <= 0 {
+		o.ActivityRefresh = DefaultActivityRefresh
+	}
+	return o
+}
 
 // Job is the durable state of one request.
 type Job struct {
@@ -63,13 +116,13 @@ type Job struct {
 
 func (j *Job) terminal() bool { return j.Status == node.JobCompleted || j.Status == node.JobFailed }
 
-// Worker is a durable serial job queue in front of a Runner.
+// Worker is a durable job queue in front of a Runner with MaxJobs slots.
 type Worker struct {
 	run     Runner // nil: no handler, pending jobs fail
 	send    SendFunc
 	dir     string // agent working folder
 	jobsDir string
-	timeout time.Duration
+	opt     Options
 	log     *slog.Logger
 	kick    chan struct{}
 
@@ -79,16 +132,13 @@ type Worker struct {
 }
 
 // New opens the job store in stateDir/jobs. run may be nil when no handler is
-// configured. log may be nil; timeout <= 0 means DefaultTimeout.
-func New(run Runner, send SendFunc, stateDir, dir string, timeout time.Duration, log *slog.Logger) (*Worker, error) {
-	if timeout <= 0 {
-		timeout = DefaultTimeout
-	}
+// configured. log may be nil.
+func New(run Runner, send SendFunc, stateDir, dir string, opt Options, log *slog.Logger) (*Worker, error) {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	w := &Worker{
-		run: run, send: send, dir: dir, jobsDir: filepath.Join(stateDir, "jobs"), timeout: timeout, log: log,
+		run: run, send: send, dir: dir, jobsDir: filepath.Join(stateDir, "jobs"), opt: opt.withDefaults(), log: log,
 		kick: make(chan struct{}, 1), jobs: map[string]*Job{},
 	}
 	if err := os.MkdirAll(w.jobsDir, 0o700); err != nil {
@@ -141,12 +191,18 @@ func (w *Worker) Accept(m node.Message) error {
 	w.jobs[m.ID] = j
 	w.mu.Unlock()
 	w.log.Info("job queued", "id", m.ID, "from", m.From)
-	w.status(m, node.JobQueued, "queued")
+	w.status(m, node.JobQueued, "queued", "")
+	w.wake()
+	return nil
+}
+
+// wake lets one idle slot look for a queued job. A slot that takes a job
+// wakes the next one, so a burst of requests fills every free slot.
+func (w *Worker) wake() {
 	select {
 	case w.kick <- struct{}{}:
 	default:
 	}
-	return nil
 }
 
 // Job returns a copy of the job for a request id.
@@ -160,10 +216,11 @@ func (w *Worker) Job(id string) (Job, bool) {
 	return *j, true
 }
 
-// Run recovers jobs left by a previous run, then processes queued jobs in
-// acceptance order until ctx is cancelled. A job running at cancellation is
-// left running on disk and retried by the next Run. Without a runner, Run
-// fails the pending jobs and returns.
+// Run recovers jobs left by a previous run, then runs queued jobs, starting
+// them in acceptance order on MaxJobs slots, until ctx is cancelled; it
+// returns when every slot has stopped. A job running at cancellation is left
+// running on disk and retried by the next Run. Without a runner, Run fails
+// the pending jobs and returns.
 func (w *Worker) Run(ctx context.Context) {
 	w.recover()
 	if w.run == nil {
@@ -172,17 +229,52 @@ func (w *Worker) Run(ctx context.Context) {
 		}
 		return
 	}
+	var slots sync.WaitGroup
+	for range w.opt.MaxJobs {
+		slots.Go(func() { w.slot(ctx) })
+	}
+	slots.Wait()
+}
+
+// slot runs jobs one after another until ctx is cancelled.
+func (w *Worker) slot(ctx context.Context) {
 	for ctx.Err() == nil {
-		j := w.next()
-		if j == nil {
+		j, err := w.claim()
+		switch {
+		case err != nil:
+			// Never run an attempt that is not on disk: it could repeat forever.
+			w.log.Error("save job", "err", err)
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+			}
+		case j == nil:
 			select {
 			case <-ctx.Done():
 			case <-w.kick:
 			}
-			continue
+		default:
+			w.wake()
+			w.handle(ctx, j)
 		}
-		w.handle(ctx, j)
 	}
+}
+
+// claim durably moves the oldest queued job to running and returns it, or nil
+// when nothing is queued.
+func (w *Worker) claim() (*Job, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	j := w.nextLocked()
+	if j == nil {
+		return nil, nil
+	}
+	j.Status, j.Attempts, j.StartedAt = node.JobRunning, j.Attempts+1, time.Now().UTC()
+	if err := w.save(j); err != nil {
+		j.Status, j.Attempts = node.JobQueued, j.Attempts-1
+		return nil, err
+	}
+	return j, nil
 }
 
 // recover requeues or fails jobs found running and re-sends missing final replies.
@@ -217,6 +309,10 @@ func (w *Worker) recover() {
 func (w *Worker) next() *Job {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.nextLocked()
+}
+
+func (w *Worker) nextLocked() *Job {
 	var best *Job
 	for _, j := range w.jobs {
 		if j.Status == node.JobQueued && (best == nil || j.Seq < best.Seq) {
@@ -226,46 +322,126 @@ func (w *Worker) next() *Job {
 	return best
 }
 
+// handle runs a claimed job. The run is cancelled (its process tree killed)
+// after Timeout, or after IdleTimeout without any output from the agent.
 func (w *Worker) handle(ctx context.Context, j *Job) {
 	m := j.Request
 	w.mu.Lock()
-	j.Status, j.Attempts, j.StartedAt = node.JobRunning, j.Attempts+1, time.Now().UTC()
-	err := w.save(j)
-	if err != nil {
-		j.Status, j.Attempts = node.JobQueued, j.Attempts-1
-	}
+	attempt := j.Attempts
 	w.mu.Unlock()
-	if err != nil {
-		// Never run an attempt that is not on disk: it could repeat forever.
-		w.log.Error("save job", "id", m.ID, "err", err)
-		select {
-		case <-ctx.Done():
-		case <-time.After(time.Second):
-		}
-		return
-	}
-	w.log.Info("handler started", "id", m.ID, "from", m.From, "attempt", j.Attempts)
-	w.status(m, node.JobRunning, "running-"+strconv.Itoa(j.Attempts))
+	w.log.Info("handler started", "id", m.ID, "from", m.From, "attempt", attempt)
+	w.status(m, node.JobRunning, "running-"+strconv.Itoa(attempt), "")
 
-	jobCtx, cancel := context.WithTimeout(ctx, w.timeout)
-	out, err := w.run(jobCtx, w.dir, m.Body)
-	jobErr := jobCtx.Err()
+	idleCtx, cancelIdle := context.WithCancelCause(ctx)
+	jobCtx, cancel := context.WithTimeoutCause(idleCtx, w.opt.Timeout, errHardTimeout)
+	idle := time.AfterFunc(w.opt.IdleTimeout, func() { cancelIdle(errIdleTimeout) })
+	relay := w.relay(m, attempt)
+	out, err := w.run(jobCtx, w.dir, m.Body, func(activity string) {
+		idle.Reset(w.opt.IdleTimeout)
+		relay.set(activity)
+	})
+	idle.Stop()
+	relay.stop()
+	cause := context.Cause(jobCtx)
 	cancel()
-	if ctx.Err() != nil && !errors.Is(jobErr, context.DeadlineExceeded) {
-		w.log.Info("handler interrupted, will retry on restart", "id", m.ID, "attempt", j.Attempts)
+	cancelIdle(nil)
+	body := strings.TrimSpace(out)
+	done := err == nil && body != "" // a timer that fired after the run ended does not count
+	if !done && ctx.Err() != nil && !errors.Is(cause, errHardTimeout) && !errors.Is(cause, errIdleTimeout) {
+		w.log.Info("handler interrupted, will retry on restart", "id", m.ID, "attempt", attempt)
 		return
 	}
-	body := strings.TrimSpace(out)
 	switch {
-	case errors.Is(jobErr, context.DeadlineExceeded):
-		w.finish(j, node.JobFailed, "", fmt.Sprintf("handler timed out after %s", w.timeout))
+	case done:
+		w.finish(j, node.JobCompleted, body, "")
+	case errors.Is(cause, errIdleTimeout):
+		w.finish(j, node.JobFailed, "", fmt.Sprintf("%s (нет активности %s)", ErrIdle, minutes(w.opt.IdleTimeout)))
+	case errors.Is(cause, errHardTimeout):
+		w.finish(j, node.JobFailed, "", fmt.Sprintf("handler timed out after %s", w.opt.Timeout))
 	case err != nil:
 		w.finish(j, node.JobFailed, "", fmt.Sprintf("handler failed: %v", err))
-	case body == "":
-		w.finish(j, node.JobFailed, "", "handler returned no text")
 	default:
-		w.finish(j, node.JobCompleted, body, "")
+		w.finish(j, node.JobFailed, "", "handler returned no text")
 	}
+}
+
+// minutes renders d as «3 мин» when it is whole minutes, else as a Go duration.
+func minutes(d time.Duration) string {
+	if d >= time.Minute && d%time.Minute == 0 {
+		return strconv.Itoa(int(d/time.Minute)) + " мин"
+	}
+	return d.String()
+}
+
+// relay forwards a running job's activity to the sender as status updates:
+// the first one at once, then at most one per ActivityEvery and only when the
+// activity changed, plus the unchanged one again after ActivityRefresh.
+type relay struct {
+	mu      sync.Mutex
+	current string
+	changed chan struct{}
+	quit    chan struct{}
+	done    chan struct{}
+}
+
+func (w *Worker) relay(m node.Message, attempt int) *relay {
+	r := &relay{changed: make(chan struct{}, 1), quit: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(r.done)
+		refresh := time.NewTimer(w.opt.ActivityRefresh)
+		defer refresh.Stop()
+		sent, n := "", 0
+		var sentAt time.Time
+		for {
+			select {
+			case <-r.quit:
+				return
+			case <-r.changed:
+			case <-refresh.C:
+			}
+			if wait := w.opt.ActivityEvery - time.Since(sentAt); wait > 0 {
+				select {
+				case <-r.quit:
+					return
+				case <-time.After(wait):
+				}
+			}
+			r.mu.Lock()
+			cur := r.current
+			r.mu.Unlock()
+			if cur == "" || (cur == sent && time.Since(sentAt) < w.opt.ActivityRefresh) {
+				continue
+			}
+			n++
+			w.status(m, node.JobRunning, "activity-"+strconv.Itoa(attempt)+"-"+strconv.Itoa(n), cur)
+			sent, sentAt = cur, time.Now()
+			refresh.Reset(w.opt.ActivityRefresh)
+		}
+	}()
+	return r
+}
+
+// set records the latest activity; "" keeps the previous one.
+func (r *relay) set(activity string) {
+	if activity == "" {
+		return
+	}
+	r.mu.Lock()
+	changed := activity != r.current
+	r.current = activity
+	r.mu.Unlock()
+	if changed {
+		select {
+		case r.changed <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// stop ends the relay; no update is sent after it returns.
+func (r *relay) stop() {
+	close(r.quit)
+	<-r.done
 }
 
 // finish records the outcome durably, then sends the final reply.
@@ -305,9 +481,10 @@ func (w *Worker) reply(j *Job) {
 	w.mu.Unlock()
 }
 
-func (w *Worker) status(m node.Message, status, label string) {
+func (w *Worker) status(m node.Message, status, label, activity string) {
 	_, err := w.send(node.Message{
 		ID: node.DerivedID(m.ID, label), To: m.From, ReplyTo: m.ID, Kind: node.KindStatus, JobStatus: status,
+		Activity: activity,
 	})
 	if err != nil {
 		w.log.Warn("send status", "id", m.ID, "status", status, "err", err)

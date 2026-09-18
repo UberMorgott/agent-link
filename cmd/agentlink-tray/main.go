@@ -47,6 +47,7 @@ func run() error {
 	cfgPath := flag.String("config", defPath, "settings file; its folder also holds data and the log")
 	apiAddr := flag.String("api", "", "loopback address of the web UI and control API (default from settings, else "+settings.DefaultAPI+")")
 	noTray := flag.Bool("no-tray", false, "run without the tray icon until interrupted or quit via the API (scripts and tests)")
+	idle := flag.Duration("handler-idle-timeout", 0, "fail an agent run that printed nothing this long (default 3m; scripts and tests)")
 	flag.Parse()
 
 	logw, err := openLog(filepath.Join(filepath.Dir(*cfgPath), "agentlink.log"))
@@ -60,6 +61,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	a.Worker.IdleTimeout = *idle
 	if *apiAddr != "" {
 		if err := a.SetAPIAddr(*apiAddr); err != nil {
 			return err

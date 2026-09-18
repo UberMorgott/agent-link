@@ -11,7 +11,6 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
@@ -27,8 +26,9 @@ type App struct {
 
 	// SetAutostart applies the autostart choice on save; replaceable in tests.
 	SetAutostart func(enable bool) error
-	// HandlerTimeout bounds one agent run.
-	HandlerTimeout time.Duration
+	// Worker tunes the job queue (timeouts, activity pacing); MaxJobs comes
+	// from the settings.
+	Worker worker.Options
 	// QuitFunc ends the program; Quit calls it. Nil makes quitting unavailable.
 	QuitFunc func()
 	// Ifaces lists network interfaces for ZeroTier detection; replaceable in tests.
@@ -85,8 +85,8 @@ func New(path string, log *slog.Logger) (*App, error) {
 	}
 	return &App{
 		path: path, token: newToken(), log: log, s: s, configured: ok,
-		SetAutostart: setAutostart, HandlerTimeout: worker.DefaultTimeout,
-		Ifaces: settings.SystemIfaces, PickFolder: pickFolder, PickFile: pickFile,
+		SetAutostart: setAutostart,
+		Ifaces:       settings.SystemIfaces, PickFolder: pickFolder, PickFile: pickFile,
 		Agents: settings.SystemFinder, zeroTier: true,
 	}, nil
 }
@@ -244,7 +244,7 @@ func (a *App) agentRunner(cmd worker.Command, handler string, fromSetting bool) 
 	}
 	var mu sync.Mutex
 	cur := cmd
-	return func(ctx context.Context, dir, prompt string) (string, error) {
+	return func(ctx context.Context, dir, prompt string, progress func(string)) (string, error) {
 		mu.Lock()
 		if !a.agentPresent(cur.Name) {
 			if f, ok := a.Agents.Discover(handler); ok {
@@ -259,7 +259,7 @@ func (a *App) agentRunner(cmd worker.Command, handler string, fromSetting bool) 
 		}
 		c := cur
 		mu.Unlock()
-		return c.Runner()(ctx, dir, prompt)
+		return c.Runner()(ctx, dir, prompt, progress)
 	}
 }
 
@@ -313,7 +313,9 @@ func (a *App) startNode() error {
 	if hasHandler {
 		run = a.agentRunner(cmd, a.s.Handler, a.s.AgentPath != "" && len(a.s.HandlerCommand) == 0)
 	}
-	w, err := worker.New(run, n.SendMessage, cfg.DataDir, a.s.WorkDir, a.HandlerTimeout, a.log)
+	opt := a.Worker
+	opt.MaxJobs = a.s.MaxJobs
+	w, err := worker.New(run, n.SendMessage, cfg.DataDir, a.s.WorkDir, opt, a.log)
 	if err != nil {
 		return err
 	}

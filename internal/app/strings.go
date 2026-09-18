@@ -97,6 +97,8 @@ var uiStrings = map[string]string{
 	"settings.areas.hint":          "Через запятую: dev, design. Тогда сообщение можно послать на area:dev.",
 	"settings.peer_name.label":     "Имя собеседника",
 	"settings.peer_name.hint":      "Пусто — имя берётся из соединения; если заполнено, чужое имя не примется.",
+	"settings.max_jobs.label":      "Сколько вопросов агент решает сразу",
+	"settings.max_jobs.hint":       "От 1 до 4; пусто — 2. Остальные вопросы ждут в очереди и начинаются по порядку прихода.",
 	"settings.autostart.label":     "Запускать agentlink при входе в Windows",
 	"settings.save":                "Сохранить",
 	"settings.saving":              "Сохраняю…",
@@ -115,6 +117,7 @@ var uiStrings = map[string]string{
 	"error.api":                    "«Адрес этой страницы» в «Дополнительно» должен быть вида 127.0.0.1:7520 или пустым.",
 	"error.areas":                  "Общие темы в «Дополнительно» — слова из букв и цифр через запятую, например dev, design.",
 	"error.peer_name":              "«Имя собеседника» в «Дополнительно» — буквы, цифры, «-» или «_»; можно оставить пустым.",
+	"error.max_jobs":               "«Сколько вопросов агент решает сразу» в «Дополнительно» — целое число от 1 до 4 или пусто.",
 	"error.peer_name_self":         "«Имя собеседника» совпадает с вашим именем — оставьте его пустым или впишите имя собеседника.",
 	"error.start":                  "Настройки сохранены, но agentlink не запустился — подробности в файле agentlink.log рядом с настройками.",
 	"error.save":                   "Не удалось записать настройки на диск — проверьте, что папка %APPDATA%\\agentlink доступна, и попробуйте снова.",
@@ -155,6 +158,8 @@ var uiStrings = map[string]string{
 	"inbox.no_answer": "Ответа пока нет.",
 	"inbox.reply":     "Ответить",
 	"inbox.status":    "Статус: {status}",
+	"inbox.activity":  "сейчас: {activity}",
+	"inbox.no_news":   "нет вестей от собеседника {min} мин",
 
 	// Statuses, keyed by the wire value in Thread.Status.
 	"status.queued":    "в очереди",
