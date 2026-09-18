@@ -96,6 +96,10 @@ type Status struct {
 	Problem string `json:"problem,omitempty"`
 	// Error is a start failure as one sentence for the user.
 	Error string `json:"error,omitempty"`
+	// Warning is a strings key shown next to any state: "link.weak_code" for
+	// a legacy 6-character code while the listener is reachable beyond
+	// private networks.
+	Warning string `json:"warning,omitempty"`
 }
 
 // New loads settings from path. log may be nil.
@@ -210,8 +214,13 @@ func (a *App) Status() Status {
 		st.Problem = "link.same_name"
 	case a.n != nil && errors.Is(a.n.Problem(), node.ErrWrongPeer):
 		st.Problem = "link.wrong_peer"
+	case a.n != nil && errors.Is(a.n.Problem(), node.ErrLegacyRefused):
+		st.Problem = "link.legacy_public"
 	case len(a.s.Peers) == 0 && st.Total == 0:
 		st.Problem = "link.no_peer"
+	}
+	if a.configured && config.WeakCode(a.s.Code) && config.ExposedListen(a.s.BindAddr()) {
+		st.Warning = "link.weak_code"
 	}
 	return st
 }

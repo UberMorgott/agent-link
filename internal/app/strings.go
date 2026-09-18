@@ -33,6 +33,8 @@ var uiStrings = map[string]string{
 	"link.removed":         "вас удалили из сети — попросите участника снова добавить ваш адрес",
 	"link.name_taken":      "ваше имя уже занято другим участником — впишите другое имя и сохраните",
 	"link.no_zerotier":     "ZeroTier не найден",
+	"link.weak_code":       "старый короткий код связи, а agentlink доступен не только из локальной сети — нажмите «Создать код», сохраните и сообщите новый код участникам",
+	"link.legacy_public":   "участник по добавленному адресу — старая версия agentlink, а она подключается только из локальной сети или ZeroTier — попросите его обновиться",
 
 	// Tray menu (cmd/agentlink-tray, see tray.go).
 	"tray.starting":      "Запуск…",
@@ -48,13 +50,14 @@ var uiStrings = map[string]string{
 	"tray.connected_n":   "На связи {online} из {total}",
 	"tray.not_connected": "Нет связи — откройте настройки",
 	"tray.lost":          "{peer} — нет связи",
+	"tray.weak_code":     "слабый код — создайте новый",
 
 	// Settings page.
 	"settings.h1":                  "Настройки",
 	"settings.node.label":          "Ваше имя",
 	"settings.node.hint":           "Как вас увидят другие участники, например morgott.",
 	"settings.code.label":          "Код связи",
-	"settings.code.hint":           "6 латинских букв или цифр, одинаковые у всех участников: один нажимает «Создать код» и сообщает его остальным.",
+	"settings.code.hint":           "Вида XXXX-XXXX-XXXX, одинаковый у всех участников: один нажимает «Создать код» и сообщает его остальным. Старый код из 6 символов тоже работает, но его можно подобрать — замените его.",
 	"settings.code.generate":       "Создать код",
 	"settings.code.copy":           "Скопировать",
 	"settings.code.generated":      "Код создан — сообщите его участникам и нажмите «Сохранить».",
@@ -68,6 +71,7 @@ var uiStrings = map[string]string{
 	"settings.members.seen":        "был на связи {when}",
 	"settings.members.version":     "версия {version}",
 	"settings.members.legacy":      "старая версия — не передаёт список участников",
+	"settings.members.old_auth":    "старая версия — вход без защиты кода, только из локальной сети",
 	"settings.members.remove":      "Удалить",
 	"settings.members.confirm":     "Удалить {name} из сети у всех участников? Вернуть можно, снова добавив его адрес.",
 	"settings.members.removed":     "{name} удалён из сети.",
@@ -157,7 +161,7 @@ var uiStrings = map[string]string{
 
 	// Errors: each one sentence saying what to do.
 	"error.node":                   "Впишите ваше имя: буквы, цифры, «-» или «_», без пробелов.",
-	"error.code":                   "Код связи — ровно 6 латинских букв или цифр: нажмите «Создать код» или впишите код, который вам дали.",
+	"error.code":                   "Код связи — 12 латинских букв и цифр вида XXXX-XXXX-XXXX (или старый код из 6): нажмите «Создать код» или впишите код, который вам дали.",
 	"error.peer_addr":              "Адрес участника не похож на IP — впишите, например, 10.147.20.9 или 10.147.20.9:7420.",
 	"error.work_dir":               "Укажите существующую рабочую папку, в которой агент будет искать ответы, или выберите «Никто, отвечаю сам».",
 	"error.handler":                "Выберите, кто отвечает: Claude Code, Codex или никто.",

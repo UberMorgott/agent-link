@@ -58,6 +58,7 @@ async function refreshStatus() {
     else if (s.problem) text = t(s.problem);
     else text = s.peer ? fmt("link.off", { peer: s.peer }) : t("link.waiting");
     if (s.configured && !s.zerotier) text += " · " + t("link.no_zerotier");
+    if (s.warning) { text += " · " + t(s.warning); cls = "off"; }
     el.textContent = text;
     el.className = cls;
     // The inbox's «Кому» suggests every member by name.

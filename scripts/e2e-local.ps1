@@ -43,8 +43,10 @@ if ($LASTEXITCODE -ne 0) { throw 'go build failed' }
 
 if (Test-Path $data) { Remove-Item -Recurse -Force $data }
 New-Item -ItemType Directory -Force $data | Out-Null
-# A 6-character pairing code; node-b.json lists node-a by address only and learns its name.
-$env:AGENTLINK_SECRET = -join ((1..6) | ForEach-Object { 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[(Get-Random -Maximum 32)] })
+# A XXXX-XXXX-XXXX pairing code (the other scripts keep a legacy 6-character one);
+# node-b.json lists node-a by address only and learns its name.
+$sym = { -join ((1..4) | ForEach-Object { 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[(Get-Random -Maximum 32)] }) }
+$env:AGENTLINK_SECRET = "$(& $sym)-$(& $sym)-$(& $sym)"
 
 $procs = @()
 try {

@@ -291,3 +291,34 @@ func TestLegacySecretConfigRuns(t *testing.T) {
 		t.Fatalf("legacy status %+v", st)
 	}
 }
+
+// A legacy 6-character code draws a warning only while the listener is
+// reachable beyond private networks; a current code never does.
+func TestWeakCodeWarning(t *testing.T) {
+	for _, c := range []struct {
+		code, listen, want string
+	}{
+		{"abc123", "", "link.weak_code"},
+		{"abc123", "203.0.113.5", "link.weak_code"},
+		{"abc123", "10.147.20.5", ""},
+		{"abc123", "127.0.0.1:7420", ""},
+		{"K7Q2-MXAB-CDEF", "", ""},
+	} {
+		path := filepath.Join(t.TempDir(), "config.json")
+		s := settings.Settings{Node: "alice", Code: c.code, Listen: c.listen, Handler: worker.HandlerNone}
+		if err := settings.Save(path, s); err != nil {
+			t.Fatal(err)
+		}
+		a, err := New(path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st := a.Status()
+		if st.Warning != c.want {
+			t.Errorf("code %q listen %q: warning %q, want %q", c.code, c.listen, st.Warning, c.want)
+		}
+		if c.want != "" && !strings.Contains(st.Summary(), uiStrings["tray.weak_code"]) {
+			t.Errorf("tray summary %q has no warning", st.Summary())
+		}
+	}
+}

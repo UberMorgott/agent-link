@@ -13,8 +13,16 @@ const (
 	TrayQuit         = "tray.quit"
 )
 
-// Summary is the one-line state for the tray menu and its tooltip.
+// Summary is the one-line state for the tray menu and its tooltip, with the
+// weak-code warning after it.
 func (s Status) Summary() string {
+	if s.Warning == "link.weak_code" {
+		return s.state() + " · " + msg("tray.weak_code", nil)
+	}
+	return s.state()
+}
+
+func (s Status) state() string {
 	vars := map[string]string{"peer": s.Peer, "online": strconv.Itoa(s.Online), "total": strconv.Itoa(s.Total)}
 	switch {
 	case !s.Configured:

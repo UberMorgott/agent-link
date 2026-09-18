@@ -152,7 +152,8 @@ function showMembers(st) {
     }
     const details = [];
     if (m.app) details.push(fmt("settings.members.version", { version: m.app }));
-    if (m.legacy) details.push(t("settings.members.legacy"));
+    if (m.old_auth) details.push(t("settings.members.old_auth"));
+    else if (m.legacy) details.push(t("settings.members.legacy"));
     if (!m.online && m.seen) details.push(fmt("settings.members.seen", { when: new Date(m.seen).toLocaleString("ru-RU") }));
     if ((m.addrs || []).length) details.push(m.addrs.join(", "));
     if (details.length) {
@@ -196,10 +197,12 @@ document.getElementById("add_peer").addEventListener("click", async () => {
   }
 });
 
+// 12 symbols, 60 bits, shown as XXXX-XXXX-XXXX.
 document.getElementById("generate").addEventListener("click", () => {
-  const bytes = new Uint8Array(6);
+  const bytes = new Uint8Array(12);
   crypto.getRandomValues(bytes);
-  code.value = Array.from(bytes, (b) => CODE_ALPHABET[b & 31]).join("");
+  const s = Array.from(bytes, (b) => CODE_ALPHABET[b & 31]).join("");
+  code.value = s.slice(0, 4) + "-" + s.slice(4, 8) + "-" + s.slice(8);
   result.textContent = t("settings.code.generated");
 });
 
