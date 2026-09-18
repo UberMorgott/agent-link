@@ -42,8 +42,8 @@ func TestCPaceDraftVectors(t *testing.T) {
 	}
 	ya := scalar("da3d23700a9e5699258aef94dc060dfda5ebb61f02a5ea77fad53f4ff0976d08")
 	yb := scalar("d2316b454718c35362d83d69df6320f38578ed5984651435e2949762d900b80d")
-	a := &cpace{sid: sid, y: ya, share: ristretto255.NewElement().ScalarMult(ya, g).Bytes()}
-	b := &cpace{sid: sid, y: yb, share: ristretto255.NewElement().ScalarMult(yb, g).Bytes()}
+	a := &cpace{sid: sid, y: ya, share: ristretto255.NewIdentityElement().ScalarMult(ya, g).Bytes()}
+	b := &cpace{sid: sid, y: yb, share: ristretto255.NewIdentityElement().ScalarMult(yb, g).Bytes()}
 	if want := unhex(t, "d6bac480f2c386c394efc7c47adb9925dcd2630b64f240c50f8d0eec482b9157"); !bytes.Equal(a.share, want) {
 		t.Fatalf("Ya %x", a.share)
 	}

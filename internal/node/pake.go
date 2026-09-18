@@ -64,7 +64,7 @@ func cpaceGeneratorString(prs, ci, sid []byte) []byte {
 // mapped to the group by RFC 9496 element derivation.
 func cpaceGenerator(prs, ci, sid []byte) (*ristretto255.Element, error) {
 	h := sha512.Sum512(cpaceGeneratorString(prs, ci, sid))
-	return ristretto255.NewElement().SetUniformBytes(h[:])
+	return ristretto255.NewIdentityElement().SetUniformBytes(h[:])
 }
 
 // cpace is one side of a CPace run.
@@ -92,17 +92,17 @@ func newCPaceScalar(prs, sid []byte, y *ristretto255.Scalar) (*cpace, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &cpace{sid: sid, y: y, share: ristretto255.NewElement().ScalarMult(y, g).Bytes()}, nil
+	return &cpace{sid: sid, y: y, share: ristretto255.NewIdentityElement().ScalarMult(y, g).Bytes()}, nil
 }
 
 // secret is scalar_mult_vfy(y, peer): it refuses a non-canonical encoding
 // and an identity result.
 func (c *cpace) secret(peer []byte) ([]byte, error) {
-	p, err := ristretto255.NewElement().SetCanonicalBytes(peer)
+	p, err := ristretto255.NewIdentityElement().SetCanonicalBytes(peer)
 	if err != nil {
 		return nil, errPAKE
 	}
-	k := ristretto255.NewElement().ScalarMult(c.y, p)
+	k := ristretto255.NewIdentityElement().ScalarMult(c.y, p)
 	if k.Equal(ristretto255.NewIdentityElement()) == 1 {
 		return nil, errPAKE
 	}
