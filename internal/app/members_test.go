@@ -35,6 +35,11 @@ func TestMemberButtons(t *testing.T) {
 			t.Fatalf("save %s: %d %s", name, code, got)
 		}
 	}
+	// The save starts the node; it learns its own address once it runs.
+	waitFor(t, "bob's own address", func() bool {
+		ms := b.app.Status().Members
+		return len(ms) > 0 && len(ms[0].Addrs) > 0
+	})
 	self := b.app.Status().Members[0]
 	if !self.Self || self.Name != "bob" || len(self.Addrs) != 1 {
 		t.Fatalf("bob's own entry %+v", self)
