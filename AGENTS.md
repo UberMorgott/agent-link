@@ -16,8 +16,13 @@ tray icon, a browser settings page, an inbox page and an optional read-only hand
 - ZeroTier (or another VPN) joined to the same network on both machines, and each side's own
   ZeroTier IP known.
 - Go 1.27+ — only to build from source or run the tests. A release binary needs no Go.
-- `claude` or `codex` on `PATH` — only if this side answers requests automatically. With the
-  handler set to «Никто, отвечаю сам» neither is needed.
+- Claude Code or Codex CLI, logged in — only if this side answers requests automatically. With
+  the handler set to «Никто, отвечаю сам» neither is needed. Codex: `npm i -g @openai/codex`
+  (needs Node.js), then `codex login`. Claude Code: its installer or
+  `npm i -g @anthropic-ai/claude-code`, then `claude` once to log in. It need not be on the
+  tray's `PATH`: on save the app checks `%APPDATA%\npm\codex.cmd`, `%APPDATA%\npm\claude.cmd`
+  and `%USERPROFILE%\.local\bin\claude.exe`, and **Программа агента → Указать…** picks any
+  other location (stored as `agent_path` in the config).
 
 ## Install
 

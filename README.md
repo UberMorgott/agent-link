@@ -59,6 +59,20 @@ Autostart is the `agentlink` value under `HKCU\Software\Microsoft\Windows\Curren
 
 ### Handler agent
 
+The agent CLI has to be installed and logged in on the answering side:
+
+- Codex: `npm i -g @openai/codex` (needs Node.js), then `codex login` once.
+- Claude Code: its installer or `npm i -g @anthropic-ai/claude-code`, then run `claude` once to log in.
+
+**Программа агента** under **Кто отвечает** shows which program will run: found on `PATH`,
+chosen by you, or «не найдена». The tray started from Explorer or autostart often does not see
+a `PATH` entry an installer just added. On save, when the agent is not on `PATH`, the app
+looks in the installers' default places (`%APPDATA%\npm\codex.cmd`, `%APPDATA%\npm\claude.cmd`,
+`%USERPROFILE%\.local\bin\claude.exe`) and remembers a hit ("Найден: <path>"). Otherwise press
+**Указать…** and pick `codex.cmd` / `codex.exe` / `claude.exe` in the Windows file dialog. The
+path is saved as `agent_path` in the config; it replaces only the program, the read-only
+arguments below stay the same.
+
 When a request arrives (a message that is not a reply) and the handler is not "None", the app
 runs the agent in the working folder with the message as the prompt, one request at a time,
 and sends the agent's final answer back as a reply. With "Никто, отвечаю сам" you read and
