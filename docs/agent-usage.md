@@ -70,7 +70,14 @@ agentlink wait  --config <path> --timeout 0                       # blocks until
 - A real reply has `reply_to` set to the request id and a body. If it came from a handler agent
   its `job_status` is `completed` (the body is the answer) or `failed` (the body is the error).
 - In `inbox`, an outbound request with `job_status` `queued`/`running` and no `answer` is still
-  being worked on.
+  being worked on; while `running` its `activity` says what the other agent does right now
+  (`Read docs/index.md`, `Grep 'Worker' internal`, `thinking`).
+- `no_news_min` on an unanswered request means the peer has said nothing about it for that many
+  minutes (5+) or is disconnected. The request is not lost (it is resent until ACKed); decide
+  whether to wait or ask again. A hung agent on the other side fails by itself after 3 minutes
+  without output (reply body `agentlink: агент завис …`), a slow one after 10 minutes.
+- The other side answers up to 2 (1–4) requests at once, so several questions can be in flight;
+  answers may arrive in any order — match them by `reply_to`.
 
 ## What the answering side does
 

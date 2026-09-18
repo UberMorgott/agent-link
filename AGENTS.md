@@ -67,6 +67,8 @@ Both sides must agree, or the session never authenticates:
   boundary (README "Security").
 - `areas` must overlap for `--to area:NAME` fan-out to reach the peer.
 - Both sides run the same version: the wire format is not negotiated (v0.2 changed the handshake).
+  v0.3 only adds to it (a `hb` heartbeat frame, a status `activity` field), so a v0.2 peer still
+  interoperates without activity or heartbeats; update both sides anyway.
 
 ## Waking an interactive session
 
@@ -90,6 +92,10 @@ to the other person. Consequences, which are rules:
 
 - Only pair with someone you trust with read access to this machine's files.
 - Never widen the handler's tool set, add a write mode, or route the prompt through a shell.
+  Streaming output (`--output-format stream-json --verbose`, `codex exec --json`) is only parsed
+  for activity lines and the answer; it does not change what the agent may do.
+- Every run is bounded: `max_jobs` (1–4, default 2) agents at once, a 10-minute hard timeout and
+  a 3-minute idle timeout (no stdout line), both kill the process tree.
 - Never make the handler echo secrets, tokens or config contents into a reply.
 
 ## Validation
@@ -100,6 +106,7 @@ Run from the repository root; all must pass before a commit.
 go test -race ./...
 pwsh -File scripts/e2e-local.ps1     # two CLI nodes on loopback: send, reply, stop
 pwsh -File scripts/e2e-worker.ps1    # two headless tray apps + fake agent; -RealClaude / -RealCodex [-AgentPath]
+pwsh -File scripts/e2e-parallel.ps1  # max_jobs 2, streamed activity at the sender, idle-timeout kill
 pwsh -File scripts/e2e-tray.ps1      # both people on one machine through the web UI; restarts, retries
 qgate                                # quality gate; qgate -All when deps or build config changed
 ```

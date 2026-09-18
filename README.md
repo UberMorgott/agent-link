@@ -45,7 +45,9 @@ Saving with only some fields filled is fine: the bar then says what is missing (
 your own listen address (default: this machine's ZeroTier IP with port 7420; without ZeroTier
 it binds `127.0.0.1` and says "ZeroTier не найден", never `0.0.0.0`), the page address
 (default `127.0.0.1:7520`, applies after a restart), shared areas, the peer's name (when set,
-another name is refused) and autostart. Every error on the page is one sentence saying what to do.
+another name is refused), how many questions the agent answers at once («Сколько вопросов агент
+решает сразу», `max_jobs`, 1–4, default 2) and autostart. Every error on the page is one sentence
+saying what to do.
 
 Configs written by v0.1 (long `secret`, `peer_name`, `listen`) still load and work; typing a
 code and saving replaces the secret. Both sides must run v0.2 or later: the handshake changed.
@@ -95,23 +97,34 @@ dialog. The path is saved as `agent_path` in the config; it replaces only the pr
 read-only arguments below stay the same.
 
 When a request arrives (a message that is not a reply) and the handler is not "None", the app
-runs the agent in the working folder with the message as the prompt, one request at a time,
-and sends the agent's final answer back as a reply. With "Никто, отвечаю сам" you read and
+runs the agent in the working folder with the message as the prompt, up to `max_jobs` requests
+at a time (default 2; the rest wait and start in arrival order, answers may come back in any
+order), and sends the agent's final answer back as a reply. With "Никто, отвечаю сам" you read and
 answer in the inbox page, where each question is shown with its answer, its direction
 («Исходящее»/«Входящее») and both node names.
 
 Jobs are durable. Each request is recorded in `data\jobs\<id>.json` before it is acknowledged
 and moves `queued` → `running` → `completed` | `failed` (with attempts, timestamps and the
-error). The sender gets small status updates (`queued`, `running`) and a final reply whose
-`job_status` is `completed` or `failed`; its inbox page shows each request's latest status and
-answer. A duplicate request id never runs twice. Queued jobs survive quit, crash and settings
-changes and resume in order. A job cut off while running (quit, crash, settings save) runs once
-more on the next start; cut off again, it fails with a reply. An agent error or the 10-minute
-timeout fails the job at once, without a retry. Switching the handler to "None" fails jobs that
-were still waiting, with the reply "no handler configured".
+error). The sender gets small status updates (`queued`, `running`, then `running` with an
+`activity` line such as `Read docs/index.md`, `Grep 'Worker' internal`, `Run rg -n Worker`,
+`thinking`, `writing answer`) and a final reply whose `job_status` is `completed` or `failed`.
+Activity goes out at most once per 3 s and only when it changed (an unchanged one is repeated
+every 2 min). The sender's inbox page shows each request's latest status, «сейчас: …» under a
+running one, and the answer. A duplicate request id never runs twice. Queued jobs survive quit,
+crash and settings changes and resume in order. A job cut off while running (quit, crash,
+settings save) runs once more on the next start; cut off again, it fails with a reply. An agent
+error, the 10-minute timeout, or 3 minutes without any output from the agent («агент завис (нет
+активности 3 мин)») kills the agent's process tree and fails the job at once, without a retry.
+Switching the handler to "None" fails jobs that were still waiting, with the reply "no handler
+configured".
 
-- Claude Code: `claude -p --output-format text --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --permission-mode dontAsk --strict-mcp-config --no-session-persistence`
-- Codex: `codex exec --sandbox read-only --skip-git-repo-check --ephemeral --color never --output-last-message <tmp> -`
+- Claude Code: `claude -p --output-format stream-json --verbose --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --permission-mode dontAsk --strict-mcp-config --no-session-persistence` — `assistant` events' `tool_use` / `thinking` / `text` blocks become activity, the `result` event is the answer.
+- Codex: `codex exec --json --sandbox read-only --skip-git-repo-check --ephemeral --color never --output-last-message <tmp> -` — `item.started|updated|completed` events (`command_execution`, `reasoning`, `agent_message`, …) become activity, the last-message file is the answer, `turn.failed` / `error` is the failure reason.
+
+On the sending side an unanswered request is marked «нет вестей от собеседника N мин» when the
+peer has sent nothing about it for 5 minutes while connected (a request `queued` behind other
+jobs is exempt), or the peer has been disconnected for 5 minutes. It is only a display: the
+message is still resent by the normal outbox until the peer ACKs it.
 
 The prompt goes through stdin, never through a shell. **Read-only:** the agent can read and
 search but cannot edit files or run commands. It can still read files it can reach (Codex's
@@ -146,7 +159,9 @@ agentlink inbox --config node.json --limit 20              # recent in/out, non-
 delivered), exits 2 with no output when `--timeout` (seconds or a Go duration, `0` = forever)
 expires, and exits 1 on errors. It returns requests and replies only: a handler's `queued` /
 `running` status updates never wake it, so a waiting session sees just the final reply (check
-its `job_status`: `completed` or `failed`). Progress is visible in `inbox`.
+its `job_status`: `completed` or `failed`). Progress is visible in `inbox`: an outbound request
+carries `job_status`, `activity` while it runs, `last_heard` and, when the peer has gone quiet,
+`no_news_min`.
 
 ## Config
 
@@ -175,7 +190,12 @@ its `job_status`: `completed` or `failed`). Progress is visible in `inbox`.
 Loopback examples: `examples/node-a.json`, `examples/node-b.json`. `scripts/e2e-local.ps1`
 builds the binary, starts both, sends a→b, replies b→a and stops them. `scripts/e2e-worker.ps1`
 runs two tray apps headless (`-no-tray`) with a fake agent and checks the automatic reply;
-`-RealClaude` / `-RealCodex` use the installed `claude` / `codex` instead.
+`-RealClaude` / `-RealCodex` use the installed `claude` / `codex` instead (and must show at least
+one activity line at the sender); `-WorkDir <dir> -Prompt <text>` asks the real agent your own
+question. `scripts/e2e-parallel.ps1` runs b with `max_jobs` 2, a fake streaming agent and a 4 s
+idle timeout (`agentlink-tray -handler-idle-timeout`), sends three requests and checks that two
+run at once, activity reaches a, and the one that hangs fails by the idle timeout while the
+others complete.
 `scripts/e2e-tray.ps1` plays both people on one machine: two tray apps with their own settings
 folders (`-config`) and API ports (`-api`), set up, messaged and quit through the web UI
 endpoints; it also quits and restarts b in the middle of three slow jobs (all complete, job 1
@@ -211,6 +231,10 @@ After handling the messages (and replying with `send --reply-to`), start `wait` 
   derived from the request, so re-sending them after a crash is deduplicated too.
 - Status updates are `kind: "status"` messages; a node without that field treats them as empty
   replies, so update both sides together.
+- Each session carries a heartbeat frame (`{"type":"hb"}`) every 15 s. Once a peer has sent one,
+  45 s without any frame from it closes the session: the status turns «нет связи» and the dialing
+  side reconnects with its usual backoff. A v0.2 peer sends no heartbeats and ignores them (and
+  `activity`); it is never timed out, it just shows no activity.
 - `wait` marks messages delivered as it returns them; a `wait` killed mid-response can lose that
   batch from `wait` (it stays visible in `inbox`).
 
