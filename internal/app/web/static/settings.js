@@ -176,6 +176,68 @@ form.addEventListener("submit", async (ev) => {
   }
 });
 
+// --- updates: own buttons and switch, not part of «Сохранить» ---
+
+const updText = document.getElementById("update_text");
+const updCheck = document.getElementById("update_check");
+const updApply = document.getElementById("update_apply");
+const updAuto = document.getElementById("update_auto");
+let restarting = false;
+let latest = "";
+
+function showUpdate(u) {
+  document.getElementById("update_version").textContent = fmt("update.version", { version: u.current });
+  updText.textContent = u.text || "";
+  updText.className = u.failed ? "hint failed" : "hint";
+  updCheck.disabled = !u.enabled || u.busy;
+  updApply.hidden = !u.available;
+  updApply.disabled = u.busy;
+  latest = u.latest || "";
+  if (u.available) updApply.textContent = fmt("update.apply", { version: u.latest });
+  updAuto.checked = !!u.auto;
+  updAuto.disabled = !u.enabled;
+  if (u.restarting) waitRestart();
+}
+
+async function refreshUpdate() {
+  if (restarting) return;
+  try { showUpdate(await api("GET", "update")); } catch (_) { /* the status line tells */ }
+}
+
+async function updateAction(path, body, busyText) {
+  if (busyText) updText.textContent = busyText;
+  updCheck.disabled = updApply.disabled = true;
+  try {
+    showUpdate(await api("POST", path, body));
+  } catch (e) {
+    updText.textContent = e.message;
+    updCheck.disabled = updApply.disabled = false;
+  }
+}
+
+// waitRestart waits for the updated app: it answers with a new token, so the
+// old page gets «forbidden»; then the page reloads.
+async function waitRestart() {
+  if (restarting) return;
+  restarting = true;
+  const deadline = Date.now() + 60000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      await api("GET", "update");
+    } catch (e) {
+      if (e.message === t("error.forbidden")) { location.reload(); return; }
+    }
+  }
+  updText.textContent = t("update.reload");
+}
+
+updCheck.addEventListener("click", () => updateAction("update/check", undefined, t("update.checking")));
+updApply.addEventListener("click", () => updateAction("update/apply", undefined, fmt("update.applying", { version: latest })));
+updAuto.addEventListener("change", () => updateAction("update/auto", { auto: updAuto.checked }));
+
 load().catch((e) => { result.textContent = e.message; });
 showMyAddr();
+refreshUpdate();
 setInterval(showMyAddr, 5000);
+setInterval(refreshUpdate, 5000);

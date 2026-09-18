@@ -68,6 +68,15 @@
   <button type="submit" data-t="settings.save"></button>
   <p id="result" role="status"></p>
 </form>
+<fieldset id="updates">
+  <legend data-t="update.legend"></legend>
+  <p class="row"><span id="update_version"></span>
+    <button type="button" id="update_check" data-t="update.check"></button>
+    <button type="button" id="update_apply" hidden></button></p>
+  <p class="hint" id="update_text" role="status"></p>
+  <label class="check"><input type="checkbox" id="update_auto"> <span data-t="update.auto"></span></label>
+  <p class="hint" data-t="update.auto.hint"></p>
+</fieldset>
 </main>
 <script src="/ui/static/common.js"></script>
 <script src="/ui/static/settings.js"></script>

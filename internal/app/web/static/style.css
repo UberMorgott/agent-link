@@ -39,3 +39,5 @@ details { border: 1px solid #8884; border-radius: 8px; margin: 0 0 16px; padding
 details fieldset { border: 0; padding: 0; margin: 8px 0 0; }
 summary { cursor: pointer; font-weight: 600; }
 #my_addr { color: inherit; font-weight: 600; }
+#update_version { flex: 1; font-weight: 600; }
+#update_text.failed { color: var(--off); }

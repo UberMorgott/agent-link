@@ -11,9 +11,11 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
+	"github.com/UberMorgott/agent-link/internal/selfupdate"
 	"github.com/UberMorgott/agent-link/internal/settings"
 	"github.com/UberMorgott/agent-link/internal/worker"
 )
@@ -42,6 +44,18 @@ type App struct {
 	// Agents finds agent programs: on PATH, at AgentPath, or at their
 	// well-known install locations; replaceable in tests.
 	Agents settings.Finder
+
+	// Version is this build's version (selfupdate.Version). Exe is set by
+	// SetExecutable. Relaunch starts the updated executable; nil disables
+	// updates. Latest finds the newest release and whether it is newer than
+	// the given version; replaceable in tests, like UpdateFirst and
+	// UpdateEvery (0: a minute after start, then every 6 hours).
+	Version                  string
+	Exe                      string
+	Relaunch                 func() error
+	Latest                   func(ctx context.Context, current string) (Release, bool, error)
+	UpdateFirst, UpdateEvery time.Duration
+	upd                      updater
 
 	picking atomic.Bool    // a Windows dialog is open
 	saves   sync.WaitGroup // background saves of a rediscovered agent path
@@ -88,6 +102,7 @@ func New(path string, log *slog.Logger) (*App, error) {
 		SetAutostart: setAutostart,
 		Ifaces:       settings.SystemIfaces, PickFolder: pickFolder, PickFile: pickFile,
 		Agents: settings.SystemFinder, zeroTier: true,
+		Version: selfupdate.Version, Latest: latestRelease,
 	}, nil
 }
 
@@ -186,8 +201,8 @@ func (a *App) Settings() settings.Settings {
 var ErrNotStarted = errors.New("settings saved, but the node did not start")
 
 // Apply validates and saves new settings, updates autostart and restarts the
-// node. HandlerCommand, an empty API and, while no code is set, the legacy
-// secret are kept from the current settings. A code replaces the secret.
+// node. HandlerCommand, an empty API, an absent auto_update and, while no code
+// is set, the legacy secret are kept from the current settings. A code replaces the secret.
 // When no AgentPath is set, or the set one has disappeared (an app update
 // moved its versioned folder), the agent is looked for again (Finder.Discover);
 // a hit off PATH is saved as AgentPath and returned.
@@ -201,6 +216,9 @@ func (a *App) Apply(s settings.Settings) (found settings.Found, err error) {
 	}
 	if s.Code == "" {
 		s.Secret = a.s.Secret
+	}
+	if s.AutoUpdate == nil {
+		s.AutoUpdate = a.s.AutoUpdate
 	}
 	if len(s.HandlerCommand) == 0 && a.Agents.LookPath != nil && !a.agentPresent(s.AgentPath) {
 		if f, ok := a.Agents.Discover(s.Handler); ok {

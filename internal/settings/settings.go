@@ -40,6 +40,9 @@ type Settings struct {
 	// MaxJobs is how many requests the agent answers at once, 1..worker.MaxMaxJobs;
 	// 0 means worker.DefaultMaxJobs.
 	MaxJobs int `json:"max_jobs,omitempty"`
+	// AutoUpdate installs a newer GitHub release by itself; nil means on.
+	// It has its own switch and is kept when the form is saved.
+	AutoUpdate *bool `json:"auto_update,omitempty"`
 
 	// Secret is the long shared secret of configs written before pairing
 	// codes; used only while Code is empty. Never sent to the page.
@@ -161,6 +164,9 @@ func Save(path string, s Settings) error {
 	}
 	return err
 }
+
+// AutoUpdateOn reports whether a newer release is installed by itself.
+func (s Settings) AutoUpdateOn() bool { return s.AutoUpdate == nil || *s.AutoUpdate }
 
 // APIAddr returns the effective control API address.
 func (s Settings) APIAddr() string {

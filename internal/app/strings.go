@@ -104,6 +104,25 @@ var uiStrings = map[string]string{
 	"settings.saving":              "Сохраняю…",
 	"settings.saved":               "Сохранено.",
 
+	// Updates: the settings page section and the tray menu.
+	"update.legend":        "Обновления",
+	"update.version":       "Версия {version}",
+	"update.check":         "Проверить обновления",
+	"update.apply":         "Обновить до {version}",
+	"update.auto":          "Обновлять автоматически",
+	"update.auto.hint":     "Раз в несколько часов agentlink проверяет выпуски на GitHub и сам ставит новую версию. Вопросы, над которыми работает агент, при перезапуске не прерываются.",
+	"update.checking":      "Проверяю обновления…",
+	"update.latest":        "У вас актуальная версия.",
+	"update.available":     "Доступна версия {version}.",
+	"update.none":          "На GitHub пока нет выпуска для этой системы.",
+	"update.applying":      "Скачиваю и проверяю версию {version}…",
+	"update.restarting":    "Версия {version} установлена — agentlink перезапускается, агент продолжает работу.",
+	"update.reload":        "agentlink перезапускается — обновите страницу (F5) через несколько секунд.",
+	"update.disabled":      "Эта сборка без номера версии — обновление отключено.",
+	"update.error.check":   "Не удалось проверить обновления — проверьте интернет; подробности в файле agentlink.log.",
+	"update.error.apply":   "Не удалось установить обновление, осталась текущая версия — подробности в файле agentlink.log.",
+	"update.error.restart": "Обновление установлено, но agentlink не перезапустился — закройте его и запустите снова.",
+
 	// Errors: each one sentence saying what to do.
 	"error.node":                   "Впишите ваше имя: буквы, цифры, «-» или «_», без пробелов.",
 	"error.code":                   "Код связи — ровно 6 латинских букв или цифр: нажмите «Создать код» или впишите код собеседника.",
@@ -180,6 +199,9 @@ func stringsAttr() string {
 	}
 	return html.EscapeString(string(data))
 }
+
+// Text is msg for the tray menu.
+func Text(key string, vars map[string]string) string { return msg(key, vars) }
 
 // msg returns the text for key with {name} placeholders filled from vars, the
 // server-side twin of fmt() in the page scripts.

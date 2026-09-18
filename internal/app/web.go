@@ -51,6 +51,10 @@ func (a *App) URL(page string) string {
 //	POST /ui/api/agent             {"handler","agent_path"} -> agentInfo
 //	POST /ui/api/pick-agent        {"start"} -> native file dialog for a program -> pickResult
 //	POST /ui/api/find-agent        {"handler"} -> look for the agent again -> agentInfo
+//	GET  /ui/api/update            UpdateStatus
+//	POST /ui/api/update/check      ask GitHub for the latest release -> UpdateStatus
+//	POST /ui/api/update/apply      install the newer release, then restart -> UpdateStatus
+//	POST /ui/api/update/auto       {"auto"} -> save the auto-update switch -> UpdateStatus
 //	POST /ui/api/quit              exit the app (same path as the tray's Quit)
 func (a *App) Handler() http.Handler {
 	ui := http.NewServeMux()
@@ -73,6 +77,10 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /ui/api/agent", a.agentInfo)
 	api.HandleFunc("POST /ui/api/pick-agent", a.pickAgent)
 	api.HandleFunc("POST /ui/api/find-agent", a.findAgent)
+	api.HandleFunc("GET /ui/api/update", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.UpdateStatus()) })
+	api.HandleFunc("POST /ui/api/update/check", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, a.CheckUpdate(r.Context())) })
+	api.HandleFunc("POST /ui/api/update/apply", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, a.InstallUpdate(r.Context())) })
+	api.HandleFunc("POST /ui/api/update/auto", a.setAutoUpdate)
 	api.HandleFunc("POST /ui/api/quit", func(w http.ResponseWriter, _ *http.Request) {
 		if a.QuitFunc == nil {
 			writeError(w, http.StatusNotImplemented, msg("error.internal", nil))
@@ -191,6 +199,22 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(saveResult{Error: msg("error.save", nil)})
 	}
+}
+
+func (a *App) setAutoUpdate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Auto bool `json:"auto"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, msg("error.bad_request", nil))
+		return
+	}
+	if err := a.SetAutoUpdate(req.Auto); err != nil {
+		a.log.Error("save auto-update", "err", err)
+		writeError(w, http.StatusInternalServerError, msg("error.save", nil))
+		return
+	}
+	writeJSON(w, a.UpdateStatus())
 }
 
 func (a *App) inbox(w http.ResponseWriter, _ *http.Request) {

@@ -21,13 +21,16 @@ import (
 
 	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
+	"github.com/UberMorgott/agent-link/internal/selfupdate"
 )
 
 const usage = `usage:
   agentlink serve --config <path>
   agentlink send  --config <path> [--to <node|area:NAME>] --body <text> [--reply-to <id>]   (no --to: the only peer)
   agentlink wait  --config <path> [--timeout 0]    (seconds or duration; 0 = forever; exit 2 on timeout)
-  agentlink inbox --config <path> [--limit 50]`
+  agentlink inbox --config <path> [--limit 50]
+  agentlink update [--check]    (install the latest GitHub release next to this program; --check only reports)
+  agentlink version`
 
 // exitTimeout is returned by wait when no message arrived in time.
 const exitTimeout = 2
@@ -43,6 +46,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	switch args[0] {
+	case "version":
+		_, _ = fmt.Fprintln(stdout, selfupdate.Version)
+		return 0
+	case "update":
+		check := fs.Bool("check", false, "only report whether a newer release exists")
+		if err := fs.Parse(args[1:]); err != nil {
+			return 1
+		}
+		if err := update(*check, stdout); err != nil {
+			_, _ = fmt.Fprintln(stderr, "agentlink:", err)
+			return 1
+		}
+		return 0
+	}
 	cfgPath := fs.String("config", "", "config file")
 	var cmd func(config.Config) (int, error)
 	switch args[0] {
@@ -160,6 +178,48 @@ func inbox(cfg config.Config, limit int, stdout io.Writer) error {
 		return err
 	}
 	return printLines[node.Entry](resp.Body, stdout)
+}
+
+// update reports the latest release and, unless check, installs it over this
+// program and agentlink-tray next to it. A running tray keeps the old version
+// until it restarts.
+func update(check bool, stdout io.Writer) error {
+	cur := selfupdate.Version
+	if !selfupdate.Valid(cur) {
+		return fmt.Errorf("this build has no version (%s): self-update is off; use a release build", cur)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	_ = selfupdate.Cleanup(exe) // leftovers of an earlier update, if no longer locked
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	rel, newer, err := selfupdate.Check(ctx, cur)
+	switch {
+	case err != nil:
+		return err
+	case rel == nil:
+		_, err = fmt.Fprintf(stdout, "agentlink %s: no release for this platform on github.com/%s\n", cur, selfupdate.Repo)
+		return err
+	case !newer:
+		_, err = fmt.Fprintf(stdout, "agentlink %s is up to date (latest release %s)\n", cur, rel.Version())
+		return err
+	case check:
+		_, err = fmt.Fprintf(stdout, "agentlink %s: update available: %s (run: agentlink update)\n", cur, rel.Version())
+		return err
+	}
+	paths, err := rel.Apply(ctx, exe)
+	if err != nil {
+		return err
+	}
+	for _, p := range paths {
+		if _, err := fmt.Fprintf(stdout, "updated %s\n", p); err != nil {
+			return err
+		}
+	}
+	_, err = fmt.Fprintf(stdout, "agentlink %s -> %s; restart agentlink-tray if it is running\n", cur, rel.Version())
+	return err
 }
 
 // parseTimeout accepts whole seconds ("30") or a Go duration ("1m30s").
