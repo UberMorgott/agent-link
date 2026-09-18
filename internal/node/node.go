@@ -520,8 +520,8 @@ func (n *Node) handleInbound(ctx context.Context, c net.Conn) {
 		return
 	}
 	_ = c.SetDeadline(time.Now().Add(n.handshakeTimeout))
-	sc := newScanner(c)
-	hello, err := n.acceptHandshake(c, sc)
+	w := newWire(c)
+	hello, err := n.acceptHandshake(w)
 	if err != nil {
 		// A name clash is a state of the network, not a guess.
 		if !errors.Is(err, ErrSameName) && !errors.Is(err, ErrNameTaken) {
@@ -534,7 +534,7 @@ func (n *Node) handleInbound(ctx context.Context, c net.Conn) {
 		return
 	}
 	n.guard.success(ip)
-	pc := newPeerConn(hello, hello.name, c)
+	pc := newPeerConn(hello, hello.name, w)
 	if !n.register(pc) {
 		_ = c.Close()
 		return
@@ -545,7 +545,7 @@ func (n *Node) handleInbound(ctx context.Context, c net.Conn) {
 		return
 	}
 	_ = c.SetDeadline(time.Time{})
-	n.runConn(ctx, pc, sc, "")
+	n.runConn(ctx, pc, "")
 }
 
 func (n *Node) dialLoop(ctx context.Context, t *target) {
@@ -583,11 +583,11 @@ func (n *Node) dialOnce(ctx context.Context, t *target) bool {
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 	defer stop()
 	_ = c.SetDeadline(time.Now().Add(n.handshakeTimeout))
-	sc := newScanner(c)
+	w := newWire(c)
 	n.mu.Lock()
 	want := t.name
 	n.mu.Unlock()
-	hello, err := n.dialHandshake(c, sc, want)
+	hello, err := n.dialHandshake(w, want)
 	if err != nil {
 		n.log.Warn("outbound handshake failed", "addr", t.addr, "err", err)
 		// Learned and discovered addresses go stale; only the user's own ones are reported.
@@ -605,7 +605,7 @@ func (n *Node) dialOnce(ctx context.Context, t *target) bool {
 		n.revive(hello.name, hello.id)
 	}
 	_ = c.SetDeadline(time.Time{})
-	pc := newPeerConn(hello, n.cfg.Node, c)
+	pc := newPeerConn(hello, n.cfg.Node, w)
 	if !n.register(pc) {
 		_ = c.Close()
 		return false
@@ -613,6 +613,6 @@ func (n *Node) dialOnce(ctx context.Context, t *target) bool {
 	n.mu.Lock()
 	t.revive = false
 	n.mu.Unlock()
-	n.runConn(ctx, pc, sc, t.addr)
+	n.runConn(ctx, pc, t.addr)
 	return true
 }

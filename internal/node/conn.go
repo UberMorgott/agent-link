@@ -1,12 +1,12 @@
 package node
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"net"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,19 +25,20 @@ type peerConn struct {
 	id     string   // node id; empty for a peer older than v0.5
 	app    string   // program version the peer announced, if any
 	port   int      // peer port the peer announced, if any
-	pake   bool     // authenticated by the PAKE; false: the legacy handshake
-	key    []byte   // PAKE session key (unused so far), nil for legacy
+	pake   bool     // authenticated by the PAKE (sealed records); false: the legacy handshake
 	c      net.Conn
+	w      *wire
 
-	wmu  sync.Mutex
-	kick chan struct{}
-	done chan struct{}
-	once sync.Once
+	wmu     sync.Mutex
+	leaving atomic.Bool // closeAfterTelling ran: frames are no longer sent or handled
+	kick    chan struct{}
+	done    chan struct{}
+	once    sync.Once
 }
 
-func newPeerConn(h peerHello, dialer string, c net.Conn) *peerConn {
+func newPeerConn(h peerHello, dialer string, w *wire) *peerConn {
 	return &peerConn{peer: h.name, dialer: dialer, areas: h.areas, proto: h.proto, caps: h.caps,
-		id: h.id, app: h.app, port: h.port, pake: h.pake, key: h.key, c: c,
+		id: h.id, app: h.app, port: h.port, pake: h.pake, c: w.c, w: w,
 		kick: make(chan struct{}, 1), done: make(chan struct{})}
 }
 
@@ -46,8 +47,34 @@ func (pc *peerConn) has(c string) bool { return slices.Contains(pc.caps, c) }
 func (pc *peerConn) write(f frame) error {
 	pc.wmu.Lock()
 	defer pc.wmu.Unlock()
+	if pc.leaving.Load() {
+		return nil // the session is being closed; the peer is gone
+	}
 	_ = pc.c.SetWriteDeadline(time.Now().Add(writeTimeout))
-	return writeFrame(pc.c, f)
+	return pc.w.write(f)
+}
+
+// lingerTimeout bounds how long a session closed by closeAfterTelling stays
+// open for the peer to read the last frame and hang up.
+const lingerTimeout = 2 * time.Second
+
+// closeAfterTelling ends the session once what was written has reached the
+// peer: it half-closes (a FIN after the data), stops sending and handling
+// frames, and the session ends when the peer hangs up or after lingerTimeout.
+// Closing at once while input is unread resets the connection, and a reset
+// can discard the last frame before the peer reads it.
+func (pc *peerConn) closeAfterTelling() {
+	tc, ok := pc.c.(*net.TCPConn)
+	if !ok {
+		pc.close()
+		return
+	}
+	pc.wmu.Lock()
+	pc.leaving.Store(true)
+	_ = tc.CloseWrite()
+	pc.wmu.Unlock()
+	_ = pc.c.SetReadDeadline(time.Now().Add(lingerTimeout))
+	time.AfterFunc(lingerTimeout, pc.close)
 }
 
 func (pc *peerConn) close() {
@@ -132,12 +159,12 @@ func (n *Node) unregister(pc *peerConn) {
 
 // runConn serves a registered connection until it closes. dialed is the
 // address this node dialed, empty for an inbound connection.
-func (n *Node) runConn(ctx context.Context, pc *peerConn, sc *bufio.Scanner, dialed string) {
+func (n *Node) runConn(ctx context.Context, pc *peerConn, dialed string) {
 	stop := context.AfterFunc(ctx, pc.close)
 	defer stop()
 	n.noteSession(pc, dialed)
 	n.wg.Go(func() { n.writeLoop(pc) })
-	n.readLoop(pc, sc)
+	n.readLoop(pc)
 	pc.close()
 	n.unregister(pc)
 }
@@ -146,15 +173,31 @@ func (n *Node) runConn(ctx context.Context, pc *peerConn, sc *bufio.Scanner, dia
 // known to send them, and a session silent for heartbeatTimeout is dead: the
 // read deadline closes it. A peer that never sends one (an older version) is
 // never timed out.
-func (n *Node) readLoop(pc *peerConn, sc *bufio.Scanner) {
+func (n *Node) readLoop(pc *peerConn) {
+	pc.w.maxLine = maxFrame
 	beats := false
-	for sc.Scan() {
+	for {
+		data, err := pc.w.next()
+		if err != nil {
+			var ne net.Error
+			switch {
+			case errors.As(err, &ne) && ne.Timeout():
+				n.log.Warn("peer silent, closing session", "peer", pc.peer, "after", n.heartbeatTimeout)
+			case errors.Is(err, errRecord) || errors.Is(err, errExhausted):
+				n.log.Warn("closing session", "peer", pc.peer, "err", err)
+			}
+			return
+		}
+		if pc.leaving.Load() {
+			continue // drained until the peer hangs up, not handled
+		}
 		// A frame this version cannot read or does not know is skipped, never a
 		// reason to drop the session: the peer may be a much newer version.
-		f, ok := decodeFrame(sc.Bytes())
+		// (On a sealed session it has at least passed the record check.)
+		f, ok := decodeFrame(data)
 		switch {
 		case !ok:
-			n.log.Debug("unreadable frame skipped", "peer", pc.peer, "len", len(sc.Bytes()))
+			n.log.Debug("unreadable frame skipped", "peer", pc.peer, "len", len(data))
 		case f.Type == "msg":
 			if !n.receive(pc, f.Msg) {
 				return
@@ -173,10 +216,6 @@ func (n *Node) readLoop(pc *peerConn, sc *bufio.Scanner) {
 		if beats {
 			_ = pc.c.SetReadDeadline(time.Now().Add(n.heartbeatTimeout))
 		}
-	}
-	var ne net.Error
-	if errors.As(sc.Err(), &ne) && ne.Timeout() {
-		n.log.Warn("peer silent, closing session", "peer", pc.peer, "after", n.heartbeatTimeout)
 	}
 }
 

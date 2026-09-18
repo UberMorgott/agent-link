@@ -96,15 +96,31 @@ func TestCPaceAgreement(t *testing.T) {
 		}
 		return dk, ak
 	}
+	th := transcript([]byte("dialer hello"), []byte("acceptor hello"))
+	channel := func(k sessionKeys, th []byte) channelKeys {
+		ck, err := k.channel(th)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ck
+	}
 	dk, ak := run(testSecret, testSecret)
-	if !bytes.Equal(dk.dialerTag, ak.dialerTag) || !bytes.Equal(dk.acceptorTag, ak.acceptorTag) || !bytes.Equal(dk.session, ak.session) {
+	dc, ac := channel(dk, th), channel(ak, th)
+	if !bytes.Equal(dk.dialerTag(th), ak.dialerTag(th)) || !bytes.Equal(dk.acceptorTag, ak.acceptorTag) ||
+		!bytes.Equal(dc.dialerToAcceptor, ac.dialerToAcceptor) || !bytes.Equal(dc.acceptorToDialer, ac.acceptorToDialer) {
 		t.Fatal("same key, different results")
 	}
-	if bytes.Equal(dk.dialerTag, dk.acceptorTag) || bytes.Equal(dk.session, dk.dialerTag) {
+	if bytes.Equal(dk.dialerTag(th), dk.acceptorTag) || bytes.Equal(dc.dialerToAcceptor, dc.acceptorToDialer) {
 		t.Fatal("keys not separated")
 	}
+	// Another transcript (a hello altered on the way): another tag, other record keys.
+	th2 := transcript([]byte("dialer hello"), []byte("acceptor hellO"))
+	if bytes.Equal(dk.dialerTag(th), dk.dialerTag(th2)) || bytes.Equal(dc.dialerToAcceptor, channel(dk, th2).dialerToAcceptor) {
+		t.Fatal("transcript not bound")
+	}
 	dk, ak = run(testSecret, "another-secret-0123456789")
-	if bytes.Equal(dk.dialerTag, ak.dialerTag) || bytes.Equal(dk.acceptorTag, ak.acceptorTag) || bytes.Equal(dk.session, ak.session) {
+	dc, ac = channel(dk, th), channel(ak, th)
+	if bytes.Equal(dk.dialerTag(th), ak.dialerTag(th)) || bytes.Equal(dk.acceptorTag, ak.acceptorTag) || bytes.Equal(dc.dialerToAcceptor, ac.dialerToAcceptor) {
 		t.Fatal("different keys agree")
 	}
 }

@@ -400,7 +400,7 @@ func (n *Node) RemoveMember(name string) error {
 		if pc.has(CapMembers) {
 			_ = pc.write(frame{Type: frameMembers, Members: n.snapshot()})
 		}
-		pc.close()
+		pc.closeAfterTelling()
 	}
 	n.membersChanged()
 	return nil

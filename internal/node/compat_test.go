@@ -91,6 +91,12 @@ func TestLegacyPeerWithoutCaps(t *testing.T) {
 	if !ok || proto != 0 || len(caps) != 0 || a.PeerHas("b", CapHeartbeat) {
 		t.Fatalf("legacy peer seen as proto %d caps %v", proto, caps)
 	}
+	a.mu.Lock()
+	pc := a.conns["b"]
+	a.mu.Unlock()
+	if pc.pake || pc.w.sealed() {
+		t.Fatal("legacy session on loopback not plain")
+	}
 	m := Message{ID: newID(), From: "b", To: "a", Body: "from the past", CreatedAt: time.Now().UTC()}
 	if err := writeFrame(c, frame{Type: "msg", Msg: &m}); err != nil {
 		t.Fatal(err)

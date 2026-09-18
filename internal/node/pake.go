@@ -17,7 +17,7 @@ import (
 // element; a transcript lets an attacker test exactly one code guess per
 // connection it takes part in, and a recorded handshake tests none. The
 // intermediate session key (ISK) then keys a confirmation MAC in each
-// direction and the session key.
+// direction and the record keys of the session (wire.go).
 const (
 	cpaceDSI      = "CPaceRistretto255"
 	cpaceDSIISK   = "CPaceRistretto255_ISK"
@@ -119,11 +119,47 @@ func cpaceISK(sid, k, ya, ada, yb, adb []byte) []byte {
 	return h.Sum(nil)
 }
 
-// sessionKeys are what one CPace run yields: the confirmation tag each side
-// sends and the session key.
+// sessionKeys are what one CPace run yields: the acceptor's confirmation tag,
+// the key of the dialer's tag and the ISK the record keys come from.
 type sessionKeys struct {
-	dialerTag, acceptorTag []byte
-	session                []byte
+	acceptorTag []byte
+	dialerKey   []byte
+	isk         []byte
+}
+
+// channelKeys are the record keys of a sealed session, one per direction.
+type channelKeys struct {
+	dialerToAcceptor, acceptorToDialer []byte
+}
+
+// transcript hashes the raw hello lines of both sides. The dialer's tag and
+// the record keys bind it, so a hello altered on the way (areas, caps, app,
+// port) fails the handshake or the first record.
+func transcript(dialerHello, acceptorHello []byte) []byte {
+	h := sha256.Sum256(lvCat([]byte("agentlink/transcript/v1"), dialerHello, acceptorHello))
+	return h[:]
+}
+
+// dialerTag is the dialer's confirmation tag over the transcript th. The
+// dialer sends it last, after checking the acceptor's tag.
+func (k sessionKeys) dialerTag(th []byte) []byte {
+	h := hmac.New(sha256.New, k.dialerKey)
+	h.Write([]byte("agentlink/cpace/confirm/dialer"))
+	h.Write(th)
+	return h.Sum(nil)
+}
+
+// channel derives the record keys from the ISK, salted with the transcript th.
+func (k sessionKeys) channel(th []byte) (channelKeys, error) {
+	d2a, err := hkdf.Key(sha256.New, k.isk, th, "agentlink/records/dialer-to-acceptor", 32)
+	if err != nil {
+		return channelKeys{}, err
+	}
+	a2d, err := hkdf.Key(sha256.New, k.isk, th, "agentlink/records/acceptor-to-dialer", 32)
+	if err != nil {
+		return channelKeys{}, err
+	}
+	return channelKeys{dialerToAcceptor: d2a, acceptorToDialer: a2d}, nil
 }
 
 // keys finishes the run given the peer's share. The dialer is the initiator
@@ -148,17 +184,9 @@ func (c *cpace) keys(peer []byte, dialer bool, adDialer, adAcceptor []byte) (ses
 	if err != nil {
 		return sessionKeys{}, err
 	}
-	sk, err := derive("agentlink/cpace/session")
-	if err != nil {
-		return sessionKeys{}, err
-	}
-	return sessionKeys{dialerTag: confirmTag(kd, "dialer"), acceptorTag: confirmTag(ka, "acceptor"), session: sk}, nil
-}
-
-func confirmTag(key []byte, role string) []byte {
-	h := hmac.New(sha256.New, key)
-	h.Write([]byte("agentlink/cpace/confirm/" + role))
-	return h.Sum(nil)
+	h := hmac.New(sha256.New, ka)
+	h.Write([]byte("agentlink/cpace/confirm/acceptor"))
+	return sessionKeys{acceptorTag: h.Sum(nil), dialerKey: kd, isk: isk}, nil
 }
 
 // cpaceAD is a side's associated data: its name and node id.

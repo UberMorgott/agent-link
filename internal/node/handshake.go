@@ -1,37 +1,39 @@
 package node
 
 import (
-	"bufio"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"strings"
 
 	"github.com/UberMorgott/agent-link/internal/config"
 )
 
-// maxFrame bounds one newline-delimited JSON frame.
+// maxFrame bounds one frame: a newline-delimited JSON line of a legacy
+// session, or the plaintext of one sealed record.
 const maxFrame = 1 << 20
 
-// frame is the single wire type: newline-delimited JSON over TCP.
+// frame is the single wire type: newline-delimited JSON over TCP, sealed in
+// records (wire.go) once a PAKE session is confirmed.
 //
 // Handshake since v0.6 (D = dialer, A = acceptor), a CPace PAKE (pake.go)
 // with sid = dialNonce, followed by key confirmation:
 //
 //	D -> A  hello{node, areas, proto, caps, node_id, nonce: dialNonce, pake: Ya}
 //	A -> D  hello{node, areas, proto, caps, node_id, nonce: acceptNonce, pake: Yb, mac: acceptor tag}
-//	D -> A  auth{mac: dialer tag}
-//	A -> D  ok
+//	D -> A  auth{mac: dialer tag over the transcript}
+//	A -> D  ok                (the first sealed record)
 //
 // The tags are HMACs under keys derived from the CPace ISK, which binds both
-// shares and both sides' names and node ids. D sends its tag only after A's
-// checked out, so neither side ever hands out a value an attacker could test
-// code guesses against offline.
+// shares and both sides' names and node ids; the dialer's tag and the record
+// keys also bind the hash of both raw hello lines. D sends its tag only after
+// A's checked out, so neither side ever hands out a value an attacker could
+// test code guesses against offline. From the ok on, every frame in both
+// directions is a sealed record.
 //
 // The legacy handshake (before v0.6; a hello without pake):
 //
@@ -101,7 +103,9 @@ const (
 	// CapMembers: exchanges the membership table (members frames) and dials
 	// the members it learns.
 	CapMembers = "members"
-	// CapPAKE: authenticates with the CPace handshake.
+	// CapPAKE: authenticates with the CPace handshake and seals every frame
+	// after it (wire.go). There is no separate cap for the records, so no
+	// peer that runs the PAKE can be talked into a plain session.
 	CapPAKE = "pake"
 )
 
@@ -122,9 +126,6 @@ type peerHello struct {
 	port  int
 	// pake: authenticated by the PAKE; false for the legacy handshake.
 	pake bool
-	// key is the session key the PAKE derived (nil for legacy). Nothing uses
-	// it yet: the link itself is not encrypted by agent-link.
-	key []byte
 }
 
 func helloOf(f frame) peerHello {
@@ -135,34 +136,6 @@ func helloOf(f frame) peerHello {
 func (n *Node) hello(nonce, mac string) frame {
 	return frame{Type: "hello", Node: n.cfg.Node, Areas: n.cfg.Areas, Nonce: nonce, MAC: mac,
 		Proto: ProtocolVersion, Caps: Capabilities, NodeID: n.id, App: n.appVersion, Port: n.port()}
-}
-
-func newScanner(r io.Reader) *bufio.Scanner {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), maxFrame)
-	return sc
-}
-
-// readFrame returns the next handshake frame, which must be of type want.
-// Frames of a type the handshake does not know (a newer peer's extras) and
-// frames that do not parse are skipped; the handshake deadline bounds the wait.
-func readFrame(sc *bufio.Scanner, want string) (frame, error) {
-	for {
-		if !sc.Scan() {
-			if err := sc.Err(); err != nil {
-				return frame{}, err
-			}
-			return frame{}, io.EOF
-		}
-		f, ok := decodeFrame(sc.Bytes())
-		if !ok || !handshakeFrames[f.Type] {
-			continue
-		}
-		if f.Type != want {
-			return frame{}, fmt.Errorf("expected %q frame, got %q", want, f.Type)
-		}
-		return f, nil
-	}
 }
 
 // decodeFrame parses one frame leniently: unknown fields are ignored, and a
@@ -178,15 +151,6 @@ func decodeFrame(line []byte) (frame, bool) {
 		// Unmarshal keeps decoding past a type mismatch; the other fields are set.
 	}
 	return f, f.Type != ""
-}
-
-func writeFrame(w io.Writer, f frame) error {
-	data, err := json.Marshal(f)
-	if err != nil {
-		return err
-	}
-	_, err = w.Write(append(data, '\n'))
-	return err
 }
 
 func (n *Node) mac(role, dialer, acceptor, dialNonce, acceptNonce string) []byte {
@@ -210,9 +174,10 @@ func validNonce(s string) bool {
 
 // dialHandshake authenticates an outbound connection and returns what the peer
 // announced (name, areas, protocol version, capabilities). want, when not empty, is the only name
-// accepted; otherwise the announced name is learned.
-func (n *Node) dialHandshake(c net.Conn, sc *bufio.Scanner, want string) (peerHello, error) {
+// accepted; otherwise the announced name is learned. A PAKE session leaves w sealed.
+func (n *Node) dialHandshake(w *wire, want string) (peerHello, error) {
 	self := n.cfg.Node
+	remote := w.c.RemoteAddr()
 	dialNonce := randomHex(32)
 	sid, _ := hex.DecodeString(dialNonce)
 	cp, err := newCPace(n.secret, sid)
@@ -221,10 +186,14 @@ func (n *Node) dialHandshake(c net.Conn, sc *bufio.Scanner, want string) (peerHe
 	}
 	hello := n.hello(dialNonce, "")
 	hello.PAKE = hex.EncodeToString(cp.share)
-	if err := writeFrame(c, hello); err != nil {
+	helloLine, err := json.Marshal(hello)
+	if err != nil {
 		return peerHello{}, err
 	}
-	f, err := readFrame(sc, "hello")
+	if err := w.writeData(helloLine); err != nil {
+		return peerHello{}, err
+	}
+	f, err := w.readFrame("hello")
 	if err != nil {
 		return peerHello{}, err
 	}
@@ -241,53 +210,66 @@ func (n *Node) dialHandshake(c net.Conn, sc *bufio.Scanner, want string) (peerHe
 	case !validNonce(f.Nonce):
 		return peerHello{}, errors.New("invalid nonce")
 	}
-	var mac string
 	h := helloOf(f)
-	if f.PAKE != "" {
-		yb, err := hex.DecodeString(f.PAKE)
-		if err != nil {
-			return peerHello{}, ErrAuth
-		}
-		keys, err := cp.keys(yb, true, cpaceAD(self, n.id), cpaceAD(peer, f.NodeID))
-		if err != nil {
-			return peerHello{}, ErrAuth
-		}
-		if err := n.checkMAC(f.MAC, keys.acceptorTag); err != nil {
-			return peerHello{}, err
-		}
-		mac, h.pake, h.key = hex.EncodeToString(keys.dialerTag), true, keys.session
-	} else {
-		if err := n.legacyAllowed(c.RemoteAddr(), peer); err != nil {
+	if f.PAKE == "" {
+		if err := n.legacyAllowed(remote, peer); err != nil {
 			return peerHello{}, err
 		}
 		if err := n.checkMAC(f.MAC, n.mac("accept", self, peer, dialNonce, f.Nonce)); err != nil {
 			return peerHello{}, err
 		}
-		mac = hex.EncodeToString(n.mac("dial", self, peer, dialNonce, f.Nonce))
+		if err := w.write(frame{Type: "auth", MAC: hex.EncodeToString(n.mac("dial", self, peer, dialNonce, f.Nonce))}); err != nil {
+			return peerHello{}, err
+		}
+		if _, err := w.readFrame("ok"); err != nil {
+			return peerHello{}, fmt.Errorf("peer rejected session: %w", err)
+		}
+		n.log.Warn("legacy handshake: peer runs a version before v0.6", "peer", peer, "remote", remote)
+		return h, nil
 	}
-	if err := writeFrame(c, frame{Type: "auth", MAC: mac}); err != nil {
+	yb, err := hex.DecodeString(f.PAKE)
+	if err != nil {
+		return peerHello{}, ErrAuth
+	}
+	keys, err := cp.keys(yb, true, cpaceAD(self, n.id), cpaceAD(peer, f.NodeID))
+	if err != nil {
+		return peerHello{}, ErrAuth
+	}
+	if err := n.checkMAC(f.MAC, keys.acceptorTag); err != nil {
 		return peerHello{}, err
 	}
-	if _, err := readFrame(sc, "ok"); err != nil {
-		return peerHello{}, fmt.Errorf("peer rejected session: %w", err)
+	th := transcript(helloLine, w.lastLine)
+	if err := w.write(frame{Type: "auth", MAC: hex.EncodeToString(keys.dialerTag(th))}); err != nil {
+		return peerHello{}, err
 	}
-	if !h.pake {
-		n.log.Warn("legacy handshake: peer runs a version before v0.6", "peer", peer, "remote", c.RemoteAddr())
-	}
-	return h, nil
-}
-
-// acceptHandshake authenticates an inbound connection. The caller sends the
-// final ok frame once the connection is registered.
-func (n *Node) acceptHandshake(c net.Conn, sc *bufio.Scanner) (peerHello, error) {
-	self := n.cfg.Node
-	f, err := readFrame(sc, "hello")
+	ck, err := keys.channel(th)
 	if err != nil {
 		return peerHello{}, err
 	}
+	if err := w.secure(ck, true); err != nil {
+		return peerHello{}, err
+	}
+	// The ok is the first sealed record: it proves the acceptor saw the same transcript.
+	if _, err := w.readFrame("ok"); err != nil {
+		return peerHello{}, fmt.Errorf("peer rejected session: %w", err)
+	}
+	h.pake = true
+	return h, nil
+}
+
+// acceptHandshake authenticates an inbound connection; a PAKE session leaves
+// w sealed. The caller sends the final ok frame once the connection is registered.
+func (n *Node) acceptHandshake(w *wire) (peerHello, error) {
+	self := n.cfg.Node
+	remote := w.c.RemoteAddr()
+	f, err := w.readFrame("hello")
+	if err != nil {
+		return peerHello{}, err
+	}
+	dialerLine := w.lastLine
 	if f.Node == self {
 		// Answer with our name so the dialer can tell it reached itself (or a twin name).
-		_ = writeFrame(c, frame{Type: "hello", Node: self})
+		_ = w.write(frame{Type: "hello", Node: self})
 		return peerHello{}, ErrSameName
 	}
 	n.mu.Lock()
@@ -298,7 +280,7 @@ func (n *Node) acceptHandshake(c net.Conn, sc *bufio.Scanner) (peerHello, error)
 		return peerHello{}, fmt.Errorf("%w %q", ErrUnknownPeer, f.Node)
 	}
 	if taken {
-		_ = writeFrame(c, frame{Type: "hello", Node: self, Error: helloNameTaken})
+		_ = w.write(frame{Type: "hello", Node: self, Error: helloNameTaken})
 		return peerHello{}, fmt.Errorf("%w: %q", ErrNameTaken, f.Node)
 	}
 	if !validNonce(f.Nonce) {
@@ -306,51 +288,63 @@ func (n *Node) acceptHandshake(c net.Conn, sc *bufio.Scanner) (peerHello, error)
 	}
 	peer, dialNonce, acceptNonce := f.Node, f.Nonce, randomHex(32)
 	h := helloOf(f)
-	if f.PAKE != "" {
-		ya, err := hex.DecodeString(f.PAKE)
-		if err != nil {
-			return peerHello{}, ErrAuth
-		}
-		sid, _ := hex.DecodeString(dialNonce)
-		cp, err := newCPace(n.secret, sid)
-		if err != nil {
+	if f.PAKE == "" {
+		// A legacy dialer: its MAC exchange leaks an offline-checkable value.
+		if err := n.legacyAllowed(remote, peer); err != nil {
 			return peerHello{}, err
 		}
-		keys, err := cp.keys(ya, false, cpaceAD(peer, f.NodeID), cpaceAD(self, n.id))
-		if err != nil {
-			return peerHello{}, ErrAuth
-		}
-		reply := n.hello(acceptNonce, hex.EncodeToString(keys.acceptorTag))
-		reply.PAKE = hex.EncodeToString(cp.share)
-		if err := writeFrame(c, reply); err != nil {
+		mac := hex.EncodeToString(n.mac("accept", peer, self, dialNonce, acceptNonce))
+		if err := w.write(n.hello(acceptNonce, mac)); err != nil {
 			return peerHello{}, err
 		}
-		auth, err := readFrame(sc, "auth")
+		auth, err := w.readFrame("auth")
 		if err != nil {
 			return peerHello{}, err
 		}
-		if err := n.checkMAC(auth.MAC, keys.dialerTag); err != nil {
+		if err := n.checkMAC(auth.MAC, n.mac("dial", peer, self, dialNonce, acceptNonce)); err != nil {
 			return peerHello{}, err
 		}
-		h.pake, h.key = true, keys.session
+		n.log.Warn("legacy handshake: peer runs a version before v0.6", "peer", peer, "remote", remote)
 		return h, nil
 	}
-	// A legacy dialer: its MAC exchange leaks an offline-checkable value.
-	if err := n.legacyAllowed(c.RemoteAddr(), peer); err != nil {
-		return peerHello{}, err
+	ya, err := hex.DecodeString(f.PAKE)
+	if err != nil {
+		return peerHello{}, ErrAuth
 	}
-	mac := hex.EncodeToString(n.mac("accept", peer, self, dialNonce, acceptNonce))
-	if err := writeFrame(c, n.hello(acceptNonce, mac)); err != nil {
-		return peerHello{}, err
-	}
-	auth, err := readFrame(sc, "auth")
+	sid, _ := hex.DecodeString(dialNonce)
+	cp, err := newCPace(n.secret, sid)
 	if err != nil {
 		return peerHello{}, err
 	}
-	if err := n.checkMAC(auth.MAC, n.mac("dial", peer, self, dialNonce, acceptNonce)); err != nil {
+	keys, err := cp.keys(ya, false, cpaceAD(peer, f.NodeID), cpaceAD(self, n.id))
+	if err != nil {
+		return peerHello{}, ErrAuth
+	}
+	reply := n.hello(acceptNonce, hex.EncodeToString(keys.acceptorTag))
+	reply.PAKE = hex.EncodeToString(cp.share)
+	replyLine, err := json.Marshal(reply)
+	if err != nil {
 		return peerHello{}, err
 	}
-	n.log.Warn("legacy handshake: peer runs a version before v0.6", "peer", peer, "remote", c.RemoteAddr())
+	if err := w.writeData(replyLine); err != nil {
+		return peerHello{}, err
+	}
+	auth, err := w.readFrame("auth")
+	if err != nil {
+		return peerHello{}, err
+	}
+	th := transcript(dialerLine, replyLine)
+	if err := n.checkMAC(auth.MAC, keys.dialerTag(th)); err != nil {
+		return peerHello{}, err
+	}
+	ck, err := keys.channel(th)
+	if err != nil {
+		return peerHello{}, err
+	}
+	if err := w.secure(ck, false); err != nil {
+		return peerHello{}, err
+	}
+	h.pake = true
 	return h, nil
 }
 

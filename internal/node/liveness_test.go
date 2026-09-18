@@ -1,7 +1,6 @@
 package node
 
 import (
-	"io"
 	"net"
 	"testing"
 	"time"
@@ -9,10 +8,10 @@ import (
 	"github.com/UberMorgott/agent-link/internal/config"
 )
 
-// rawPeer authenticates a bare TCP session to a as node name and returns it.
+// rawPeer authenticates a bare (sealed) TCP session to a as node name and returns it.
 // Nothing runs on it: the test decides which frames the "peer" sends. What a
 // writes is drained so its writes never block.
-func rawPeer(t *testing.T, a *testNode, name string) net.Conn {
+func rawPeer(t *testing.T, a *testNode, name string) *wire {
 	t.Helper()
 	cfg := config.Config{Node: name, Listen: "127.0.0.1:0", API: "127.0.0.1:0", DataDir: t.TempDir(), SecretEnv: "UNUSED"}
 	b, err := New(cfg, []byte(testSecret), nil)
@@ -25,12 +24,19 @@ func rawPeer(t *testing.T, a *testNode, name string) net.Conn {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	if _, err := b.dialHandshake(c, newScanner(c), ""); err != nil {
+	w := newWire(c)
+	if _, err := b.dialHandshake(w, ""); err != nil {
 		t.Fatal(err)
 	}
 	_ = c.SetDeadline(time.Time{})
-	go func() { _, _ = io.Copy(io.Discard, c) }()
-	return c
+	go func() {
+		for {
+			if _, err := w.next(); err != nil {
+				return
+			}
+		}
+	}()
+	return w
 }
 
 // openNode starts a node with no configured peer (it accepts any
@@ -47,9 +53,9 @@ func openNode(t *testing.T, every, timeout time.Duration) *testNode {
 // machine) is dropped after the heartbeat timeout.
 func TestSilentPeerIsDroppedAfterHeartbeat(t *testing.T) {
 	a := openNode(t, 50*time.Millisecond, 300*time.Millisecond)
-	c := rawPeer(t, a, "b")
+	w := rawPeer(t, a, "b")
 	eventually(t, "b connected", func() bool { return a.Connected("b") })
-	if err := writeFrame(c, frame{Type: frameHeartbeat}); err != nil {
+	if err := w.write(frame{Type: frameHeartbeat}); err != nil {
 		t.Fatal(err)
 	}
 	began := time.Now()
@@ -125,7 +131,7 @@ func TestNoNewsWhilePeerOffline(t *testing.T) {
 func TestNoNewsWhileConnected(t *testing.T) {
 	a := openNode(t, time.Second, 5*time.Second)
 	a.noNewsAfter = 200 * time.Millisecond
-	c := rawPeer(t, a, "b")
+	w := rawPeer(t, a, "b")
 	eventually(t, "b connected", func() bool { return a.Connected("b") })
 	m, err := a.Send("b", "question", "")
 	if err != nil {
@@ -139,7 +145,7 @@ func TestNoNewsWhileConnected(t *testing.T) {
 			ID: DerivedID(m.ID, label), From: "b", To: "a", ReplyTo: m.ID, Kind: KindStatus,
 			JobStatus: job, Activity: activity, CreatedAt: time.Now().UTC(),
 		}
-		if err := writeFrame(c, frame{Type: "msg", Msg: &st}); err != nil {
+		if err := w.write(frame{Type: "msg", Msg: &st}); err != nil {
 			t.Fatal(err)
 		}
 	}

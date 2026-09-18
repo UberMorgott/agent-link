@@ -1,9 +1,9 @@
 package node
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net"
 	"slices"
@@ -41,14 +41,15 @@ func TestPAKESessionFromPublicAddress(t *testing.T) {
 	a.mu.Lock()
 	pc := a.conns["b"]
 	a.mu.Unlock()
-	if !pc.pake || len(pc.key) != 32 {
-		t.Fatal("session not marked as PAKE or no session key")
+	if !pc.pake || !pc.w.sealed() {
+		t.Fatal("session not marked as PAKE or not sealed")
 	}
 }
 
 // rawPAKE plays a dialer named name that runs CPace with key against tn and
-// returns the acceptor's hello, the dialer's CPace state and the connection.
-func rawPAKE(t *testing.T, tn *testNode, name, key string) (frame, *cpace, net.Conn, *bufio.Scanner) {
+// returns the acceptor's hello, the dialer's CPace state, the connection and
+// the handshake transcript.
+func rawPAKE(t *testing.T, tn *testNode, name, key string) (frame, *cpace, *wire, []byte) {
 	t.Helper()
 	c, err := net.Dial("tcp", tn.peerLn.Addr().String())
 	if err != nil {
@@ -62,15 +63,16 @@ func rawPAKE(t *testing.T, tn *testNode, name, key string) (frame, *cpace, net.C
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeFrame(c, frame{Type: "hello", Node: name, Nonce: nonce, NodeID: "id-" + name, PAKE: hex.EncodeToString(cp.share)}); err != nil {
+	hello, _ := json.Marshal(frame{Type: "hello", Node: name, Nonce: nonce, NodeID: "id-" + name, PAKE: hex.EncodeToString(cp.share)})
+	w := newWire(c)
+	if err := w.writeData(hello); err != nil {
 		t.Fatal(err)
 	}
-	sc := newScanner(c)
-	f, err := readFrame(sc, "hello")
+	f, err := w.readFrame("hello")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return f, cp, c, sc
+	return f, cp, w, transcript(hello, w.lastLine)
 }
 
 // A dialer with a wrong code gets the acceptor's share and tag, but they
@@ -79,7 +81,7 @@ func rawPAKE(t *testing.T, tn *testNode, name, key string) (frame, *cpace, net.C
 func TestWrongCodeGivesNothingReusable(t *testing.T) {
 	a := openNode(t, time.Second, 5*time.Second)
 	wrong := "another-secret-0123456789"
-	f, cp, c, sc := rawPAKE(t, a, "eve", wrong)
+	f, cp, w, _ := rawPAKE(t, a, "eve", wrong)
 	yb, err := hex.DecodeString(f.PAKE)
 	if err != nil || len(yb) != 32 || f.MAC == "" {
 		t.Fatalf("acceptor reply %+v", f)
@@ -99,8 +101,8 @@ func TestWrongCodeGivesNothingReusable(t *testing.T) {
 		}
 	}
 	// Its auth fails and the session never comes up.
-	_ = writeFrame(c, frame{Type: "auth", MAC: hex.EncodeToString(make([]byte, 32))})
-	if _, err := readFrame(sc, "ok"); err == nil {
+	_ = w.write(frame{Type: "auth", MAC: hex.EncodeToString(make([]byte, 32))})
+	if _, err := w.readFrame("ok"); err == nil {
 		t.Fatal("wrong code got ok")
 	}
 	if a.Connected("eve") {
@@ -108,7 +110,7 @@ func TestWrongCodeGivesNothingReusable(t *testing.T) {
 	}
 
 	// The same procedure with the right code does confirm: the check above is meaningful.
-	f, cp, c, sc = rawPAKE(t, a, "bob", testSecret)
+	f, cp, w, th := rawPAKE(t, a, "bob", testSecret)
 	yb, _ = hex.DecodeString(f.PAKE)
 	keys, err := cp.keys(yb, true, cpaceAD("bob", "id-bob"), cpaceAD(f.Node, f.NodeID))
 	if err != nil {
@@ -117,8 +119,15 @@ func TestWrongCodeGivesNothingReusable(t *testing.T) {
 	if hex.EncodeToString(keys.acceptorTag) != f.MAC {
 		t.Fatal("right code not confirmed")
 	}
-	_ = writeFrame(c, frame{Type: "auth", MAC: hex.EncodeToString(keys.dialerTag)})
-	if _, err := readFrame(sc, "ok"); err != nil {
+	_ = w.write(frame{Type: "auth", MAC: hex.EncodeToString(keys.dialerTag(th))})
+	ck, err := keys.channel(th)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.secure(ck, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.readFrame("ok"); err != nil {
 		t.Fatalf("right code: %v", err)
 	}
 	eventually(t, "bob connected", func() bool { return a.Connected("bob") })
@@ -259,12 +268,12 @@ func TestDialLegacyAcceptor(t *testing.T) {
 func TestFailedHandshakesBlockSource(t *testing.T) {
 	a := openNode(t, time.Second, 5*time.Second)
 	for i := range guardFree + 1 {
-		f, _, c, _ := rawPAKE(t, a, "eve", "another-secret-0123456789")
+		f, _, w, _ := rawPAKE(t, a, "eve", "another-secret-0123456789")
 		if f.PAKE == "" {
 			t.Fatalf("attempt %d not answered", i)
 		}
-		_ = writeFrame(c, frame{Type: "auth", MAC: hex.EncodeToString(make([]byte, 32))})
-		_ = c.Close()
+		_ = w.write(frame{Type: "auth", MAC: hex.EncodeToString(make([]byte, 32))})
+		_ = w.c.Close()
 	}
 	eventually(t, "source blocked", func() bool { return !a.guard.allow(net.ParseIP("127.0.0.1")) })
 	c, err := net.Dial("tcp", a.peerLn.Addr().String())
