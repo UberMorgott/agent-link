@@ -26,9 +26,12 @@ import (
 
 const usage = `usage:
   agentlink serve --config <path>
-  agentlink send  --config <path> [--to <node|area:NAME>] --body <text> [--reply-to <id>]   (no --to: the only peer)
+  agentlink send  --config <path> [--to <node|area:NAME>] --body <text> [--reply-to <id>]   (no --to: the only peer; with several it fails and lists them)
   agentlink wait  --config <path> [--timeout 0]    (seconds or duration; 0 = forever; exit 2 on timeout)
   agentlink inbox --config <path> [--limit 50]
+  agentlink members --config <path>                (one JSON line per member, this node first)
+  agentlink add    --config <path> --addr <ip[:port]>   (dial a member's address; it spreads to all members)
+  agentlink remove --config <path> --name <node>        (remove a member from the whole network)
   agentlink update [--check]    (install the latest GitHub release next to this program; --check only reports)
   agentlink version`
 
@@ -67,7 +70,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "serve":
 		cmd = func(c config.Config) (int, error) { return 0, serve(c) }
 	case "send":
-		to := fs.String("to", "", "node name or area:NAME; empty sends to the only known peer")
+		to := fs.String("to", "", "node name or area:NAME; empty sends to the only known peer (an error listing them when there are several)")
 		body := fs.String("body", "", "message text")
 		replyTo := fs.String("reply-to", "", "id of the message being answered")
 		cmd = func(c config.Config) (int, error) { return 0, send(c, *to, *body, *replyTo, stdout) }
@@ -77,6 +80,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "inbox":
 		limit := fs.Int("limit", 50, "maximum entries")
 		cmd = func(c config.Config) (int, error) { return 0, inbox(c, *limit, stdout) }
+	case "members":
+		cmd = func(c config.Config) (int, error) { return 0, members(c, "", nil, stdout) }
+	case "add":
+		addr := fs.String("addr", "", "IP or host of a member, port optional")
+		cmd = func(c config.Config) (int, error) {
+			return 0, members(c, "/members", &node.MemberRequest{Addr: *addr}, stdout)
+		}
+	case "remove":
+		name := fs.String("name", "", "node name of the member")
+		cmd = func(c config.Config) (int, error) {
+			return 0, members(c, "/members/remove", &node.MemberRequest{Name: *name}, stdout)
+		}
 	default:
 		_, _ = fmt.Fprintln(stderr, usage)
 		return 1
@@ -111,6 +126,7 @@ func serve(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	n.SetAppVersion(selfupdate.Version)
 	peerLn, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return err
@@ -178,6 +194,32 @@ func inbox(cfg config.Config, limit int, stdout io.Writer) error {
 		return err
 	}
 	return printLines[node.Entry](resp.Body, stdout)
+}
+
+// members lists the member table, after posting req to path when req is set.
+func members(cfg config.Config, path string, req *node.MemberRequest, stdout io.Writer) error {
+	var resp *http.Response
+	var err error
+	if req == nil {
+		resp, err = http.Get(apiURL(cfg, "/members", nil))
+	} else {
+		if req.Addr == "" && req.Name == "" {
+			return errors.New("--addr or --name is required")
+		}
+		body, merr := json.Marshal(req)
+		if merr != nil {
+			return merr
+		}
+		resp, err = http.Post(apiURL(cfg, path, nil), "application/json", bytes.NewReader(body))
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return err
+	}
+	return printLines[node.MemberInfo](resp.Body, stdout)
 }
 
 // update reports the latest release and, unless check, installs it over this

@@ -85,6 +85,11 @@ type Config struct {
 	SecretEnv string   `json:"secret_env"`
 	Areas     []string `json:"areas"`
 	Peers     []Peer   `json:"peers"`
+	// Discovery sends and answers LAN beacons (UDP, see node.BeaconPort) so
+	// members of the same network find each other without addresses.
+	Discovery bool `json:"discovery,omitempty"`
+	// DiscoveryPort replaces node.BeaconPort; 0 keeps it.
+	DiscoveryPort int `json:"discovery_port,omitempty"`
 }
 
 var namePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_-]{0,63}$`)
@@ -150,6 +155,9 @@ func (c Config) Validate() error {
 	}
 	if c.SecretEnv == "" {
 		errs = append(errs, errors.New("secret_env is required"))
+	}
+	if c.DiscoveryPort < 0 || c.DiscoveryPort > 65535 {
+		errs = append(errs, fmt.Errorf("invalid discovery_port %d", c.DiscoveryPort))
 	}
 	for _, a := range c.Areas {
 		if !ValidName(a) {

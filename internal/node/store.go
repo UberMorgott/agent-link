@@ -18,6 +18,8 @@ import (
 //	outbox/<peer>/<id>.json  queued until the peer ACKs
 //	sent/<peer>/<id>.json    ACKed by the peer
 //	areas.json               last areas each peer announced
+//	members.json             the membership table, tombstones included
+//	node_id                  this node's random id
 type store struct {
 	dir string
 
@@ -227,6 +229,33 @@ func (s *store) loadAreas() (map[string][]string, error) {
 
 func (s *store) saveAreas(areas map[string][]string) error {
 	return writeJSON(filepath.Join(s.dir, "areas.json"), areas)
+}
+
+// nodeID returns the node's random id from node_id, creating it on first use.
+func (s *store) nodeID() (string, error) {
+	path := filepath.Join(s.dir, "node_id")
+	data, err := os.ReadFile(path)
+	if err == nil && validID(strings.TrimSpace(string(data))) {
+		return strings.TrimSpace(string(data)), nil
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	id := newID()
+	return id, os.WriteFile(path, []byte(id+"\n"), 0o600)
+}
+
+func (s *store) loadMembers() ([]Member, error) {
+	var ms []Member
+	err := readJSON(filepath.Join(s.dir, "members.json"), &ms)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return ms, err
+}
+
+func (s *store) saveMembers(ms []Member) error {
+	return writeJSON(filepath.Join(s.dir, "members.json"), ms)
 }
 
 func (s *store) inboxPath(id string) string { return filepath.Join(s.dir, "inbox", id+".json") }

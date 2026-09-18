@@ -32,13 +32,25 @@ var (
 	ErrNoAreaPeer = errors.New("no peer subscribed to the area")
 	// ErrEmptyBody: a request or reply without text.
 	ErrEmptyBody = errors.New("empty body")
+	// ErrAmbiguousPeer: a message without a recipient while several peers are known.
+	ErrAmbiguousPeer = errors.New("several peers known, name one")
+	// ErrNameTaken: another live member with a smaller node id uses this node's name.
+	ErrNameTaken = errors.New("name taken by another member")
+	// ErrRemoved: another member removed this node from the network.
+	ErrRemoved = errors.New("removed from the network")
+	// ErrSelf: the operation names this node itself.
+	ErrSelf = errors.New("this node itself")
 )
 
-// target is one configured peer address; name is fixed by config or learned
-// from the first handshake (guarded by Node.mu).
+// target is one peer address to dial; name is fixed by config or learned
+// from the first handshake (guarded by Node.mu). revive is set for an address
+// the user added by hand: its first session brings back a removed member.
 type target struct {
-	addr string
-	name string
+	addr    string
+	name    string
+	revive  bool
+	auto    bool // learned from gossip or discovery, not configured by the user
+	started bool // its dial loop runs
 }
 
 // Node is one running agentlink peer.
@@ -59,6 +71,17 @@ type Node struct {
 	problem error                // last handshake failure, nil once a session is up
 	offline map[string]time.Time // when each peer's last session ended
 	started time.Time            // stands in for offline of peers never connected
+	members map[string]*Member   // the gossiped membership table, incl. this node and tombstones
+	dialing map[string]bool      // members with a running dial loop
+	tried   map[string]time.Time // discovered addresses by when they were last dialed
+	saveMu  sync.Mutex           // orders members.json writes
+
+	selfAddrs []string // this node's own peer addresses, set by Run
+
+	id         string // random node id, kept in the data directory
+	appVersion string
+	listenPort int
+	netTag     string // discovery network id derived from the key; empty when off
 
 	wg sync.WaitGroup
 
@@ -70,6 +93,14 @@ type Node struct {
 	heartbeatEvery   time.Duration
 	heartbeatTimeout time.Duration
 	noNewsAfter      time.Duration
+	meshEvery        time.Duration // how often new members get a dial loop
+
+	// Discovery (cfg.Discovery): the UDP beacon's port, multicast group,
+	// interval and the interfaces it is sent on and received from.
+	beaconPort   int
+	beaconGroup  net.IP
+	beaconEvery  time.Duration
+	beaconIfaces func() []net.Interface
 
 	onInbound func(Message) error
 }
@@ -89,16 +120,34 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	id, err := st.nodeID()
+	if err != nil {
+		return nil, err
+	}
+	members, err := st.loadMembers()
+	if err != nil {
+		return nil, err
+	}
 	n := &Node{
 		cfg: cfg, secret: secret, store: st, log: log.With("node", cfg.Node),
 		known: map[string]bool{}, conns: map[string]*peerConn{}, areas: map[string][]string{},
 		offline: map[string]time.Time{}, started: time.Now(),
+		members: map[string]*Member{}, dialing: map[string]bool{}, tried: map[string]time.Time{},
+		id:          id,
 		open:        len(cfg.Peers) == 0,
 		resendAfter: 5 * time.Second, resendTick: time.Second,
 		backoffMin: 250 * time.Millisecond, backoffMax: 5 * time.Second,
 		handshakeTimeout: 10 * time.Second,
 		heartbeatEvery:   HeartbeatEvery, heartbeatTimeout: HeartbeatTimeout,
-		noNewsAfter: NoNewsAfter,
+		noNewsAfter: NoNewsAfter, meshEvery: time.Second,
+		beaconPort: cfg.DiscoveryPort, beaconGroup: net.ParseIP(BeaconGroup).To4(),
+		beaconEvery: BeaconEvery, beaconIfaces: beaconInterfaces,
+	}
+	if n.beaconPort == 0 {
+		n.beaconPort = BeaconPort
+	}
+	if cfg.Discovery {
+		n.netTag = NetworkTag(secret)
 	}
 	for _, p := range cfg.Peers {
 		n.targets = append(n.targets, &target{addr: p.Addr, name: p.Name})
@@ -121,8 +170,29 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 			n.areas[peer] = areas
 		}
 	}
+	// members.json: every member ever learned, removed ones as tombstones.
+	for _, m := range members {
+		if !config.ValidName(m.Name) {
+			continue
+		}
+		n.members[m.Name] = &m
+		switch {
+		case m.Name == cfg.Node:
+		case m.Removed:
+			delete(n.known, m.Name)
+		default:
+			n.known[m.Name] = true
+		}
+	}
 	return n, nil
 }
+
+// SetAppVersion sets the program version announced to peers. It must be set
+// before Serve or Run.
+func (n *Node) SetAppVersion(v string) { n.appVersion = v }
+
+// ID returns this node's random id, kept in its data directory.
+func (n *Node) ID() string { return n.id }
 
 // SetInboundHook registers fn to be called for every inbound message after it
 // is persisted and before it is ACKed, including resent duplicates (a crash
@@ -172,14 +242,45 @@ func (n *Node) Serve(ctx context.Context, peerLn, apiLn net.Listener) error {
 // Run serves peers only (listener and dialers) until ctx is cancelled, then
 // closes peerLn. Hosts that serve the control API themselves mount APIHandler.
 func (n *Node) Run(ctx context.Context, peerLn net.Listener) {
+	addrs, port := listenAddrs(peerLn.Addr())
+	n.mu.Lock()
+	n.selfAddrs, n.listenPort = addrs, port
+	n.mu.Unlock()
+	n.refreshSelf()
 	n.wg.Go(func() { n.acceptLoop(ctx, peerLn) })
-	for _, t := range n.targets {
-		n.wg.Go(func() { n.dialLoop(ctx, t) })
+	n.wg.Go(func() { n.meshLoop(ctx) }) // also dials the configured peers
+	if n.netTag != "" {
+		n.wg.Go(func() { n.discoveryLoop(ctx) })
 	}
-	n.log.Info("serving peers", "listen", peerLn.Addr())
+	n.log.Info("serving peers", "listen", peerLn.Addr(), "addrs", addrs, "discovery", n.netTag != "")
 	<-ctx.Done()
 	_ = peerLn.Close()
 	n.wg.Wait()
+	n.mu.Lock()
+	for _, t := range n.targets {
+		t.started = false // a later Run dials them again
+	}
+	n.mu.Unlock()
+}
+
+// AddPeer dials addr (host or host:port, default port added) in addition to
+// the configured peers, now and in a later Run. The first session through it
+// brings back a member someone removed; the address then spreads to every member.
+func (n *Node) AddPeer(addr string) error {
+	a, err := config.WithDefaultPort(addr)
+	if err != nil {
+		return err
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for _, t := range n.targets {
+		if t.addr == a {
+			t.revive = true
+			return nil
+		}
+	}
+	n.targets = append(n.targets, &target{addr: a, revive: true})
+	return nil
 }
 
 // Link liveness and sender-side tracking defaults.
@@ -262,13 +363,16 @@ func (n *Node) PeerHas(peer, c string) bool {
 	return ok && slices.Contains(caps, c)
 }
 
-// Peers returns the known peer names (configured or learned), connected ones first.
+// Peers returns the known peer names (configured or learned, not removed),
+// connected ones first.
 func (n *Node) Peers() []string {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	out := make([]string, 0, len(n.known))
 	for p := range n.known {
-		out = append(out, p)
+		if !n.removedLocked(p) {
+			out = append(out, p)
+		}
 	}
 	slices.SortFunc(out, func(a, b string) int {
 		ca, cb := n.conns[a] != nil, n.conns[b] != nil
@@ -299,7 +403,7 @@ func (n *Node) setProblem(err error) {
 
 // Send queues a message to a node name or to "area:NAME". Area messages fan
 // out to every peer that announced the area. An empty to means the only
-// known peer.
+// known peer; with several it is ErrAmbiguousPeer, which lists them.
 func (n *Node) Send(to, body, replyTo string) (Message, error) {
 	return n.SendMessage(Message{To: to, Body: body, ReplyTo: replyTo})
 }
@@ -325,8 +429,12 @@ func (n *Node) SendMessage(m Message) (Message, error) {
 	}
 	m.From, m.Area, m.CreatedAt = n.cfg.Node, "", time.Now().UTC()
 	if m.To == "" {
-		if peers := n.Peers(); len(peers) == 1 {
+		switch peers := n.Peers(); {
+		case len(peers) == 1:
 			m.To = peers[0]
+		case len(peers) > 1:
+			slices.Sort(peers)
+			return Message{}, fmt.Errorf("%w: %s", ErrAmbiguousPeer, strings.Join(peers, ", "))
 		}
 	}
 	to := m.To
@@ -335,7 +443,7 @@ func (n *Node) SendMessage(m Message) (Message, error) {
 		m.Area = area
 		n.mu.Lock()
 		for peer, areas := range n.areas {
-			if slices.Contains(areas, area) {
+			if slices.Contains(areas, area) && n.known[peer] && !n.removedLocked(peer) {
 				recipients = append(recipients, peer)
 			}
 		}
@@ -346,7 +454,7 @@ func (n *Node) SendMessage(m Message) (Message, error) {
 		slices.Sort(recipients)
 	} else {
 		n.mu.Lock()
-		ok := n.known[to]
+		ok := n.known[to] && !n.removedLocked(to)
 		n.mu.Unlock()
 		if !ok {
 			return Message{}, fmt.Errorf("%w %q", ErrUnknownPeer, to)
@@ -410,18 +518,21 @@ func (n *Node) handleInbound(ctx context.Context, c net.Conn) {
 		return
 	}
 	_ = c.SetDeadline(time.Time{})
-	n.runConn(ctx, pc, sc)
+	n.runConn(ctx, pc, sc, "")
 }
 
 func (n *Node) dialLoop(ctx context.Context, t *target) {
 	backoff := n.backoffMin
 	for {
 		n.mu.Lock()
-		name := t.name
+		name, idle := t.name, t.name != "" && n.removedLocked(t.name) && !t.revive
 		n.mu.Unlock()
-		if name != "" && n.Connected(name) {
+		switch {
+		case idle: // a removed member: only a hand-added address brings it back
+			backoff = n.backoffMax
+		case name != "" && n.Connected(name):
 			backoff = n.backoffMin
-		} else if n.dialOnce(ctx, t) {
+		case n.dialOnce(ctx, t):
 			backoff = n.backoffMin
 		}
 		select {
@@ -452,7 +563,8 @@ func (n *Node) dialOnce(ctx context.Context, t *target) bool {
 	hello, err := n.dialHandshake(c, sc, want)
 	if err != nil {
 		n.log.Warn("outbound handshake failed", "addr", t.addr, "err", err)
-		if errors.Is(err, ErrAuth) || errors.Is(err, ErrSameName) || errors.Is(err, ErrWrongPeer) {
+		// Learned and discovered addresses go stale; only the user's own ones are reported.
+		if !t.auto && (errors.Is(err, ErrAuth) || errors.Is(err, ErrSameName) || errors.Is(err, ErrWrongPeer)) || errors.Is(err, ErrNameTaken) {
 			n.setProblem(err)
 		}
 		_ = c.Close()
@@ -460,13 +572,20 @@ func (n *Node) dialOnce(ctx context.Context, t *target) bool {
 	}
 	n.mu.Lock()
 	t.name = hello.name
+	revive := t.revive
 	n.mu.Unlock()
+	if revive {
+		n.revive(hello.name, hello.id)
+	}
 	_ = c.SetDeadline(time.Time{})
 	pc := newPeerConn(hello, n.cfg.Node, c)
 	if !n.register(pc) {
 		_ = c.Close()
 		return false
 	}
-	n.runConn(ctx, pc, sc)
+	n.mu.Lock()
+	t.revive = false
+	n.mu.Unlock()
+	n.runConn(ctx, pc, sc, t.addr)
 	return true
 }

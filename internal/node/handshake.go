@@ -38,21 +38,36 @@ const maxFrame = 1 << 20
 // types, unknown fields and frames that do not parse are skipped, never an
 // error that closes the session. A new feature is only used towards a peer
 // that announced its capability (Node.PeerHas).
+//
+// Since v0.5 hello also carries node_id (a random id kept in the data
+// directory), app (the program version) and port (the dialer's peer port),
+// and peers with the "members" capability exchange members frames (the
+// gossiped membership table, see members.go). An acceptor that refuses a
+// dialer because its name is taken by a live member with a smaller node_id
+// answers hello{error: "name-taken"} without a MAC.
 type frame struct {
-	Type  string   `json:"type"`
-	Node  string   `json:"node,omitempty"`
-	Areas []string `json:"areas,omitempty"`
-	Nonce string   `json:"nonce,omitempty"`
-	MAC   string   `json:"mac,omitempty"`
-	Proto int      `json:"proto,omitempty"`
-	Caps  []string `json:"caps,omitempty"`
-	Msg   *Message `json:"msg,omitempty"`
-	ID    string   `json:"id,omitempty"`
+	Type    string   `json:"type"`
+	Node    string   `json:"node,omitempty"`
+	Areas   []string `json:"areas,omitempty"`
+	Nonce   string   `json:"nonce,omitempty"`
+	MAC     string   `json:"mac,omitempty"`
+	Proto   int      `json:"proto,omitempty"`
+	Caps    []string `json:"caps,omitempty"`
+	NodeID  string   `json:"node_id,omitempty"`
+	App     string   `json:"app,omitempty"`
+	Port    int      `json:"port,omitempty"`
+	Error   string   `json:"error,omitempty"`
+	Msg     *Message `json:"msg,omitempty"`
+	ID      string   `json:"id,omitempty"`
+	Members []Member `json:"members,omitempty"`
 }
 
 // ProtocolVersion is announced in hello. It only grows; it never gates a
 // session, only capabilities do.
-const ProtocolVersion = 4
+const ProtocolVersion = 5
+
+// helloNameTaken is hello.error when the dialer's name belongs to another live member.
+const helloNameTaken = "name-taken"
 
 // Capabilities this node announces. Older peers announce none.
 const (
@@ -64,10 +79,13 @@ const (
 	CapCaps = "caps"
 	// CapJobReattach: a running job survives a restart of the answering app.
 	CapJobReattach = "job-reattach"
+	// CapMembers: exchanges the membership table (members frames) and dials
+	// the members it learns.
+	CapMembers = "members"
 )
 
 // Capabilities is the list sent in hello.
-var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach}
+var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers}
 
 // handshakeFrames are the frame types readFrame knows; any other type is skipped.
 var handshakeFrames = map[string]bool{"hello": true, "auth": true, "ok": true}
@@ -78,10 +96,19 @@ type peerHello struct {
 	areas []string
 	proto int
 	caps  []string
+	id    string // empty for a peer older than v0.5
+	app   string
+	port  int
 }
 
 func helloOf(f frame) peerHello {
-	return peerHello{name: f.Node, areas: f.Areas, proto: f.Proto, caps: f.Caps}
+	return peerHello{name: f.Node, areas: f.Areas, proto: f.Proto, caps: f.Caps, id: f.NodeID, app: f.App, port: f.Port}
+}
+
+// hello is this node's hello frame.
+func (n *Node) hello(nonce, mac string) frame {
+	return frame{Type: "hello", Node: n.cfg.Node, Areas: n.cfg.Areas, Nonce: nonce, MAC: mac,
+		Proto: ProtocolVersion, Caps: Capabilities, NodeID: n.id, App: n.appVersion, Port: n.port()}
 }
 
 func newScanner(r io.Reader) *bufio.Scanner {
@@ -161,7 +188,7 @@ func validNonce(s string) bool {
 func (n *Node) dialHandshake(c net.Conn, sc *bufio.Scanner, want string) (peerHello, error) {
 	self := n.cfg.Node
 	dialNonce := randomHex(32)
-	if err := writeFrame(c, frame{Type: "hello", Node: self, Areas: n.cfg.Areas, Nonce: dialNonce, Proto: ProtocolVersion, Caps: Capabilities}); err != nil {
+	if err := writeFrame(c, n.hello(dialNonce, "")); err != nil {
 		return peerHello{}, err
 	}
 	f, err := readFrame(sc, "hello")
@@ -170,6 +197,8 @@ func (n *Node) dialHandshake(c net.Conn, sc *bufio.Scanner, want string) (peerHe
 	}
 	peer := f.Node
 	switch {
+	case f.Error == helloNameTaken:
+		return peerHello{}, ErrNameTaken
 	case peer == self:
 		return peerHello{}, ErrSameName
 	case !config.ValidName(peer):
@@ -206,17 +235,22 @@ func (n *Node) acceptHandshake(c net.Conn, sc *bufio.Scanner) (peerHello, error)
 		return peerHello{}, ErrSameName
 	}
 	n.mu.Lock()
-	known := n.known[f.Node]
+	known, removed := n.known[f.Node], n.removedLocked(f.Node)
+	taken := n.takenLocked(f.Node, f.NodeID)
 	n.mu.Unlock()
-	if !config.ValidName(f.Node) || (!n.open && !known) {
+	if !config.ValidName(f.Node) || removed || (!n.open && !known) {
 		return peerHello{}, fmt.Errorf("%w %q", ErrUnknownPeer, f.Node)
+	}
+	if taken {
+		_ = writeFrame(c, frame{Type: "hello", Node: self, Error: helloNameTaken})
+		return peerHello{}, fmt.Errorf("%w: %q", ErrNameTaken, f.Node)
 	}
 	if !validNonce(f.Nonce) {
 		return peerHello{}, errors.New("invalid nonce")
 	}
 	peer, dialNonce, acceptNonce := f.Node, f.Nonce, randomHex(32)
 	mac := hex.EncodeToString(n.mac("accept", peer, self, dialNonce, acceptNonce))
-	if err := writeFrame(c, frame{Type: "hello", Node: self, Areas: n.cfg.Areas, Nonce: acceptNonce, MAC: mac, Proto: ProtocolVersion, Caps: Capabilities}); err != nil {
+	if err := writeFrame(c, n.hello(acceptNonce, mac)); err != nil {
 		return peerHello{}, err
 	}
 	auth, err := readFrame(sc, "auth")

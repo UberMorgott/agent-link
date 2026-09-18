@@ -74,6 +74,13 @@ try {
     $back = Receive-One $cfgA
     if ($back.from -ne 'node-b' -or $back.reply_to -ne $id) { throw 'node-a got the wrong reply' }
 
+    Write-Host '== member table'
+    $m = Invoke-Agentlink members --config $cfgB
+    if ($m.Code -ne 0) { throw 'members failed' }
+    $members = @($m.Output | ForEach-Object { $_ | ConvertFrom-Json })
+    Write-Host "node-b members: $(($members | ForEach-Object { "$($_.name)$(if ($_.online) { '+' })" }) -join ', ')"
+    if (-not $members[0].self -or $members[0].name -ne 'node-b' -or -not ($members | Where-Object { $_.name -eq 'node-a' -and $_.online })) { throw 'node-b member table is wrong' }
+
     $empty = Invoke-Agentlink wait --config $cfgA --timeout 1
     if ($empty.Code -ne 2) { throw "empty wait exited $($empty.Code), want 2" }
 

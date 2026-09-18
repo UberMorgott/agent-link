@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"sync"
 	"time"
 )
@@ -21,6 +22,9 @@ type peerConn struct {
 	areas  []string
 	proto  int      // 0: an older peer that announced no version
 	caps   []string // empty for an older peer
+	id     string   // node id; empty for a peer older than v0.5
+	app    string   // program version the peer announced, if any
+	port   int      // peer port the peer announced, if any
 	c      net.Conn
 
 	wmu  sync.Mutex
@@ -30,9 +34,12 @@ type peerConn struct {
 }
 
 func newPeerConn(h peerHello, dialer string, c net.Conn) *peerConn {
-	return &peerConn{peer: h.name, dialer: dialer, areas: h.areas, proto: h.proto, caps: h.caps, c: c,
+	return &peerConn{peer: h.name, dialer: dialer, areas: h.areas, proto: h.proto, caps: h.caps,
+		id: h.id, app: h.app, port: h.port, c: c,
 		kick: make(chan struct{}, 1), done: make(chan struct{})}
 }
+
+func (pc *peerConn) has(c string) bool { return slices.Contains(pc.caps, c) }
 
 func (pc *peerConn) write(f frame) error {
 	pc.wmu.Lock()
@@ -70,7 +77,17 @@ func preferred(self string, next, old *peerConn) bool {
 func (n *Node) register(pc *peerConn) bool {
 	n.mu.Lock()
 	old := n.conns[pc.peer]
-	if old != nil && !preferred(n.cfg.Node, pc, old) {
+	switch {
+	case n.removedLocked(pc.peer):
+		n.mu.Unlock()
+		return false
+	case old != nil && old.id != "" && pc.id != "" && old.id != pc.id:
+		// Two machines use one name: the smaller node id keeps it everywhere.
+		if old.id < pc.id {
+			n.mu.Unlock()
+			return false
+		}
+	case old != nil && !preferred(n.cfg.Node, pc, old):
 		n.mu.Unlock()
 		return false
 	}
@@ -90,24 +107,30 @@ func (n *Node) register(pc *peerConn) bool {
 		n.log.Warn("save areas", "err", err)
 	}
 	n.log.Info("peer connected", "peer", pc.peer, "dialer", pc.dialer, "areas", pc.areas,
-		"proto", pc.proto, "caps", pc.caps)
+		"proto", pc.proto, "caps", pc.caps, "app", pc.app)
 	return true
 }
 
 func (n *Node) unregister(pc *peerConn) {
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.conns[pc.peer] == pc {
+	gone := n.conns[pc.peer] == pc
+	if gone {
 		delete(n.conns, pc.peer)
 		n.offline[pc.peer] = time.Now()
 		n.log.Info("peer disconnected", "peer", pc.peer)
 	}
+	n.mu.Unlock()
+	if gone {
+		n.touchSeen(pc.peer)
+	}
 }
 
-// runConn serves a registered connection until it closes.
-func (n *Node) runConn(ctx context.Context, pc *peerConn, sc *bufio.Scanner) {
+// runConn serves a registered connection until it closes. dialed is the
+// address this node dialed, empty for an inbound connection.
+func (n *Node) runConn(ctx context.Context, pc *peerConn, sc *bufio.Scanner, dialed string) {
 	stop := context.AfterFunc(ctx, pc.close)
 	defer stop()
+	n.noteSession(pc, dialed)
 	n.wg.Go(func() { n.writeLoop(pc) })
 	n.readLoop(pc, sc)
 	pc.close()
@@ -137,6 +160,8 @@ func (n *Node) readLoop(pc *peerConn, sc *bufio.Scanner) {
 			}
 		case f.Type == frameHeartbeat:
 			beats = true
+		case f.Type == frameMembers:
+			n.mergeMembers(f.Members)
 		default:
 			n.log.Debug("unknown frame type ignored", "peer", pc.peer, "type", f.Type)
 		}
