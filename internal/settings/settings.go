@@ -41,7 +41,12 @@ type Settings struct {
 	// Secret is the long shared secret of configs written before pairing
 	// codes; used only while Code is empty. Never sent to the page.
 	Secret string `json:"secret,omitempty"`
-	// HandlerCommand replaces the built-in agent command (argv, used by tests).
+	// AgentPath is the absolute path of the agent program (.exe, .cmd, .bat)
+	// when it is not on PATH. It replaces only the command name: the handler's
+	// read-only arguments stay.
+	AgentPath string `json:"agent_path,omitempty"`
+	// HandlerCommand replaces the built-in agent command (argv, used by tests)
+	// and wins over AgentPath.
 	HandlerCommand []string `json:"handler_command,omitempty"`
 }
 
@@ -109,7 +114,7 @@ func Load(path string) (s Settings, ok bool, err error) {
 func (s Settings) Normalize() Settings {
 	s.Node, s.PeerAddr, s.Listen = strings.TrimSpace(s.Node), strings.TrimSpace(s.PeerAddr), strings.TrimSpace(s.Listen)
 	s.API, s.PeerName, s.WorkDir = strings.TrimSpace(s.API), strings.TrimSpace(s.PeerName), strings.TrimSpace(s.WorkDir)
-	s.Code = strings.TrimSpace(s.Code)
+	s.Code, s.AgentPath = strings.TrimSpace(s.Code), strings.TrimSpace(s.AgentPath)
 	if c, ok := config.NormalizeCode(s.Code); ok {
 		s.Code = c
 	}
@@ -207,7 +212,11 @@ func (s Settings) Command() (worker.Command, bool) {
 	if len(s.HandlerCommand) > 0 {
 		return worker.Command{Name: s.HandlerCommand[0], Args: s.HandlerCommand[1:]}, true
 	}
-	return worker.ForHandler(s.Handler)
+	c, ok := worker.ForHandler(s.Handler)
+	if ok && s.AgentPath != "" {
+		c.Name = s.AgentPath
+	}
+	return c, ok
 }
 
 // Validate reports the first problem, in page order. Empty code and empty
@@ -232,8 +241,16 @@ func (s Settings) Validate() error {
 		if st, err := os.Stat(s.WorkDir); s.WorkDir == "" || err != nil || !st.IsDir() {
 			return problem("work_dir")
 		}
-		if _, err := exec.LookPath(s.Handler); err != nil && len(s.HandlerCommand) == 0 {
-			return problem("handler_missing")
+		switch {
+		case len(s.HandlerCommand) > 0:
+		case s.AgentPath != "":
+			if st, err := os.Stat(s.AgentPath); !filepath.IsAbs(s.AgentPath) || err != nil || !st.Mode().IsRegular() {
+				return problem("agent_path")
+			}
+		default:
+			if _, err := exec.LookPath(s.Handler); err != nil {
+				return problem("handler_missing")
+			}
 		}
 	default:
 		return problem("handler")

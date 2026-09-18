@@ -11,8 +11,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// The modern Explorer-style folder picker (IFileOpenDialog with
-// FOS_PICKFOLDERS), called through its COM vtable without cgo.
+// The modern Explorer-style folder and file pickers (IFileOpenDialog, with
+// FOS_PICKFOLDERS for folders), called through the COM vtable without cgo.
 
 var (
 	clsidFileOpenDialog = windows.GUID{Data1: 0xDC1C5A9C, Data2: 0xE88A, Data3: 0x4DDE, Data4: [8]byte{0xA5, 0xA1, 0x60, 0xF8, 0x2A, 0x20, 0xAE, 0xF7}}
@@ -37,6 +37,7 @@ const (
 	fosPickFolders      = 0x20
 	fosForceFileSystem  = 0x40
 	fosPathMustExist    = 0x800
+	fosFileMustExist    = 0x1000
 	sigdnFileSysPath    = 0x80058000
 	wsExTopmost         = 0x8
 	wsExToolWindow      = 0x80
@@ -46,6 +47,7 @@ const (
 	hresultCancelled    = 0x80070000 | uintptr(windows.ERROR_CANCELLED)
 	vtblRelease         = 2
 	vtblShow            = 3
+	vtblSetFileTypes    = 4
 	vtblSetOptions      = 9
 	vtblGetOptions      = 10
 	vtblSetFolder       = 12
@@ -71,9 +73,20 @@ func hresult(what string, hr uintptr) error {
 	return nil
 }
 
-// pickFolder shows the folder dialog on its own OS thread with COM
-// initialized there, and waits for the user.
+// pickFolder shows the folder dialog and waits for the user.
 func pickFolder(start, title string) (string, error) {
+	return pickOnThread(start, title, nil)
+}
+
+// pickFile shows the file dialog for one existing file matching filterSpec
+// (e.g. "*.exe;*.cmd"), opening in the folder start, and waits for the user.
+func pickFile(start, title, filterName, filterSpec string) (string, error) {
+	return pickOnThread(start, title, &[2]string{filterName, filterSpec})
+}
+
+// pickOnThread shows the dialog on its own OS thread with COM initialized
+// there. A nil filter picks a folder, else a file.
+func pickOnThread(start, title string, filter *[2]string) (string, error) {
 	type result struct {
 		path string
 		err  error
@@ -82,14 +95,17 @@ func pickFolder(start, title string) (string, error) {
 	go func() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
-		p, err := pickFolderOnThread(start, title)
+		p, err := showOpenDialog(start, title, filter)
 		done <- result{p, err}
 	}()
 	r := <-done
 	return r.path, r.err
 }
 
-func pickFolderOnThread(start, title string) (string, error) {
+// filterSpec mirrors COMDLG_FILTERSPEC.
+type filterSpec struct{ name, spec *uint16 }
+
+func showOpenDialog(start, title string, filter *[2]string) (string, error) {
 	err := windows.CoInitializeEx(0, windows.COINIT_APARTMENTTHREADED|windows.COINIT_DISABLE_OLE1DDE)
 	if err != nil && !errors.Is(err, syscall.Errno(1)) { // S_FALSE: already initialized, still paired
 		return "", fmt.Errorf("CoInitializeEx: %w", err)
@@ -111,9 +127,25 @@ func pickFolderOnThread(start, title string) (string, error) {
 	if err := hresult("GetOptions", dlg.call(vtblGetOptions, uintptr(unsafe.Pointer(opts)))); err != nil {
 		return "", err
 	}
-	*opts |= fosPickFolders | fosForceFileSystem | fosPathMustExist | fosNoChangeDir
+	*opts |= fosForceFileSystem | fosPathMustExist | fosNoChangeDir
+	if filter == nil {
+		*opts |= fosPickFolders
+	} else {
+		*opts |= fosFileMustExist
+	}
 	if err := hresult("SetOptions", dlg.call(vtblSetOptions, uintptr(*opts))); err != nil {
 		return "", err
+	}
+	if filter != nil {
+		name, err1 := windows.UTF16PtrFromString(filter[0])
+		spec, err2 := windows.UTF16PtrFromString(filter[1])
+		if err1 == nil && err2 == nil {
+			specs := &[1]filterSpec{{name, spec}}
+			if err := hresult("SetFileTypes", dlg.call(vtblSetFileTypes, 1, uintptr(unsafe.Pointer(specs)))); err != nil {
+				return "", err
+			}
+			runtime.KeepAlive(specs)
+		}
 	}
 	if t, err := windows.UTF16PtrFromString(title); err == nil {
 		dlg.call(vtblSetTitle, uintptr(unsafe.Pointer(t)))

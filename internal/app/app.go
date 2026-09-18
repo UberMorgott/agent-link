@@ -36,8 +36,14 @@ type App struct {
 	// PickFolder shows the native folder dialog starting at start and returns
 	// the chosen absolute path or ErrPickCancelled; replaceable in tests.
 	PickFolder func(start, title string) (string, error)
+	// PickFile shows the native file dialog for a program, starting in the
+	// folder start; replaceable in tests.
+	PickFile func(start, title, filterName, filterSpec string) (string, error)
+	// Agents finds agent programs: on PATH, at AgentPath, or at their
+	// well-known install locations; replaceable in tests.
+	Agents settings.Finder
 
-	picking atomic.Bool // a folder dialog is open
+	picking atomic.Bool // a Windows dialog is open
 
 	mu         sync.Mutex
 	s          settings.Settings
@@ -79,7 +85,8 @@ func New(path string, log *slog.Logger) (*App, error) {
 	return &App{
 		path: path, token: newToken(), log: log, s: s, configured: ok,
 		SetAutostart: setAutostart, HandlerTimeout: worker.DefaultTimeout,
-		Ifaces: settings.SystemIfaces, PickFolder: pickFolder, zeroTier: true,
+		Ifaces: settings.SystemIfaces, PickFolder: pickFolder, PickFile: pickFile,
+		Agents: settings.SystemFinder, zeroTier: true,
 	}, nil
 }
 
@@ -179,7 +186,9 @@ var ErrNotStarted = errors.New("settings saved, but the node did not start")
 // Apply validates and saves new settings, updates autostart and restarts the
 // node. HandlerCommand, an empty API and, while no code is set, the legacy
 // secret are kept from the current settings. A code replaces the secret.
-func (a *App) Apply(s settings.Settings) error {
+// When the chosen agent is neither on PATH nor at AgentPath, its well-known
+// install locations are tried and a hit is saved as AgentPath and returned.
+func (a *App) Apply(s settings.Settings) (found string, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s = s.Normalize()
@@ -190,8 +199,12 @@ func (a *App) Apply(s settings.Settings) error {
 	if s.Code == "" {
 		s.Secret = a.s.Secret
 	}
+	if s.AgentPath == "" && len(s.HandlerCommand) == 0 && a.Agents.LookPath != nil {
+		found = a.Agents.Discover(s.Handler)
+		s.AgentPath = found
+	}
 	if err := settings.Save(a.path, s); err != nil {
-		return err
+		return "", err
 	}
 	if a.SetAutostart != nil && (s.Autostart != a.s.Autostart || !a.configured) {
 		if err := a.SetAutostart(s.Autostart); err != nil {
@@ -201,9 +214,9 @@ func (a *App) Apply(s settings.Settings) error {
 	a.stopLocked()
 	a.s, a.configured = s, true
 	if err := a.startLocked(); err != nil {
-		return fmt.Errorf("%w: %w", ErrNotStarted, err)
+		return found, fmt.Errorf("%w: %w", ErrNotStarted, err)
 	}
-	return nil
+	return found, nil
 }
 
 func (a *App) startLocked() error {

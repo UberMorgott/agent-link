@@ -5,6 +5,8 @@ const result = document.getElementById("result");
 const code = document.getElementById("code");
 const workDir = document.getElementById("work_dir");
 const pick = document.getElementById("pick");
+const agentPath = document.getElementById("agent_path");
+const pickAgent = document.getElementById("pick_agent");
 
 // Letters and digits without 0/O and 1/I: 32 symbols, so a byte & 31 is uniform.
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -16,6 +18,8 @@ async function load() {
   }
   form.elements.areas.value = (s.areas || []).join(", ");
   form.elements.handler.value = s.handler || "none";
+  agentPath.value = s.agent_path || "";
+  showAgent();
   form.elements.autostart.checked = !!s.autostart;
   if (s.listen || s.api || s.peer_name || (s.areas || []).length) document.getElementById("advanced").open = true;
   showWorkDir("settings.work_dir.current");
@@ -48,6 +52,45 @@ pick.addEventListener("click", async () => {
     result.textContent = e.message;
   } finally {
     pick.disabled = false;
+  }
+});
+
+// showAgent tells which agent program the chosen handler would run.
+async function showAgent() {
+  const row = document.getElementById("agent_row");
+  const handler = form.elements.handler.value;
+  row.hidden = handler === "none";
+  if (row.hidden) return;
+  const el = document.getElementById("agent_shown");
+  try {
+    const r = await api("POST", "agent", { handler, agent_path: agentPath.value });
+    if (form.elements.handler.value === handler) el.textContent = r.text || "";
+  } catch (e) { el.textContent = e.message; }
+}
+
+// A program chosen for one agent is not the other agent's program.
+form.elements.handler.addEventListener("change", () => {
+  agentPath.value = "";
+  showAgent();
+});
+
+// The tray process opens the native Windows file dialog for the program.
+pickAgent.addEventListener("click", async () => {
+  pickAgent.disabled = true;
+  result.textContent = t("settings.agent.picking");
+  try {
+    const r = await api("POST", "pick-agent", { start: agentPath.value });
+    if (r.path) {
+      agentPath.value = r.path;
+      await showAgent();
+      result.textContent = fmt("settings.agent.chosen", { path: r.path });
+    } else {
+      result.textContent = r.message || "";
+    }
+  } catch (e) {
+    result.textContent = e.message;
+  } finally {
+    pickAgent.disabled = false;
   }
 });
 
@@ -88,6 +131,7 @@ form.addEventListener("submit", async (ev) => {
     code: f.code.value.trim(),
     peer_addr: f.peer_addr.value.trim(),
     handler: f.handler.value,
+    agent_path: agentPath.value,
     work_dir: f.work_dir.value.trim(),
     listen: f.listen.value.trim(),
     api: f.api.value.trim(),
@@ -98,7 +142,8 @@ form.addEventListener("submit", async (ev) => {
   result.textContent = t("settings.saving");
   try {
     const r = await api("POST", "settings", body);
-    result.textContent = r.error ? r.error : t("settings.saved");
+    const text = r.error ? r.error : t("settings.saved");
+    result.textContent = r.found ? text + " " + r.found : text;
     await load();
     refreshStatus();
     showMyAddr();

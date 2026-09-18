@@ -10,11 +10,13 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
 	"github.com/UberMorgott/agent-link/internal/settings"
+	"github.com/UberMorgott/agent-link/internal/worker"
 )
 
 //go:embed web
@@ -46,6 +48,8 @@ func (a *App) URL(page string) string {
 //	GET  /ui/api/threads           []Thread (inbox entries paired by reply_to)
 //	POST /ui/api/send              node.SendRequest -> node.Message
 //	POST /ui/api/pick-folder       {"start"} -> native folder dialog -> pickResult
+//	POST /ui/api/agent             {"handler","agent_path"} -> agentInfo
+//	POST /ui/api/pick-agent        {"start"} -> native file dialog for a program -> pickResult
 //	POST /ui/api/quit              exit the app (same path as the tray's Quit)
 func (a *App) Handler() http.Handler {
 	ui := http.NewServeMux()
@@ -65,6 +69,8 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("GET /ui/api/threads", a.threads)
 	api.HandleFunc("POST /ui/api/send", a.send)
 	api.HandleFunc("POST /ui/api/pick-folder", a.pickFolder)
+	api.HandleFunc("POST /ui/api/agent", a.agentInfo)
+	api.HandleFunc("POST /ui/api/pick-agent", a.pickAgent)
 	api.HandleFunc("POST /ui/api/quit", func(w http.ResponseWriter, _ *http.Request) {
 		if a.QuitFunc == nil {
 			writeError(w, http.StatusNotImplemented, msg("error.internal", nil))
@@ -152,6 +158,8 @@ func (a *App) page(name string) http.HandlerFunc {
 type saveResult struct {
 	Saved bool   `json:"saved"`
 	Error string `json:"error,omitempty"`
+	// Found says where the agent program was found on save, if it was looked for.
+	Found string `json:"found,omitempty"`
 }
 
 func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
@@ -160,13 +168,17 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg("error.bad_request", nil))
 		return
 	}
-	err := a.Apply(s)
+	path, err := a.Apply(s)
+	found := ""
+	if path != "" {
+		found = msg("settings.agent.found", map[string]string{"path": path})
+	}
 	var p *settings.Problem
 	switch {
 	case err == nil:
-		writeJSON(w, saveResult{Saved: true})
+		writeJSON(w, saveResult{Saved: true, Found: found})
 	case errors.Is(err, ErrNotStarted):
-		writeJSON(w, saveResult{Saved: true, Error: userError(err)})
+		writeJSON(w, saveResult{Saved: true, Error: userError(err), Found: found})
 	case errors.As(err, &p):
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
@@ -232,11 +244,11 @@ func (a *App) send(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, m)
 }
 
-// ErrPickCancelled means the user closed the folder dialog without choosing.
-var ErrPickCancelled = errors.New("folder dialog cancelled")
+// ErrPickCancelled means the user closed a Windows dialog without choosing.
+var ErrPickCancelled = errors.New("dialog cancelled")
 
-// ErrPickUnsupported means this platform has no native folder dialog.
-var ErrPickUnsupported = errors.New("folder dialog is not supported on this platform")
+// ErrPickUnsupported means this platform has no native dialog.
+var ErrPickUnsupported = errors.New("native dialog is not supported on this platform")
 
 type pickResult struct {
 	Path      string `json:"path,omitempty"`
@@ -244,9 +256,12 @@ type pickResult struct {
 	Message   string `json:"message,omitempty"`
 }
 
-// pickFolder opens the native folder dialog in this (tray) process: a browser
-// page cannot learn absolute paths. One dialog at a time.
-func (a *App) pickFolder(w http.ResponseWriter, r *http.Request) {
+// pickKeys are the strings of one kind of dialog.
+type pickKeys struct{ what, cancelled, unsupported, failed string }
+
+// pick opens a native dialog in this (tray) process: a browser page cannot
+// learn absolute paths. One dialog of any kind at a time.
+func (a *App) pick(w http.ResponseWriter, r *http.Request, keys pickKeys, open func(start string) (string, error)) {
 	var req struct {
 		Start string `json:"start"`
 	}
@@ -254,8 +269,8 @@ func (a *App) pickFolder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg("error.bad_request", nil))
 		return
 	}
-	if a.PickFolder == nil {
-		writeError(w, http.StatusNotImplemented, msg("error.pick_unsupported", nil))
+	if open == nil {
+		writeError(w, http.StatusNotImplemented, msg(keys.unsupported, nil))
 		return
 	}
 	if !a.picking.CompareAndSwap(false, true) {
@@ -263,20 +278,80 @@ func (a *App) pickFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer a.picking.Store(false)
-	path, err := a.PickFolder(strings.TrimSpace(req.Start), msg("settings.work_dir.pick_title", nil))
+	path, err := open(strings.TrimSpace(req.Start))
 	switch {
 	case err == nil:
 		writeJSON(w, pickResult{Path: path})
 	case errors.Is(err, ErrPickCancelled):
-		writeJSON(w, pickResult{Cancelled: true, Message: msg("settings.work_dir.cancelled", nil)})
+		writeJSON(w, pickResult{Cancelled: true, Message: msg(keys.cancelled, nil)})
 	case errors.Is(err, ErrPickUnsupported):
-		writeError(w, http.StatusNotImplemented, msg("error.pick_unsupported", nil))
+		writeError(w, http.StatusNotImplemented, msg(keys.unsupported, nil))
 	default:
-		a.log.Error("pick folder", "err", err)
-		writeError(w, http.StatusInternalServerError, msg("error.pick", nil))
+		a.log.Error("pick "+keys.what, "err", err)
+		writeError(w, http.StatusInternalServerError, msg(keys.failed, nil))
 	}
 }
 
+func (a *App) pickFolder(w http.ResponseWriter, r *http.Request) {
+	var open func(string) (string, error)
+	if a.PickFolder != nil {
+		open = func(start string) (string, error) {
+			return a.PickFolder(start, msg("settings.work_dir.pick_title", nil))
+		}
+	}
+	a.pick(w, r, pickKeys{"folder", "settings.work_dir.cancelled", "error.pick_unsupported", "error.pick"}, open)
+}
+
+// pickAgent opens the file dialog for the agent program. start is the current
+// program path or its folder; the dialog opens in that folder.
+func (a *App) pickAgent(w http.ResponseWriter, r *http.Request) {
+	var open func(string) (string, error)
+	if a.PickFile != nil {
+		open = func(start string) (string, error) {
+			if start != "" && filepath.Ext(start) != "" {
+				start = filepath.Dir(start)
+			}
+			return a.PickFile(start, msg("settings.agent.pick_title", nil), msg("settings.agent.filter", nil), "*.exe;*.cmd;*.bat")
+		}
+	}
+	a.pick(w, r, pickKeys{"agent", "settings.agent.cancelled", "error.pick_agent_unsupported", "error.pick_agent"}, open)
+}
+
+type agentInfo struct {
+	Path   string `json:"path,omitempty"`
+	Source string `json:"source,omitempty"` // settings.AgentFrom*|AgentMissing; empty for no handler
+	Text   string `json:"text"`
+}
+
+// agentInfo tells which program the chosen handler would run, for the line
+// under «Кто отвечает».
+func (a *App) agentInfo(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Handler   string `json:"handler"`
+		AgentPath string `json:"agent_path"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, msg("error.bad_request", nil))
+		return
+	}
+	if _, ok := worker.ForHandler(req.Handler); !ok || a.Agents.LookPath == nil {
+		writeJSON(w, agentInfo{Text: ""})
+		return
+	}
+	path, source := a.Agents.Resolve(req.Handler, strings.TrimSpace(req.AgentPath))
+	info := agentInfo{Path: path, Source: source}
+	switch {
+	case source == settings.AgentFromPath:
+		info.Text = msg("settings.agent.from_path", map[string]string{"path": path})
+	case source == settings.AgentFromSetting:
+		info.Text = msg("settings.agent.from_setting", map[string]string{"path": path})
+	case path != "":
+		info.Text = msg("settings.agent.gone", map[string]string{"path": path})
+	default:
+		info.Text = msg("settings.agent.missing", nil)
+	}
+	writeJSON(w, info)
+}
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
