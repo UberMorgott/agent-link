@@ -30,9 +30,11 @@ Copy `agentlink-tray.exe` anywhere and double-click it. Members reach each other
 1. Start `agentlink-tray.exe`; the settings page opens. Later use the tray icon, «Открыть настройки».
 2. **Ваше имя** is already filled with your Windows name; change it if you like. Names must
    differ between members.
-3. **Код связи**: one person clicks **Создать код** and tells everyone the 6 letters/digits;
-   the others type them in (case does not matter). The code is the same for every member: it is
-   the network.
+3. **Код связи**: one person clicks **Создать код** and tells everyone the code, 12 symbols
+   written `XXXX-XXXX-XXXX` (60 bits, no 0/O/1/I); the others type it in (case, dashes and
+   spaces do not matter). The code is the same for every member: it is the network. A 6-character
+   code from an earlier version still works, but while the listener is reachable beyond private
+   networks the page and the tray warn «слабый код» until everyone switches to a new one.
 4. **Участники сети** lists the members this node knows: name, «на связи» / «нет связи», version,
    addresses, **Удалить**. Members on the same LAN or ZeroTier network find each other by
    themselves (see "Members and discovery"). Otherwise type one member's IP under **Добавить
@@ -80,13 +82,17 @@ A network is everyone holding the same code; every member sees every other membe
 - **LAN discovery.** Every 5 s a node sends a beacon to UDP `239.255.74.21:7421` (multicast)
   and to the directed broadcast of each IPv4 network, on every running non-loopback interface,
   ZeroTier included, and listens on UDP 7421 (shared with other instances on the machine). The
-  beacon is `{"t":"agentlink","v":1,"net":"<16 hex>","node":"<name>","id":"<node id>","port":7420}`:
-  `net` is PBKDF2-SHA256 (100 000 rounds) of the session key, so only nodes with the same code
-  react, and the code is not in it. A node that hears its own network from a member it has no
+  beacon is `{"t":"agentlink","v":2,"net":"<16 hex>","node":"<name>","id":"<node id>","port":7420}`:
+  `net` is Argon2id of the session key (64 MiB, 3 passes, 4 lanes, fixed salt
+  `agentlink/network-tag/v2`, computed once per key at start), so only nodes with the same code
+  react, and the code is not in it. Beacons of older versions (`v` 1, a PBKDF2 tag) are still
+  recognised, so a new node dials old ones it hears; a new node never sends one. A node that hears its own network from a member it has no
   session with dials the sender's IP at `port` (once per address per 15 s); the TCP handshake
   still authenticates, so a replayed or forged beacon causes at most a failed dial.
 - **Older versions** (without `members`) still connect and exchange messages; they are listed
-  as «старая версия», get no table and dial only their own configured peer.
+  as «старая версия», get no table and dial only their own configured peer. A version without
+  the PAKE handshake (see "Security") connects only from a private address and is listed as
+  «старая версия — вход без защиты кода, только из локальной сети».
 - With several members `send` needs a recipient: an empty «Кому» / `--to` fails and lists the
   names. The tray menu shows «Участники» with each member's state.
 
@@ -217,7 +223,7 @@ go build -o bin/agentlink.exe ./cmd/agentlink
 ## Usage
 
 ```powershell
-$env:AGENTLINK_SECRET = 'K7Q2MX'   # the same 6-character code on both machines (or a 16+ byte secret)
+$env:AGENTLINK_SECRET = 'K7Q2-MXAB-CDEF'   # the same code on every machine (or a 16+ byte secret)
 agentlink serve --config node.json                         # the node (keep running)
 agentlink send  --config node.json --to node-b --body "hi" # prints the message id
 agentlink send  --config node.json --body "hi"             # no --to: the only other member (several: error listing them)
@@ -262,8 +268,9 @@ carries `job_status`, `activity` while it runs, `last_heard` and, when the peer 
 - `listen` — peer TCP listener: the ZeroTier address, or `:7420` for every interface.
 - `api` — local HTTP control API; must be a loopback address, anything else is refused.
 - `data_dir` — outbox, inbox and sent messages as JSON files; relative to the config file.
-- `secret_env` — name of the environment variable holding the 6-character pairing code (letters
-  and digits, case-insensitive) or a legacy shared secret of 16+ bytes.
+- `secret_env` — name of the environment variable holding the pairing code (`XXXX-XXXX-XXXX`,
+  case-insensitive; a legacy 6-character code still works, and `serve` warns about it when
+  `listen` is not a private address) or a legacy shared secret of 16+ bytes.
 - `areas` — topics this node subscribes to; `--to area:NAME` fans out to every peer that announced it.
 - `peers` — addresses to dial; `name` is optional. A peer without a name is learned from the
   handshake. If every peer has a name, only those names may connect; with a nameless peer (or
@@ -321,9 +328,9 @@ After handling the messages (and replying with `send --reply-to`), start `wait` 
   45 s without any frame from it closes the session: the status turns «нет связи» and the dialing
   side reconnects with its usual backoff. A v0.2 peer sends no heartbeats and ignores them (and
   `activity`); it is never timed out, it just shows no activity.
-- Versions interoperate: since v0.4 `hello` carries `proto` (protocol version, now 5) and `caps`
-  (`caps`, `hb`, `activity`, `job-reattach`, and since v0.6 `members`); v0.6 adds `node_id`,
-  `app` (version) and `port` to `hello` and the `members` frame. A peer that sends neither is an older version
+- Versions interoperate: since v0.4 `hello` carries `proto` (protocol version, now 6) and `caps`
+  (`caps`, `hb`, `activity`, `job-reattach`, and since v0.6 `members` and `pake`); v0.6 adds
+  `node_id`, `app` (version), `port` and `pake` (the CPace share) to `hello` and the `members` frame. A peer that sends neither is an older version
   with no optional capabilities; it still connects and exchanges messages. Unknown frame
   types, unknown fields, fields of an unexpected JSON type and lines that do not parse are
   skipped (debug log), during the handshake and after, and never close the session. A feature
@@ -334,23 +341,46 @@ After handling the messages (and replying with `send --reply-to`), start `wait` 
 ## Security
 
 - The tray app listens on every interface by default (so LAN and external addresses work).
-  Anyone who can reach TCP 7420 can attempt the handshake; to keep the old boundary set
-  «Мой адрес» / `listen` to the ZeroTier IP and firewall the port to the members, or switch
-  discovery off on untrusted LANs.
-- Peers authenticate with mutual HMAC-SHA256 challenge-response over fresh nonces, keyed with
-  HKDF-SHA256 of the upper-cased pairing code (context `agentlink/pair-code/v1`); the code is
-  never sent. Node names are announced in the handshake and bound by the MACs; bad MACs are
-  rejected.
-- **The security boundary is the private ZeroTier network, not the code.** A 6-character code
-  has about 31 bits: anyone who can reach the port can record one handshake and brute-force the
-  code offline in minutes. Keep the ZeroTier network private (only the two of you as members)
-  and firewall the port to it. A legacy 16+ byte random secret (CLI `secret_env`, or a v0.1
-  tray config) resists that attack if you need it. The discovery beacon's `net` tag is another
-  offline check of a guessed code (PBKDF2 with 100 000 rounds makes each guess costlier than
-  a handshake MAC), sent to everyone on the LAN.
+  Anyone who can reach TCP 7420 can attempt the handshake. To narrow that, set «Мой адрес» /
+  `listen` to the ZeroTier IP and firewall the port to the members, or switch discovery off on
+  untrusted LANs.
+- **Handshake: a PAKE.** Peers run CPace (draft-irtf-cfrg-cpace-20, ristretto255 + SHA-512,
+  checked against the draft's test vectors; group arithmetic from `github.com/gtank/ristretto255`
+  on `filippo.io/edwards25519`). The password is the session key, HKDF-SHA256 of the normalized
+  code (`agentlink/pair-code/v2`; `v1` for a 6-character code). The dialer's nonce is the
+  session id; each side's name and node id are bound into the key. Both sides then prove the key
+  with an HMAC-SHA256 tag derived from it (the acceptor first; the dialer answers only after
+  checking it) and derive a session key. The code is never sent, and **no transcript, recorded
+  or obtained by connecting, lets anyone test code guesses offline**: an attacker who takes
+  part in a handshake gets exactly one guess, and a passive one none.
+- **Online guessing** is slowed per source (an IPv4 address or an IPv6 /64): after 5 failed
+  inbound handshakes, further connections are closed unread for 1 s, doubling per failure up to
+  5 min; a success clears it, 30 min without failures forgets it. At most 4096 sources are tracked.
+- **Codes.** New codes are 12 symbols of a 32-letter alphabet, 60 bits: at even a thousand
+  online guesses a day, hopeless. A legacy 6-character code (about 31 bits) still works; the
+  app and `serve` warn about it while the listener is reachable beyond private networks.
+- **Legacy handshake.** Versions without `pake` authenticate with HMAC-SHA256 keyed directly by
+  the session key, and the acceptor answers any hello with such a MAC: one recorded or requested
+  MAC lets the code be brute-forced offline (minutes for a 6-character code). A node therefore
+  runs it only with a peer at a private address (loopback, RFC 1918, fc00::/7, link-local, or a
+  network of this machine's ZeroTier adapter), logs a warning and marks the member «старая
+  версия»; never with a name that has had a PAKE session since the node started (no silent
+  downgrade); a public address gets no MAC at all. Update every member and switch to a new code
+  to leave it behind.
+- **Discovery tag.** A heard beacon still lets its hearer test code guesses offline, at Argon2id
+  cost (64 MiB per guess). With a new code that is out of reach; with a 6-character code on an
+  untrusted LAN, switch discovery off. Old members' v1 beacons (PBKDF2) keep leaking their
+  cheaper tag until they update.
 - Any member can add addresses to the table and remove members; every member is trusted alike.
 - The CLI's code or secret lives only in an environment variable; CLI configs are safe to commit.
-- There is no TLS: message bodies travel in clear text, relying on ZeroTier's encryption.
+- **Not protected: the session after the handshake.** There is no TLS and the PAKE session key
+  is not used yet: frames travel in clear text and are not authenticated per frame, relying on
+  ZeroTier's encryption. Over the LAN or the internet without ZeroTier, anyone on the path can
+  read messages, and an active man in the middle can inject or alter frames on an established
+  session (it still cannot learn the code or open a session of its own).
+- Not protected either: connection floods (each costs a goroutine and a handshake timeout), and a
+  LAN attacker who plays a legacy peer under a new name gets a legacy MAC (offline oracle) — that
+  is why the weak code has to go.
 - The control API listens on loopback only and rejects browser requests (`Origin` header) and
   non-loopback `Host` headers, but any local process on the machine can use it.
 - The tray app's web pages share that address. Their API calls need a random per-run token that

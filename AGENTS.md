@@ -47,7 +47,7 @@ go build -ldflags "-H=windowsgui" -o bin/agentlink-tray.exe ./cmd/agentlink-tray
 ## First run
 
 Start `agentlink-tray.exe`; it opens the settings page (later: tray icon → «Открыть настройки»).
-Fields: name (prefilled), 6-character code (**Создать код** on one member, typed on the
+Fields: name (prefilled), code `XXXX-XXXX-XXXX` (**Создать код** on one member, typed on the
 others), **Участники сети** (the member list, **Добавить участника по адресу** + **Добавить**,
 **Удалить**), who answers, working folder; Save. Everything else is under the collapsed
 "Дополнительно". README's "First run (every member)" has the walk.
@@ -63,19 +63,22 @@ All members must agree, or the session never authenticates:
 - The tray app listens on every interface (port 7420) unless «Мой адрес» names one IP. A member
   is reached by LAN discovery, or by one member adding its address; the table spreads it to
   all. The settings page shows this side's address to pass on.
-- The **same** 6-character code on every machine (case-insensitive), exchanged out of band (a
-  private channel, not this repo, not a PR, not an issue). The CLI reads it (or a legacy 16+
-  byte secret) from the env var named by `secret_env`; the tray app stores it in its config.
+- The **same** code on every machine (`XXXX-XXXX-XXXX`, 60 bits; case, dashes and spaces do not
+  matter; a legacy 6-character code still works but is weak), exchanged out of band (a private
+  channel, not this repo, not a PR, not an issue). The CLI reads it (or a legacy 16+ byte
+  secret) from the env var named by `secret_env`; the tray app stores it in its config.
 - Names are learned from the handshake; a configured peer name, if any, must match. Names are
   unique per network: on a clash the smaller node id keeps the name.
-- The code is short and brute-forceable offline, so the private ZeroTier network is the security
-  boundary (README "Security").
+- The handshake is a PAKE (CPace): no transcript allows offline guessing, and failed attempts
+  back off per source. What stays exposed (a legacy peer's MAC, the beacon tag, the unencrypted
+  session) is in README "Security".
 - `areas` must overlap for `--to area:NAME` fan-out to reach the peer.
 - Both sides run v0.2 or later (v0.2 changed the handshake MAC). From there on versions mix:
   since v0.4 `hello` announces `proto` and `caps`; unknown frames and fields are skipped, never
   an error that drops the session. Rule for changes: the wire format only grows. Never make a
   new field required, never reject an unknown one, and gate every new feature on a new cap
-  (`node.Capabilities`, `Node.PeerHas`); a peer without caps is an older version.
+  (`node.Capabilities`, `Node.PeerHas`); a peer without caps is an older version. One
+  exception, for security: a peer without `pake` authenticates only from a private address.
 
 ## Waking an interactive session
 
@@ -131,12 +134,14 @@ qgate                                # quality gate; qgate -All when deps or bui
   `examples/*.json` are templates and carry no secret.
 - The peer listener binds every interface only because members must be reachable over the LAN
   and external addresses; the handshake is the gate there. Never add an unauthenticated peer
-  path, never put the code, key or a reversible form of it in a beacon (only the PBKDF2 `net`
-  tag), and keep «Мой адрес» able to restrict the listener to one IP.
+  path, never put the code, key or a reversible form of it in a beacon (only the Argon2id `net`
+  tag), never answer an unauthenticated hello with a value keyed by the code alone (the legacy
+  MAC goes only to private addresses, `Node.legacyAllowed`), never weaken the per-source
+  backoff, and keep «Мой адрес» able to restrict the listener to one IP.
 - The control API stays loopback-only; a non-loopback `api` value is refused on purpose — do not
   relax that check.
-- There is no TLS. Confidentiality comes from ZeroTier alone; do not describe the link as
-  encrypted end to end by agent-link.
+- There is no TLS and the PAKE session key does not protect frames yet. Confidentiality comes
+  from ZeroTier alone; do not describe the link as encrypted end to end by agent-link.
 - Do not commit binaries (`bin/`, `*.exe`) or node data (`.data/`); release assets are built and
   attached, not tracked.
 - Release binaries are always stripped and UPX-packed and carry their version: build them only
