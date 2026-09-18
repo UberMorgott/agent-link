@@ -70,8 +70,9 @@ All members must agree, or the session never authenticates:
 - Names are learned from the handshake; a configured peer name, if any, must match. Names are
   unique per network: on a clash the smaller node id keeps the name.
 - The handshake is a PAKE (CPace): no transcript allows offline guessing, and failed attempts
-  back off per source. What stays exposed (a legacy peer's MAC, the beacon tag, the unencrypted
-  session) is in README "Security".
+  back off per source. After it every frame is sealed (ChaCha20-Poly1305 records,
+  internal/node/wire.go). What stays exposed (a legacy peer's MAC and plain session, the beacon
+  tag, the hellos) is in README "Security".
 - `areas` must overlap for `--to area:NAME` fan-out to reach the peer.
 - Both sides run v0.2 or later (v0.2 changed the handshake MAC). From there on versions mix:
   since v0.4 `hello` announces `proto` and `caps`; unknown frames and fields are skipped, never
@@ -140,8 +141,10 @@ qgate                                # quality gate; qgate -All when deps or bui
   backoff, and keep «Мой адрес» able to restrict the listener to one IP.
 - The control API stays loopback-only; a non-loopback `api` value is refused on purpose — do not
   relax that check.
-- There is no TLS and the PAKE session key does not protect frames yet. Confidentiality comes
-  from ZeroTier alone; do not describe the link as encrypted end to end by agent-link.
+- A PAKE session is always sealed (records keyed from the CPace ISK and the hello transcript);
+  never add a plain or downgradable path for a peer that announced pake, never reuse a nonce,
+  and close the connection on any record that fails to open. A legacy session is plain: do not
+  describe every link as encrypted by agent-link.
 - Do not commit binaries (`bin/`, `*.exe`) or node data (`.data/`); release assets are built and
   attached, not tracked.
 - Release binaries are always stripped and UPX-packed and carry their version: build them only

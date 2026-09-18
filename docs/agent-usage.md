@@ -93,5 +93,5 @@ stdin and never through a shell. It can read and search that machine's files but
 them or run commands, and its answer is sent back automatically. With the handler set to
 "none" a human answers from the inbox page, so the reply may take a while.
 
-Never put secrets, tokens or config contents in a message: the body travels in clear text
-inside the VPN tunnel and lands in the other developer's inbox.
+Never put secrets, tokens or config contents in a message: it is stored in clear text in the
+other developer's inbox (and travels unsealed to a member still on a pre-v0.6 version).

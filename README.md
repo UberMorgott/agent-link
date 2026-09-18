@@ -350,7 +350,7 @@ After handling the messages (and replying with `send --reply-to`), start `wait` 
   code (`agentlink/pair-code/v2`; `v1` for a 6-character code). The dialer's nonce is the
   session id; each side's name and node id are bound into the key. Both sides then prove the key
   with an HMAC-SHA256 tag derived from it (the acceptor first; the dialer answers only after
-  checking it) and derive a session key. The code is never sent, and **no transcript, recorded
+  checking it; its tag also covers both raw hello lines). The code is never sent, and **no transcript, recorded
   or obtained by connecting, lets anyone test code guesses offline**: an attacker who takes
   part in a handshake gets exactly one guess, and a passive one none.
 - **Online guessing** is slowed per source (an IPv4 address or an IPv6 /64): after 5 failed
@@ -373,14 +373,26 @@ After handling the messages (and replying with `send --reply-to`), start `wait` 
   cheaper tag until they update.
 - Any member can add addresses to the table and remove members; every member is trusted alike.
 - The CLI's code or secret lives only in an environment variable; CLI configs are safe to commit.
-- **Not protected: the session after the handshake.** There is no TLS and the PAKE session key
-  is not used yet: frames travel in clear text and are not authenticated per frame, relying on
-  ZeroTier's encryption. Over the LAN or the internet without ZeroTier, anyone on the path can
-  read messages, and an active man in the middle can inject or alter frames on an established
-  session (it still cannot learn the code or open a session of its own).
-- Not protected either: connection floods (each costs a goroutine and a handshake timeout), and a
-  LAN attacker who plays a legacy peer under a new name gets a legacy MAC (offline oracle) — that
-  is why the weak code has to go.
+- **Session: sealed records.** After the handshake every frame of a PAKE session, both ways,
+  starting with the acceptor's `ok`, is a record: a 4-byte big-endian length, then the frame
+  sealed with ChaCha20-Poly1305 (`golang.org/x/crypto`), the length as associated data. Each
+  direction has its own key, HKDF-SHA256 of the CPace ISK salted with the hash of both hello
+  lines, so a hello altered on the way (areas, caps, version) breaks the session. The nonce is a
+  per-direction record counter that is never sent: a dropped, replayed, reordered, reflected or
+  altered record fails to open and the connection is closed, as it is after 2^48 records under one
+  key. A record holds at most 1 MiB. A man in the middle sees only lengths and timing.
+- **Not protected: legacy sessions and the hellos.** A session with a pre-v0.6 member (private
+  addresses only) stays plain newline-delimited JSON, unauthenticated per frame: on that path
+  anyone who can see the traffic reads it, and an active attacker can inject or alter frames.
+  Confidentiality there comes from ZeroTier or the private LAN alone. The hellos themselves are
+  readable by anyone on the path (names, node ids, areas, program version, port).
+- **Connection floods.** At most 64 inbound connections may be in the handshake at once, 8 per
+  source (IPv4 address or IPv6 /64); more are closed unread, and a handshake that does not finish
+  within 10 s is dropped. Many sources can still keep those 64 slots busy and delay real members'
+  handshakes (not their established sessions), and nothing limits traffic on an authenticated
+  session.
+- Not protected either: a LAN attacker who plays a legacy peer under a new name gets a legacy MAC
+  (offline oracle) — that is why the weak code has to go.
 - The control API listens on loopback only and rejects browser requests (`Origin` header) and
   non-loopback `Host` headers, but any local process on the machine can use it.
 - The tray app's web pages share that address. Their API calls need a random per-run token that
