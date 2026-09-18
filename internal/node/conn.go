@@ -130,9 +130,7 @@ func (n *Node) register(pc *peerConn) bool {
 	n.problem = nil
 	n.areas[pc.peer] = pc.areas
 	areas := make(map[string][]string, len(n.areas))
-	for k, v := range n.areas {
-		areas[k] = v
-	}
+	maps.Copy(areas, n.areas)
 	n.mu.Unlock()
 	if old != nil {
 		old.close()

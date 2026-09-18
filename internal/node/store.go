@@ -235,7 +235,7 @@ func (s *store) saveAreas(areas map[string][]string) error {
 // nodeID returns the node's random id from node_id, creating it on first use.
 func (s *store) nodeID() (string, error) {
 	path := filepath.Join(s.dir, "node_id")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err == nil && validID(strings.TrimSpace(string(data))) {
 		return strings.TrimSpace(string(data)), nil
 	}
@@ -313,7 +313,7 @@ func jsonFiles(dir string) ([]string, error) {
 }
 
 func readJSON(path string, v any) error {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return err
 	}

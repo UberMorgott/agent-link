@@ -25,9 +25,21 @@ type testNode struct {
 	done   chan struct{}
 }
 
+// dialTCP connects to addr, bounded by the test's context.
+func dialTCP(t *testing.T, addr string) (net.Conn, error) {
+	var d net.Dialer
+	return d.DialContext(t.Context(), "tcp", addr)
+}
+
+// listenTCP listens on addr, bounded by the test's context.
+func listenTCP(t *testing.T, addr string) (net.Listener, error) {
+	var lc net.ListenConfig
+	return lc.Listen(t.Context(), "tcp", addr)
+}
+
 func listen(t *testing.T) net.Listener {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := listenTCP(t, "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +106,11 @@ func eventually(t *testing.T, what string, cond func() bool) {
 // waitHTTP calls GET /wait on the node's control API.
 func waitHTTP(t *testing.T, tn *testNode, timeout string) (int, []Message) {
 	t.Helper()
-	resp, err := http.Get("http://" + tn.apiLn.Addr().String() + "/wait?timeout=" + timeout)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+tn.apiLn.Addr().String()+"/wait?timeout="+timeout, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +269,7 @@ func TestOfflineThenReconnect(t *testing.T) {
 	addr := lnB.Addr().String()
 	b.stop()
 	eventually(t, "a sees b gone", func() bool { return !a.Connected("b") })
-	lnB2, err := net.Listen("tcp", addr)
+	lnB2, err := listenTCP(t, addr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +322,7 @@ func TestDedupeOnResend(t *testing.T) {
 
 func TestAPIRejectsForeignOrigin(t *testing.T) {
 	a, _ := pair(t, testSecret, testSecret)
-	req, _ := http.NewRequest(http.MethodPost, "http://"+a.apiLn.Addr().String()+"/send",
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+a.apiLn.Addr().String()+"/send",
 		strings.NewReader(`{"to":"b","body":"x"}`))
 	req.Header.Set("Origin", "http://evil.example")
 	resp, err := http.DefaultClient.Do(req)

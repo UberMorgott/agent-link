@@ -82,7 +82,7 @@ func (s *sealer) seal(p []byte) ([]byte, error) {
 		return nil, err
 	}
 	rec := make([]byte, recordHeader, recordHeader+len(p)+chacha20poly1305.Overhead)
-	binary.BigEndian.PutUint32(rec, uint32(len(p)+chacha20poly1305.Overhead))
+	binary.BigEndian.PutUint32(rec, uint32(len(p)+chacha20poly1305.Overhead)) //nolint:gosec // G115: len(p) <= maxFrame (1 MiB), checked above
 	return s.aead.Seal(rec, nonce, p, rec[:recordHeader]), nil
 }
 

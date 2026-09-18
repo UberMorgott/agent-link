@@ -38,13 +38,15 @@ func recordingProxy(t *testing.T, target string) (net.Listener, *syncBuf) {
 	ln := listen(t)
 	t.Cleanup(func() { _ = ln.Close() })
 	rec := &syncBuf{}
+	ctx := t.Context()
 	go func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			up, err := net.Dial("tcp", target)
+			var d net.Dialer
+			up, err := d.DialContext(ctx, "tcp", target)
 			if err != nil {
 				_ = c.Close()
 				continue
@@ -277,7 +279,7 @@ func TestUnauthenticatedConnectionCap(t *testing.T) {
 	a.handshakeTimeout = 700 * time.Millisecond
 	a.start(t)
 	dial := func() net.Conn {
-		c, err := net.Dial("tcp", a.peerLn.Addr().String())
+		c, err := dialTCP(t, a.peerLn.Addr().String())
 		if err != nil {
 			t.Fatal(err)
 		}

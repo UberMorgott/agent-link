@@ -18,7 +18,7 @@ func rawPeer(t *testing.T, a *testNode, name string) *wire {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := net.Dial("tcp", a.peerLn.Addr().String())
+	c, err := dialTCP(t, a.peerLn.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}

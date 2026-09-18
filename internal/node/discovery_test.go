@@ -22,12 +22,27 @@ func loopbackIfaces() []net.Interface {
 // freeUDPPort returns a port that was free a moment ago.
 func freeUDPPort(t *testing.T) int {
 	t.Helper()
-	c, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	var lc net.ListenConfig
+	c, err := lc.ListenPacket(t.Context(), "udp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = c.Close() }()
-	return c.LocalAddr().(*net.UDPAddr).Port
+	addr, ok := c.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		t.Fatalf("local address %v is not UDP", c.LocalAddr())
+	}
+	return addr.Port
+}
+
+// tcpPort returns the port ln listens on.
+func tcpPort(t *testing.T, ln net.Listener) int {
+	t.Helper()
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listen address %v is not TCP", ln.Addr())
+	}
+	return addr.Port
 }
 
 func TestNetworkTag(t *testing.T) {
@@ -81,7 +96,7 @@ func TestBeaconDials(t *testing.T) {
 	b.start(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	bc := beacon{T: beaconType, V: 1, Net: a.netTag, Node: "b", ID: b.id, Port: b.peerLn.Addr().(*net.TCPAddr).Port}
+	bc := beacon{T: beaconType, V: 1, Net: a.netTag, Node: "b", ID: b.id, Port: tcpPort(t, b.peerLn)}
 	a.heard(ctx, bc, net.IPv4(127, 0, 0, 1))
 	eventually(t, "a dialed b from its beacon", meshed(a, b))
 }
@@ -98,7 +113,7 @@ func TestLegacyBeaconDials(t *testing.T) {
 	b.start(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	bc := beacon{T: beaconType, V: 1, Net: a.oldNetTag, Node: "b", ID: b.id, Port: b.peerLn.Addr().(*net.TCPAddr).Port}
+	bc := beacon{T: beaconType, V: 1, Net: a.oldNetTag, Node: "b", ID: b.id, Port: tcpPort(t, b.peerLn)}
 	a.heard(ctx, bc, net.IPv4(127, 0, 0, 1))
 	eventually(t, "a dialed b from its v1 beacon", meshed(a, b))
 }

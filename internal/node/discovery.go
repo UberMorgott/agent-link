@@ -73,8 +73,10 @@ var netTags sync.Map
 // three passes over it.
 func NetworkTag(key []byte) string {
 	id := sha256.Sum256(key)
-	if tag, ok := netTags.Load(id); ok {
-		return tag.(string)
+	if v, ok := netTags.Load(id); ok {
+		if tag, ok := v.(string); ok {
+			return tag
+		}
 	}
 	tag := hex.EncodeToString(argon2.IDKey(key, []byte(netTagSalt), netTagTime, netTagMemory, netTagThreads, netTagByteLen))
 	netTags.Store(id, tag)

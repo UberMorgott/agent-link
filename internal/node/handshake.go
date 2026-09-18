@@ -144,8 +144,7 @@ func (n *Node) hello(nonce, mac string) frame {
 func decodeFrame(line []byte) (frame, bool) {
 	var f frame
 	if err := json.Unmarshal(line, &f); err != nil {
-		var te *json.UnmarshalTypeError
-		if !errors.As(err, &te) {
+		if _, ok := errors.AsType[*json.UnmarshalTypeError](err); !ok {
 			return frame{}, false
 		}
 		// Unmarshal keeps decoding past a type mismatch; the other fields are set.

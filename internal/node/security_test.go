@@ -51,7 +51,7 @@ func TestPAKESessionFromPublicAddress(t *testing.T) {
 // the handshake transcript.
 func rawPAKE(t *testing.T, tn *testNode, name, key string) (frame, *cpace, *wire, []byte) {
 	t.Helper()
-	c, err := net.Dial("tcp", tn.peerLn.Addr().String())
+	c, err := dialTCP(t, tn.peerLn.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestWrongCodeGivesNothingReusable(t *testing.T) {
 func TestInvalidShareGetsNoTag(t *testing.T) {
 	a := openNode(t, time.Second, 5*time.Second)
 	for _, share := range []string{hex.EncodeToString(ristretto255.NewIdentityElement().Bytes()), "zz", hex.EncodeToString(bytes.Repeat([]byte{0xff}, 32))} {
-		c, err := net.Dial("tcp", a.peerLn.Addr().String())
+		c, err := dialTCP(t, a.peerLn.Addr().String())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -154,7 +154,7 @@ func TestInvalidShareGetsNoTag(t *testing.T) {
 // answered with a MAC.
 func legacyHello(t *testing.T, tn *testNode, name string) bool {
 	t.Helper()
-	c, err := net.Dial("tcp", tn.peerLn.Addr().String())
+	c, err := dialTCP(t, tn.peerLn.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestFailedHandshakesBlockSource(t *testing.T) {
 		_ = w.c.Close()
 	}
 	eventually(t, "source blocked", func() bool { return !a.guard.allow(net.ParseIP("127.0.0.1")) })
-	c, err := net.Dial("tcp", a.peerLn.Addr().String())
+	c, err := dialTCP(t, a.peerLn.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}

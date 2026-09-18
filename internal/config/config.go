@@ -170,7 +170,7 @@ func IsLoopbackHost(host string) bool {
 // Load reads a config file. A relative data_dir resolves against the config
 // file's directory.
 func Load(path string) (Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return Config{}, err
 	}

@@ -22,7 +22,7 @@ func manualDial(t *testing.T, a *testNode, name string, extras []string, helloEx
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := net.Dial("tcp", a.peerLn.Addr().String())
+	c, err := dialTCP(t, a.peerLn.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}

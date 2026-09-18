@@ -130,7 +130,7 @@ func TestMembersPersisted(t *testing.T) {
 	a.stop()
 	cfg := a.cfg
 	cfg.Peers = nil // only members.json knows c now
-	own, err := net.Listen("tcp", "127.0.0.1:0")
+	own, err := listenTCP(t, "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
