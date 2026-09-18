@@ -31,13 +31,14 @@ const (
 
 // Claude runs Claude Code headless with read-only built-in tools only: no
 // shell, no edits, no web, no MCP servers, and every other permission denied.
+// dontAsk already denies anything not pre-approved without prompting, so the
+// newer --permission-prompts flag is left out: older CLIs reject it.
 var Claude = Command{Name: "claude", Args: []string{
 	"-p",
 	"--output-format", "text",
 	"--tools", "Read,Grep,Glob",
 	"--allowedTools", "Read,Grep,Glob",
 	"--permission-mode", "dontAsk",
-	"--permission-prompts", "none",
 	"--strict-mcp-config",
 	"--no-session-persistence",
 }}
@@ -96,7 +97,7 @@ func (c Command) Runner() Runner {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
 			}
-			return "", fmt.Errorf("%s: %w: %s", c.Name, err, tail(stderr.String(), 2000))
+			return "", fmt.Errorf("%s: %w: %s", c.Name, err, reason(stderr.String()))
 		}
 		if outFile != "" {
 			data, err := os.ReadFile(outFile)
@@ -107,6 +108,18 @@ func (c Command) Runner() Runner {
 		}
 		return stdout.String(), nil
 	}
+}
+
+// reason keeps the CLI's own "ERROR:" line when there is one (Codex prints its
+// whole session banner to stderr), otherwise the tail of stderr.
+func reason(stderr string) string {
+	lines := strings.Split(stderr, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); strings.HasPrefix(line, "ERROR:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "ERROR:"))
+		}
+	}
+	return tail(stderr, 2000)
 }
 
 func tail(s string, n int) string {

@@ -75,7 +75,7 @@ more on the next start; cut off again, it fails with a reply. An agent error or 
 timeout fails the job at once, without a retry. Switching the handler to "None" fails jobs that
 were still waiting, with the reply "no handler configured".
 
-- Claude Code: `claude -p --output-format text --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --permission-mode dontAsk --permission-prompts none --strict-mcp-config --no-session-persistence`
+- Claude Code: `claude -p --output-format text --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --permission-mode dontAsk --strict-mcp-config --no-session-persistence`
 - Codex: `codex exec --sandbox read-only --skip-git-repo-check --ephemeral --color never --output-last-message <tmp> -`
 
 The prompt goes through stdin, never through a shell. **Read-only:** the agent can read and
