@@ -22,35 +22,73 @@ page and an inbox page in your browser, and an optional agent that answers reque
 go build -ldflags "-H=windowsgui" -o bin/agentlink-tray.exe ./cmd/agentlink-tray
 ```
 
-Copy `agentlink-tray.exe` anywhere and double-click it. Both people need ZeroTier (or another
-VPN) joined to the same network.
+Copy `agentlink-tray.exe` anywhere and double-click it. Members reach each other over ZeroTier
+(or another VPN), the local network, or an address reachable from the internet.
 
-### First run (both people)
+### First run (every member)
 
-1. Start `agentlink-tray.exe`; the settings page opens. Later use the tray icon, "Open settings".
-2. **Ваше имя** is already filled with your Windows name; change it if you like.
-3. **Код связи**: one person clicks **Создать код** and tells the other the 6 letters/digits;
-   the other types them in (case does not matter). The code must be the same on both sides.
-4. **Адрес собеседника**: the other person's ZeroTier IP, e.g. `10.147.20.9` (no port needed).
-   The page shows your own address under this field ("Ваш адрес для собеседника") — tell it
-   to the other person. One side having the other's address is enough to connect.
+1. Start `agentlink-tray.exe`; the settings page opens. Later use the tray icon, «Открыть настройки».
+2. **Ваше имя** is already filled with your Windows name; change it if you like. Names must
+   differ between members.
+3. **Код связи**: one person clicks **Создать код** and tells everyone the 6 letters/digits;
+   the others type them in (case does not matter). The code is the same for every member: it is
+   the network.
+4. **Участники сети** lists the members this node knows: name, «на связи» / «нет связи», version,
+   addresses, **Удалить**. Members on the same LAN or ZeroTier network find each other by
+   themselves (see "Members and discovery"). Otherwise type one member's IP under **Добавить
+   участника по адресу** (e.g. `10.147.20.9`, port optional) and press **Добавить**: this node
+   connects (only if that side has the same code), and every other member learns the address
+   and connects too. The page shows your own address ("Ваш адрес для других участников").
 5. **Кто отвечает** and **Рабочая папка** (see "Handler agent"): press **Выбрать…** next to the
    folder field and pick the project folder in the Windows folder dialog (the tray app opens it,
    since a browser page cannot see absolute paths; the field stays editable), then **Сохранить**. The top
-   bar shows "связь есть: <name>" once both sides are saved; the other person's name comes
-   from the connection.
+   bar shows "связь есть: <name>" (or «на связи N из M») once members are connected; names
+   come from the connection.
 
 Saving with only some fields filled is fine: the bar then says what is missing ("нет кода
-связи", "нет собеседника — впишите его адрес"). **Дополнительно** (collapsed) holds the rest:
-your own listen address (default: this machine's ZeroTier IP with port 7420; without ZeroTier
-it binds `127.0.0.1` and says "ZeroTier не найден", never `0.0.0.0`), the page address
-(default `127.0.0.1:7520`, applies after a restart), shared areas, the peer's name (when set,
-another name is refused), how many questions the agent answers at once («Сколько вопросов агент
-решает сразу», `max_jobs`, 1–4, default 2) and autostart. Every error on the page is one sentence
-saying what to do.
+связи", «пока никого — добавьте адрес участника…»). **Дополнительно** (collapsed) holds the rest:
+your own listen address (default: every interface, port 7420, so ZeroTier, LAN and external
+addresses all work; set one IP, e.g. the ZeroTier one, to restrict it), the page address
+(default `127.0.0.1:7520`, applies after a restart), shared areas, **Искать участников в
+локальной сети и ZeroTier** (`discovery`, on by default), how many questions the agent answers
+at once («Сколько вопросов агент решает сразу», `max_jobs`, 1–4, default 2) and autostart.
+Every error on the page is one sentence saying what to do.
 
 Configs written by v0.1 (long `secret`, `peer_name`, `listen`) still load and work; typing a
 code and saving replaces the secret. Both sides must run v0.2 or later: the handshake changed.
+The single `peer_addr` / `peer_name` of v0.5 and earlier is migrated on load into the `peers`
+list (`[{"name":…, "addr":…}]`, written back on the next save); a `peer_addr` posted to the
+settings API is added to that list.
+
+### Members and discovery
+
+A network is everyone holding the same code; every member sees every other member.
+
+- **Member table.** Each node keeps `{name, node id, addresses, version, last seen}` for every
+  member, itself included, in `data\members.json`, and exchanges the whole table with each peer
+  that announced the `members` capability, on connect and whenever a merge changed it. Records
+  are last-writer-wins per member (a nanosecond version, ties broken deterministically). Every
+  node dials every live member it learns, trying each known address (full mesh, at most 64
+  members, 8 addresses each). An address a node reached is added to that member's record, so an
+  address added by hand on one node spreads to all.
+- **Removal.** **Удалить** (or `agentlink remove`) writes a tombstone that spreads the same way:
+  every node closes its session to that member, stops dialing it and refuses it; the removed
+  node is told («вас удалили из сети»). Adding its address by hand again brings it back.
+- **Names.** Each node has a random id (`data\node_id`). If two machines use one name, the one
+  with the smaller id keeps it on every node; the other is refused and shows «ваше имя уже
+  занято другим участником».
+- **LAN discovery.** Every 5 s a node sends a beacon to UDP `239.255.74.21:7421` (multicast)
+  and to the directed broadcast of each IPv4 network, on every running non-loopback interface,
+  ZeroTier included, and listens on UDP 7421 (shared with other instances on the machine). The
+  beacon is `{"t":"agentlink","v":1,"net":"<16 hex>","node":"<name>","id":"<node id>","port":7420}`:
+  `net` is PBKDF2-SHA256 (100 000 rounds) of the session key, so only nodes with the same code
+  react, and the code is not in it. A node that hears its own network from a member it has no
+  session with dials the sender's IP at `port` (once per address per 15 s); the TCP handshake
+  still authenticates, so a replayed or forged beacon causes at most a failed dial.
+- **Older versions** (without `members`) still connect and exchange messages; they are listed
+  as «старая версия», get no table and dial only their own configured peer.
+- With several members `send` needs a recipient: an empty «Кому» / `--to` fails and lists the
+  names. The tray menu shows «Участники» with each member's state.
 
 The two web pages are in Russian; every visible string lives in `internal/app/strings.go`, so a
 second language means a second map, not a page rewrite.
@@ -182,11 +220,14 @@ go build -o bin/agentlink.exe ./cmd/agentlink
 $env:AGENTLINK_SECRET = 'K7Q2MX'   # the same 6-character code on both machines (or a 16+ byte secret)
 agentlink serve --config node.json                         # the node (keep running)
 agentlink send  --config node.json --to node-b --body "hi" # prints the message id
-agentlink send  --config node.json --body "hi"             # no --to: the only known peer
+agentlink send  --config node.json --body "hi"             # no --to: the only other member (several: error listing them)
 agentlink send  --config node.json --to area:dev --body "build is green"
 agentlink send  --config node.json --to node-b --body "done" --reply-to <id>
 agentlink wait  --config node.json --timeout 0             # blocks; JSON line per message
 agentlink inbox --config node.json --limit 20              # recent in/out, non-destructive
+agentlink members --config node.json                       # member table, one JSON line each, this node first
+agentlink add    --config node.json --addr 203.0.113.7     # dial a member's address; it spreads to all members
+agentlink remove --config node.json --name node-c          # remove a member from the whole network
 agentlink version                                          # this build's version (dev: not a release)
 agentlink update --check                                   # is there a newer release?
 agentlink update                                           # install it next to agentlink.exe
@@ -218,7 +259,7 @@ carries `job_status`, `activity` while it runs, `last_heard` and, when the peer 
 }
 ```
 
-- `listen` — peer TCP listener; bind it to the ZeroTier address.
+- `listen` — peer TCP listener: the ZeroTier address, or `:7420` for every interface.
 - `api` — local HTTP control API; must be a loopback address, anything else is refused.
 - `data_dir` — outbox, inbox and sent messages as JSON files; relative to the config file.
 - `secret_env` — name of the environment variable holding the 6-character pairing code (letters
@@ -226,7 +267,10 @@ carries `job_status`, `activity` while it runs, `last_heard` and, when the peer 
 - `areas` — topics this node subscribes to; `--to area:NAME` fans out to every peer that announced it.
 - `peers` — addresses to dial; `name` is optional. A peer without a name is learned from the
   handshake. If every peer has a name, only those names may connect; with a nameless peer (or
-  none) any node holding the code may. Nodes keep one session per peer.
+  none) any node holding the code may. Nodes keep one session per peer. Members learned from
+  the table are dialed too (see "Members and discovery").
+- `discovery` (optional, default off for the CLI, on in the tray app) — send and answer LAN
+  beacons; `discovery_port` replaces UDP 7421.
 
 Loopback examples: `examples/node-a.json`, `examples/node-b.json`. `scripts/e2e-local.ps1`
 builds the binary, starts both, sends a→b, replies b→a and stops them. `scripts/e2e-worker.ps1`
@@ -277,8 +321,9 @@ After handling the messages (and replying with `send --reply-to`), start `wait` 
   45 s without any frame from it closes the session: the status turns «нет связи» and the dialing
   side reconnects with its usual backoff. A v0.2 peer sends no heartbeats and ignores them (and
   `activity`); it is never timed out, it just shows no activity.
-- Versions interoperate: since v0.4 `hello` carries `proto` (protocol version, 4) and `caps`
-  (`caps`, `hb`, `activity`, `job-reattach`). A peer that sends neither is an older version
+- Versions interoperate: since v0.4 `hello` carries `proto` (protocol version, now 5) and `caps`
+  (`caps`, `hb`, `activity`, `job-reattach`, and since v0.6 `members`); v0.6 adds `node_id`,
+  `app` (version) and `port` to `hello` and the `members` frame. A peer that sends neither is an older version
   with no optional capabilities; it still connects and exchanges messages. Unknown frame
   types, unknown fields, fields of an unexpected JSON type and lines that do not parse are
   skipped (debug log), during the handshake and after, and never close the session. A feature
@@ -288,7 +333,10 @@ After handling the messages (and replying with `send --reply-to`), start `wait` 
 
 ## Security
 
-- Bind `listen` to the ZeroTier (or VPN) IP, not `0.0.0.0`, and firewall the port to the peers.
+- The tray app listens on every interface by default (so LAN and external addresses work).
+  Anyone who can reach TCP 7420 can attempt the handshake; to keep the old boundary set
+  «Мой адрес» / `listen` to the ZeroTier IP and firewall the port to the members, or switch
+  discovery off on untrusted LANs.
 - Peers authenticate with mutual HMAC-SHA256 challenge-response over fresh nonces, keyed with
   HKDF-SHA256 of the upper-cased pairing code (context `agentlink/pair-code/v1`); the code is
   never sent. Node names are announced in the handshake and bound by the MACs; bad MACs are
@@ -297,7 +345,10 @@ After handling the messages (and replying with `send --reply-to`), start `wait` 
   has about 31 bits: anyone who can reach the port can record one handshake and brute-force the
   code offline in minutes. Keep the ZeroTier network private (only the two of you as members)
   and firewall the port to it. A legacy 16+ byte random secret (CLI `secret_env`, or a v0.1
-  tray config) resists that attack if you need it.
+  tray config) resists that attack if you need it. The discovery beacon's `net` tag is another
+  offline check of a guessed code (PBKDF2 with 100 000 rounds makes each guess costlier than
+  a handshake MAC), sent to everyone on the LAN.
+- Any member can add addresses to the table and remove members; every member is trusted alike.
 - The CLI's code or secret lives only in an environment variable; CLI configs are safe to commit.
 - There is no TLS: message bodies travel in clear text, relying on ZeroTier's encryption.
 - The control API listens on loopback only and rejects browser requests (`Origin` header) and

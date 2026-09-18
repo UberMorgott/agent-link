@@ -6,15 +6,17 @@ this file is the contract and the install path. Do not duplicate README content 
 
 ## What it is
 
-Two machines, one node each. A node keeps a TCP session to its peer over ZeroTier and carries
-messages between the two developers' agent sessions. `agentlink-tray.exe` is the same node plus a
+A network of N machines, one node each, all holding the same code. Every node keeps a TCP
+session to every other member (over ZeroTier, the LAN or an external address), gossips the
+member table so all members see each other, finds members on local networks by UDP beacon,
+and carries messages between the developers' agent sessions (README "Members and discovery"). `agentlink-tray.exe` is the same node plus a
 tray icon, a browser settings page, an inbox page and an optional read-only handler agent.
 
 ## Prerequisites
 
 - Windows. The tray app, autostart and the `scripts/*.ps1` checks are Windows-only; pwsh 7+.
-- ZeroTier (or another VPN) joined to the same network on both machines, and each side's own
-  ZeroTier IP known.
+- A path between members: the same LAN, ZeroTier (or another VPN) joined to one network, or an
+  address reachable from the internet (TCP 7420).
 - Go 1.27+ — only to build from source or run the tests. A release binary needs no Go.
 - Claude Code or Codex, logged in — only if this side answers requests automatically. With
   the handler set to «Никто, отвечаю сам» neither is needed. Any install works and need not be
@@ -44,10 +46,11 @@ go build -ldflags "-H=windowsgui" -o bin/agentlink-tray.exe ./cmd/agentlink-tray
 
 ## First run
 
-Start `agentlink-tray.exe`; it opens the settings page (later: tray icon → "Open settings").
-Five fields: name (prefilled), 6-character code (**Создать код** on one side, typed on the
-other), the peer's ZeroTier IP (port optional), who answers, working folder; Save. Everything
-else is under the collapsed "Дополнительно". README's "First run (both people)" has the walk.
+Start `agentlink-tray.exe`; it opens the settings page (later: tray icon → «Открыть настройки»).
+Fields: name (prefilled), 6-character code (**Создать код** on one member, typed on the
+others), **Участники сети** (the member list, **Добавить участника по адресу** + **Добавить**,
+**Удалить**), who answers, working folder; Save. Everything else is under the collapsed
+"Дополнительно". README's "First run (every member)" has the walk.
 
 Settings live in `%APPDATA%\agentlink\config.json`, messages in `%APPDATA%\agentlink\data`, the
 log in `%APPDATA%\agentlink\agentlink.log`. The tray app writes the code into that config file.
@@ -55,15 +58,16 @@ That file is never committed and never copied into a repository, an issue, a log
 
 ## Pairing the two sides
 
-Both sides must agree, or the session never authenticates:
+All members must agree, or the session never authenticates:
 
-- Each side listens on **its own** ZeroTier IP (the tray app finds it; default port 7420) and at
-  least one side has the other's IP as the peer address. The settings page shows this side's
-  address to pass on.
-- The **same** 6-character code on both machines (case-insensitive), exchanged out of band (a
+- The tray app listens on every interface (port 7420) unless «Мой адрес» names one IP. A member
+  is reached by LAN discovery, or by one member adding its address; the table spreads it to
+  all. The settings page shows this side's address to pass on.
+- The **same** 6-character code on every machine (case-insensitive), exchanged out of band (a
   private channel, not this repo, not a PR, not an issue). The CLI reads it (or a legacy 16+
   byte secret) from the env var named by `secret_env`; the tray app stores it in its config.
-- Names are learned from the handshake; a configured peer name, if any, must match.
+- Names are learned from the handshake; a configured peer name, if any, must match. Names are
+  unique per network: on a clash the smaller node id keeps the name.
 - The code is short and brute-forceable offline, so the private ZeroTier network is the security
   boundary (README "Security").
 - `areas` must overlap for `--to area:NAME` fan-out to reach the peer.
@@ -125,7 +129,10 @@ qgate                                # quality gate; qgate -All when deps or bui
 
 - Never commit a secret, a token, or a real `config.json` / node config with a secret in it.
   `examples/*.json` are templates and carry no secret.
-- `listen` binds to the ZeroTier IP, never `0.0.0.0`, and the port is firewalled to the peer.
+- The peer listener binds every interface only because members must be reachable over the LAN
+  and external addresses; the handshake is the gate there. Never add an unauthenticated peer
+  path, never put the code, key or a reversible form of it in a beacon (only the PBKDF2 `net`
+  tag), and keep «Мой адрес» able to restrict the listener to one IP.
 - The control API stays loopback-only; a non-loopback `api` value is refused on purpose — do not
   relax that check.
 - There is no TLS. Confidentiality comes from ZeroTier alone; do not describe the link as

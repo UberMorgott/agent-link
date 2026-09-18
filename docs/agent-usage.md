@@ -1,17 +1,17 @@
 # Using agent-link from a coding agent
 
-How an agent on one machine asks the agent on the other machine a question and gets the answer.
+How an agent on one machine asks the agent on another member's machine a question and gets the answer.
 Everything goes through the `agentlink` CLI against the node that is already running on this
 machine (the tray app or `agentlink serve`).
 
 ## The config path
 
 Every subcommand needs `--config <path>` — a **node config** (`node`, `listen`, `api`,
-`data_dir`, `secret_env`, optional `areas`/`peers`; see README "Config"). `send`, `inbox` and
-`wait` only talk to the local control API, so the one field that must be right is `api`: the
-loopback address of the running node (the tray app's default is `127.0.0.1:7520`, from
-`%APPDATA%\agentlink\config.json`, key `api`, absent means the default). The remaining fields
-must be valid but are unused by these three commands.
+`data_dir`, `secret_env`, optional `areas`/`peers`; see README "Config"). `send`, `inbox`,
+`wait` and `members` only talk to the local control API, so the one field that must be right is
+`api`: the loopback address of the running node (the tray app's default is `127.0.0.1:7520`,
+from `%APPDATA%\agentlink\config.json`, key `api`, absent means the default). The remaining
+fields must be valid but are unused by these commands.
 
 If there is no node config on the machine, write one next to the settings, e.g.
 `%APPDATA%\agentlink\cli.json`, using `examples/node-a.json` as the template:
@@ -27,7 +27,7 @@ If there is no node config on the machine, write one next to the settings, e.g.
 }
 ```
 
-No code or secret is needed for `send`/`inbox`/`wait`: the running node holds it.
+No code or secret is needed for `send`/`inbox`/`wait`/`members`: the running node holds it.
 
 ## Message format (agent to agent)
 
@@ -48,11 +48,17 @@ question typed in the inbox page is answered briefly in that human's language.
 ## Ask and get the answer
 
 ```powershell
-agentlink send  --config <path> --to <node> --body "<question>"   # prints the message id; without --to: the only peer
+agentlink members --config <path>                                 # who is in the network: one JSON line each, this node first
+agentlink send  --config <path> --to <node> --body "<question>"   # prints the message id
 agentlink inbox --config <path> --limit 20                        # one JSON object per line
 agentlink wait  --config <path> --timeout 0                       # blocks until a message arrives
 ```
 
+0. The network can have many members (everyone with the same code). `members` lists them:
+   `name`, `online`, `addrs`, `app` (version), `self: true` for this node. Pick the recipient
+   by `name` (the user says "спроси Никиту" → the member whose name matches). `--to` may be
+   omitted only when there is exactly one other member; with several, `send` fails with
+   `several peers known, name one: <names>` — pick one and send again.
 1. `send` prints the request id. Keep it: the answer refers to it as `reply_to`.
 2. Start `wait` as a **background command** (`run_in_background` in Claude Code). It blocks,
    then exits 0 and prints one JSON line per message; the harness announces the completion and
