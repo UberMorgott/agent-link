@@ -59,6 +59,26 @@ Settings, including the code, live in `%APPDATA%\agentlink\config.json` (per use
 repo); messages in `%APPDATA%\agentlink\data`, the log in `%APPDATA%\agentlink\agentlink.log`.
 Autostart is the `agentlink` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 
+### Updates
+
+The app updates itself from this repository's GitHub releases. **Обновления** at the bottom of
+the settings page and the tray menu show the version, **Проверить обновления** (the latest
+release, or «У вас актуальная версия»), **Обновить до X.Y.Z** when a newer one exists, progress
+and errors, and the **Обновлять автоматически** switch (`auto_update` in the config, on by
+default; it saves at once and is not part of **Сохранить**). With it on, the app checks a minute
+after start and then every 6 hours (±10%) and installs a newer release by itself.
+
+An update downloads `checksums.txt` and the release executables for the app's folder over HTTPS
+(`api.github.com/repos/UberMorgott/agent-link/releases/latest`, no token), checks each file's
+SHA-256 against it and refuses anything unlisted, mismatched, older or equal, or a release
+without `checksums.txt`. Only then does it swap `agentlink-tray.exe` and, when it is next to it,
+`agentlink.exe`: each running file is renamed to a hidden `.<name>.old` and the new one takes its
+place; a failure puts back every file already swapped. The app then starts the new executable
+(with `-restarted`, which waits up to 30 s for the API address) and quits the normal way, never
+the kill path: running agent jobs stay up and the new app reattaches to them. The next start
+deletes the `.old` files. A plain `go build` has version `dev` and never updates itself;
+`agentlink update` (below) is the same for the CLI.
+
 ### Handler agent
 
 The agent has to be installed and logged in on the answering side, in any of the ways below.
@@ -167,7 +187,14 @@ agentlink send  --config node.json --to area:dev --body "build is green"
 agentlink send  --config node.json --to node-b --body "done" --reply-to <id>
 agentlink wait  --config node.json --timeout 0             # blocks; JSON line per message
 agentlink inbox --config node.json --limit 20              # recent in/out, non-destructive
+agentlink version                                          # this build's version (dev: not a release)
+agentlink update --check                                   # is there a newer release?
+agentlink update                                           # install it next to agentlink.exe
 ```
+
+`update` replaces `agentlink.exe` and `agentlink-tray.exe` in its folder with the latest release,
+verified as in "Updates"; a running tray keeps the old version until it restarts (with automatic updates on, its next
+check does that).
 
 `wait` exits 0 after printing every undelivered inbound message (they are then marked
 delivered), exits 2 with no output when `--timeout` (seconds or a Go duration, `0` = forever)

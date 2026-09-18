@@ -30,7 +30,8 @@ tray icon, a browser settings page, an inbox page and an optional read-only hand
 
 Release asset (preferred): download `agentlink-tray.exe` (and `agentlink.exe` for the CLI) from
 the GitHub release, put them in a folder of your choice, run the tray exe. Nothing else is
-installed; all state lives under `%APPDATA%\agentlink`.
+installed; all state lives under `%APPDATA%\agentlink`. From then on the app updates both files
+in that folder from GitHub releases by itself (README "Updates"; `agentlink update` for the CLI).
 
 From source:
 
@@ -114,6 +115,7 @@ pwsh -File scripts/e2e-local.ps1     # two CLI nodes on loopback: send, reply, s
 pwsh -File scripts/e2e-worker.ps1    # two headless tray apps + fake agent; -RealClaude / -RealCodex [-AgentPath]
 pwsh -File scripts/e2e-parallel.ps1  # max_jobs 2, streamed activity at the sender, idle-timeout kill
 pwsh -File scripts/e2e-tray.ps1      # both people on one machine through the web UI; agent survives restarts, retries
+pwsh -File scripts/e2e-update.ps1    # self-update 0.0.1 -> 0.0.2 from a fake releases API while an agent job runs
 qgate                                # quality gate; qgate -All when deps or build config changed
 ```
 
@@ -130,9 +132,15 @@ qgate                                # quality gate; qgate -All when deps or bui
   encrypted end to end by agent-link.
 - Do not commit binaries (`bin/`, `*.exe`) or node data (`.data/`); release assets are built and
   attached, not tracked.
-- Release binaries are always stripped and UPX-packed: build them only with
-  `pwsh -File scripts/release.ps1 -Version <x.y.z> [-Publish]` (`-trimpath -ldflags "-s -w"`,
-  `upx --best --lzma`, `upx -t`), never attach a plain `go build` output.
+- Release binaries are always stripped and UPX-packed and carry their version: build them only
+  with `scripts/release.ps1` (`-trimpath -ldflags "-s -w -X …/selfupdate.Version=<x.y.z>"`,
+  `upx --best --lzma`, `upx -t`, `checksums.txt`), never attach a plain `go build` output. A
+  release is cut by pushing a `vX.Y.Z` tag: `.github/workflows/release.yml` vets, tests, runs
+  that script, attests provenance and publishes. `pwsh -File scripts/release.ps1 -Version <x.y.z>
+  -Publish` is the manual fallback. Asset names and `checksums.txt` are what self-update reads
+  (`internal/selfupdate.AssetName`); renaming one breaks every installed app's update.
+- Self-update never skips the SHA-256 check, never downgrades, and restarts the app through its
+  normal quit, never `Worker.CancelAll`: running agent jobs must survive an update.
 - `reference/` is an untracked third-party checkout (see README). Read it, never edit it, never
   add it back to git.
 - Conventional commits with explicit paths.
