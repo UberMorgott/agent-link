@@ -135,8 +135,12 @@ func (s *store) claimUndelivered() ([]Message, error) {
 // are folded into the outbound request they refer to.
 func (s *store) recent(limit int) ([]Entry, error) {
 	var out []Entry
-	// progress[peer/request id]: the latest status update and the latest reply.
-	type progress struct{ status, reply *Message }
+	// progress[peer/request id]: the latest status update, the latest reply
+	// and when anything about the request last arrived.
+	type progress struct {
+		status, reply *Message
+		heard         time.Time
+	}
 	byRequest := map[string]*progress{}
 	s.mu.Lock()
 	for _, r := range s.inbox {
@@ -147,6 +151,9 @@ func (s *store) recent(limit int) ([]Entry, error) {
 			if p == nil {
 				p = &progress{}
 				byRequest[key] = p
+			}
+			if r.ReceivedAt.After(p.heard) {
+				p.heard = r.ReceivedAt
 			}
 			slot := &p.reply
 			if m.Kind == KindStatus {
@@ -181,12 +188,18 @@ func (s *store) recent(limit int) ([]Entry, error) {
 			}
 			for _, m := range msgs {
 				e := Entry{Direction: "out", Status: box.status, Peer: p.Name(), Message: m}
+				if m.IsRequest() {
+					e.LastHeard = m.CreatedAt
+				}
 				if pr := byRequest[p.Name()+"/"+m.ID]; pr != nil && m.IsRequest() {
 					switch {
 					case pr.reply != nil:
 						e.JobStatus, e.Answer = pr.reply.JobStatus, pr.reply.Body
 					case pr.status != nil:
-						e.JobStatus = pr.status.JobStatus
+						e.JobStatus, e.Activity = pr.status.JobStatus, pr.status.Activity
+					}
+					if pr.heard.After(e.LastHeard) {
+						e.LastHeard = pr.heard
 					}
 				}
 				if m.Kind == KindStatus {

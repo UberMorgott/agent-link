@@ -55,8 +55,10 @@ type Node struct {
 	mu      sync.Mutex
 	known   map[string]bool // configured and learned peer names
 	conns   map[string]*peerConn
-	areas   map[string][]string // last areas each peer announced
-	problem error               // last handshake failure, nil once a session is up
+	areas   map[string][]string  // last areas each peer announced
+	problem error                // last handshake failure, nil once a session is up
+	offline map[string]time.Time // when each peer's last session ended
+	started time.Time            // stands in for offline of peers never connected
 
 	wg sync.WaitGroup
 
@@ -65,6 +67,9 @@ type Node struct {
 	backoffMin       time.Duration
 	backoffMax       time.Duration
 	handshakeTimeout time.Duration
+	heartbeatEvery   time.Duration
+	heartbeatTimeout time.Duration
+	noNewsAfter      time.Duration
 
 	onInbound func(Message) error
 }
@@ -87,10 +92,13 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	n := &Node{
 		cfg: cfg, secret: secret, store: st, log: log.With("node", cfg.Node),
 		known: map[string]bool{}, conns: map[string]*peerConn{}, areas: map[string][]string{},
+		offline: map[string]time.Time{}, started: time.Now(),
 		open:        len(cfg.Peers) == 0,
 		resendAfter: 5 * time.Second, resendTick: time.Second,
 		backoffMin: 250 * time.Millisecond, backoffMax: 5 * time.Second,
 		handshakeTimeout: 10 * time.Second,
+		heartbeatEvery:   HeartbeatEvery, heartbeatTimeout: HeartbeatTimeout,
+		noNewsAfter: NoNewsAfter,
 	}
 	for _, p := range cfg.Peers {
 		n.targets = append(n.targets, &target{addr: p.Addr, name: p.Name})
@@ -174,8 +182,58 @@ func (n *Node) Run(ctx context.Context, peerLn net.Listener) {
 	n.wg.Wait()
 }
 
-// Recent lists inbound, queued and sent messages, newest first.
-func (n *Node) Recent(limit int) ([]Entry, error) { return n.store.recent(limit) }
+// Link liveness and sender-side tracking defaults.
+const (
+	// HeartbeatEvery is how often a node sends a heartbeat frame on each session.
+	HeartbeatEvery = 15 * time.Second
+	// HeartbeatTimeout closes a session that has been silent this long, but only
+	// once the peer has sent a heartbeat: older peers never do.
+	HeartbeatTimeout = 45 * time.Second
+	// NoNewsAfter marks an unanswered outbound request (Entry.NoNewsMin) whose
+	// peer has sent nothing about it for this long while connected, or has been
+	// disconnected this long.
+	NoNewsAfter = 5 * time.Minute
+)
+
+// Recent lists inbound, queued and sent messages, newest first. Unanswered
+// outbound requests the peer has been silent about carry NoNewsMin.
+func (n *Node) Recent(limit int) ([]Entry, error) {
+	entries, err := n.store.recent(limit)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	for i := range entries {
+		e := &entries[i]
+		if e.Direction != "out" || !e.IsRequest() || e.Answer != "" ||
+			e.JobStatus == JobCompleted || e.JobStatus == JobFailed || e.LastHeard.IsZero() {
+			continue
+		}
+		silent := now.Sub(e.LastHeard)
+		offline := n.offlineFor(e.Peer, now)
+		// A request queued behind other jobs is news enough while the peer is up.
+		stale := offline >= n.noNewsAfter || (offline == 0 && e.JobStatus != JobQueued && silent >= n.noNewsAfter)
+		if stale {
+			e.NoNewsMin = max(1, int(silent/time.Minute))
+		}
+	}
+	return entries, nil
+}
+
+// offlineFor is how long peer has had no session: 0 while connected, and
+// since this node started for a peer that never connected.
+func (n *Node) offlineFor(peer string, now time.Time) time.Duration {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.conns[peer] != nil {
+		return 0
+	}
+	since, ok := n.offline[peer]
+	if !ok {
+		since = n.started
+	}
+	return max(now.Sub(since), time.Nanosecond)
+}
 
 // Connected reports whether a live session to peer exists.
 func (n *Node) Connected(peer string) bool {

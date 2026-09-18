@@ -27,7 +27,8 @@ const maxFrame = 1 << 20
 //	D -> A  auth{mac: HMAC("dial", D, A, dialNonce, acceptNonce)}
 //	A -> D  ok
 //
-// Then either side sends msg{msg} and answers with ack{id}. Node names are
+// Then either side sends msg{msg} and answers with ack{id}, and sends hb (a
+// heartbeat, since v0.3) every HeartbeatEvery; unknown types are ignored. Node names are
 // announced in hello and bound by both MACs, so a peer's name can be learned
 // from the handshake; the shared key alone authenticates it.
 type frame struct {

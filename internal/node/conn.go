@@ -4,12 +4,16 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"sync"
 	"time"
 )
 
 const writeTimeout = 10 * time.Second
+
+// frameHeartbeat is the liveness frame; older peers ignore unknown frame types.
+const frameHeartbeat = "hb"
 
 // peerConn is one authenticated connection to a peer.
 type peerConn struct {
@@ -93,6 +97,7 @@ func (n *Node) unregister(pc *peerConn) {
 	defer n.mu.Unlock()
 	if n.conns[pc.peer] == pc {
 		delete(n.conns, pc.peer)
+		n.offline[pc.peer] = time.Now()
 		n.log.Info("peer disconnected", "peer", pc.peer)
 	}
 }
@@ -107,7 +112,12 @@ func (n *Node) runConn(ctx context.Context, pc *peerConn, sc *bufio.Scanner) {
 	n.unregister(pc)
 }
 
+// readLoop handles the peer's frames. Once the peer has sent a heartbeat it is
+// known to send them, and a session silent for heartbeatTimeout is dead: the
+// read deadline closes it. A peer that never sends one (an older version) is
+// never timed out.
 func (n *Node) readLoop(pc *peerConn, sc *bufio.Scanner) {
+	beats := false
 	for sc.Scan() {
 		var f frame
 		if err := json.Unmarshal(sc.Bytes(), &f); err != nil {
@@ -123,7 +133,16 @@ func (n *Node) readLoop(pc *peerConn, sc *bufio.Scanner) {
 			if err := n.store.ack(pc.peer, f.ID); err != nil {
 				n.log.Warn("ack", "peer", pc.peer, "id", f.ID, "err", err)
 			}
+		case frameHeartbeat:
+			beats = true
 		}
+		if beats {
+			_ = pc.c.SetReadDeadline(time.Now().Add(n.heartbeatTimeout))
+		}
+	}
+	var ne net.Error
+	if errors.As(sc.Err(), &ne) && ne.Timeout() {
+		n.log.Warn("peer silent, closing session", "peer", pc.peer, "after", n.heartbeatTimeout)
 	}
 }
 
@@ -152,10 +171,17 @@ func (n *Node) receive(pc *peerConn, m *Message) bool {
 	return pc.write(frame{Type: "ack", ID: m.ID}) == nil
 }
 
-// writeLoop sends the peer's outbox, resending anything not ACKed within resendAfter.
+// writeLoop sends the peer's outbox, resending anything not ACKed within
+// resendAfter, and a heartbeat every heartbeatEvery.
 func (n *Node) writeLoop(pc *peerConn) {
 	ticker := time.NewTicker(n.resendTick)
 	defer ticker.Stop()
+	beat := time.NewTicker(n.heartbeatEvery)
+	defer beat.Stop()
+	if pc.write(frame{Type: frameHeartbeat}) != nil {
+		pc.close()
+		return
+	}
 	sentAt := map[string]time.Time{}
 	for {
 		msgs, err := n.store.pending(pc.peer)
@@ -180,6 +206,11 @@ func (n *Node) writeLoop(pc *peerConn) {
 			return
 		case <-pc.kick:
 		case <-ticker.C:
+		case <-beat.C:
+			if pc.write(frame{Type: frameHeartbeat}) != nil {
+				pc.close()
+				return
+			}
 		}
 	}
 }
