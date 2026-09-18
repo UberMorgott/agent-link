@@ -110,6 +110,30 @@ func (c Command) Runner() Runner {
 	}
 }
 
+// VersionTimeout bounds one "--version" probe; a large agent binary can take a
+// few seconds on its first start while an antivirus scans it.
+const VersionTimeout = 15 * time.Second
+
+// Version runs "<path> --version" without a console window and returns its
+// trimmed output. A program that fails, prints nothing or hangs is an error.
+func Version(ctx context.Context, path string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, VersionTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "--version")
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	cmd.WaitDelay = 2 * time.Second
+	prepare(cmd)
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%s --version: %w: %s", path, err, tail(out.String(), 300))
+	}
+	v := tail(out.String(), 300)
+	if v == "" {
+		return "", fmt.Errorf("%s --version printed nothing", path)
+	}
+	return v, nil
+}
+
 // reason keeps the CLI's own "ERROR:" line when there is one (Codex prints its
 // whole session banner to stderr), otherwise the tail of stderr.
 func reason(stderr string) string {

@@ -50,6 +50,7 @@ func (a *App) URL(page string) string {
 //	POST /ui/api/pick-folder       {"start"} -> native folder dialog -> pickResult
 //	POST /ui/api/agent             {"handler","agent_path"} -> agentInfo
 //	POST /ui/api/pick-agent        {"start"} -> native file dialog for a program -> pickResult
+//	POST /ui/api/find-agent        {"handler"} -> look for the agent again -> agentInfo
 //	POST /ui/api/quit              exit the app (same path as the tray's Quit)
 func (a *App) Handler() http.Handler {
 	ui := http.NewServeMux()
@@ -71,6 +72,7 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /ui/api/pick-folder", a.pickFolder)
 	api.HandleFunc("POST /ui/api/agent", a.agentInfo)
 	api.HandleFunc("POST /ui/api/pick-agent", a.pickAgent)
+	api.HandleFunc("POST /ui/api/find-agent", a.findAgent)
 	api.HandleFunc("POST /ui/api/quit", func(w http.ResponseWriter, _ *http.Request) {
 		if a.QuitFunc == nil {
 			writeError(w, http.StatusNotImplemented, msg("error.internal", nil))
@@ -168,10 +170,10 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg("error.bad_request", nil))
 		return
 	}
-	path, err := a.Apply(s)
+	f, err := a.Apply(s)
 	found := ""
-	if path != "" {
-		found = msg("settings.agent.found", map[string]string{"path": path})
+	if f.Path != "" {
+		found = foundText(f)
 	}
 	var p *settings.Problem
 	switch {
@@ -343,6 +345,8 @@ func (a *App) agentInfo(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case source == settings.AgentFromPath:
 		info.Text = msg("settings.agent.from_path", map[string]string{"path": path})
+	case source == settings.AgentFromSetting && a.Agents.Kind(req.Handler, path) != "":
+		info.Text = foundText(settings.Found{Path: path, Kind: a.Agents.Kind(req.Handler, path)})
 	case source == settings.AgentFromSetting:
 		info.Text = msg("settings.agent.from_setting", map[string]string{"path": path})
 	case path != "":
@@ -352,6 +356,39 @@ func (a *App) agentInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, info)
 }
+
+// foundText is «Найден: <install kind> — <path>».
+func foundText(f settings.Found) string {
+	return msg("settings.agent.found", map[string]string{"kind": msg("agent_kind."+f.Kind, nil), "path": f.Path})
+}
+
+// findAgent looks for the handler's agent again («Найти заново») and returns
+// what it would save; the page keeps it until «Сохранить». A program on PATH
+// needs no agent_path, so Path is then empty.
+func (a *App) findAgent(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Handler string `json:"handler"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, msg("error.bad_request", nil))
+		return
+	}
+	if _, ok := worker.ForHandler(req.Handler); !ok || a.Agents.LookPath == nil {
+		writeJSON(w, agentInfo{Text: ""})
+		return
+	}
+	f, ok := a.Agents.Discover(req.Handler)
+	if !ok {
+		writeJSON(w, agentInfo{Source: settings.AgentMissing, Text: msg("settings.agent.not_found", nil)})
+		return
+	}
+	info := agentInfo{Path: f.Path, Source: settings.AgentFromSetting, Text: foundText(f)}
+	if f.Kind == settings.KindPath {
+		info.Path, info.Source = "", settings.AgentFromPath
+	}
+	writeJSON(w, info)
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)

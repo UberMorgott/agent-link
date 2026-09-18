@@ -7,6 +7,7 @@ const workDir = document.getElementById("work_dir");
 const pick = document.getElementById("pick");
 const agentPath = document.getElementById("agent_path");
 const pickAgent = document.getElementById("pick_agent");
+const findAgent = document.getElementById("find_agent");
 
 // Letters and digits without 0/O and 1/I: 32 symbols, so a byte & 31 is uniform.
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -72,6 +73,25 @@ async function showAgent() {
 form.elements.handler.addEventListener("change", () => {
   agentPath.value = "";
   showAgent();
+});
+
+// «Найти заново» looks through every known install location; the result is
+// kept until «Сохранить», like a picked program.
+findAgent.addEventListener("click", async () => {
+  findAgent.disabled = true;
+  result.textContent = t("settings.agent.finding");
+  const handler = form.elements.handler.value;
+  try {
+    const r = await api("POST", "find-agent", { handler });
+    if (form.elements.handler.value !== handler) return;
+    if (r.source !== "missing") agentPath.value = r.path || "";
+    document.getElementById("agent_shown").textContent = r.text || "";
+    result.textContent = r.source === "missing" ? "" : t("settings.agent.save_hint");
+  } catch (e) {
+    result.textContent = e.message;
+  } finally {
+    findAgent.disabled = false;
+  }
 });
 
 // The tray process opens the native Windows file dialog for the program.

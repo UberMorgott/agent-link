@@ -43,7 +43,8 @@ type App struct {
 	// well-known install locations; replaceable in tests.
 	Agents settings.Finder
 
-	picking atomic.Bool // a Windows dialog is open
+	picking atomic.Bool    // a Windows dialog is open
+	saves   sync.WaitGroup // background saves of a rediscovered agent path
 
 	mu         sync.Mutex
 	s          settings.Settings
@@ -136,8 +137,9 @@ func (a *App) Start() error {
 // Stop stops the node and the worker and waits for them.
 func (a *App) Stop() {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.stopLocked()
+	a.mu.Unlock()
+	a.saves.Wait()
 }
 
 // Status returns the current state.
@@ -186,9 +188,10 @@ var ErrNotStarted = errors.New("settings saved, but the node did not start")
 // Apply validates and saves new settings, updates autostart and restarts the
 // node. HandlerCommand, an empty API and, while no code is set, the legacy
 // secret are kept from the current settings. A code replaces the secret.
-// When the chosen agent is neither on PATH nor at AgentPath, its well-known
-// install locations are tried and a hit is saved as AgentPath and returned.
-func (a *App) Apply(s settings.Settings) (found string, err error) {
+// When no AgentPath is set, or the set one has disappeared (an app update
+// moved its versioned folder), the agent is looked for again (Finder.Discover);
+// a hit off PATH is saved as AgentPath and returned.
+func (a *App) Apply(s settings.Settings) (found settings.Found, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s = s.Normalize()
@@ -199,12 +202,16 @@ func (a *App) Apply(s settings.Settings) (found string, err error) {
 	if s.Code == "" {
 		s.Secret = a.s.Secret
 	}
-	if s.AgentPath == "" && len(s.HandlerCommand) == 0 && a.Agents.LookPath != nil {
-		found = a.Agents.Discover(s.Handler)
-		s.AgentPath = found
+	if len(s.HandlerCommand) == 0 && a.Agents.LookPath != nil && !a.agentPresent(s.AgentPath) {
+		if f, ok := a.Agents.Discover(s.Handler); ok {
+			s.AgentPath, found = "", f
+			if f.Kind != settings.KindPath {
+				s.AgentPath = f.Path
+			}
+		}
 	}
 	if err := settings.Save(a.path, s); err != nil {
-		return "", err
+		return settings.Found{}, err
 	}
 	if a.SetAutostart != nil && (s.Autostart != a.s.Autostart || !a.configured) {
 		if err := a.SetAutostart(s.Autostart); err != nil {
@@ -217,6 +224,60 @@ func (a *App) Apply(s settings.Settings) (found string, err error) {
 		return found, fmt.Errorf("%w: %w", ErrNotStarted, err)
 	}
 	return found, nil
+}
+
+// agentPresent reports a set AgentPath that is a file.
+func (a *App) agentPresent(p string) bool {
+	if p == "" || a.Agents.Stat == nil {
+		return false
+	}
+	st, err := a.Agents.Stat(p)
+	return err == nil && st.Mode().IsRegular()
+}
+
+// agentRunner runs cmd. When cmd is the saved AgentPath and that file is gone
+// by the time a job runs, the agent is looked for again, the job runs the new
+// program and the new path is saved in the background.
+func (a *App) agentRunner(cmd worker.Command, handler string, fromSetting bool) worker.Runner {
+	if !fromSetting || a.Agents.Stat == nil {
+		return cmd.Runner()
+	}
+	var mu sync.Mutex
+	cur := cmd
+	return func(ctx context.Context, dir, prompt string) (string, error) {
+		mu.Lock()
+		if !a.agentPresent(cur.Name) {
+			if f, ok := a.Agents.Discover(handler); ok {
+				old, saved := cur.Name, f.Path
+				if f.Kind == settings.KindPath {
+					saved = ""
+				}
+				a.log.Info("agent program moved", "old", old, "new", f.Path, "kind", f.Kind)
+				cur.Name = f.Path
+				a.saves.Go(func() { a.saveAgentPath(handler, old, saved) })
+			}
+		}
+		c := cur
+		mu.Unlock()
+		return c.Runner()(ctx, dir, prompt)
+	}
+}
+
+// saveAgentPath replaces the stored AgentPath old with p, unless the settings
+// changed meanwhile. The running node keeps going: its runner already uses p.
+func (a *App) saveAgentPath(handler, old, p string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.configured || a.s.Handler != handler || a.s.AgentPath != old || len(a.s.HandlerCommand) > 0 {
+		return
+	}
+	s := a.s
+	s.AgentPath = p
+	if err := settings.Save(a.path, s); err != nil {
+		a.log.Warn("save rediscovered agent path", "err", err)
+		return
+	}
+	a.s = s
 }
 
 func (a *App) startLocked() error {
@@ -250,7 +311,7 @@ func (a *App) startNode() error {
 	var run worker.Runner
 	cmd, hasHandler := a.s.Command()
 	if hasHandler {
-		run = cmd.Runner()
+		run = a.agentRunner(cmd, a.s.Handler, a.s.AgentPath != "" && len(a.s.HandlerCommand) == 0)
 	}
 	w, err := worker.New(run, n.SendMessage, cfg.DataDir, a.s.WorkDir, a.HandlerTimeout, a.log)
 	if err != nil {

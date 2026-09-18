@@ -2,9 +2,10 @@
 # End-to-end loopback run of the desktop app: two agentlink-tray nodes in
 # -no-tray mode, node-b answers requests with a fake echo agent, node-a sends a
 # request and must receive the automatic reply.
-# -RealClaude / -RealCodex run the installed `claude` / `codex` CLI instead of the fake agent (one real smoke).
+# -RealClaude / -RealCodex run the installed `claude` / `codex` CLI instead of the fake agent (one real smoke);
+# -AgentPath runs that program for it (saved as agent_path), e.g. the Codex app's own codex.exe.
 [CmdletBinding()]
-param([int]$TimeoutSeconds = 0, [switch]$RealClaude, [switch]$RealCodex)
+param([int]$TimeoutSeconds = 0, [switch]$RealClaude, [switch]$RealCodex, [string]$AgentPath = '')
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -47,6 +48,7 @@ foreach ($name in $nodes.Keys) {
         listen = $n.listen; api = $n.api
     }
     if ($name -eq 'node-b' -and -not $real) { $settings.handler_command = @($fake) }
+    if ($name -eq 'node-b' -and $real -and $AgentPath) { $settings.agent_path = $AgentPath }
     $n.config = Join-Path $dir 'config.json'
     $settings | ConvertTo-Json | Set-Content -Path $n.config
     # A CLI config pointing at the same control API, for send/wait.
