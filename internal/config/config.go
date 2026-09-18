@@ -19,14 +19,25 @@ import (
 // MinSecretLen is the minimum accepted length of the shared secret in bytes.
 const MinSecretLen = 16
 
-// CodeLen is the length of a pairing code: letters and digits, case-insensitive.
-const CodeLen = 6
+// A pairing code is CodeLen symbols of CodeAlphabet (60 bits), written in
+// groups of four: XXXX-XXXX-XXXX. Case, dashes and spaces do not matter.
+// Codes made before v0.6 are LegacyCodeLen letters or digits (about 31
+// bits); they still work but are weak (WeakCode).
+const (
+	CodeLen       = 12
+	LegacyCodeLen = 6
+	// CodeAlphabet has no 0/O and no 1/I: 32 symbols, 5 bits each.
+	CodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+)
 
 // DefaultPort is the peer port used when an address has none.
 const DefaultPort = 7420
 
-// codeKDFInfo is the fixed HKDF context for keys derived from a pairing code.
-const codeKDFInfo = "agentlink/pair-code/v1"
+// HKDF contexts for keys derived from a legacy and a current pairing code.
+const (
+	codeKDFInfo       = "agentlink/pair-code/v1"
+	strongCodeKDFInfo = "agentlink/pair-code/v2"
+)
 
 // Peer is a remote node this node dials. An empty Name is learned from the
 // handshake: the peer announces it and the shared key authenticates it.
@@ -35,27 +46,67 @@ type Peer struct {
 	Addr string `json:"addr"`
 }
 
-var codePattern = regexp.MustCompile(`^[A-Za-z0-9]{6}$`)
+var (
+	legacyCodePattern = regexp.MustCompile(`^[A-Z0-9]{6}$`)
+	codePattern       = regexp.MustCompile(`^[A-HJ-NP-Z2-9]{12}$`)
+	codeSeparators    = strings.NewReplacer("-", "", " ", "")
+)
 
-// NormalizeCode upper-cases a pairing code and reports whether it is exactly
-// CodeLen ASCII letters or digits.
+// NormalizeCode returns a pairing code in its canonical form (XXXX-XXXX-XXXX,
+// or the 6 upper-case characters of a legacy code) and reports whether it is one.
 func NormalizeCode(s string) (string, bool) {
-	s = strings.TrimSpace(s)
+	s = strings.ToUpper(strings.TrimSpace(s))
+	if legacyCodePattern.MatchString(s) {
+		return s, true
+	}
+	s = codeSeparators.Replace(s)
 	if !codePattern.MatchString(s) {
 		return "", false
 	}
-	return strings.ToUpper(s), true
+	return s[:4] + "-" + s[4:8] + "-" + s[8:], true
 }
 
-// KeyFromCode derives the 32-byte session key from a pairing code. Case does
-// not matter. A 6-character code is guessable offline by anyone who records a
-// handshake, so the private network, not the code, is the security boundary.
+// WeakCode reports a valid legacy 6-character code: about 31 bits, fine
+// inside a private network but too short for a listener the internet reaches.
+func WeakCode(code string) bool {
+	norm, ok := NormalizeCode(code)
+	return ok && len(norm) == LegacyCodeLen
+}
+
+// KeyFromCode derives the 32-byte session key from a pairing code. Case,
+// dashes and spaces do not matter. The handshake (a PAKE) gives an attacker
+// one guess per connection; the code's length is what makes guessing hopeless.
 func KeyFromCode(code string) ([]byte, error) {
 	norm, ok := NormalizeCode(code)
-	if !ok {
-		return nil, fmt.Errorf("pairing code must be %d letters or digits", CodeLen)
+	switch {
+	case !ok:
+		return nil, fmt.Errorf("pairing code must be %d symbols like XXXX-XXXX-XXXX (or a legacy code of %d letters or digits)", CodeLen, LegacyCodeLen)
+	case len(norm) == LegacyCodeLen:
+		return hkdf.Key(sha256.New, []byte(norm), nil, codeKDFInfo, 32)
+	default:
+		return hkdf.Key(sha256.New, []byte(codeSeparators.Replace(norm)), nil, strongCodeKDFInfo, 32)
 	}
-	return hkdf.Key(sha256.New, []byte(norm), nil, codeKDFInfo, 32)
+}
+
+// PrivateIP reports an address not routed on the internet: loopback, private
+// (RFC 1918, fc00::/7) or link-local.
+func PrivateIP(ip net.IP) bool {
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast())
+}
+
+// ExposedListen reports whether a peer listener bound to addr may be reached
+// from beyond private networks: it binds every interface, a public IP or a
+// host name other than localhost.
+func ExposedListen(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return !IsLoopbackHost(host)
+	}
+	return ip.IsUnspecified() || !PrivateIP(ip)
 }
 
 // WithDefaultPort returns addr as host:port, adding DefaultPort when addr is
@@ -186,15 +237,15 @@ func (c Config) Validate() error {
 }
 
 // Secret returns the session key from the environment variable named by
-// SecretEnv: a 6-character pairing code (see KeyFromCode), or a long shared
-// secret of at least MinSecretLen bytes used as is.
+// SecretEnv: a pairing code (see KeyFromCode), or a long shared secret of at
+// least MinSecretLen bytes used as is.
 func (c Config) Secret() ([]byte, error) {
 	s := os.Getenv(c.SecretEnv)
 	if _, ok := NormalizeCode(s); ok {
 		return KeyFromCode(s)
 	}
 	if len(s) < MinSecretLen {
-		return nil, fmt.Errorf("env %s must hold a %d-character pairing code or a shared secret of at least %d bytes", c.SecretEnv, CodeLen, MinSecretLen)
+		return nil, fmt.Errorf("env %s must hold a pairing code (XXXX-XXXX-XXXX) or a shared secret of at least %d bytes", c.SecretEnv, MinSecretLen)
 	}
 	return []byte(s), nil
 }

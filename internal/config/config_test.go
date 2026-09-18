@@ -71,12 +71,16 @@ func TestLoadResolvesDataDirAndReadsSecret(t *testing.T) {
 }
 
 func TestNormalizeCode(t *testing.T) {
-	for in, want := range map[string]string{"abc123": "ABC123", " K7q2Mx ": "K7Q2MX", "ZZZZZZ": "ZZZZZZ"} {
+	for in, want := range map[string]string{
+		"abc123": "ABC123", " K7q2Mx ": "K7Q2MX", "ZZZZZZ": "ZZZZZZ",
+		"k7q2-mxab-cdef": "K7Q2-MXAB-CDEF", "K7Q2MXABCDEF": "K7Q2-MXAB-CDEF", " k7q2 mxab cdef ": "K7Q2-MXAB-CDEF",
+	} {
 		if got, ok := NormalizeCode(in); !ok || got != want {
 			t.Errorf("NormalizeCode(%q) = %q %v, want %q", in, got, ok, want)
 		}
 	}
-	for _, bad := range []string{"", "ABC12", "ABC1234", "ABC 12", "ABC-12", "АВС123", "abc12é"} {
+	for _, bad := range []string{"", "ABC12", "ABC1234", "ABC 12", "ABC-12", "АВС123", "abc12é",
+		"K7Q2-MXAB-CDE", "K7Q2-MXAB-CDEFG", "K7Q2-MXAB-CDE0", "K7Q2-MXAB-CDEO", "I7Q2-MXAB-CDEF", "K7Q2-MXAB-CDE1"} {
 		if _, ok := NormalizeCode(bad); ok {
 			t.Errorf("NormalizeCode(%q) accepted", bad)
 		}
@@ -89,17 +93,39 @@ func TestNormalizeCode(t *testing.T) {
 	if len(a) != 32 || string(a) != string(b) {
 		t.Fatal("key depends on case")
 	}
+	c, _ := KeyFromCode("k7q2-mxab-cdef")
+	d, _ := KeyFromCode("K7Q2MXABCDEF")
+	if len(c) != 32 || string(c) != string(d) || string(c) == string(a) {
+		t.Fatal("strong code key depends on case or dashes")
+	}
+	if !WeakCode("abc123") || WeakCode("K7Q2-MXAB-CDEF") || WeakCode("bad") {
+		t.Fatal("WeakCode answers wrong")
+	}
+}
+
+func TestExposedListen(t *testing.T) {
+	for addr, want := range map[string]bool{
+		":7420": true, "0.0.0.0:7420": true, "[::]:7420": true, "203.0.113.5:7420": true, "example.com:7420": true,
+		"127.0.0.1:7420": false, "localhost:7420": false, "10.147.20.9:7420": false, "192.168.1.2:7420": false,
+		"[fd00::1]:7420": false, "169.254.1.1:7420": false,
+	} {
+		if got := ExposedListen(addr); got != want {
+			t.Errorf("ExposedListen(%q) = %v, want %v", addr, got, want)
+		}
+	}
 }
 
 func TestSecretAcceptsCode(t *testing.T) {
 	c := validConfig()
-	t.Setenv("AGENTLINK_SECRET", "k7q2mx")
-	k, err := c.Secret()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want, _ := KeyFromCode("K7Q2MX"); string(k) != string(want) {
-		t.Fatal("env code not derived like the tray's code")
+	for _, code := range []string{"k7q2mx", "k7q2-mxab-cdef"} {
+		t.Setenv("AGENTLINK_SECRET", code)
+		k, err := c.Secret()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want, _ := KeyFromCode(strings.ToUpper(code)); string(k) != string(want) {
+			t.Fatalf("env code %q not derived like the tray's code", code)
+		}
 	}
 }
 
