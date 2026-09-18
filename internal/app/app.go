@@ -44,6 +44,9 @@ type App struct {
 	// Agents finds agent programs: on PATH, at AgentPath, or at their
 	// well-known install locations; replaceable in tests.
 	Agents settings.Finder
+	// Discovery allows LAN discovery when the settings ask for it (the
+	// default); tests turn it off.
+	Discovery bool
 
 	// Version is this build's version (selfupdate.Version). Exe is set by
 	// SetExecutable. Relaunch starts the updated executable; nil disables
@@ -67,7 +70,7 @@ type App struct {
 	stop       context.CancelFunc
 	wg         sync.WaitGroup
 	startErr   error
-	listen     string // effective peer listener address of the last start
+	listen     string // this side's address to give the others, of the last start
 	zeroTier   bool
 }
 
@@ -76,10 +79,17 @@ type Status struct {
 	Configured bool   `json:"configured"`
 	Running    bool   `json:"running"`
 	Node       string `json:"node"`
-	Peer       string `json:"peer"`
-	Connected  bool   `json:"connected"`
-	Handler    string `json:"handler"`
-	// Listen is this side's peer address, what the other person types in.
+	// Peer is the first member with a session, else the first one known.
+	Peer string `json:"peer"`
+	// Connected: a session with at least one member.
+	Connected bool   `json:"connected"`
+	Handler   string `json:"handler"`
+	// Online and Total count the other members (not removed).
+	Online int `json:"online"`
+	Total  int `json:"total"`
+	// Members lists this node first, then the others (node.Members).
+	Members []node.MemberInfo `json:"members,omitempty"`
+	// Listen is this side's peer address, what the others type in.
 	Listen   string `json:"listen,omitempty"`
 	ZeroTier bool   `json:"zerotier"`
 	// Problem is a strings key ("link.no_code", "link.no_peer", "link.bad_code", ...).
@@ -101,7 +111,7 @@ func New(path string, log *slog.Logger) (*App, error) {
 		path: path, token: newToken(), log: log, s: s, configured: ok,
 		SetAutostart: setAutostart,
 		Ifaces:       settings.SystemIfaces, PickFolder: pickFolder, PickFile: pickFile,
-		Agents: settings.SystemFinder, zeroTier: true,
+		Agents: settings.SystemFinder, zeroTier: true, Discovery: true,
 		Version: selfupdate.Version, Latest: latestRelease,
 	}, nil
 }
@@ -163,16 +173,32 @@ func (a *App) Status() Status {
 	defer a.mu.Unlock()
 	st := Status{
 		Configured: a.configured, Running: a.n != nil,
-		Node: a.s.Node, Peer: a.s.PeerName, Handler: a.s.Handler,
+		Node: a.s.Node, Handler: a.s.Handler,
 		Listen: a.listen, ZeroTier: a.zeroTier,
+	}
+	for _, p := range a.s.Peers {
+		if st.Peer == "" {
+			st.Peer = p.Name
+		}
 	}
 	if a.n != nil {
 		if peers := a.n.Peers(); len(peers) > 0 {
-			st.Peer = peers[0]
+			st.Peer = peers[0] // connected ones first
 		}
 		st.Connected = st.Peer != "" && a.n.Connected(st.Peer)
+		st.Members = a.n.Members()
+		for _, m := range st.Members[1:] {
+			st.Total++
+			if m.Online {
+				st.Online++
+			}
+		}
 	}
 	switch {
+	case a.n != nil && errors.Is(a.n.Problem(), node.ErrRemoved):
+		st.Problem = "link.removed"
+	case a.n != nil && errors.Is(a.n.Problem(), node.ErrNameTaken):
+		st.Problem = "link.name_taken"
 	case !a.configured || st.Connected:
 	case a.startErr != nil:
 		st.Error = userError(a.startErr)
@@ -184,7 +210,7 @@ func (a *App) Status() Status {
 		st.Problem = "link.same_name"
 	case a.n != nil && errors.Is(a.n.Problem(), node.ErrWrongPeer):
 		st.Problem = "link.wrong_peer"
-	case a.s.PeerAddr == "":
+	case len(a.s.Peers) == 0 && st.Total == 0:
 		st.Problem = "link.no_peer"
 	}
 	return st
@@ -201,14 +227,23 @@ func (a *App) Settings() settings.Settings {
 var ErrNotStarted = errors.New("settings saved, but the node did not start")
 
 // Apply validates and saves new settings, updates autostart and restarts the
-// node. HandlerCommand, an empty API, an absent auto_update and, while no code
-// is set, the legacy secret are kept from the current settings. A code replaces the secret.
+// node. HandlerCommand, an empty API, absent peers, discovery and auto_update
+// and, while no code is set, the legacy secret are kept from the current
+// settings. A code replaces the secret.
 // When no AgentPath is set, or the set one has disappeared (an app update
 // moved its versioned folder), the agent is looked for again (Finder.Discover);
 // a hit off PATH is saved as AgentPath and returned.
 func (a *App) Apply(s settings.Settings) (found settings.Found, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if s.Peers == nil {
+		// The page manages members with their own buttons; a legacy
+		// peer_addr in the request is added to the kept list by Normalize.
+		s.Peers = a.s.Peers
+	}
+	if s.Discovery == nil {
+		s.Discovery = a.s.Discovery
+	}
 	s = s.Normalize()
 	s.HandlerCommand, s.Secret = a.s.HandlerCommand, ""
 	if s.API == "" {
@@ -313,17 +348,19 @@ func (a *App) startNode() error {
 	if a.Ifaces != nil {
 		ifaces = a.Ifaces()
 	}
-	a.listen, a.zeroTier = a.s.ListenAddr(ifaces)
+	a.listen, a.zeroTier = a.s.AdvertiseAddr(ifaces)
 	key := a.s.Key()
 	if key == nil {
 		a.log.Info("node not started: no pairing code")
 		return nil
 	}
-	cfg := a.s.NodeConfig(a.path, a.listen)
+	cfg := a.s.NodeConfig(a.path, a.s.BindAddr())
+	cfg.Discovery = cfg.Discovery && a.Discovery
 	n, err := node.New(cfg, key, a.log)
 	if err != nil {
 		return err
 	}
+	n.SetAppVersion(a.Version)
 	// The job store always opens: with no handler, jobs left from an earlier
 	// handler fail with a reply, and new requests stay manual (no hook).
 	opt := a.Worker

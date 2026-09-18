@@ -23,7 +23,15 @@
       <button type="button" id="copy" data-t="settings.code.copy"></button></span>
     </label>
     <p class="hint" data-t="settings.code.hint"></p>
-    <label><span data-t="settings.peer_addr.label"></span><input name="peer_addr" autocomplete="off" placeholder="10.147.20.9"></label>
+    <div id="members_row">
+      <span data-t="settings.members.label"></span>
+      <ul id="members" class="members"></ul>
+      <p class="hint" id="members_none" data-t="settings.members.none" hidden></p>
+    </div>
+    <label><span data-t="settings.peer_addr.label"></span>
+      <span class="row"><input name="peer_addr" id="peer_addr" autocomplete="off" spellcheck="false" placeholder="10.147.20.9">
+      <button type="button" id="add_peer" data-t="settings.peer_addr.add"></button></span>
+    </label>
     <p class="hint" data-t="settings.peer_addr.hint"></p>
     <p class="hint" id="my_addr"></p>
     <label><span data-t="settings.handler.label"></span>
@@ -58,8 +66,8 @@
       <p class="hint" data-t="settings.api.hint"></p>
       <label><span data-t="settings.areas.label"></span><input name="areas" autocomplete="off"></label>
       <p class="hint" data-t="settings.areas.hint"></p>
-      <label><span data-t="settings.peer_name.label"></span><input name="peer_name" autocomplete="off"></label>
-      <p class="hint" data-t="settings.peer_name.hint"></p>
+      <label class="check"><input type="checkbox" name="discovery"> <span data-t="settings.discovery.label"></span></label>
+      <p class="hint" data-t="settings.discovery.hint"></p>
       <label><span data-t="settings.max_jobs.label"></span><input name="max_jobs" type="number" min="1" max="4" step="1" placeholder="2"></label>
       <p class="hint" data-t="settings.max_jobs.hint"></p>
       <label class="check"><input type="checkbox" name="autostart"> <span data-t="settings.autostart.label"></span></label>

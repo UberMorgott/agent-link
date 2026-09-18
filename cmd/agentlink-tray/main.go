@@ -175,11 +175,18 @@ func cleanupUpdate(exe string, log *slog.Logger) {
 func onReady(a *app.App) {
 	systray.SetIcon(icon)
 	systray.SetTitle("agentlink")
-	status := systray.AddMenuItem("Starting...", "")
+	status := systray.AddMenuItem(app.Text(app.TrayStarting, nil), "")
 	status.Disable()
+	membersItem := systray.AddMenuItem(app.Text(app.TrayMembers, nil), "")
+	memberItems := make([]*systray.MenuItem, maxTrayMembers)
+	for i := range memberItems {
+		memberItems[i] = membersItem.AddSubMenuItem("", "")
+		memberItems[i].Disable()
+		memberItems[i].Hide()
+	}
 	systray.AddSeparator()
-	settingsItem := systray.AddMenuItem("Open settings", "")
-	inboxItem := systray.AddMenuItem("Open inbox", "")
+	settingsItem := systray.AddMenuItem(app.Text(app.TrayOpenSettings, nil), "")
+	inboxItem := systray.AddMenuItem(app.Text(app.TrayOpenInbox, nil), "")
 	systray.AddSeparator()
 	versionItem := systray.AddMenuItem(app.Text("update.version", map[string]string{"version": a.Version}), "")
 	versionItem.Disable()
@@ -189,12 +196,14 @@ func onReady(a *app.App) {
 	applyItem := systray.AddMenuItem("", "")
 	autoItem := systray.AddMenuItemCheckbox(app.Text("update.auto", nil), "", a.UpdateStatus().Auto)
 	systray.AddSeparator()
-	quit := systray.AddMenuItem("Quit", "")
+	quit := systray.AddMenuItem(app.Text(app.TrayQuit, nil), "")
 
 	refresh := func() {
-		text := statusText(a.Status())
+		st := a.Status()
+		text := st.Summary()
 		status.SetTitle(text)
 		systray.SetTooltip("agentlink: " + text)
+		showMembers(st, membersItem, memberItems)
 		showUpdate(a.UpdateStatus(), updText, checkItem, applyItem, autoItem)
 	}
 	refresh()
@@ -252,18 +261,34 @@ func showUpdate(u app.UpdateStatus, text, check, apply, auto *systray.MenuItem) 
 	}
 }
 
-func statusText(s app.Status) string {
-	switch {
-	case !s.Configured:
-		return "Not set up - open settings"
-	case s.Error != "":
-		return "Error - open settings"
-	case s.Connected:
-		return s.Peer + " connected"
-	case s.Problem != "" || s.Peer == "":
-		return "Not connected - open settings"
-	default:
-		return s.Peer + " offline"
+// maxTrayMembers bounds the members listed in the tray submenu.
+const maxTrayMembers = 16
+
+// showMembers lists the other members, online ones first, in the submenu.
+func showMembers(st app.Status, parent *systray.MenuItem, items []*systray.MenuItem) {
+	var others []string
+	for _, m := range st.Members {
+		if m.Self {
+			continue
+		}
+		key := app.TrayMemberOff
+		if m.Online {
+			key = app.TrayMemberOn
+		}
+		others = append(others, app.Text(key, map[string]string{"name": m.Name}))
+	}
+	if len(others) == 0 {
+		parent.Hide()
+	} else {
+		parent.Show()
+	}
+	for i, it := range items {
+		if i < len(others) {
+			it.SetTitle(others[i])
+			it.Show()
+		} else {
+			it.Hide()
+		}
 	}
 }
 

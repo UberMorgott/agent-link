@@ -47,6 +47,8 @@ func (a *App) URL(page string) string {
 //	GET  /ui/api/inbox             []node.Entry
 //	GET  /ui/api/threads           []Thread (inbox entries paired by reply_to)
 //	POST /ui/api/send              node.SendRequest -> node.Message
+//	POST /ui/api/members/add       {"addr"} -> keep and dial that address -> Status
+//	POST /ui/api/members/remove    {"name"} -> remove the member everywhere -> Status
 //	POST /ui/api/pick-folder       {"start"} -> native folder dialog -> pickResult
 //	POST /ui/api/agent             {"handler","agent_path"} -> agentInfo
 //	POST /ui/api/pick-agent        {"start"} -> native file dialog for a program -> pickResult
@@ -73,6 +75,8 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("GET /ui/api/inbox", a.inbox)
 	api.HandleFunc("GET /ui/api/threads", a.threads)
 	api.HandleFunc("POST /ui/api/send", a.send)
+	api.HandleFunc("POST /ui/api/members/add", a.memberAction(func(r node.MemberRequest) error { return a.AddMember(r.Addr) }))
+	api.HandleFunc("POST /ui/api/members/remove", a.memberAction(func(r node.MemberRequest) error { return a.RemoveMember(r.Name) }))
 	api.HandleFunc("POST /ui/api/pick-folder", a.pickFolder)
 	api.HandleFunc("POST /ui/api/agent", a.agentInfo)
 	api.HandleFunc("POST /ui/api/pick-agent", a.pickAgent)
@@ -263,6 +267,10 @@ func (a *App) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m, err := n.Send(strings.TrimSpace(req.To), req.Body, req.ReplyTo)
+	if errors.Is(err, node.ErrAmbiguousPeer) {
+		writeError(w, http.StatusBadRequest, msg("error.ambiguous_peer", map[string]string{"peers": strings.Join(n.Peers(), ", ")}))
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, sendError(err))
 		return

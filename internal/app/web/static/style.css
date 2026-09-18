@@ -39,5 +39,12 @@ details { border: 1px solid #8884; border-radius: 8px; margin: 0 0 16px; padding
 details fieldset { border: 0; padding: 0; margin: 8px 0 0; }
 summary { cursor: pointer; font-weight: 600; }
 #my_addr { color: inherit; font-weight: 600; }
+#members_row { margin: 8px 0; }
+ul.members { list-style: none; padding: 0; margin: 4px 0; }
+ul.members li { display: flex; gap: 8px; align-items: center; border: 1px solid #8884; border-radius: 6px; padding: 4px 8px; margin: 4px 0; }
+ul.members li .who { flex: 1; overflow-wrap: anywhere; }
+ul.members li .on { color: var(--on); }
+ul.members li .off { color: var(--off); }
+ul.members li .detail { color: var(--muted); font-size: 12px; display: block; }
 #update_version { flex: 1; font-weight: 600; }
 #update_text.failed { color: var(--off); }

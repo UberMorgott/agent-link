@@ -51,12 +51,24 @@ async function refreshStatus() {
     let text, cls = "off";
     if (!s.configured) text = t("link.unconfigured");
     else if (s.error) text = s.error;
-    else if (s.connected) { text = fmt("link.on", { peer: s.peer }); cls = "on"; }
+    else if (s.connected) {
+      text = s.total > 1 ? fmt("link.on_many", { online: s.online, total: s.total }) : fmt("link.on", { peer: s.peer });
+      cls = "on";
+    }
     else if (s.problem) text = t(s.problem);
     else text = s.peer ? fmt("link.off", { peer: s.peer }) : t("link.waiting");
     if (s.configured && !s.zerotier) text += " · " + t("link.no_zerotier");
     el.textContent = text;
     el.className = cls;
+    // The inbox's «Кому» suggests every member by name.
+    const names = document.getElementById("member_names");
+    if (names) {
+      names.replaceChildren(...(s.members || []).filter((m) => !m.self).map((m) => {
+        const o = document.createElement("option");
+        o.value = m.name;
+        return o;
+      }));
+    }
   } catch (e) {
     el.textContent = t("link.app_not_running");
     el.className = "off";

@@ -14,16 +14,18 @@ const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 async function load() {
   const s = await api("GET", "settings");
-  for (const key of ["node", "code", "peer_addr", "work_dir", "listen", "api", "peer_name"]) {
+  for (const key of ["node", "code", "work_dir", "listen", "api"]) {
     form.elements[key].value = s[key] || "";
   }
+  form.elements.peer_addr.value = "";
   form.elements.areas.value = (s.areas || []).join(", ");
   form.elements.handler.value = s.handler || "none";
   agentPath.value = s.agent_path || "";
   showAgent();
   form.elements.autostart.checked = !!s.autostart;
+  form.elements.discovery.checked = s.discovery !== false;
   form.elements.max_jobs.value = s.max_jobs ? String(s.max_jobs) : "";
-  if (s.listen || s.api || s.peer_name || s.max_jobs || (s.areas || []).length) document.getElementById("advanced").open = true;
+  if (s.listen || s.api || s.discovery === false || s.max_jobs || (s.areas || []).length) document.getElementById("advanced").open = true;
   showWorkDir("settings.work_dir.current");
 }
 
@@ -115,17 +117,84 @@ pickAgent.addEventListener("click", async () => {
   }
 });
 
-// showMyAddr tells this side's address, the one the other person types in.
+// showMyAddr tells this side's address, the one the others type in, and
+// lists the members of the network.
 async function showMyAddr() {
   const el = document.getElementById("my_addr");
   try {
     const st = await api("GET", "status");
+    showMembers(st);
     if (!st.configured) { el.textContent = ""; return; }
-    if (!st.zerotier) { el.textContent = t("settings.my_addr.none"); return; }
     const addr = (st.listen || "").replace(/:7420$/, "");
     el.textContent = addr ? fmt("settings.my_addr", { addr }) : "";
+    if (!st.zerotier) el.textContent += " " + t("settings.my_addr.none");
   } catch (_) { el.textContent = ""; }
 }
+
+// showMembers renders the member table: this node first, then the others.
+function showMembers(st) {
+  const list = document.getElementById("members");
+  const others = (st.members || []).filter((m) => !m.self);
+  document.getElementById("members_none").hidden = !st.configured || others.length > 0;
+  list.replaceChildren();
+  for (const m of st.members || []) {
+    const li = document.createElement("li");
+    const who = document.createElement("span");
+    who.className = "who";
+    const name = document.createElement("strong");
+    name.textContent = m.self ? fmt("settings.members.self", { name: m.name }) : m.name;
+    who.append(name, " ");
+    if (!m.self) {
+      const state = document.createElement("span");
+      state.className = m.online ? "on" : "off";
+      state.textContent = t(m.online ? "settings.members.online" : "settings.members.lost");
+      who.append(state);
+    }
+    const details = [];
+    if (m.app) details.push(fmt("settings.members.version", { version: m.app }));
+    if (m.legacy) details.push(t("settings.members.legacy"));
+    if (!m.online && m.seen) details.push(fmt("settings.members.seen", { when: new Date(m.seen).toLocaleString("ru-RU") }));
+    if ((m.addrs || []).length) details.push(m.addrs.join(", "));
+    if (details.length) {
+      const d = document.createElement("span");
+      d.className = "detail";
+      d.textContent = details.join(" · ");
+      who.append(d);
+    }
+    li.append(who);
+    if (!m.self) {
+      const rm = document.createElement("button");
+      rm.type = "button";
+      rm.textContent = t("settings.members.remove");
+      rm.addEventListener("click", () => removeMember(m.name));
+      li.append(rm);
+    }
+    list.append(li);
+  }
+}
+
+async function removeMember(name) {
+  if (!confirm(fmt("settings.members.confirm", { name }))) return;
+  try {
+    showMembers(await api("POST", "members/remove", { name }));
+    result.textContent = fmt("settings.members.removed", { name });
+  } catch (e) {
+    result.textContent = e.message;
+  }
+}
+
+// «Добавить» keeps the address and dials it now, without «Сохранить».
+document.getElementById("add_peer").addEventListener("click", async () => {
+  const addr = form.elements.peer_addr.value.trim();
+  if (!addr) { result.textContent = t("settings.peer_addr.empty"); return; }
+  try {
+    showMembers(await api("POST", "members/add", { addr }));
+    form.elements.peer_addr.value = "";
+    result.textContent = fmt("settings.peer_addr.added", { addr });
+  } catch (e) {
+    result.textContent = e.message;
+  }
+});
 
 document.getElementById("generate").addEventListener("click", () => {
   const bytes = new Uint8Array(6);
@@ -157,7 +226,7 @@ form.addEventListener("submit", async (ev) => {
     listen: f.listen.value.trim(),
     api: f.api.value.trim(),
     areas: f.areas.value.split(",").map((a) => a.trim()).filter(Boolean),
-    peer_name: f.peer_name.value.trim(),
+    discovery: f.discovery.checked,
     // Empty is the default; anything that is not a whole number is sent as -1
     // so the server names the field instead of silently using the default.
     max_jobs: f.max_jobs.value.trim() === "" ? 0 : (/^\d+$/.test(f.max_jobs.value.trim()) ? Number(f.max_jobs.value.trim()) : -1),
@@ -239,5 +308,5 @@ updAuto.addEventListener("change", () => updateAction("update/auto", { auto: upd
 load().catch((e) => { result.textContent = e.message; });
 showMyAddr();
 refreshUpdate();
-setInterval(showMyAddr, 5000);
+setInterval(showMyAddr, 3000);
 setInterval(refreshUpdate, 5000);

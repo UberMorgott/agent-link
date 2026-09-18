@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -23,20 +24,30 @@ import (
 const DefaultAPI = "127.0.0.1:7520"
 
 // Settings is what the settings page edits. Only Node is required: without a
-// code the node does not start, without PeerAddr it runs and waits to be dialed.
+// code the node does not start, without Peers it runs, looks for members on
+// the local networks and waits to be dialed.
 type Settings struct {
-	Node      string `json:"node"`
-	Code      string `json:"code,omitempty"`      // 6-character pairing code, same on both sides
-	PeerAddr  string `json:"peer_addr,omitempty"` // the other side's ZeroTier IP, port optional
-	Handler   string `json:"handler"`             // worker.HandlerNone|HandlerClaude|HandlerCodex
-	WorkDir   string `json:"work_dir,omitempty"`
-	Autostart bool   `json:"autostart"`
+	Node string `json:"node"`
+	Code string `json:"code,omitempty"` // 6-character pairing code, same for every member
+	// Peers are the addresses added by hand (IP, port optional); names are
+	// learned from the handshake unless set. Members learned from them or by
+	// discovery live in the node's own table, not here.
+	Peers     []config.Peer `json:"peers,omitempty"`
+	Handler   string        `json:"handler"` // worker.HandlerNone|HandlerClaude|HandlerCodex
+	WorkDir   string        `json:"work_dir,omitempty"`
+	Autostart bool          `json:"autostart"`
+
+	// PeerAddr and PeerName are the single peer of v0.5 and earlier. Load and
+	// Normalize move them into Peers; a posted peer_addr adds one address.
+	PeerAddr string `json:"peer_addr,omitempty"`
+	PeerName string `json:"peer_name,omitempty"`
 
 	// "Дополнительно" on the page; all optional.
-	Listen   string   `json:"listen,omitempty"` // empty: the ZeroTier IP, else 127.0.0.1
-	API      string   `json:"api,omitempty"`    // empty: DefaultAPI; applies on the next start
-	Areas    []string `json:"areas,omitempty"`
-	PeerName string   `json:"peer_name,omitempty"` // empty: learned from the handshake
+	Listen string   `json:"listen,omitempty"` // empty: every interface, port 7420
+	API    string   `json:"api,omitempty"`    // empty: DefaultAPI; applies on the next start
+	Areas  []string `json:"areas,omitempty"`
+	// Discovery looks for members on the local networks (UDP beacons); nil means on.
+	Discovery *bool `json:"discovery,omitempty"`
 	// MaxJobs is how many requests the agent answers at once, 1..worker.MaxMaxJobs;
 	// 0 means worker.DefaultMaxJobs.
 	MaxJobs int `json:"max_jobs,omitempty"`
@@ -112,27 +123,73 @@ func Load(path string) (s Settings, ok bool, err error) {
 	if s.Handler == "" {
 		s.Handler = worker.HandlerNone
 	}
-	return s, true, nil
+	return s.migrated(), true, nil
 }
 
-// Normalize trims the fields, upper-cases the code and adds the default port
-// to the peer address. Invalid values are left for Validate to report.
+// migrated moves the single legacy peer (PeerAddr, PeerName) into Peers.
+// An address that does not parse stays in PeerAddr for Validate to report.
+func (s Settings) migrated() Settings {
+	s.PeerAddr, s.PeerName = strings.TrimSpace(s.PeerAddr), strings.TrimSpace(s.PeerName)
+	if s.PeerAddr == "" {
+		s.PeerName = ""
+		return s
+	}
+	a, err := config.WithDefaultPort(s.PeerAddr)
+	if err != nil {
+		return s
+	}
+	s.Peers = slices.Clone(s.Peers)
+	for i, p := range s.Peers {
+		if p.Addr == a {
+			if s.PeerName != "" {
+				s.Peers[i].Name = s.PeerName
+			}
+			s.PeerAddr, s.PeerName = "", ""
+			return s
+		}
+	}
+	s.Peers = append(s.Peers, config.Peer{Name: s.PeerName, Addr: a})
+	s.PeerAddr, s.PeerName = "", ""
+	return s
+}
+
+// WithPeer returns s with addr (default port added) in Peers, once.
+func (s Settings) WithPeer(addr string) Settings {
+	s.PeerAddr, s.PeerName = addr, ""
+	return s.migrated()
+}
+
+// DiscoveryOn reports whether members are looked for on the local networks.
+func (s Settings) DiscoveryOn() bool { return s.Discovery == nil || *s.Discovery }
+
+// Normalize trims the fields, upper-cases the code, adds the default port to
+// the peer addresses and moves a legacy peer_addr into Peers. Invalid values
+// are left for Validate to report.
 func (s Settings) Normalize() Settings {
-	s.Node, s.PeerAddr, s.Listen = strings.TrimSpace(s.Node), strings.TrimSpace(s.PeerAddr), strings.TrimSpace(s.Listen)
-	s.API, s.PeerName, s.WorkDir = strings.TrimSpace(s.API), strings.TrimSpace(s.PeerName), strings.TrimSpace(s.WorkDir)
+	s.Node, s.Listen = strings.TrimSpace(s.Node), strings.TrimSpace(s.Listen)
+	s.API, s.WorkDir = strings.TrimSpace(s.API), strings.TrimSpace(s.WorkDir)
 	s.Code, s.AgentPath = strings.TrimSpace(s.Code), strings.TrimSpace(s.AgentPath)
 	if c, ok := config.NormalizeCode(s.Code); ok {
 		s.Code = c
 	}
-	if s.PeerAddr != "" {
-		if a, err := config.WithDefaultPort(s.PeerAddr); err == nil {
-			s.PeerAddr = a
+	peers := make([]config.Peer, 0, len(s.Peers))
+	for _, p := range s.Peers {
+		p.Name, p.Addr = strings.TrimSpace(p.Name), strings.TrimSpace(p.Addr)
+		if a, err := config.WithDefaultPort(p.Addr); err == nil {
+			p.Addr = a
 		}
+		if !slices.ContainsFunc(peers, func(q config.Peer) bool { return q.Addr == p.Addr }) {
+			peers = append(peers, p)
+		}
+	}
+	s.Peers = nil
+	if len(peers) > 0 {
+		s.Peers = peers
 	}
 	if s.Handler == "" {
 		s.Handler = worker.HandlerNone
 	}
-	return s
+	return s.migrated()
 }
 
 // Save validates and writes settings atomically with owner-only permissions.
@@ -202,13 +259,13 @@ func (s Settings) NodeConfig(path, listen string) config.Config {
 		DataDir:   filepath.Join(filepath.Dir(path), "data"),
 		SecretEnv: "-", // the key comes from the settings file, not the environment
 		Areas:     s.Areas,
+		Discovery: s.DiscoveryOn(),
 	}
-	if s.PeerAddr != "" {
-		addr, err := config.WithDefaultPort(s.PeerAddr)
-		if err != nil {
-			addr = s.PeerAddr
+	for _, p := range s.migrated().Peers {
+		if a, err := config.WithDefaultPort(p.Addr); err == nil {
+			p.Addr = a
 		}
-		c.Peers = []config.Peer{{Name: s.PeerName, Addr: addr}}
+		c.Peers = append(c.Peers, p)
 	}
 	return c
 }
@@ -242,6 +299,11 @@ func (s Settings) Validate() error {
 	}
 	if s.PeerAddr != "" {
 		if _, err := config.WithDefaultPort(s.PeerAddr); err != nil {
+			return problem("peer_addr")
+		}
+	}
+	for _, p := range s.Peers {
+		if _, err := config.WithDefaultPort(p.Addr); err != nil {
 			return problem("peer_addr")
 		}
 	}
@@ -286,13 +348,26 @@ func (s Settings) Validate() error {
 			return problem("areas")
 		}
 	}
-	if s.PeerName != "" {
-		if !config.ValidName(s.PeerName) {
+	seen := map[string]bool{}
+	for _, name := range append([]string{s.PeerName}, peerNames(s.Peers)...) {
+		switch {
+		case name == "":
+		case !config.ValidName(name):
 			return problem("peer_name")
-		}
-		if s.PeerName == s.Node {
+		case name == s.Node:
 			return problem("peer_name_self")
+		case seen[name]:
+			return problem("peer_name_twice")
 		}
+		seen[name] = true
 	}
 	return nil
+}
+
+func peerNames(ps []config.Peer) []string {
+	out := make([]string, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, p.Name)
+	}
+	return out
 }

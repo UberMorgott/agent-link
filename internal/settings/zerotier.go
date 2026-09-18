@@ -56,19 +56,49 @@ func ZeroTierIP(ifaces []Iface) (net.IP, bool) {
 	return v6, v6 != nil
 }
 
-// ListenAddr is the peer listener address: the configured Listen (default
-// port added), else the ZeroTier IP with the default port, else loopback.
-// Never 0.0.0.0. zeroTier is false only when detection found no adapter.
-func (s Settings) ListenAddr(ifaces []Iface) (addr string, zeroTier bool) {
+// LANIP returns the first IPv4 address of a running interface that is
+// neither loopback nor link-local.
+func LANIP(ifaces []Iface) (net.IP, bool) {
+	for _, i := range ifaces {
+		if !i.Up {
+			continue
+		}
+		for _, ip := range i.Addrs {
+			if ip.To4() != nil && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified() {
+				return ip, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// BindAddr is the peer listener address: the configured Listen (default port
+// added), else every interface on the default port, so members reach this
+// node over ZeroTier, the LAN or an external address alike. The control API
+// is separate and stays on loopback.
+func (s Settings) BindAddr() string {
 	if s.Listen != "" {
 		if a, err := config.WithDefaultPort(s.Listen); err == nil {
-			return a, true
+			return a
 		}
-		return s.Listen, true
+		return s.Listen
+	}
+	return ":" + strconv.Itoa(config.DefaultPort)
+}
+
+// AdvertiseAddr is the address to give the others: the configured Listen,
+// else the ZeroTier IP, else a LAN IP, else loopback, with the default port.
+// zeroTier is false only when detection found no ZeroTier adapter.
+func (s Settings) AdvertiseAddr(ifaces []Iface) (addr string, zeroTier bool) {
+	if s.Listen != "" {
+		return s.BindAddr(), true
 	}
 	port := strconv.Itoa(config.DefaultPort)
 	if ip, ok := ZeroTierIP(ifaces); ok {
 		return net.JoinHostPort(ip.String(), port), true
+	}
+	if ip, ok := LANIP(ifaces); ok {
+		return net.JoinHostPort(ip.String(), port), false
 	}
 	return net.JoinHostPort("127.0.0.1", port), false
 }

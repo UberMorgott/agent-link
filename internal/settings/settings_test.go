@@ -16,7 +16,7 @@ import (
 
 func valid(t *testing.T) Settings {
 	return Settings{
-		Node: "alice", Listen: "10.147.20.5:7420", PeerName: "bob", PeerAddr: "10.147.20.9:7420",
+		Node: "alice", Listen: "10.147.20.5:7420", Peers: []config.Peer{{Name: "bob", Addr: "10.147.20.9:7420"}},
 		Code: "ABC123", Areas: []string{"dev"},
 		Handler: worker.HandlerClaude, WorkDir: t.TempDir(),
 	}
@@ -64,20 +64,22 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 func TestSaveRejectsInvalid(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	cases := map[string]func(*Settings){
-		"short code":     func(s *Settings) { s.Code = "ABC12" },
-		"long code":      func(s *Settings) { s.Code = "ABC1234" },
-		"code charset":   func(s *Settings) { s.Code = "ABC-12" },
-		"cyrillic code":  func(s *Settings) { s.Code = "АВС123" },
-		"no name":        func(s *Settings) { s.Node = "" },
-		"same name":      func(s *Settings) { s.PeerName = s.Node },
-		"bad listen":     func(s *Settings) { s.Listen = "no pe" },
-		"all interfaces": func(s *Settings) { s.Listen = "0.0.0.0" },
-		"bad peer port":  func(s *Settings) { s.PeerAddr = "10.0.0.1:70000" },
-		"missing folder": func(s *Settings) { s.WorkDir = filepath.Join(s.WorkDir, "absent") },
-		"bad handler":    func(s *Settings) { s.Handler = "vim" },
-		"public api":     func(s *Settings) { s.API = "0.0.0.0:7520" },
-		"max jobs high":  func(s *Settings) { s.MaxJobs = 5 },
-		"max jobs neg":   func(s *Settings) { s.MaxJobs = -1 },
+		"short code":       func(s *Settings) { s.Code = "ABC12" },
+		"long code":        func(s *Settings) { s.Code = "ABC1234" },
+		"code charset":     func(s *Settings) { s.Code = "ABC-12" },
+		"cyrillic code":    func(s *Settings) { s.Code = "АВС123" },
+		"no name":          func(s *Settings) { s.Node = "" },
+		"same name":        func(s *Settings) { s.Peers[0].Name = s.Node },
+		"legacy same":      func(s *Settings) { s.PeerName = s.Node },
+		"bad peer in list": func(s *Settings) { s.Peers[0].Addr = "10.0.0.1:70000" },
+		"bad listen":       func(s *Settings) { s.Listen = "no pe" },
+		"all interfaces":   func(s *Settings) { s.Listen = "0.0.0.0" },
+		"bad peer port":    func(s *Settings) { s.PeerAddr = "10.0.0.1:70000" },
+		"missing folder":   func(s *Settings) { s.WorkDir = filepath.Join(s.WorkDir, "absent") },
+		"bad handler":      func(s *Settings) { s.Handler = "vim" },
+		"public api":       func(s *Settings) { s.API = "0.0.0.0:7520" },
+		"max jobs high":    func(s *Settings) { s.MaxJobs = 5 },
+		"max jobs neg":     func(s *Settings) { s.MaxJobs = -1 },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -125,14 +127,14 @@ func TestPartialSettingsValid(t *testing.T) {
 
 func TestNormalize(t *testing.T) {
 	s := Settings{Node: " morgott ", Code: " k7q2mx ", PeerAddr: "10.147.20.9"}.Normalize()
-	if s.Node != "morgott" || s.Code != "K7Q2MX" || s.PeerAddr != "10.147.20.9:7420" || s.Handler != worker.HandlerNone {
+	if s.Node != "morgott" || s.Code != "K7Q2MX" || len(s.Peers) != 1 || s.Peers[0].Addr != "10.147.20.9:7420" || s.Handler != worker.HandlerNone {
 		t.Fatalf("normalized %+v", s)
 	}
-	if s := (Settings{PeerAddr: "fd00::1"}).Normalize(); s.PeerAddr != "[fd00::1]:7420" {
-		t.Fatalf("ipv6 peer %q", s.PeerAddr)
+	if s := (Settings{PeerAddr: "fd00::1"}).Normalize(); s.Peers[0].Addr != "[fd00::1]:7420" {
+		t.Fatalf("ipv6 peer %+v", s.Peers)
 	}
-	if s := (Settings{PeerAddr: "10.0.0.2:7500"}).Normalize(); s.PeerAddr != "10.0.0.2:7500" {
-		t.Fatalf("explicit port changed: %q", s.PeerAddr)
+	if s := (Settings{Peers: []config.Peer{{Addr: " 10.0.0.2:7500 "}}}).Normalize(); s.Peers[0].Addr != "10.0.0.2:7500" {
+		t.Fatalf("explicit port changed: %+v", s.Peers)
 	}
 }
 
@@ -177,21 +179,67 @@ func TestZeroTierDetection(t *testing.T) {
 		{"zerotier ipv4", []Iface{eth, zt(true, "fe80::1", "10.147.20.5"), lo}, "10.147.20.5:7420", true},
 		{"lower-case name", []Iface{{Name: "zerotier0", Up: true, Addrs: []net.IP{net.ParseIP("10.1.2.3")}}}, "10.1.2.3:7420", true},
 		{"ipv6 only", []Iface{zt(true, "fe80::1", "fd80:56c2::5")}, "[fd80:56c2::5]:7420", true},
-		{"adapter down", []Iface{eth, zt(false, "10.147.20.5")}, "127.0.0.1:7420", false},
+		{"adapter down", []Iface{eth, zt(false, "10.147.20.5")}, "192.168.1.10:7420", false},
 		{"link-local only", []Iface{zt(true, "fe80::1", "169.254.3.4")}, "127.0.0.1:7420", false},
-		{"no zerotier", []Iface{eth, lo}, "127.0.0.1:7420", false},
+		{"no zerotier", []Iface{lo, eth}, "192.168.1.10:7420", false},
 		{"no interfaces", nil, "127.0.0.1:7420", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := Settings{}.ListenAddr(c.ifaces)
+			got, ok := Settings{}.AdvertiseAddr(c.ifaces)
 			if got != c.want || ok != c.zeroTier {
-				t.Fatalf("ListenAddr = %q, %v; want %q, %v", got, ok, c.want, c.zeroTier)
+				t.Fatalf("AdvertiseAddr = %q, %v; want %q, %v", got, ok, c.want, c.zeroTier)
 			}
 		})
 	}
-	// An explicit listen wins and never falls back.
-	if got, ok := (Settings{Listen: "10.9.9.9"}).ListenAddr(nil); got != "10.9.9.9:7420" || !ok {
+	// An explicit listen wins and never falls back; empty binds every interface.
+	if got, ok := (Settings{Listen: "10.9.9.9"}).AdvertiseAddr(nil); got != "10.9.9.9:7420" || !ok {
 		t.Fatalf("explicit listen = %q %v", got, ok)
+	}
+	if b := (Settings{Listen: "10.9.9.9"}).BindAddr(); b != "10.9.9.9:7420" {
+		t.Fatalf("explicit bind %q", b)
+	}
+	if b := (Settings{}).BindAddr(); b != ":7420" {
+		t.Fatalf("default bind %q", b)
+	}
+}
+
+// A config with the single peer_addr/peer_name of v0.5 and earlier loads as a
+// one-entry peer list, and a posted peer_addr is added to the list.
+func TestPeerMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	old := `{"node":"alice","code":"ABC123","peer_addr":"10.147.20.9","peer_name":"bob","handler":"none"}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, ok, err := Load(path)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	want := []config.Peer{{Name: "bob", Addr: "10.147.20.9:7420"}}
+	if !reflect.DeepEqual(s.Peers, want) || s.PeerAddr != "" || s.PeerName != "" {
+		t.Fatalf("migrated %+v", s)
+	}
+	if cfg := s.NodeConfig(path, ":7420"); !reflect.DeepEqual(cfg.Peers, want) || !cfg.Discovery {
+		t.Fatalf("node config %+v", cfg)
+	}
+	s.PeerAddr = "10.147.20.10"
+	s = s.Normalize()
+	if len(s.Peers) != 2 || s.Peers[1].Addr != "10.147.20.10:7420" || s.PeerAddr != "" {
+		t.Fatalf("posted peer_addr: %+v", s.Peers)
+	}
+	if s = s.WithPeer("10.147.20.10:7420"); len(s.Peers) != 2 {
+		t.Fatalf("duplicate added: %+v", s.Peers)
+	}
+	if err := Save(path, s); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "peer_addr") || !strings.Contains(string(data), `"peers"`) {
+		t.Fatalf("saved %s", data)
+	}
+	off := false
+	if cfg := (Settings{Node: "a", Discovery: &off}).NodeConfig(path, ":7420"); cfg.Discovery {
+		t.Fatal("discovery switched off still on")
 	}
 }
