@@ -98,6 +98,71 @@ func TestSenderObservesStatusSequence(t *testing.T) {
 	}
 }
 
+// The answering side (node and worker, like the tray app) is stopped while
+// its detached agent runs and started again on the same state: the sender gets
+// the full answer once, and the agent ran once.
+func TestAnswerSurvivesDaemonRestart(t *testing.T) {
+	runs := fakeRunLog(t)
+	agent := fakeAgent(t, "slow-stream")
+	agent.Format = FormatClaude
+	lnA, lnB := listenTCP(t), listenTCP(t)
+	addrB := lnB.Addr().String()
+	a := startNode(t, "a", lnA, "b", lnB)
+	a.serve(t)
+	bData, bState := t.TempDir(), t.TempDir()
+
+	// daemon starts node b and its worker; the returned func stops both.
+	daemon := func(ln net.Listener) func() {
+		cfg := config.Config{
+			Node: "b", Listen: addrB, API: "127.0.0.1:0", DataDir: bData, SecretEnv: "UNUSED",
+			Peers: []config.Peer{{Name: "a", Addr: lnA.Addr().String()}},
+		}
+		n, err := node.New(cfg, []byte(e2eSecret), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w, err := New(nil, n.SendMessage, bState, t.TempDir(), Options{Agent: func() Command { return agent }}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.SetInboundHook(w.Accept)
+		ctx, cancel := context.WithCancel(context.Background())
+		var wg sync.WaitGroup
+		wg.Go(func() { n.Run(ctx, ln) })
+		wg.Go(func() { w.Run(ctx) })
+		var once sync.Once
+		stop := func() { once.Do(func() { cancel(); wg.Wait() }) }
+		t.Cleanup(stop)
+		return stop
+	}
+	stop := daemon(lnB)
+	req, err := a.n.Send("b", "the question", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "agent started", func() bool { return len(runs()) == 1 })
+	stop()
+	ln, err := net.Listen("tcp", addrB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon(ln)
+
+	resp, err := http.Get(a.api.URL + "/wait?timeout=30s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var msgs []node.Message
+	err = json.NewDecoder(resp.Body).Decode(&msgs)
+	_ = resp.Body.Close()
+	if err != nil || len(msgs) != 1 || msgs[0].ReplyTo != req.ID || msgs[0].JobStatus != node.JobCompleted || msgs[0].Body != "slow done: the question" {
+		t.Fatalf("wait = %+v, err %v", msgs, err)
+	}
+	if r := runs(); len(r) != 1 {
+		t.Fatalf("agent runs %v, want one", r)
+	}
+}
+
 type e2eNode struct {
 	n   *node.Node
 	ln  net.Listener

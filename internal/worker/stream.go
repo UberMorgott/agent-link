@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -49,6 +50,8 @@ type stream struct {
 	result    string          // the final answer the stream reported
 	hasResult bool
 	failure   string // an error the stream reported
+	session   string // the agent session id the stream announced
+	finished  bool   // the stream reported the end of the run
 }
 
 func (s *stream) Write(p []byte) (int, error) {
@@ -108,9 +111,19 @@ func (s *stream) event(line []byte) (string, bool) {
 		Error struct {
 			Message string `json:"message"`
 		} `json:"error"`
+		// Session ids: Claude's on every event, Codex's on thread.started.
+		SessionID string `json:"session_id"`
+		ThreadID  string `json:"thread_id"`
 	}
 	if json.Unmarshal(line, &ev) != nil || ev.Type == "" {
 		return "", false
+	}
+	if id := cmp.Or(ev.SessionID, ev.ThreadID); id != "" && s.session == "" {
+		s.session = id
+	}
+	switch ev.Type {
+	case "result", "turn.completed", "turn.failed":
+		s.finished = true
 	}
 	switch s.format {
 	case FormatClaude:

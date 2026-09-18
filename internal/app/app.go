@@ -235,17 +235,19 @@ func (a *App) agentPresent(p string) bool {
 	return err == nil && st.Mode().IsRegular()
 }
 
-// agentRunner runs cmd. When cmd is the saved AgentPath and that file is gone
-// by the time a job runs, the agent is looked for again, the job runs the new
-// program and the new path is saved in the background.
-func (a *App) agentRunner(cmd worker.Command, handler string, fromSetting bool) worker.Runner {
+// agentCommand returns cmd for each job; the job runs it detached, so it
+// survives a restart of the app. When cmd is the saved AgentPath and that file
+// is gone by the time a job runs, the agent is looked for again, the job runs
+// the new program and the new path is saved in the background.
+func (a *App) agentCommand(cmd worker.Command, handler string, fromSetting bool) func() worker.Command {
 	if !fromSetting || a.Agents.Stat == nil {
-		return cmd.Runner()
+		return func() worker.Command { return cmd }
 	}
 	var mu sync.Mutex
 	cur := cmd
-	return func(ctx context.Context, dir, prompt string, progress func(string)) (string, error) {
+	return func() worker.Command {
 		mu.Lock()
+		defer mu.Unlock()
 		if !a.agentPresent(cur.Name) {
 			if f, ok := a.Agents.Discover(handler); ok {
 				old, saved := cur.Name, f.Path
@@ -257,9 +259,7 @@ func (a *App) agentRunner(cmd worker.Command, handler string, fromSetting bool) 
 				a.saves.Go(func() { a.saveAgentPath(handler, old, saved) })
 			}
 		}
-		c := cur
-		mu.Unlock()
-		return c.Runner()(ctx, dir, prompt, progress)
+		return cur
 	}
 }
 
@@ -308,14 +308,13 @@ func (a *App) startNode() error {
 	}
 	// The job store always opens: with no handler, jobs left from an earlier
 	// handler fail with a reply, and new requests stay manual (no hook).
-	var run worker.Runner
-	cmd, hasHandler := a.s.Command()
-	if hasHandler {
-		run = a.agentRunner(cmd, a.s.Handler, a.s.AgentPath != "" && len(a.s.HandlerCommand) == 0)
-	}
 	opt := a.Worker
 	opt.MaxJobs = a.s.MaxJobs
-	w, err := worker.New(run, n.SendMessage, cfg.DataDir, a.s.WorkDir, opt, a.log)
+	cmd, hasHandler := a.s.Command()
+	if hasHandler {
+		opt.Agent = a.agentCommand(cmd, a.s.Handler, a.s.AgentPath != "" && len(a.s.HandlerCommand) == 0)
+	}
+	w, err := worker.New(nil, n.SendMessage, cfg.DataDir, a.s.WorkDir, opt, a.log)
 	if err != nil {
 		return err
 	}

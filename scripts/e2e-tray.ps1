@@ -6,11 +6,12 @@
 # (per-run token from the page, same-origin headers).
 #
 # Checks: a->b request answered by b's fake echo agent and shown in a's inbox;
-# quitting b during the first of three slow jobs and restarting it completes all
-# three (job 1 runs twice, the others once, in order) with queued/running shown
-# on a meanwhile; saving settings while a job runs retries it once, a second
-# save fails it with a reply, and no agent processes are left behind; a
-# restarted app keeps its inbox history; Quit exits both.
+# quitting b during the first of three slow jobs leaves that agent running, and
+# restarting b reattaches to it: all three complete (each run once, in order)
+# with queued/running shown on a meanwhile; saving settings while a job runs
+# leaves its agent running; an agent killed while b is down (a reboot) starts
+# over once, killed again the job fails with a reply, and no agent processes
+# are left behind; a restarted app keeps its inbox history; Quit exits both.
 # -Address binds both peer listeners to that IP (e.g. the ZeroTier address).
 [CmdletBinding()]
 param([string]$Address = '127.0.0.1', [int]$TimeoutSeconds = 30)
@@ -116,6 +117,7 @@ foreach ($pair in @(@($a, $b), @($b, $a))) {
     }
 }
 $b.settings.handler = 'claude'
+$b.settings.max_jobs = 1 # jobs run one after another, in order
 $b.settings.code = $code.ToLower()
 # The agent command is not editable in the UI; the only pre-seeded field is b's fake agent.
 @{ handler_command = @($fake) } | ConvertTo-Json | Set-Content -Path $b.config
@@ -142,7 +144,7 @@ try {
     Write-Host "reply: $($reply.body)"
     if ($reply.from -ne 'node-b' -or $reply.body -ne 'echo: ping from node-a') { throw 'wrong auto-reply' }
 
-    Write-Host '== quit node-b during job 1 of 3, restart: all completed, job 1 run twice, others once'
+    Write-Host '== quit node-b during job 1 of 3, restart: job 1 agent survives, all completed, each run once'
     $runlog = Join-Path $data 'runs.log'
     $jobs = @(1..3 | ForEach-Object { Invoke-Ui $a POST send @{ to = 'node-b'; body = "slow 3 $runlog job$_" } })
     Wait-Until { (Test-Path $runlog) -and (Get-Content $runlog) -contains 'job1' } 'job 1 running' | Out-Null
@@ -151,8 +153,11 @@ try {
         if ($st[0] -eq 'running' -and $st[1] -eq 'queued' -and $st[2] -eq 'queued') { $st -join ',' }
     } 'node-a sees job 1 running and jobs 2-3 queued'
     Write-Host "statuses on node-a before quit: $seen"
+    $job1 = @(Get-CimInstance Win32_Process -Filter "Name='fakeagent.exe'" | Where-Object { $_.ExecutablePath -eq $fake })
+    if ($job1.Count -ne 1) { throw "expected one agent for job 1, found $($job1.Count)" }
     Stop-Node $b
-    if (@($jobs | Where-Object { Find-Reply $a $_.id }).Count) { throw 'a reply was sent for an interrupted or queued job' }
+    if (-not (Get-Process -Id $job1[0].ProcessId -ErrorAction SilentlyContinue)) { throw 'quitting node-b killed the running agent' }
+    if (@($jobs | Where-Object { Find-Reply $a $_.id }).Count) { throw 'a reply was sent for a running or queued job' }
     Start-Node $b -NoApiFlag
     Wait-Until { @($jobs | Where-Object { (Get-JobStatus $a $_.id) -eq 'completed' }).Count -eq 3 } 'three completed replies' | Out-Null
     foreach ($i in 0..2) {
@@ -161,18 +166,32 @@ try {
     }
     $runs = (Get-Content $runlog) -join ','
     Write-Host "agent runs: $runs"
-    if ($runs -ne 'job1,job1,job2,job3') { throw "unexpected agent runs: $runs" }
+    if ($runs -ne 'job1,job2,job3') { throw "unexpected agent runs: $runs" }
 
-    Write-Host '== save settings on node-b while its job runs: retried once, then failed'
+    Write-Host '== save settings on node-b while its job runs: the agent keeps running'
     $job = Invoke-Ui $a POST send @{ to = 'node-b'; body = "tree $marker" }
     $first = Wait-Until { $p = @(Get-Leftovers $marker); if ($p.Count -ge 2) { , $p.ProcessId } } 'attempt 1 and its child running'
     Save-Settings $b
-    Wait-Until { $p = @(Get-Leftovers $marker); $p.Count -ge 2 -and -not @($p.ProcessId | Where-Object { $_ -in $first }).Count } 'attempt 2 running, attempt 1 gone' | Out-Null
-    if (Find-Reply $a $job.id) { throw 'a settings save replied instead of retrying' }
-    Save-Settings $b
+    Wait-Until { (Invoke-Ui $b GET status).connected } 'node-b reconnected after the save' | Out-Null
+    Start-Sleep -Seconds 1
+    $now = @((Get-Leftovers $marker).ProcessId)
+    if (@($first | Where-Object { $_ -notin $now }).Count -or $now.Count -ne $first.Count) { throw "a settings save changed the agent processes: $($first -join ',') -> $($now -join ',')" }
+    if (Find-Reply $a $job.id) { throw 'a settings save replied' }
+
+    Write-Host '== agent killed while node-b is down: started over once, killed again: failed'
+    foreach ($round in 1, 2) {
+        Stop-Node $b
+        Get-Leftovers $marker | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Wait-Until { -not @(Get-Leftovers $marker).Count } 'agent processes gone' | Out-Null
+        Start-Node $b -NoApiFlag
+        if ($round -eq 1) {
+            Wait-Until { @(Get-Leftovers $marker).Count -ge 2 } 'attempt 2 and its child running' | Out-Null
+            if (Find-Reply $a $job.id) { throw 'a killed agent replied instead of starting over' }
+        }
+    }
     $int = Wait-Until { Find-Reply $a $job.id } 'failed reply'
     Write-Host "reply: $($int.job_status) $($int.body)"
-    if ($int.job_status -ne 'failed' -or $int.body -ne 'agentlink: handler was interrupted twice (the app quit, crashed or settings changed)') { throw 'wrong failed reply' }
+    if ($int.job_status -ne 'failed' -or $int.body -ne 'agentlink: handler was interrupted twice (the agent or the app stopped mid-run)') { throw 'wrong failed reply' }
     Start-Sleep -Seconds 1
     $left = @(Get-Leftovers $marker)
     if ($left.Count) { throw "agent processes left after interruption: $($left.ProcessId -join ', ')" }

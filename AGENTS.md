@@ -98,6 +98,10 @@ to the other person. Consequences, which are rules:
   for activity lines and the answer; it does not change what the agent may do.
 - Every run is bounded: `max_jobs` (1–4, default 2) agents at once, a 10-minute hard timeout and
   a 3-minute idle timeout (no stdout line), both kill the process tree.
+- Agents run detached and outlive the app (quit, restart, update, settings save); the next start
+  reattaches, or resumes the agent's session if it died mid-run. Sessions are therefore
+  persisted by the agent CLI (no `--no-session-persistence` / `--ephemeral`). A resume must keep
+  exactly the launch's read-only limits (`Command.ResumeArgs`).
 - Never make the handler echo secrets, tokens or config contents into a reply.
 
 ## Validation
@@ -109,7 +113,7 @@ go test -race ./...
 pwsh -File scripts/e2e-local.ps1     # two CLI nodes on loopback: send, reply, stop
 pwsh -File scripts/e2e-worker.ps1    # two headless tray apps + fake agent; -RealClaude / -RealCodex [-AgentPath]
 pwsh -File scripts/e2e-parallel.ps1  # max_jobs 2, streamed activity at the sender, idle-timeout kill
-pwsh -File scripts/e2e-tray.ps1      # both people on one machine through the web UI; restarts, retries
+pwsh -File scripts/e2e-tray.ps1      # both people on one machine through the web UI; agent survives restarts, retries
 qgate                                # quality gate; qgate -All when deps or build config changed
 ```
 

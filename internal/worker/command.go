@@ -15,6 +15,15 @@ import (
 // agent's final text is then read from that file instead of stdout.
 const OutputFileArg = "{output_file}"
 
+// SessionIDArg in Command.SessionArgs and Command.ResumeArgs is replaced by
+// the agent session id: one chosen at launch (SessionArgs), or the one the
+// interrupted run used (ResumeArgs).
+const SessionIDArg = "{session_id}"
+
+// ResumePrompt is the stdin of a resumed session: the original request and
+// what the agent already did are in the session.
+const ResumePrompt = "Your previous run on this request was interrupted before it finished. Continue the same task from where you stopped and give your final answer.\n"
+
 // Command describes how to run an agent CLI. The prompt is always written to
 // stdin, never interpolated into arguments or a shell.
 type Command struct {
@@ -24,6 +33,12 @@ type Command struct {
 	Preamble string
 	// Format is how stdout is parsed: FormatText, FormatClaude or FormatCodex.
 	Format string
+	// SessionArgs, when set, are appended to Args at launch with a fresh
+	// session id (SessionIDArg), so an interrupted run can be resumed.
+	SessionArgs []string
+	// ResumeArgs, when set, replace Args to resume an interrupted session
+	// (SessionIDArg: its id). Without them an interrupted run starts over.
+	ResumeArgs []string
 }
 
 // ReplyStyle frames a request for the built-in agents: agent-to-agent traffic
@@ -48,8 +63,15 @@ const (
 // dontAsk already denies anything not pre-approved without prompting, so the
 // newer --permission-prompts flag is left out: older CLIs reject it. It
 // streams one JSON event per line (stream-json requires --verbose with -p):
-// tool calls become activity, the result event is the answer.
-var Claude = Command{Name: "claude", Args: []string{
+// tool calls become activity, the result event is the answer. The session is
+// persisted under a chosen --session-id so a run cut off by a reboot resumes
+// with --resume (same read-only flags) instead of starting over.
+var Claude = Command{Name: "claude", Args: claudeArgs, Preamble: ReplyStyle, Format: FormatClaude,
+	SessionArgs: []string{"--session-id", SessionIDArg},
+	ResumeArgs:  append(append([]string(nil), claudeArgs...), "--resume", SessionIDArg),
+}
+
+var claudeArgs = []string{
 	"-p",
 	"--output-format", "stream-json",
 	"--verbose",
@@ -57,22 +79,31 @@ var Claude = Command{Name: "claude", Args: []string{
 	"--allowedTools", "Read,Grep,Glob",
 	"--permission-mode", "dontAsk",
 	"--strict-mcp-config",
-	"--no-session-persistence",
-}, Preamble: ReplyStyle, Format: FormatClaude}
+}
 
 // Codex runs Codex non-interactively in its read-only sandbox; "-" reads the
-// prompt from stdin. --json streams its events (activity); the answer is the
-// last message file.
+// prompt from stdin. --json streams its events (activity, and thread.started
+// with the session id); the answer is the last message file. The session is
+// persisted (no --ephemeral) so an interrupted run resumes with `codex exec
+// resume`, which has no --sandbox flag: -c sandbox_mode=read-only keeps it
+// read-only (it also overrides the sandbox the session was saved with).
 var Codex = Command{Name: "codex", Args: []string{
 	"exec",
 	"--json",
 	"--sandbox", "read-only",
 	"--skip-git-repo-check",
-	"--ephemeral",
 	"--color", "never",
 	"--output-last-message", OutputFileArg,
 	"-",
-}, Preamble: ReplyStyle, Format: FormatCodex}
+}, Preamble: ReplyStyle, Format: FormatCodex, ResumeArgs: []string{
+	"exec", "resume",
+	"-c", "sandbox_mode=read-only",
+	"--json",
+	"--skip-git-repo-check",
+	"--output-last-message", OutputFileArg,
+	SessionIDArg,
+	"-",
+}}
 
 // ForHandler returns the command for a handler name.
 func ForHandler(h string) (Command, bool) {

@@ -49,6 +49,34 @@ func TestMain(m *testing.M) {
 		// Claude stream-json: one tool call, then silence.
 		_, _ = os.Stdout.WriteString(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"notes.md"}}]}}` + "\n")
 		time.Sleep(time.Minute)
+	case "slow-stream":
+		// Claude stream-json: logs "start", a tool call every 100ms for 3s, then the result.
+		in, _ := io.ReadAll(os.Stdin)
+		fakeLog("start")
+		for i := range 30 {
+			_, _ = os.Stdout.WriteString(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"f` + strconv.Itoa(i) + `.md"}}]}}` + "\n")
+			time.Sleep(100 * time.Millisecond)
+		}
+		_, _ = os.Stdout.WriteString(`{"type":"result","is_error":false,"result":"slow done: ` + strings.TrimSpace(string(in)) + `"}` + "\n")
+	case "resumable":
+		// Claude stream-json with sessions: "--session-id X" announces X and
+		// hangs (to be killed mid-run); "--resume X" answers at once.
+		in, _ := io.ReadAll(os.Stdin)
+		for i, a := range os.Args {
+			if i+1 >= len(os.Args) {
+				break
+			}
+			switch a {
+			case "--session-id":
+				fakeLog("start")
+				_, _ = os.Stdout.WriteString(`{"type":"system","subtype":"init","session_id":"` + os.Args[i+1] + `"}` + "\n")
+				time.Sleep(time.Minute)
+			case "--resume":
+				fakeLog("resume")
+				_, _ = os.Stdout.WriteString(`{"type":"system","subtype":"init","session_id":"` + os.Args[i+1] + `"}` + "\n")
+				_, _ = os.Stdout.WriteString(`{"type":"result","is_error":false,"result":"resumed ` + os.Args[i+1] + `: ` + strings.TrimSpace(string(in)) + `"}` + "\n")
+			}
+		}
 	case "stream-steady":
 		// Claude stream-json: an event every 50ms for 3s, then the result.
 		for i := range 60 {
@@ -57,6 +85,20 @@ func TestMain(m *testing.M) {
 		}
 		_, _ = os.Stdout.WriteString(`{"type":"result","is_error":false,"result":"steady done"}` + "\n")
 	}
+}
+
+// fakeLog appends line to $AGENTLINK_FAKE_LOG, if set, so a test can count runs.
+func fakeLog(line string) {
+	p := os.Getenv("AGENTLINK_FAKE_LOG")
+	if p == "" {
+		return
+	}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	_, _ = f.WriteString(line + "\n")
+	_ = f.Close()
 }
 
 func fakeAgent(t *testing.T, mode string, args ...string) Command {

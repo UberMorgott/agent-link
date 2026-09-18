@@ -111,15 +111,29 @@ error). The sender gets small status updates (`queued`, `running`, then `running
 Activity goes out at most once per 3 s and only when it changed (an unchanged one is repeated
 every 2 min). The sender's inbox page shows each request's latest status, «сейчас: …» under a
 running one, and the answer. A duplicate request id never runs twice. Queued jobs survive quit,
-crash and settings changes and resume in order. A job cut off while running (quit, crash,
-settings save) runs once more on the next start; cut off again, it fails with a reply. An agent
-error, the 10-minute timeout, or 3 minutes without any output from the agent («агент завис (нет
-активности 3 мин)») kills the agent's process tree and fails the job at once, without a retry.
+crash and settings changes and resume in order.
+
+A running agent survives the app: it is started detached (its own process group, outside the
+app's job object, no console) with stdin, stdout and stderr on files in `data\jobs\<id>\`
+(`<attempt>.in`, `.out`, `.err`, `.last`), and the job records its pid, the process start time
+(so a reused pid is never mistaken for it), the agent session id and how much output was
+already relayed. Quitting, restarting, saving settings or updating the app leaves the agent
+running; the next start reattaches to it, keeps relaying its activity and sends its answer as
+usual, so it runs once. An agent that finished while the app was down is answered from its
+output file. One that died mid-run (a reboot, a crash) is resumed in its own session
+(`claude --resume <id>`, `codex exec resume <id>`, same read-only limits) with a short "continue"
+prompt; without a session to resume it starts over once. Died a second time, the job fails with
+a reply. A completed job's run files are removed; a failed one keeps them for diagnosis. An
+agent error, the 10-minute timeout (counted from the attempt's start, across restarts), or 3
+minutes without any output from the agent («агент завис (нет активности 3 мин)») kills the
+agent's process tree and fails the job at once, without a retry; so does `Worker.Cancel`
+(`Worker.CancelAll` is the "shut down and kill jobs" path; the app's normal stop leaves agents
+running).
 Switching the handler to "None" fails jobs that were still waiting, with the reply "no handler
 configured".
 
-- Claude Code: `claude -p --output-format stream-json --verbose --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --permission-mode dontAsk --strict-mcp-config --no-session-persistence` — `assistant` events' `tool_use` / `thinking` / `text` blocks become activity, the `result` event is the answer.
-- Codex: `codex exec --json --sandbox read-only --skip-git-repo-check --ephemeral --color never --output-last-message <tmp> -` — `item.started|updated|completed` events (`command_execution`, `reasoning`, `agent_message`, …) become activity, the last-message file is the answer, `turn.failed` / `error` is the failure reason.
+- Claude Code: `claude -p --output-format stream-json --verbose --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --permission-mode dontAsk --strict-mcp-config --session-id <new uuid>` (resume: the same flags with `--resume <uuid>` instead of `--session-id`) — `assistant` events' `tool_use` / `thinking` / `text` blocks become activity, the `result` event is the answer.
+- Codex: `codex exec --json --sandbox read-only --skip-git-repo-check --color never --output-last-message <file> -` (resume: `codex exec resume -c sandbox_mode=read-only --json --skip-git-repo-check --output-last-message <file> <thread_id> -`; `resume` has no `--sandbox` flag, the `-c` override keeps it read-only; the thread id comes from `thread.started`) — `item.started|updated|completed` events (`command_execution`, `reasoning`, `agent_message`, …) become activity, the last-message file is the answer, `turn.failed` / `error` is the failure reason.
 
 On the sending side an unanswered request is marked «нет вестей от собеседника N мин» when the
 peer has sent nothing about it for 5 minutes while connected (a request `queued` behind other
@@ -198,9 +212,10 @@ run at once, activity reaches a, and the one that hangs fails by the idle timeou
 others complete.
 `scripts/e2e-tray.ps1` plays both people on one machine: two tray apps with their own settings
 folders (`-config`) and API ports (`-api`), set up, messaged and quit through the web UI
-endpoints; it also quits and restarts b in the middle of three slow jobs (all complete, job 1
-runs twice, the others once), checks that a save during a job retries it once and a second save
-fails it, that no agent processes are left, and that a restart keeps the inbox. `-Address <ip>` binds the peers to e.g. the ZeroTier IP.
+endpoints; it also quits and restarts b in the middle of three slow jobs (job 1's agent keeps
+running, all complete, each runs once), checks that a settings save leaves a running agent
+alone, that an agent killed while b is down starts over once and killed again fails the job,
+that no agent processes are left, and that a restart keeps the inbox. `-Address <ip>` binds the peers to e.g. the ZeroTier IP.
 With a non-default `-config` the app never touches the autostart entry, and `POST /ui/api/quit`
 (token-guarded, the same path as the tray's Quit) exits it.
 

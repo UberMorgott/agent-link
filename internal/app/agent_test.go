@@ -116,7 +116,6 @@ func TestJobRediscoversMovedAgent(t *testing.T) {
 	if err := os.Remove(old); err != nil {
 		t.Fatal(err)
 	}
-	// Not a real program: the run fails, and its error names what it tried.
 	moved := filepath.Join(appdata, `npm\codex.cmd`)
 	if err := os.MkdirAll(filepath.Dir(moved), 0o700); err != nil {
 		t.Fatal(err)
@@ -125,9 +124,8 @@ func TestJobRediscoversMovedAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd, _ := s.Command()
-	_, err := h.app.agentRunner(cmd, "codex", true)(t.Context(), s.WorkDir, "q", nil)
-	if err == nil || !strings.Contains(err.Error(), moved) {
-		t.Fatalf("run: %v, want the rediscovered %s", err, moved)
+	if got := h.app.agentCommand(cmd, "codex", true)(); got.Name != moved {
+		t.Fatalf("job runs %q, want the rediscovered %s", got.Name, moved)
 	}
 	h.app.saves.Wait()
 	if got, _, _ := settings.Load(h.path); got.AgentPath != moved || h.app.Settings().AgentPath != moved {

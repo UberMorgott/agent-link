@@ -5,9 +5,13 @@
 // The job queue is durable: every request is recorded in <state dir>/jobs
 // before the node ACKs it, and moves queued -> running -> completed | failed.
 // Jobs start in arrival order; with several slots they may finish in any
-// order. A job interrupted while running (quit, crash, settings save) runs
-// once more after restart; a second interruption fails it. Timeouts (hard, or
-// idle: no output from the agent) and agent errors fail at once. The sender
+// order. With Options.Agent the agent runs detached (see Proc): quitting,
+// restarting or updating the app leaves it running and the next start
+// reattaches to it, or finalizes it from its output, or resumes its session
+// when it died mid-run. A job interrupted while running without a way to
+// continue runs once more after restart; a second interruption fails it.
+// Timeouts (hard, or idle: no output from the agent), Cancel and agent errors
+// fail at once and kill the agent's process tree. The sender
 // gets status updates (queued, running, then running with the agent's current
 // activity, throttled) and a final reply that carries completed or failed.
 package worker
@@ -54,7 +58,7 @@ const MaxAttempts = 2
 // Failure texts that tests and scripts match.
 const (
 	ErrNoHandler   = "no handler configured"
-	ErrInterrupted = "handler was interrupted twice (the app quit, crashed or settings changed)"
+	ErrInterrupted = "handler was interrupted twice (the agent or the app stopped mid-run)"
 	// ErrIdle starts the failure of a run stopped by the idle timeout.
 	ErrIdle = "агент завис"
 )
@@ -74,6 +78,9 @@ type SendFunc func(m node.Message) (node.Message, error)
 
 // Options tune a Worker; zero fields take the defaults.
 type Options struct {
+	// Agent, when set, returns the agent command, which then runs detached
+	// (see Proc) and survives a restart of this app; the Runner is not used.
+	Agent           func() Command
 	Timeout         time.Duration
 	IdleTimeout     time.Duration
 	MaxJobs         int
@@ -112,6 +119,8 @@ type Job struct {
 	AcceptedAt time.Time    `json:"accepted_at"`
 	StartedAt  time.Time    `json:"started_at,omitzero"`
 	FinishedAt time.Time    `json:"finished_at,omitzero"`
+	// Proc is the detached agent run of the current attempt, if any.
+	Proc *Proc `json:"proc,omitempty"`
 }
 
 func (j *Job) terminal() bool { return j.Status == node.JobCompleted || j.Status == node.JobFailed }
@@ -129,6 +138,10 @@ type Worker struct {
 	mu   sync.Mutex
 	jobs map[string]*Job
 	seq  int64
+	// reattach holds running jobs left by a previous app, claimed before queued ones.
+	reattach map[string]bool
+	// live maps a watched detached job to its cancel signal.
+	live map[string]chan struct{}
 }
 
 // New opens the job store in stateDir/jobs. run may be nil when no handler is
@@ -139,7 +152,7 @@ func New(run Runner, send SendFunc, stateDir, dir string, opt Options, log *slog
 	}
 	w := &Worker{
 		run: run, send: send, dir: dir, jobsDir: filepath.Join(stateDir, "jobs"), opt: opt.withDefaults(), log: log,
-		kick: make(chan struct{}, 1), jobs: map[string]*Job{},
+		kick: make(chan struct{}, 1), jobs: map[string]*Job{}, reattach: map[string]bool{}, live: map[string]chan struct{}{},
 	}
 	if err := os.MkdirAll(w.jobsDir, 0o700); err != nil {
 		return nil, err
@@ -213,7 +226,12 @@ func (w *Worker) Job(id string) (Job, bool) {
 	if !ok {
 		return Job{}, false
 	}
-	return *j, true
+	c := *j
+	if j.Proc != nil {
+		p := *j.Proc
+		c.Proc = &p
+	}
+	return c, true
 }
 
 // Run recovers jobs left by a previous run, then runs queued jobs, starting
@@ -223,7 +241,7 @@ func (w *Worker) Job(id string) (Job, bool) {
 // the pending jobs and returns.
 func (w *Worker) Run(ctx context.Context) {
 	w.recover()
-	if w.run == nil {
+	if !w.hasHandler() {
 		for j := w.next(); j != nil; j = w.next() {
 			w.finish(j, node.JobFailed, "", ErrNoHandler)
 		}
@@ -239,7 +257,7 @@ func (w *Worker) Run(ctx context.Context) {
 // slot runs jobs one after another until ctx is cancelled.
 func (w *Worker) slot(ctx context.Context) {
 	for ctx.Err() == nil {
-		j, err := w.claim()
+		j, reattach, err := w.claim()
 		switch {
 		case err != nil:
 			// Never run an attempt that is not on disk: it could repeat forever.
@@ -253,6 +271,9 @@ func (w *Worker) slot(ctx context.Context) {
 			case <-ctx.Done():
 			case <-w.kick:
 			}
+		case w.opt.Agent != nil:
+			w.wake()
+			w.handleDetached(ctx, j, reattach)
 		default:
 			w.wake()
 			w.handle(ctx, j)
@@ -260,21 +281,32 @@ func (w *Worker) slot(ctx context.Context) {
 	}
 }
 
-// claim durably moves the oldest queued job to running and returns it, or nil
-// when nothing is queued.
-func (w *Worker) claim() (*Job, error) {
+func (w *Worker) hasHandler() bool { return w.run != nil || w.opt.Agent != nil }
+
+// claim returns a running job left by a previous app (reattach), else durably
+// moves the oldest queued job to running and returns it; nil when neither.
+func (w *Worker) claim() (j *Job, reattach bool, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	j := w.nextLocked()
-	if j == nil {
-		return nil, nil
+	for id := range w.reattach {
+		if c := w.jobs[id]; j == nil || c.Seq < j.Seq {
+			j = c
+		}
 	}
-	j.Status, j.Attempts, j.StartedAt = node.JobRunning, j.Attempts+1, time.Now().UTC()
+	if j != nil {
+		delete(w.reattach, j.Request.ID)
+		return j, true, nil
+	}
+	j = w.nextLocked()
+	if j == nil {
+		return nil, false, nil
+	}
+	j.Status, j.Attempts, j.StartedAt, j.Proc = node.JobRunning, j.Attempts+1, time.Now().UTC(), nil
 	if err := w.save(j); err != nil {
 		j.Status, j.Attempts = node.JobQueued, j.Attempts-1
-		return nil, err
+		return nil, false, err
 	}
-	return j, nil
+	return j, false, nil
 }
 
 // recover requeues or fails jobs found running and re-sends missing final replies.
@@ -287,6 +319,17 @@ func (w *Worker) recover() {
 	w.mu.Unlock()
 	slices.SortFunc(jobs, func(a, b *Job) int { return cmp.Compare(a.Seq, b.Seq) })
 	for _, j := range jobs {
+		switch {
+		case j.Status == node.JobRunning && j.Proc != nil && w.opt.Agent != nil:
+			// A detached agent: reattach, finalize or resume it in a slot.
+			w.mu.Lock()
+			w.reattach[j.Request.ID] = true
+			w.mu.Unlock()
+			continue
+		case j.Status == node.JobRunning && j.Proc != nil:
+			// No handler to watch it any more.
+			killLeftover(j.Proc)
+		}
 		switch {
 		case j.Status == node.JobRunning && j.Attempts >= MaxAttempts:
 			w.log.Warn("job interrupted again, failing", "id", j.Request.ID, "attempts", j.Attempts)
@@ -335,7 +378,7 @@ func (w *Worker) handle(ctx context.Context, j *Job) {
 	idleCtx, cancelIdle := context.WithCancelCause(ctx)
 	jobCtx, cancel := context.WithTimeoutCause(idleCtx, w.opt.Timeout, errHardTimeout)
 	idle := time.AfterFunc(w.opt.IdleTimeout, func() { cancelIdle(errIdleTimeout) })
-	relay := w.relay(m, attempt)
+	relay := w.relay(m, "activity-"+strconv.Itoa(attempt))
 	out, err := w.run(jobCtx, w.dir, m.Body, func(activity string) {
 		idle.Reset(w.opt.IdleTimeout)
 		relay.set(activity)
@@ -382,9 +425,11 @@ type relay struct {
 	changed chan struct{}
 	quit    chan struct{}
 	done    chan struct{}
+	once    sync.Once
 }
 
-func (w *Worker) relay(m node.Message, attempt int) *relay {
+// relay starts one; update ids are prefix-1, prefix-2, ...
+func (w *Worker) relay(m node.Message, prefix string) *relay {
 	r := &relay{changed: make(chan struct{}, 1), quit: make(chan struct{}), done: make(chan struct{})}
 	go func() {
 		defer close(r.done)
@@ -413,7 +458,7 @@ func (w *Worker) relay(m node.Message, attempt int) *relay {
 				continue
 			}
 			n++
-			w.status(m, node.JobRunning, "activity-"+strconv.Itoa(attempt)+"-"+strconv.Itoa(n), cur)
+			w.status(m, node.JobRunning, prefix+"-"+strconv.Itoa(n), cur)
 			sent, sentAt = cur, time.Now()
 			refresh.Reset(w.opt.ActivityRefresh)
 		}
@@ -438,9 +483,9 @@ func (r *relay) set(activity string) {
 	}
 }
 
-// stop ends the relay; no update is sent after it returns.
+// stop ends the relay; no update is sent after it returns. It may be called again.
 func (r *relay) stop() {
-	close(r.quit)
+	r.once.Do(func() { close(r.quit) })
 	<-r.done
 }
 
@@ -453,6 +498,9 @@ func (w *Worker) finish(j *Job, status, result, errText string) {
 	w.log.Info("handler finished", "id", j.Request.ID, "status", status, "error", errText)
 	if err != nil {
 		w.log.Error("save job", "id", j.Request.ID, "err", err)
+	} else if status == node.JobCompleted {
+		// A failed run keeps its files (<jobs>/<id>/) for diagnosis.
+		_ = os.RemoveAll(filepath.Join(w.jobsDir, j.Request.ID))
 	}
 	w.reply(j)
 }
