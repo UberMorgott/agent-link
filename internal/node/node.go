@@ -89,6 +89,7 @@ type Node struct {
 	oldNetTag  string // the pre-v0.6 tag, only matched in received beacons
 
 	guard     *authGuard        // failed inbound handshakes per source
+	pending   *connLimit        // inbound connections still in the handshake
 	pakeSeen  map[string]bool   // peer names that authenticated with the PAKE (guarded by mu)
 	isPrivate func(net.IP) bool // addresses allowed the legacy handshake (privateAddr)
 
@@ -142,7 +143,7 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		known: map[string]bool{}, conns: map[string]*peerConn{}, areas: map[string][]string{},
 		offline: map[string]time.Time{}, started: time.Now(),
 		members: map[string]*Member{}, dialing: map[string]bool{}, tried: map[string]time.Time{},
-		guard: newAuthGuard(), pakeSeen: map[string]bool{},
+		guard: newAuthGuard(), pending: newConnLimit(pendingTotal, pendingPerSource), pakeSeen: map[string]bool{},
 		isPrivate:   func(ip net.IP) bool { return privateAddr(ip, zeroTierNets()) },
 		id:          id,
 		open:        len(cfg.Peers) == 0,
@@ -526,9 +527,15 @@ func (n *Node) handleInbound(ctx context.Context, c net.Conn) {
 		_ = c.Close()
 		return
 	}
+	if !n.pending.acquire(ip) {
+		n.log.Debug("inbound connection closed: too many unauthenticated connections", "remote", c.RemoteAddr())
+		_ = c.Close()
+		return
+	}
 	_ = c.SetDeadline(time.Now().Add(n.handshakeTimeout))
 	w := newWire(c)
 	hello, err := n.acceptHandshake(w)
+	n.pending.release(ip)
 	if err != nil {
 		// A name clash is a state of the network, not a guess.
 		if !errors.Is(err, ErrSameName) && !errors.Is(err, ErrNameTaken) {

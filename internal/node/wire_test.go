@@ -267,3 +267,71 @@ func TestPAKESeenSurvivesRestart(t *testing.T) {
 		t.Fatalf("legacy handshake as another name: %v", err)
 	}
 }
+
+// Unauthenticated connections are capped per source and in all; a
+// connection over the cap is closed at once, and the handshake deadline
+// frees the slots of idle ones.
+func TestUnauthenticatedConnectionCap(t *testing.T) {
+	a := newTestNode(t, "a", testSecret, nil, t.TempDir(), listen(t), nil)
+	a.pending = newConnLimit(10, 2)
+	a.handshakeTimeout = 700 * time.Millisecond
+	a.start(t)
+	dial := func() net.Conn {
+		c, err := net.Dial("tcp", a.peerLn.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		return c
+	}
+	idle := []net.Conn{dial(), dial()}
+	eventually(t, "two pending", func() bool {
+		a.pending.mu.Lock()
+		defer a.pending.mu.Unlock()
+		return a.pending.n == 2
+	})
+	over := dial()
+	began := time.Now()
+	_ = over.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := over.Read(make([]byte, 1)); err == nil {
+		t.Fatal("connection over the cap answered")
+	}
+	if d := time.Since(began); d > 500*time.Millisecond {
+		t.Fatalf("over-cap connection closed after %s, want at once", d)
+	}
+	for _, c := range idle { // the deadline closes the idle ones
+		_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if _, err := c.Read(make([]byte, 1)); err == nil {
+			t.Fatal("idle connection answered")
+		}
+	}
+	eventually(t, "slots freed", func() bool {
+		a.pending.mu.Lock()
+		defer a.pending.mu.Unlock()
+		return a.pending.n == 0
+	})
+	if !legacyHello(t, a, "old") {
+		t.Fatal("handshake refused after the slots were freed")
+	}
+}
+
+func TestConnLimit(t *testing.T) {
+	l := newConnLimit(3, 2)
+	ip1, ip2, ip3 := net.ParseIP("203.0.113.1"), net.ParseIP("203.0.113.2"), net.ParseIP("203.0.113.3")
+	if !l.acquire(ip1) || !l.acquire(ip1) || l.acquire(ip1) {
+		t.Fatal("per-source cap")
+	}
+	if !l.acquire(ip2) || l.acquire(ip3) {
+		t.Fatal("global cap")
+	}
+	l.release(ip1)
+	if !l.acquire(ip3) || l.acquire(ip3) {
+		t.Fatal("release")
+	}
+	l.release(ip1)
+	l.release(ip2)
+	l.release(ip3)
+	if l.n != 0 || len(l.by) != 0 {
+		t.Fatalf("left %d, %v", l.n, l.by)
+	}
+}

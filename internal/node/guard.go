@@ -108,3 +108,47 @@ func (g *authGuard) makeRoomLocked(now time.Time) {
 		delete(g.m, oldest)
 	}
 }
+
+// connLimit caps the inbound connections that have not authenticated yet: at
+// most total in all and perSource from one source (guardKey), so a flood of
+// idle or slow connections cannot pile up goroutines and buffers. Each one is
+// also bounded by the handshake deadline.
+type connLimit struct {
+	mu               sync.Mutex
+	total, perSource int
+	n                int
+	by               map[string]int
+}
+
+const (
+	pendingTotal     = 64
+	pendingPerSource = 8
+)
+
+func newConnLimit(total, perSource int) *connLimit {
+	return &connLimit{total: total, perSource: perSource, by: map[string]int{}}
+}
+
+// acquire reports whether a connection from ip may start a handshake; if so,
+// release must follow once the handshake ends.
+func (l *connLimit) acquire(ip net.IP) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	k := guardKey(ip)
+	if l.n >= l.total || l.by[k] >= l.perSource {
+		return false
+	}
+	l.n++
+	l.by[k]++
+	return true
+}
+
+func (l *connLimit) release(ip net.IP) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	k := guardKey(ip)
+	l.n--
+	if l.by[k]--; l.by[k] <= 0 {
+		delete(l.by, k)
+	}
+}
