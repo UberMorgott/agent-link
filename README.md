@@ -235,6 +235,12 @@ After handling the messages (and replying with `send --reply-to`), start `wait` 
   45 s without any frame from it closes the session: the status turns «нет связи» and the dialing
   side reconnects with its usual backoff. A v0.2 peer sends no heartbeats and ignores them (and
   `activity`); it is never timed out, it just shows no activity.
+- Versions interoperate: since v0.4 `hello` carries `proto` (protocol version, 4) and `caps`
+  (`caps`, `hb`, `activity`, `job-reattach`). A peer that sends neither is an older version
+  with no optional capabilities; it still connects and exchanges messages. Unknown frame
+  types, unknown fields, fields of an unexpected JSON type and lines that do not parse are
+  skipped (debug log), during the handshake and after, and never close the session. A feature
+  newer than v0.3 is only used towards a peer that announced its capability (`Node.PeerHas`).
 - `wait` marks messages delivered as it returns them; a `wait` killed mid-response can lose that
   batch from `wait` (it stays visible in `inbox`).
 

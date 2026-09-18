@@ -242,6 +242,26 @@ func (n *Node) Connected(peer string) bool {
 	return n.conns[peer] != nil
 }
 
+// PeerCaps returns the protocol version and capabilities peer announced on its
+// live session; ok is false without one. An older peer announces version 0
+// and no capabilities.
+func (n *Node) PeerCaps(peer string) (proto int, caps []string, ok bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	pc := n.conns[peer]
+	if pc == nil {
+		return 0, nil, false
+	}
+	return pc.proto, slices.Clone(pc.caps), true
+}
+
+// PeerHas reports whether peer's live session announced capability c. Gate
+// every feature newer than v0.3 on it.
+func (n *Node) PeerHas(peer, c string) bool {
+	_, caps, ok := n.PeerCaps(peer)
+	return ok && slices.Contains(caps, c)
+}
+
 // Peers returns the known peer names (configured or learned), connected ones first.
 func (n *Node) Peers() []string {
 	n.mu.Lock()
@@ -373,13 +393,13 @@ func (n *Node) handleInbound(ctx context.Context, c net.Conn) {
 	defer stop()
 	_ = c.SetDeadline(time.Now().Add(n.handshakeTimeout))
 	sc := newScanner(c)
-	peer, areas, err := n.acceptHandshake(c, sc)
+	hello, err := n.acceptHandshake(c, sc)
 	if err != nil {
 		n.log.Warn("inbound handshake rejected", "remote", c.RemoteAddr(), "err", err)
 		_ = c.Close()
 		return
 	}
-	pc := newPeerConn(peer, peer, areas, c)
+	pc := newPeerConn(hello, hello.name, c)
 	if !n.register(pc) {
 		_ = c.Close()
 		return
@@ -429,7 +449,7 @@ func (n *Node) dialOnce(ctx context.Context, t *target) bool {
 	n.mu.Lock()
 	want := t.name
 	n.mu.Unlock()
-	peer, areas, err := n.dialHandshake(c, sc, want)
+	hello, err := n.dialHandshake(c, sc, want)
 	if err != nil {
 		n.log.Warn("outbound handshake failed", "addr", t.addr, "err", err)
 		if errors.Is(err, ErrAuth) || errors.Is(err, ErrSameName) || errors.Is(err, ErrWrongPeer) {
@@ -439,10 +459,10 @@ func (n *Node) dialOnce(ctx context.Context, t *target) bool {
 		return false
 	}
 	n.mu.Lock()
-	t.name = peer
+	t.name = hello.name
 	n.mu.Unlock()
 	_ = c.SetDeadline(time.Time{})
-	pc := newPeerConn(peer, n.cfg.Node, areas, c)
+	pc := newPeerConn(hello, n.cfg.Node, c)
 	if !n.register(pc) {
 		_ = c.Close()
 		return false

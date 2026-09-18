@@ -66,9 +66,11 @@ Both sides must agree, or the session never authenticates:
 - The code is short and brute-forceable offline, so the private ZeroTier network is the security
   boundary (README "Security").
 - `areas` must overlap for `--to area:NAME` fan-out to reach the peer.
-- Both sides run the same version: the wire format is not negotiated (v0.2 changed the handshake).
-  v0.3 only adds to it (a `hb` heartbeat frame, a status `activity` field), so a v0.2 peer still
-  interoperates without activity or heartbeats; update both sides anyway.
+- Both sides run v0.2 or later (v0.2 changed the handshake MAC). From there on versions mix:
+  since v0.4 `hello` announces `proto` and `caps`; unknown frames and fields are skipped, never
+  an error that drops the session. Rule for changes: the wire format only grows. Never make a
+  new field required, never reject an unknown one, and gate every new feature on a new cap
+  (`node.Capabilities`, `Node.PeerHas`); a peer without caps is an older version.
 
 ## Waking an interactive session
 

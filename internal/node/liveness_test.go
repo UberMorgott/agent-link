@@ -25,7 +25,7 @@ func rawPeer(t *testing.T, a *testNode, name string) net.Conn {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-	if _, _, err := b.dialHandshake(c, newScanner(c), ""); err != nil {
+	if _, err := b.dialHandshake(c, newScanner(c), ""); err != nil {
 		t.Fatal(err)
 	}
 	_ = c.SetDeadline(time.Time{})

@@ -3,7 +3,6 @@ package node
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"sync"
@@ -20,6 +19,8 @@ type peerConn struct {
 	peer   string
 	dialer string // node name that opened the TCP connection
 	areas  []string
+	proto  int      // 0: an older peer that announced no version
+	caps   []string // empty for an older peer
 	c      net.Conn
 
 	wmu  sync.Mutex
@@ -28,8 +29,8 @@ type peerConn struct {
 	once sync.Once
 }
 
-func newPeerConn(peer, dialer string, areas []string, c net.Conn) *peerConn {
-	return &peerConn{peer: peer, dialer: dialer, areas: areas, c: c,
+func newPeerConn(h peerHello, dialer string, c net.Conn) *peerConn {
+	return &peerConn{peer: h.name, dialer: dialer, areas: h.areas, proto: h.proto, caps: h.caps, c: c,
 		kick: make(chan struct{}, 1), done: make(chan struct{})}
 }
 
@@ -88,7 +89,8 @@ func (n *Node) register(pc *peerConn) bool {
 	if err := n.store.saveAreas(areas); err != nil {
 		n.log.Warn("save areas", "err", err)
 	}
-	n.log.Info("peer connected", "peer", pc.peer, "dialer", pc.dialer, "areas", pc.areas)
+	n.log.Info("peer connected", "peer", pc.peer, "dialer", pc.dialer, "areas", pc.areas,
+		"proto", pc.proto, "caps", pc.caps)
 	return true
 }
 
@@ -119,22 +121,24 @@ func (n *Node) runConn(ctx context.Context, pc *peerConn, sc *bufio.Scanner) {
 func (n *Node) readLoop(pc *peerConn, sc *bufio.Scanner) {
 	beats := false
 	for sc.Scan() {
-		var f frame
-		if err := json.Unmarshal(sc.Bytes(), &f); err != nil {
-			n.log.Warn("bad frame", "peer", pc.peer, "err", err)
-			return
-		}
-		switch f.Type {
-		case "msg":
+		// A frame this version cannot read or does not know is skipped, never a
+		// reason to drop the session: the peer may be a much newer version.
+		f, ok := decodeFrame(sc.Bytes())
+		switch {
+		case !ok:
+			n.log.Debug("unreadable frame skipped", "peer", pc.peer, "len", len(sc.Bytes()))
+		case f.Type == "msg":
 			if !n.receive(pc, f.Msg) {
 				return
 			}
-		case "ack":
+		case f.Type == "ack":
 			if err := n.store.ack(pc.peer, f.ID); err != nil {
 				n.log.Warn("ack", "peer", pc.peer, "id", f.ID, "err", err)
 			}
-		case frameHeartbeat:
+		case f.Type == frameHeartbeat:
 			beats = true
+		default:
+			n.log.Debug("unknown frame type ignored", "peer", pc.peer, "type", f.Type)
 		}
 		if beats {
 			_ = pc.c.SetReadDeadline(time.Now().Add(n.heartbeatTimeout))
