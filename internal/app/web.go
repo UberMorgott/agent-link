@@ -23,7 +23,7 @@ import (
 var webFS embed.FS
 
 // TokenHeader carries the per-run token on every web UI API call.
-const TokenHeader = "X-Agentlink-Token"
+const TokenHeader = "X-Agentlink-Token" //nolint:gosec // G101: an HTTP header name; the token itself is random per run (newToken)
 
 const maxBody = 1 << 20
 
@@ -182,7 +182,7 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg("error.bad_request", nil))
 		return
 	}
-	f, err := a.Apply(s)
+	f, err := a.Apply(r.Context(), s)
 	found := ""
 	if f.Path != "" {
 		found = foundText(f)

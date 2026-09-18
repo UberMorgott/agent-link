@@ -154,13 +154,14 @@ func (a *App) Configured() bool {
 }
 
 // Start runs the node if settings exist. A start failure is also kept for Status.
-func (a *App) Start() error {
+// The node keeps running after ctx is cancelled, until Stop or the next Apply.
+func (a *App) Start(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if !a.configured {
 		return nil
 	}
-	return a.startLocked()
+	return a.startLocked(ctx)
 }
 
 // Stop stops the node and the worker and waits for them.
@@ -242,7 +243,7 @@ var ErrNotStarted = errors.New("settings saved, but the node did not start")
 // When no AgentPath is set, or the set one has disappeared (an app update
 // moved its versioned folder), the agent is looked for again (Finder.Discover);
 // a hit off PATH is saved as AgentPath and returned.
-func (a *App) Apply(s settings.Settings) (found settings.Found, err error) {
+func (a *App) Apply(ctx context.Context, s settings.Settings) (found settings.Found, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if s.Peers == nil {
@@ -282,7 +283,7 @@ func (a *App) Apply(s settings.Settings) (found settings.Found, err error) {
 	}
 	a.stopLocked()
 	a.s, a.configured = s, true
-	if err := a.startLocked(); err != nil {
+	if err := a.startLocked(ctx); err != nil {
 		return found, fmt.Errorf("%w: %w", ErrNotStarted, err)
 	}
 	return found, nil
@@ -342,8 +343,8 @@ func (a *App) saveAgentPath(handler, old, p string) {
 	a.s = s
 }
 
-func (a *App) startLocked() error {
-	a.startErr = a.startNode()
+func (a *App) startLocked(ctx context.Context) error {
+	a.startErr = a.startNode(ctx)
 	if a.startErr != nil {
 		a.log.Error("node start", "err", a.startErr)
 	}
@@ -351,8 +352,9 @@ func (a *App) startLocked() error {
 }
 
 // startNode runs the node, unless there is no code yet: then nothing can
-// authenticate and Status asks for one.
-func (a *App) startNode() error {
+// authenticate and Status asks for one. The node outlives ctx (often an HTTP
+// request): only its values are kept, stopLocked ends the run.
+func (a *App) startNode(ctx context.Context) error {
 	var ifaces []settings.Iface
 	if a.Ifaces != nil {
 		ifaces = a.Ifaces()
@@ -385,11 +387,12 @@ func (a *App) startNode() error {
 	if hasHandler {
 		n.SetInboundHook(w.Accept)
 	}
-	ln, err := net.Listen("tcp", cfg.Listen)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", cfg.Listen)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	a.wg.Go(func() { w.Run(ctx) })
 	a.wg.Go(func() { n.Run(ctx, ln) })
 	a.n, a.stop = n, cancel

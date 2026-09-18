@@ -130,17 +130,18 @@ func serve(cfg config.Config) error {
 		return err
 	}
 	n.SetAppVersion(selfupdate.Version)
-	peerLn, err := net.Listen("tcp", cfg.Listen)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	var lc net.ListenConfig
+	peerLn, err := lc.Listen(ctx, "tcp", cfg.Listen)
 	if err != nil {
 		return err
 	}
-	apiLn, err := net.Listen("tcp", cfg.API)
+	apiLn, err := lc.Listen(ctx, "tcp", cfg.API)
 	if err != nil {
 		_ = peerLn.Close()
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	return n.Serve(ctx, peerLn, apiLn)
 }
 
@@ -152,7 +153,7 @@ func send(cfg config.Config, to, body, replyTo string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.Post(apiURL(cfg, "/send", nil), "application/json", bytes.NewReader(req))
+	resp, err := apiDo(http.MethodPost, apiURL(cfg, "/send", nil), req)
 	if err != nil {
 		return err
 	}
@@ -173,7 +174,7 @@ func wait(cfg config.Config, timeout string, stdout io.Writer) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	resp, err := http.Get(apiURL(cfg, "/wait", url.Values{"timeout": {d.String()}}))
+	resp, err := apiDo(http.MethodGet, apiURL(cfg, "/wait", url.Values{"timeout": {d.String()}}), nil)
 	if err != nil {
 		return 1, err
 	}
@@ -188,7 +189,7 @@ func wait(cfg config.Config, timeout string, stdout io.Writer) (int, error) {
 }
 
 func inbox(cfg config.Config, limit int, stdout io.Writer) error {
-	resp, err := http.Get(apiURL(cfg, "/inbox", url.Values{"limit": {strconv.Itoa(limit)}}))
+	resp, err := apiDo(http.MethodGet, apiURL(cfg, "/inbox", url.Values{"limit": {strconv.Itoa(limit)}}), nil)
 	if err != nil {
 		return err
 	}
@@ -204,7 +205,7 @@ func members(cfg config.Config, path string, req *node.MemberRequest, stdout io.
 	var resp *http.Response
 	var err error
 	if req == nil {
-		resp, err = http.Get(apiURL(cfg, "/members", nil))
+		resp, err = apiDo(http.MethodGet, apiURL(cfg, "/members", nil), nil)
 	} else {
 		if req.Addr == "" && req.Name == "" {
 			return errors.New("--addr or --name is required")
@@ -213,7 +214,7 @@ func members(cfg config.Config, path string, req *node.MemberRequest, stdout io.
 		if merr != nil {
 			return merr
 		}
-		resp, err = http.Post(apiURL(cfg, path, nil), "application/json", bytes.NewReader(body))
+		resp, err = apiDo(http.MethodPost, apiURL(cfg, path, nil), body)
 	}
 	if err != nil {
 		return err
@@ -277,6 +278,18 @@ func parseTimeout(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid --timeout %q", s)
 	}
 	return d, nil
+}
+
+// apiDo sends one request to the local API: a POST carries body as JSON.
+func apiDo(method, u string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(context.Background(), method, u, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return http.DefaultClient.Do(req)
 }
 
 func apiURL(cfg config.Config, path string, q url.Values) string {

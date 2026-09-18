@@ -76,7 +76,7 @@ func TestUIStringsCoverPages(t *testing.T) {
 		if strings.HasSuffix(name, "_test.go") || name == "strings.go" {
 			continue
 		}
-		data, err := os.ReadFile(name)
+		data, err := os.ReadFile(filepath.Clean(name))
 		if err != nil {
 			t.Fatal(err)
 		}

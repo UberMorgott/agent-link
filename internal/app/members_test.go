@@ -11,7 +11,9 @@ import (
 
 func errorText(t *testing.T, body string) string {
 	t.Helper()
-	var r struct{ Error string }
+	var r struct {
+		Error string `json:"error"`
+	}
 	if err := json.Unmarshal([]byte(body), &r); err != nil {
 		t.Fatalf("not an error answer: %s", body)
 	}

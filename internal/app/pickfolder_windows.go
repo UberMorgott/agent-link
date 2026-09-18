@@ -60,18 +60,21 @@ const (
 type comObject struct{ vtbl *[32]uintptr }
 
 func (o *comObject) call(method int, args ...uintptr) uintptr {
-	r, _, _ := syscall.SyscallN(o.vtbl[method], append([]uintptr{uintptr(unsafe.Pointer(o))}, args...)...)
+	r, _, _ := syscall.SyscallN(o.vtbl[method], append([]uintptr{uintptr(unsafe.Pointer(o))}, args...)...) //nolint:gosec // G103: Win32/COM call takes a pointer argument as uintptr
 	return r
 }
 
 func (o *comObject) release() { o.call(vtblRelease) }
 
 func hresult(what string, hr uintptr) error {
-	if int32(hr) < 0 {
-		return fmt.Errorf("%s: HRESULT 0x%08X", what, uint32(hr))
+	if failed(hr) {
+		return fmt.Errorf("%s: HRESULT 0x%08X", what, hr&0xFFFFFFFF)
 	}
 	return nil
 }
+
+// failed reports a failure HRESULT: its 32-bit severity (sign) bit is set.
+func failed(hr uintptr) bool { return hr&0x80000000 != 0 }
 
 // pickFolder shows the folder dialog and waits for the user.
 func pickFolder(start, title string) (string, error) {
@@ -114,8 +117,8 @@ func showOpenDialog(start, title string, filter *[2]string) (string, error) {
 
 	var dlg *comObject
 	hr, _, _ := procCoCreateInstance.Call(
-		uintptr(unsafe.Pointer(&clsidFileOpenDialog)), 0, windows.CLSCTX_INPROC_SERVER,
-		uintptr(unsafe.Pointer(&iidIFileOpenDialog)), uintptr(unsafe.Pointer(&dlg)))
+		uintptr(unsafe.Pointer(&clsidFileOpenDialog)), 0, windows.CLSCTX_INPROC_SERVER, //nolint:gosec // G103: Win32/COM call takes a pointer argument as uintptr
+		uintptr(unsafe.Pointer(&iidIFileOpenDialog)), uintptr(unsafe.Pointer(&dlg))) //nolint:gosec // G103: Win32/COM call takes a pointer argument as uintptr
 	if err := hresult("CoCreateInstance", hr); err != nil {
 		return "", err
 	}
@@ -124,7 +127,7 @@ func showOpenDialog(start, title string, filter *[2]string) (string, error) {
 	// Out-parameters and strings live on the heap (new, UTF16PtrFromString):
 	// a stack address turned into uintptr could move when the stack grows.
 	opts := new(uint32)
-	if err := hresult("GetOptions", dlg.call(vtblGetOptions, uintptr(unsafe.Pointer(opts)))); err != nil {
+	if err := hresult("GetOptions", dlg.call(vtblGetOptions, uintptr(unsafe.Pointer(opts)))); err != nil { //nolint:gosec // G103: Win32/COM call takes a pointer argument as uintptr
 		return "", err
 	}
 	*opts |= fosForceFileSystem | fosPathMustExist | fosNoChangeDir
@@ -141,18 +144,18 @@ func showOpenDialog(start, title string, filter *[2]string) (string, error) {
 		spec, err2 := windows.UTF16PtrFromString(filter[1])
 		if err1 == nil && err2 == nil {
 			specs := &[1]filterSpec{{name, spec}}
-			if err := hresult("SetFileTypes", dlg.call(vtblSetFileTypes, 1, uintptr(unsafe.Pointer(specs)))); err != nil {
+			if err := hresult("SetFileTypes", dlg.call(vtblSetFileTypes, 1, uintptr(unsafe.Pointer(specs)))); err != nil { //nolint:gosec // G103: Win32/COM call takes a pointer argument as uintptr
 				return "", err
 			}
 			runtime.KeepAlive(specs)
 		}
 	}
 	if t, err := windows.UTF16PtrFromString(title); err == nil {
-		dlg.call(vtblSetTitle, uintptr(unsafe.Pointer(t)))
+		dlg.call(vtblSetTitle, uintptr(unsafe.Pointer(t))) //nolint:gosec // G103: Win32/COM call takes a pointer argument as uintptr
 		runtime.KeepAlive(t)
 	}
 	if folder := startItem(start); folder != nil {
-		dlg.call(vtblSetFolder, uintptr(unsafe.Pointer(folder)))
+		dlg.call(vtblSetFolder, uintptr(unsafe.Pointer(folder))) //nolint:gosec // G103: Win32/COM call takes a pointer argument as uintptr
 		folder.release()
 	}
 
@@ -167,15 +170,15 @@ func showOpenDialog(start, title string, filter *[2]string) (string, error) {
 	}
 
 	item := new(*comObject)
-	if err := hresult("GetResult", dlg.call(vtblGetResult, uintptr(unsafe.Pointer(item)))); err != nil {
+	if err := hresult("GetResult", dlg.call(vtblGetResult, uintptr(unsafe.Pointer(item)))); err != nil { //nolint:gosec // G103: Win32/COM call takes a pointer argument as uintptr
 		return "", err
 	}
 	defer (*item).release()
 	name := new(*uint16)
-	if err := hresult("GetDisplayName", (*item).call(vtblItemDisplayName, sigdnFileSysPath, uintptr(unsafe.Pointer(name)))); err != nil {
+	if err := hresult("GetDisplayName", (*item).call(vtblItemDisplayName, sigdnFileSysPath, uintptr(unsafe.Pointer(name)))); err != nil { //nolint:gosec // G103: Win32/COM call takes a pointer argument as uintptr
 		return "", err
 	}
-	defer windows.CoTaskMemFree(unsafe.Pointer(*name))
+	defer windows.CoTaskMemFree(unsafe.Pointer(*name)) //nolint:gosec // G103: Win32/COM call takes a pointer argument as uintptr
 	return windows.UTF16PtrToString(*name), nil
 }
 
@@ -189,9 +192,9 @@ func startItem(start string) *comObject {
 		return nil
 	}
 	var item *comObject
-	hr, _, _ := procSHCreateItemFromParsingName.Call(uintptr(unsafe.Pointer(p)), 0,
-		uintptr(unsafe.Pointer(&iidIShellItem)), uintptr(unsafe.Pointer(&item)))
-	if int32(hr) < 0 {
+	hr, _, _ := procSHCreateItemFromParsingName.Call(uintptr(unsafe.Pointer(p)), 0, //nolint:gosec // G103: Win32/COM call takes a pointer argument as uintptr
+		uintptr(unsafe.Pointer(&iidIShellItem)), uintptr(unsafe.Pointer(&item))) //nolint:gosec // G103: Win32/COM call takes a pointer argument as uintptr
+	if failed(hr) {
 		return nil
 	}
 	return item
@@ -207,7 +210,7 @@ func foregroundOwner() uintptr {
 	cls, _ := windows.UTF16PtrFromString("STATIC")
 	cx, _, _ := procGetSystemMetrics.Call(smCxScreen)
 	cy, _, _ := procGetSystemMetrics.Call(smCyScreen)
-	hwnd, _, _ := procCreateWindowExW.Call(wsExTopmost|wsExToolWindow, uintptr(unsafe.Pointer(cls)), 0,
+	hwnd, _, _ := procCreateWindowExW.Call(wsExTopmost|wsExToolWindow, uintptr(unsafe.Pointer(cls)), 0, //nolint:gosec // G103: Win32/COM call takes a pointer argument as uintptr
 		wsPopup, cx/4, cy/4, 0, 0, 0, 0, 0, 0)
 	if hwnd == 0 {
 		return 0

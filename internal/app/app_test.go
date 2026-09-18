@@ -44,7 +44,7 @@ func newHarness(t *testing.T, setup ...func(*App)) *harness {
 
 func (h *harness) do(t *testing.T, method, path, body string, hdr map[string]string) (int, string) {
 	t.Helper()
-	req, err := http.NewRequest(method, h.srv.URL+path, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(t.Context(), method, h.srv.URL+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func validJSON(t *testing.T) string {
 		Node: "alice", Listen: "127.0.0.1:0", PeerName: "bob", PeerAddr: "127.0.0.1:1",
 		Code: "abc123", Areas: []string{"dev"}, Handler: worker.HandlerNone, Autostart: true,
 	}
-	data, err := json.Marshal(s)
+	data, err := json.Marshal(s) //nolint:gosec // G117: test fixture, Secret is empty
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestAPITokenGuard(t *testing.T) {
 
 func TestRebindingHostRejected(t *testing.T) {
 	h := newHarness(t)
-	req, _ := http.NewRequest(http.MethodGet, h.srv.URL+"/ui/settings", nil)
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, h.srv.URL+"/ui/settings", nil)
 	req.Host = "evil.example"
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -252,13 +252,16 @@ func TestSaveErrorsAreSentences(t *testing.T) {
 	}
 	for body, key := range cases {
 		code, got := h.do(t, http.MethodPost, "/ui/api/settings", body, h.tokenHdr())
-		var r struct{ Error string }
+		var r struct {
+			Error string `json:"error"`
+		}
 		if err := json.Unmarshal([]byte(got), &r); err != nil || code != http.StatusBadRequest || r.Error != uiStrings[key] {
 			t.Errorf("%s: %d %s, want %q", body, code, got, uiStrings[key])
 		}
 	}
 	// A bind failure is saved but explained.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +287,7 @@ func TestLegacySecretConfigRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Stop()
-	if err := a.Start(); err != nil {
+	if err := a.Start(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if st := a.Status(); !st.Running || st.Peer != "bob" || st.Problem != "" {

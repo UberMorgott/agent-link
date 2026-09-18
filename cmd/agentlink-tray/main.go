@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -91,7 +92,7 @@ func run() error {
 	if *noTray {
 		a.QuitFunc = quit
 	}
-	ln, err := listen(a.APIAddr(), *restarted)
+	ln, err := listen(quitCtx, a.APIAddr(), *restarted)
 	if err != nil {
 		return fmt.Errorf("agentlink is probably already running (%s is taken): %w", a.APIAddr(), err)
 	}
@@ -112,7 +113,7 @@ func run() error {
 		_ = srv.Shutdown(ctx)
 	}()
 
-	_ = a.Start() // a failure is logged and shown on the settings page
+	_ = a.Start(quitCtx) // a failure is logged and shown on the settings page
 	defer a.Stop()
 
 	if *noTray {
@@ -135,10 +136,11 @@ const restartFlag = "restarted"
 
 // listen takes the API address. After an update the old instance still holds
 // it while it shuts down, so a restarted instance keeps trying for a while.
-func listen(addr string, restarted bool) (net.Listener, error) {
+func listen(ctx context.Context, addr string, restarted bool) (net.Listener, error) {
+	var lc net.ListenConfig
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		ln, err := net.Listen("tcp", addr)
+		ln, err := lc.Listen(ctx, "tcp", addr)
 		if err == nil || !restarted || time.Now().After(deadline) {
 			return ln, err
 		}
@@ -296,18 +298,23 @@ func openLog(path string) (io.WriteCloser, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	return os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 }
 
-func openBrowser(url string) {
-	var cmd *exec.Cmd
+// openBrowser opens an http(s) URL in the default browser; anything else is
+// ignored, so the opener never receives a file path or another scheme.
+func openBrowser(rawURL string) {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return
+	}
+	name, args := "xdg-open", []string{u.String()}
 	switch runtime.GOOS {
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", u.String()}
 	case "darwin":
-		cmd = exec.Command("open", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
+		name = "open"
 	}
+	cmd := exec.CommandContext(context.Background(), name, args...) //nolint:gosec // G204: fixed opener binary; the only argument is an http(s) URL validated above
 	_ = cmd.Start()
 }
