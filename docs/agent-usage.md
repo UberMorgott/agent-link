@@ -23,16 +23,16 @@ If there is no node config on the machine, write one next to the settings, e.g.
   "api": "127.0.0.1:7520",
   "data_dir": ".",
   "secret_env": "AGENTLINK_SECRET",
-  "peers": [{ "name": "<the other node>", "addr": "127.0.0.1:7421" }]
+  "peers": [{ "addr": "127.0.0.1:7421" }]
 }
 ```
 
-No secret is needed for `send`/`inbox`/`wait`: the running node holds it.
+No code or secret is needed for `send`/`inbox`/`wait`: the running node holds it.
 
 ## Ask and get the answer
 
 ```powershell
-agentlink send  --config <path> --to <node> --body "<question>"   # prints the message id
+agentlink send  --config <path> --to <node> --body "<question>"   # prints the message id; without --to: the only peer
 agentlink inbox --config <path> --limit 20                        # one JSON object per line
 agentlink wait  --config <path> --timeout 0                       # blocks until a message arrives
 ```

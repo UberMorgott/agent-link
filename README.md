@@ -28,18 +28,30 @@ VPN) joined to the same network.
 ### First run (both people)
 
 1. Start `agentlink-tray.exe`; the settings page opens. Later use the tray icon, "Open settings".
-2. Fill in your name, your ZeroTier IP with a port (e.g. `10.147.20.5:7420`), and the other
-   person's name and ZeroTier IP:port.
-3. One person clicks **Создать**, **Скопировать**, and sends the secret to the other privately;
-   the other pastes it. The secret must be identical on both computers.
-4. Choose a handler (below), optionally tick "Запускать agentlink при входе в Windows", click
-   **Сохранить**. The tray menu shows "<peer> connected" and the pages "связь есть: <peer>"
-   once both sides are saved.
+2. **Ваше имя** is already filled with your Windows name; change it if you like.
+3. **Код связи**: one person clicks **Создать код** and tells the other the 6 letters/digits;
+   the other types them in (case does not matter). The code must be the same on both sides.
+4. **Адрес собеседника**: the other person's ZeroTier IP, e.g. `10.147.20.9` (no port needed).
+   The page shows your own address under this field ("Ваш адрес для собеседника") — tell it
+   to the other person. One side having the other's address is enough to connect.
+5. **Кто отвечает** and **Рабочая папка** (see "Handler agent"), then **Сохранить**. The top
+   bar shows "связь есть: <name>" once both sides are saved; the other person's name comes
+   from the connection.
+
+Saving with only some fields filled is fine: the bar then says what is missing ("нет кода
+связи", "нет собеседника — впишите его адрес"). **Дополнительно** (collapsed) holds the rest:
+your own listen address (default: this machine's ZeroTier IP with port 7420; without ZeroTier
+it binds `127.0.0.1` and says "ZeroTier не найден", never `0.0.0.0`), the page address
+(default `127.0.0.1:7520`, applies after a restart), shared areas, the peer's name (when set,
+another name is refused) and autostart. Every error on the page is one sentence saying what to do.
+
+Configs written by v0.1 (long `secret`, `peer_name`, `listen`) still load and work; typing a
+code and saving replaces the secret. Both sides must run v0.2 or later: the handshake changed.
 
 The two web pages are in Russian; every visible string lives in `internal/app/strings.go`, so a
 second language means a second map, not a page rewrite.
 
-Settings, including the secret, live in `%APPDATA%\agentlink\config.json` (per user, never in a
+Settings, including the code, live in `%APPDATA%\agentlink\config.json` (per user, never in a
 repo); messages in `%APPDATA%\agentlink\data`, the log in `%APPDATA%\agentlink\agentlink.log`.
 Autostart is the `agentlink` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 
@@ -83,9 +95,10 @@ go build -o bin/agentlink.exe ./cmd/agentlink
 ## Usage
 
 ```powershell
-$env:AGENTLINK_SECRET = '<same random 32+ byte secret on both machines>'
+$env:AGENTLINK_SECRET = 'K7Q2MX'   # the same 6-character code on both machines (or a 16+ byte secret)
 agentlink serve --config node.json                         # the node (keep running)
 agentlink send  --config node.json --to node-b --body "hi" # prints the message id
+agentlink send  --config node.json --body "hi"             # no --to: the only known peer
 agentlink send  --config node.json --to area:dev --body "build is green"
 agentlink send  --config node.json --to node-b --body "done" --reply-to <id>
 agentlink wait  --config node.json --timeout 0             # blocks; JSON line per message
@@ -108,16 +121,19 @@ its `job_status`: `completed` or `failed`). Progress is visible in `inbox`.
   "data_dir": "../.data/alice",
   "secret_env": "AGENTLINK_SECRET",
   "areas": ["dev"],
-  "peers": [{ "name": "bob", "addr": "10.147.20.9:7420" }]
+  "peers": [{ "addr": "10.147.20.9:7420" }]
 }
 ```
 
 - `listen` — peer TCP listener; bind it to the ZeroTier address.
 - `api` — local HTTP control API; must be a loopback address, anything else is refused.
 - `data_dir` — outbox, inbox and sent messages as JSON files; relative to the config file.
-- `secret_env` — name of the environment variable holding the shared secret.
+- `secret_env` — name of the environment variable holding the 6-character pairing code (letters
+  and digits, case-insensitive) or a legacy shared secret of 16+ bytes.
 - `areas` — topics this node subscribes to; `--to area:NAME` fans out to every peer that announced it.
-- `peers` — the only node names allowed to connect. Nodes dial each other and keep one session per peer.
+- `peers` — addresses to dial; `name` is optional. A peer without a name is learned from the
+  handshake. If every peer has a name, only those names may connect; with a nameless peer (or
+  none) any node holding the code may. Nodes keep one session per peer.
 
 Loopback examples: `examples/node-a.json`, `examples/node-b.json`. `scripts/e2e-local.ps1`
 builds the binary, starts both, sends a→b, replies b→a and stops them. `scripts/e2e-worker.ps1`
@@ -164,10 +180,16 @@ After handling the messages (and replying with `send --reply-to`), start `wait` 
 ## Security
 
 - Bind `listen` to the ZeroTier (or VPN) IP, not `0.0.0.0`, and firewall the port to the peers.
-- Peers authenticate with mutual HMAC-SHA256 challenge-response over fresh nonces; the secret is
-  never sent. Unknown node names and bad MACs are rejected. Use a long random secret: an
-  attacker who can reach the port can collect MACs for an offline guessing attack.
-- The secret lives only in an environment variable; configs are safe to commit.
+- Peers authenticate with mutual HMAC-SHA256 challenge-response over fresh nonces, keyed with
+  HKDF-SHA256 of the upper-cased pairing code (context `agentlink/pair-code/v1`); the code is
+  never sent. Node names are announced in the handshake and bound by the MACs; bad MACs are
+  rejected.
+- **The security boundary is the private ZeroTier network, not the code.** A 6-character code
+  has about 31 bits: anyone who can reach the port can record one handshake and brute-force the
+  code offline in minutes. Keep the ZeroTier network private (only the two of you as members)
+  and firewall the port to it. A legacy 16+ byte random secret (CLI `secret_env`, or a v0.1
+  tray config) resists that attack if you need it.
+- The CLI's code or secret lives only in an environment variable; CLI configs are safe to commit.
 - There is no TLS: message bodies travel in clear text, relying on ZeroTier's encryption.
 - The control API listens on loopback only and rejects browser requests (`Origin` header) and
   non-loopback `Host` headers, but any local process on the machine can use it.

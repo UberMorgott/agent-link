@@ -17,7 +17,7 @@ tray icon, a browser settings page, an inbox page and an optional read-only hand
   ZeroTier IP known.
 - Go 1.27+ — only to build from source or run the tests. A release binary needs no Go.
 - `claude` or `codex` on `PATH` — only if this side answers requests automatically. With the
-  handler set to "None (manual)" neither is needed.
+  handler set to «Никто, отвечаю сам» neither is needed.
 
 ## Install
 
@@ -37,25 +37,29 @@ go build -ldflags "-H=windowsgui" -o bin/agentlink-tray.exe ./cmd/agentlink-tray
 ## First run
 
 Start `agentlink-tray.exe`; it opens the settings page (later: tray icon → "Open settings").
-Fill in this side's name and `listen` address, the peer's name and address, paste the shared
-secret, pick a handler, Save. README's "First run (both people)" has the field-by-field walk.
+Five fields: name (prefilled), 6-character code (**Создать код** on one side, typed on the
+other), the peer's ZeroTier IP (port optional), who answers, working folder; Save. Everything
+else is under the collapsed "Дополнительно". README's "First run (both people)" has the walk.
 
 Settings live in `%APPDATA%\agentlink\config.json`, messages in `%APPDATA%\agentlink\data`, the
-log in `%APPDATA%\agentlink\agentlink.log`. The tray app writes the secret into that config file.
+log in `%APPDATA%\agentlink\agentlink.log`. The tray app writes the code into that config file.
 That file is never committed and never copied into a repository, an issue, a log or a chat.
 
 ## Pairing the two sides
 
 Both sides must agree, or the session never authenticates:
 
-- Each side's `listen` is **its own** ZeroTier IP with a port, e.g. `10.147.20.5:7420`; the peer
-  entry on the other machine holds that same `ip:port`. Mirrored, not identical.
-- The **same** shared secret on both machines, exchanged out of band (a private channel, not this
-  repo, not a PR, not an issue). 32+ random bytes. The CLI reads it from the env var named by
-  `secret_env`; the tray app stores it in its own config.
-- Node names must match what the peer expects — an unknown name is rejected.
+- Each side listens on **its own** ZeroTier IP (the tray app finds it; default port 7420) and at
+  least one side has the other's IP as the peer address. The settings page shows this side's
+  address to pass on.
+- The **same** 6-character code on both machines (case-insensitive), exchanged out of band (a
+  private channel, not this repo, not a PR, not an issue). The CLI reads it (or a legacy 16+
+  byte secret) from the env var named by `secret_env`; the tray app stores it in its config.
+- Names are learned from the handshake; a configured peer name, if any, must match.
+- The code is short and brute-forceable offline, so the private ZeroTier network is the security
+  boundary (README "Security").
 - `areas` must overlap for `--to area:NAME` fan-out to reach the peer.
-- Both sides run the same version: the wire format is not negotiated.
+- Both sides run the same version: the wire format is not negotiated (v0.2 changed the handshake).
 
 ## Waking an interactive session
 
