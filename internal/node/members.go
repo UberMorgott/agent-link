@@ -53,6 +53,9 @@ type MemberInfo struct {
 	Proto  int       `json:"proto,omitempty"`
 	// Legacy: connected, but an older version without membership exchange.
 	Legacy bool `json:"legacy,omitempty"`
+	// OldAuth: connected with the pre-v0.6 handshake (no PAKE), which only a
+	// private address may use.
+	OldAuth bool `json:"old_auth,omitempty"`
 }
 
 // newer reports whether record r replaces l.
@@ -431,7 +434,7 @@ func (n *Node) Members() []MemberInfo {
 			}
 		}
 		if pc := n.conns[name]; pc != nil {
-			info.Online, info.Proto, info.Legacy = true, pc.proto, !pc.has(CapMembers)
+			info.Online, info.Proto, info.Legacy, info.OldAuth = true, pc.proto, !pc.has(CapMembers), !pc.pake
 			if pc.app != "" {
 				info.App = pc.app
 			}

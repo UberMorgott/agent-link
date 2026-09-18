@@ -40,6 +40,10 @@ var (
 	ErrRemoved = errors.New("removed from the network")
 	// ErrSelf: the operation names this node itself.
 	ErrSelf = errors.New("this node itself")
+	// ErrLegacyRefused: the peer offers only the pre-v0.6 handshake, which
+	// leaks an offline-checkable MAC, from a public address (or after a PAKE
+	// session under its name).
+	ErrLegacyRefused = errors.New("legacy handshake refused")
 )
 
 // target is one peer address to dial; name is fixed by config or learned
@@ -82,6 +86,11 @@ type Node struct {
 	appVersion string
 	listenPort int
 	netTag     string // discovery network id derived from the key; empty when off
+	oldNetTag  string // the pre-v0.6 tag, only matched in received beacons
+
+	guard     *authGuard        // failed inbound handshakes per source
+	pakeSeen  map[string]bool   // peer names that authenticated with the PAKE (guarded by mu)
+	isPrivate func(net.IP) bool // addresses allowed the legacy handshake (privateAddr)
 
 	wg sync.WaitGroup
 
@@ -133,6 +142,8 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		known: map[string]bool{}, conns: map[string]*peerConn{}, areas: map[string][]string{},
 		offline: map[string]time.Time{}, started: time.Now(),
 		members: map[string]*Member{}, dialing: map[string]bool{}, tried: map[string]time.Time{},
+		guard: newAuthGuard(), pakeSeen: map[string]bool{},
+		isPrivate:   func(ip net.IP) bool { return privateAddr(ip, zeroTierNets()) },
 		id:          id,
 		open:        len(cfg.Peers) == 0,
 		resendAfter: 5 * time.Second, resendTick: time.Second,
@@ -147,7 +158,7 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		n.beaconPort = BeaconPort
 	}
 	if cfg.Discovery {
-		n.netTag = NetworkTag(secret)
+		n.netTag, n.oldNetTag = NetworkTag(secret), legacyNetworkTag(secret)
 	}
 	for _, p := range cfg.Peers {
 		n.targets = append(n.targets, &target{addr: p.Addr, name: p.Name})
@@ -499,14 +510,30 @@ func (n *Node) acceptLoop(ctx context.Context, ln net.Listener) {
 func (n *Node) handleInbound(ctx context.Context, c net.Conn) {
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 	defer stop()
+	var ip net.IP
+	if tcp, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+		ip = tcp.IP
+	}
+	if !n.guard.allow(ip) {
+		n.log.Debug("inbound connection closed: too many failed handshakes", "remote", c.RemoteAddr())
+		_ = c.Close()
+		return
+	}
 	_ = c.SetDeadline(time.Now().Add(n.handshakeTimeout))
 	sc := newScanner(c)
 	hello, err := n.acceptHandshake(c, sc)
 	if err != nil {
+		// A name clash is a state of the network, not a guess.
+		if !errors.Is(err, ErrSameName) && !errors.Is(err, ErrNameTaken) {
+			if d := n.guard.fail(ip); d > 0 {
+				n.log.Warn("too many failed handshakes, source blocked", "remote", c.RemoteAddr(), "for", d)
+			}
+		}
 		n.log.Warn("inbound handshake rejected", "remote", c.RemoteAddr(), "err", err)
 		_ = c.Close()
 		return
 	}
+	n.guard.success(ip)
 	pc := newPeerConn(hello, hello.name, c)
 	if !n.register(pc) {
 		_ = c.Close()
@@ -564,7 +591,7 @@ func (n *Node) dialOnce(ctx context.Context, t *target) bool {
 	if err != nil {
 		n.log.Warn("outbound handshake failed", "addr", t.addr, "err", err)
 		// Learned and discovered addresses go stale; only the user's own ones are reported.
-		if !t.auto && (errors.Is(err, ErrAuth) || errors.Is(err, ErrSameName) || errors.Is(err, ErrWrongPeer)) || errors.Is(err, ErrNameTaken) {
+		if !t.auto && (errors.Is(err, ErrAuth) || errors.Is(err, ErrSameName) || errors.Is(err, ErrWrongPeer) || errors.Is(err, ErrLegacyRefused)) || errors.Is(err, ErrNameTaken) {
 			n.setProblem(err)
 		}
 		_ = c.Close()

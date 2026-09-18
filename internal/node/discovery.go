@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
+	"golang.org/x/crypto/argon2"
 	"golang.org/x/net/ipv4"
 
 	"github.com/UberMorgott/agent-link/internal/config"
@@ -20,11 +22,17 @@ import (
 // on each IPv4 network) on every running interface except loopback, ZeroTier
 // included, and listens on that port. A node that hears a beacon with its own
 // network tag from a member it has no session with dials the sender's IP at
-// the announced peer port. The beacon carries no secret: the tag is a slow
-// one-way function of the key, and the TCP handshake still authenticates,
-// so a recorded or forged beacon at most causes one dial.
+// the announced peer port. The beacon carries no secret: the tag is a
+// memory-hard one-way function of the key (NetworkTag), and the TCP handshake
+// still authenticates, so a recorded or forged beacon at most causes one dial.
+// Still, a heard tag lets its hearer test code guesses offline at Argon2id
+// cost; only a strong code makes that hopeless.
 //
-//	{"t":"agentlink","v":1,"net":"<16 hex>","node":"<name>","id":"<node id>","port":7420}
+//	{"t":"agentlink","v":2,"net":"<16 hex>","node":"<name>","id":"<node id>","port":7420}
+//
+// Before v0.6 beacons were v1 with a PBKDF2 tag (legacyNetworkTag). A node
+// still recognises those, so it dials older members it hears, but never
+// sends one.
 const (
 	BeaconPort  = 7421
 	BeaconGroup = "239.255.74.21"
@@ -33,9 +41,17 @@ const (
 	beaconType    = "agentlink"
 	beaconMax     = 512
 	beaconRedial  = 15 * time.Second // per address, whatever the beacons say
-	netTagInfo    = "agentlink/network-tag/v1"
-	netTagRounds  = 100_000
+	beaconVersion = 2
 	netTagByteLen = 8
+	// NetworkTag: Argon2id, RFC 9106's second recommended setting (64 MiB,
+	// 3 passes, 4 lanes), salted with a fixed domain string.
+	netTagSalt    = "agentlink/network-tag/v2"
+	netTagTime    = 3
+	netTagMemory  = 64 * 1024 // KiB
+	netTagThreads = 4
+	// legacyNetworkTag (v1 beacons).
+	oldNetTagInfo   = "agentlink/network-tag/v1"
+	oldNetTagRounds = 100_000
 )
 
 type beacon struct {
@@ -47,11 +63,28 @@ type beacon struct {
 	Port int    `json:"port"`
 }
 
-// NetworkTag is the network id in beacons: PBKDF2-SHA256 of the session key,
-// so nodes of one network recognise each other without sending the key or
-// the pairing code, and guessing a code from a tag costs 100k hashes per try.
+// netTags caches NetworkTag by a hash of the key: a node restarts on every
+// settings save, and 64 MiB of Argon2id is worth doing once per key.
+var netTags sync.Map
+
+// NetworkTag is the network id in beacons: Argon2id of the session key, so
+// nodes of one network recognise each other without sending the key or the
+// pairing code, and every code guess against a heard tag costs 64 MiB and
+// three passes over it.
 func NetworkTag(key []byte) string {
-	b, err := pbkdf2.Key(sha256.New, string(key), []byte(netTagInfo), netTagRounds, netTagByteLen)
+	id := sha256.Sum256(key)
+	if tag, ok := netTags.Load(id); ok {
+		return tag.(string)
+	}
+	tag := hex.EncodeToString(argon2.IDKey(key, []byte(netTagSalt), netTagTime, netTagMemory, netTagThreads, netTagByteLen))
+	netTags.Store(id, tag)
+	return tag
+}
+
+// legacyNetworkTag is the v1 beacon tag, PBKDF2-SHA256 of the key; it is
+// only compared with received beacons.
+func legacyNetworkTag(key []byte) string {
+	b, err := pbkdf2.Key(sha256.New, string(key), []byte(oldNetTagInfo), oldNetTagRounds, netTagByteLen)
 	if err != nil { // only for parameters outside FIPS limits
 		return ""
 	}
@@ -125,7 +158,7 @@ func (n *Node) discoveryLoop(ctx context.Context) {
 	tick := time.NewTicker(n.beaconEvery)
 	defer tick.Stop()
 	for {
-		msg, err := json.Marshal(beacon{T: beaconType, V: 1, Net: n.netTag, Node: n.cfg.Node, ID: n.id, Port: n.port()})
+		msg, err := json.Marshal(beacon{T: beaconType, V: beaconVersion, Net: n.netTag, Node: n.cfg.Node, ID: n.id, Port: n.port()})
 		if err != nil {
 			return
 		}
@@ -190,7 +223,7 @@ func (n *Node) readBeacons(ctx context.Context, p *ipv4.PacketConn) {
 // heard dials the sender of a beacon of this network, unless it is this node,
 // a removed member, already connected, or was dialed at that address lately.
 func (n *Node) heard(ctx context.Context, b beacon, ip net.IP) {
-	if b.T != beaconType || b.Net != n.netTag || b.ID == n.id || b.Node == n.cfg.Node ||
+	if b.T != beaconType || (b.Net != n.netTag && (n.oldNetTag == "" || b.Net != n.oldNetTag)) || b.ID == n.id || b.Node == n.cfg.Node ||
 		!config.ValidName(b.Node) || b.Port <= 0 || b.Port > 65535 || ip == nil {
 		return
 	}

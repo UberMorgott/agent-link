@@ -20,12 +20,30 @@ const maxFrame = 1 << 20
 
 // frame is the single wire type: newline-delimited JSON over TCP.
 //
-// Handshake (D = dialer, A = acceptor):
+// Handshake since v0.6 (D = dialer, A = acceptor), a CPace PAKE (pake.go)
+// with sid = dialNonce, followed by key confirmation:
+//
+//	D -> A  hello{node, areas, proto, caps, node_id, nonce: dialNonce, pake: Ya}
+//	A -> D  hello{node, areas, proto, caps, node_id, nonce: acceptNonce, pake: Yb, mac: acceptor tag}
+//	D -> A  auth{mac: dialer tag}
+//	A -> D  ok
+//
+// The tags are HMACs under keys derived from the CPace ISK, which binds both
+// shares and both sides' names and node ids. D sends its tag only after A's
+// checked out, so neither side ever hands out a value an attacker could test
+// code guesses against offline.
+//
+// The legacy handshake (before v0.6; a hello without pake):
 //
 //	D -> A  hello{node, areas, proto, caps, nonce: dialNonce}
 //	A -> D  hello{node, areas, proto, caps, nonce: acceptNonce, mac: HMAC("accept", D, A, dialNonce, acceptNonce)}
 //	D -> A  auth{mac: HMAC("dial", D, A, dialNonce, acceptNonce)}
 //	A -> D  ok
+//
+// Its MACs are keyed by the session key directly: one recorded (or, for A's,
+// merely requested) MAC lets the code be brute-forced offline. It is
+// therefore run only with a peer at a private address (legacyAllowed), and
+// never with a peer name this node has had a PAKE session with.
 //
 // Then either side sends msg{msg} and answers with ack{id}, and sends hb (a
 // heartbeat, since v0.3) every HeartbeatEvery. Node names are
@@ -60,11 +78,12 @@ type frame struct {
 	Msg     *Message `json:"msg,omitempty"`
 	ID      string   `json:"id,omitempty"`
 	Members []Member `json:"members,omitempty"`
+	PAKE    string   `json:"pake,omitempty"` // hex CPace share (since v0.6)
 }
 
 // ProtocolVersion is announced in hello. It only grows; it never gates a
 // session, only capabilities do.
-const ProtocolVersion = 5
+const ProtocolVersion = 6
 
 // helloNameTaken is hello.error when the dialer's name belongs to another live member.
 const helloNameTaken = "name-taken"
@@ -82,10 +101,12 @@ const (
 	// CapMembers: exchanges the membership table (members frames) and dials
 	// the members it learns.
 	CapMembers = "members"
+	// CapPAKE: authenticates with the CPace handshake.
+	CapPAKE = "pake"
 )
 
 // Capabilities is the list sent in hello.
-var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers}
+var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE}
 
 // handshakeFrames are the frame types readFrame knows; any other type is skipped.
 var handshakeFrames = map[string]bool{"hello": true, "auth": true, "ok": true}
@@ -99,6 +120,11 @@ type peerHello struct {
 	id    string // empty for a peer older than v0.5
 	app   string
 	port  int
+	// pake: authenticated by the PAKE; false for the legacy handshake.
+	pake bool
+	// key is the session key the PAKE derived (nil for legacy). Nothing uses
+	// it yet: the link itself is not encrypted by agent-link.
+	key []byte
 }
 
 func helloOf(f frame) peerHello {
@@ -188,7 +214,14 @@ func validNonce(s string) bool {
 func (n *Node) dialHandshake(c net.Conn, sc *bufio.Scanner, want string) (peerHello, error) {
 	self := n.cfg.Node
 	dialNonce := randomHex(32)
-	if err := writeFrame(c, n.hello(dialNonce, "")); err != nil {
+	sid, _ := hex.DecodeString(dialNonce)
+	cp, err := newCPace(n.secret, sid)
+	if err != nil {
+		return peerHello{}, err
+	}
+	hello := n.hello(dialNonce, "")
+	hello.PAKE = hex.EncodeToString(cp.share)
+	if err := writeFrame(c, hello); err != nil {
 		return peerHello{}, err
 	}
 	f, err := readFrame(sc, "hello")
@@ -208,17 +241,40 @@ func (n *Node) dialHandshake(c net.Conn, sc *bufio.Scanner, want string) (peerHe
 	case !validNonce(f.Nonce):
 		return peerHello{}, errors.New("invalid nonce")
 	}
-	if err := n.checkMAC(f.MAC, n.mac("accept", self, peer, dialNonce, f.Nonce)); err != nil {
-		return peerHello{}, err
+	var mac string
+	h := helloOf(f)
+	if f.PAKE != "" {
+		yb, err := hex.DecodeString(f.PAKE)
+		if err != nil {
+			return peerHello{}, ErrAuth
+		}
+		keys, err := cp.keys(yb, true, cpaceAD(self, n.id), cpaceAD(peer, f.NodeID))
+		if err != nil {
+			return peerHello{}, ErrAuth
+		}
+		if err := n.checkMAC(f.MAC, keys.acceptorTag); err != nil {
+			return peerHello{}, err
+		}
+		mac, h.pake, h.key = hex.EncodeToString(keys.dialerTag), true, keys.session
+	} else {
+		if err := n.legacyAllowed(c.RemoteAddr(), peer); err != nil {
+			return peerHello{}, err
+		}
+		if err := n.checkMAC(f.MAC, n.mac("accept", self, peer, dialNonce, f.Nonce)); err != nil {
+			return peerHello{}, err
+		}
+		mac = hex.EncodeToString(n.mac("dial", self, peer, dialNonce, f.Nonce))
 	}
-	mac := hex.EncodeToString(n.mac("dial", self, peer, dialNonce, f.Nonce))
 	if err := writeFrame(c, frame{Type: "auth", MAC: mac}); err != nil {
 		return peerHello{}, err
 	}
 	if _, err := readFrame(sc, "ok"); err != nil {
 		return peerHello{}, fmt.Errorf("peer rejected session: %w", err)
 	}
-	return helloOf(f), nil
+	if !h.pake {
+		n.log.Warn("legacy handshake: peer runs a version before v0.6", "peer", peer, "remote", c.RemoteAddr())
+	}
+	return h, nil
 }
 
 // acceptHandshake authenticates an inbound connection. The caller sends the
@@ -249,6 +305,40 @@ func (n *Node) acceptHandshake(c net.Conn, sc *bufio.Scanner) (peerHello, error)
 		return peerHello{}, errors.New("invalid nonce")
 	}
 	peer, dialNonce, acceptNonce := f.Node, f.Nonce, randomHex(32)
+	h := helloOf(f)
+	if f.PAKE != "" {
+		ya, err := hex.DecodeString(f.PAKE)
+		if err != nil {
+			return peerHello{}, ErrAuth
+		}
+		sid, _ := hex.DecodeString(dialNonce)
+		cp, err := newCPace(n.secret, sid)
+		if err != nil {
+			return peerHello{}, err
+		}
+		keys, err := cp.keys(ya, false, cpaceAD(peer, f.NodeID), cpaceAD(self, n.id))
+		if err != nil {
+			return peerHello{}, ErrAuth
+		}
+		reply := n.hello(acceptNonce, hex.EncodeToString(keys.acceptorTag))
+		reply.PAKE = hex.EncodeToString(cp.share)
+		if err := writeFrame(c, reply); err != nil {
+			return peerHello{}, err
+		}
+		auth, err := readFrame(sc, "auth")
+		if err != nil {
+			return peerHello{}, err
+		}
+		if err := n.checkMAC(auth.MAC, keys.dialerTag); err != nil {
+			return peerHello{}, err
+		}
+		h.pake, h.key = true, keys.session
+		return h, nil
+	}
+	// A legacy dialer: its MAC exchange leaks an offline-checkable value.
+	if err := n.legacyAllowed(c.RemoteAddr(), peer); err != nil {
+		return peerHello{}, err
+	}
 	mac := hex.EncodeToString(n.mac("accept", peer, self, dialNonce, acceptNonce))
 	if err := writeFrame(c, n.hello(acceptNonce, mac)); err != nil {
 		return peerHello{}, err
@@ -260,5 +350,56 @@ func (n *Node) acceptHandshake(c net.Conn, sc *bufio.Scanner) (peerHello, error)
 	if err := n.checkMAC(auth.MAC, n.mac("dial", peer, self, dialNonce, acceptNonce)); err != nil {
 		return peerHello{}, err
 	}
-	return helloOf(f), nil
+	n.log.Warn("legacy handshake: peer runs a version before v0.6", "peer", peer, "remote", c.RemoteAddr())
+	return h, nil
+}
+
+// legacyAllowed permits the legacy handshake only with a peer at a private
+// address (loopback, RFC 1918, fc00::/7, link-local, or a ZeroTier network of
+// this machine), and never with a name that has had a PAKE session here: a
+// newer peer does not fall back, so that would be a downgrade.
+func (n *Node) legacyAllowed(remote net.Addr, peer string) error {
+	tcp, ok := remote.(*net.TCPAddr)
+	if !ok || !n.isPrivate(tcp.IP) {
+		return fmt.Errorf("%w: %s is not a private address", ErrLegacyRefused, remote)
+	}
+	n.mu.Lock()
+	seen := n.pakeSeen[peer]
+	n.mu.Unlock()
+	if seen {
+		return fmt.Errorf("%w: %q authenticated with the PAKE before", ErrLegacyRefused, peer)
+	}
+	return nil
+}
+
+// privateAddr reports whether ip is private (config.PrivateIP) or in one of
+// nets (this machine's ZeroTier networks). It is Node.isPrivate by default.
+func privateAddr(ip net.IP, nets []*net.IPNet) bool {
+	if config.PrivateIP(ip) {
+		return true
+	}
+	for _, ipn := range nets {
+		if ipn.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// zeroTierNets lists the networks of this machine's running ZeroTier adapters.
+func zeroTierNets() []*net.IPNet {
+	ifs, _ := net.Interfaces()
+	var out []*net.IPNet
+	for _, ifi := range ifs {
+		if ifi.Flags&net.FlagUp == 0 || !strings.Contains(strings.ToLower(ifi.Name), "zerotier") {
+			continue
+		}
+		as, _ := ifi.Addrs()
+		for _, a := range as {
+			if ipn, ok := a.(*net.IPNet); ok {
+				out = append(out, ipn)
+			}
+		}
+	}
+	return out
 }

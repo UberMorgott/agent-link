@@ -25,6 +25,8 @@ type peerConn struct {
 	id     string   // node id; empty for a peer older than v0.5
 	app    string   // program version the peer announced, if any
 	port   int      // peer port the peer announced, if any
+	pake   bool     // authenticated by the PAKE; false: the legacy handshake
+	key    []byte   // PAKE session key (unused so far), nil for legacy
 	c      net.Conn
 
 	wmu  sync.Mutex
@@ -35,7 +37,7 @@ type peerConn struct {
 
 func newPeerConn(h peerHello, dialer string, c net.Conn) *peerConn {
 	return &peerConn{peer: h.name, dialer: dialer, areas: h.areas, proto: h.proto, caps: h.caps,
-		id: h.id, app: h.app, port: h.port, c: c,
+		id: h.id, app: h.app, port: h.port, pake: h.pake, key: h.key, c: c,
 		kick: make(chan struct{}, 1), done: make(chan struct{})}
 }
 
@@ -93,6 +95,9 @@ func (n *Node) register(pc *peerConn) bool {
 	}
 	n.conns[pc.peer] = pc
 	n.known[pc.peer] = true
+	if pc.pake {
+		n.pakeSeen[pc.peer] = true
+	}
 	n.problem = nil
 	n.areas[pc.peer] = pc.areas
 	areas := make(map[string][]string, len(n.areas))
@@ -107,7 +112,7 @@ func (n *Node) register(pc *peerConn) bool {
 		n.log.Warn("save areas", "err", err)
 	}
 	n.log.Info("peer connected", "peer", pc.peer, "dialer", pc.dialer, "areas", pc.areas,
-		"proto", pc.proto, "caps", pc.caps, "app", pc.app)
+		"proto", pc.proto, "caps", pc.caps, "app", pc.app, "pake", pc.pake)
 	return true
 }
 

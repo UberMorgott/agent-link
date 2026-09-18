@@ -86,6 +86,23 @@ func TestBeaconDials(t *testing.T) {
 	eventually(t, "a dialed b from its beacon", meshed(a, b))
 }
 
+// A v1 beacon (a node before v0.6, PBKDF2 tag) is still recognised, and the
+// Argon2id tag differs from it.
+func TestLegacyBeaconDials(t *testing.T) {
+	a, b := newMeshNode(t, "a"), newMeshNode(t, "b")
+	a.netTag, a.oldNetTag = NetworkTag([]byte(testSecret)), legacyNetworkTag([]byte(testSecret))
+	if a.oldNetTag == "" || a.oldNetTag == a.netTag || len(a.oldNetTag) != 16 {
+		t.Fatalf("tags %q %q", a.netTag, a.oldNetTag)
+	}
+	a.start(t)
+	b.start(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	bc := beacon{T: beaconType, V: 1, Net: a.oldNetTag, Node: "b", ID: b.id, Port: b.peerLn.Addr().(*net.TCPAddr).Port}
+	a.heard(ctx, bc, net.IPv4(127, 0, 0, 1))
+	eventually(t, "a dialed b from its v1 beacon", meshed(a, b))
+}
+
 // Two nodes with the same key and no addresses find each other by multicast
 // beacons on the loopback interface and connect.
 func TestDiscoveryLoopback(t *testing.T) {
