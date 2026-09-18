@@ -29,7 +29,8 @@ go -C $root build -o $fake ./internal/worker/testdata/fakeagent
 if ($LASTEXITCODE -ne 0) { throw 'build fakeagent failed' }
 
 if (Test-Path $data) { Remove-Item -Recurse -Force $data }
-$secret = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
+# The settings page's "Создать код" button: 6 letters/digits, the same on both sides.
+$code = -join ((1..6) | ForEach-Object { 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[(Get-Random -Maximum 32)] })
 $work = New-Item -ItemType Directory -Force (Join-Path $data 'work')
 Set-Content -Path (Join-Path $work 'note.txt') -Value 'kiwi'
 $prompt = if ($real) { 'Read note.txt in the current folder. Reply with only the word pong followed by the word in that file.' } else { 'ping from node-a' }
@@ -42,8 +43,8 @@ foreach ($name in $nodes.Keys) {
     $n = $nodes[$name]
     $dir = New-Item -ItemType Directory -Force (Join-Path $data $name)
     $settings = [ordered]@{
-        node = $name; listen = $n.listen; peer_name = $n.peer; peer_addr = $n.peerAddr; secret = $secret
-        areas = @(); handler = $n.handler; work_dir = $work.FullName; autostart = $false; api = $n.api
+        node = $name; code = $code; peer_addr = $n.peerAddr; handler = $n.handler; work_dir = $work.FullName
+        listen = $n.listen; api = $n.api
     }
     if ($name -eq 'node-b' -and -not $real) { $settings.handler_command = @($fake) }
     $n.config = Join-Path $dir 'config.json'
@@ -52,7 +53,7 @@ foreach ($name in $nodes.Keys) {
     $n.cli = Join-Path $dir 'cli.json'
     [ordered]@{
         node = $name; listen = $n.listen; api = $n.api; data_dir = 'data'; secret_env = 'UNUSED'
-        areas = @(); peers = @(@{ name = $n.peer; addr = $n.peerAddr })
+        areas = @(); peers = @(@{ addr = $n.peerAddr })
     } | ConvertTo-Json | Set-Content -Path $n.cli
 }
 

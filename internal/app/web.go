@@ -56,7 +56,7 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("GET /ui/api/status", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.Status()) })
 	api.HandleFunc("GET /ui/api/settings", func(w http.ResponseWriter, _ *http.Request) {
 		s := a.Settings()
-		s.API, s.HandlerCommand = "", nil
+		s.Secret, s.HandlerCommand = "", nil
 		writeJSON(w, s)
 	})
 	api.HandleFunc("POST /ui/api/settings", a.saveSettings)
@@ -65,7 +65,7 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /ui/api/send", a.send)
 	api.HandleFunc("POST /ui/api/quit", func(w http.ResponseWriter, _ *http.Request) {
 		if a.QuitFunc == nil {
-			http.Error(w, "quit is not available", http.StatusNotImplemented)
+			writeError(w, http.StatusNotImplemented, msg("error.internal", nil))
 			return
 		}
 		writeJSON(w, map[string]bool{"quitting": true})
@@ -84,7 +84,7 @@ func (a *App) Handler() http.Handler {
 	root.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		n := a.node()
 		if n == nil {
-			http.Error(w, "node is not running", http.StatusServiceUnavailable)
+			http.Error(w, "node is not running: open the settings page and save a pairing code", http.StatusServiceUnavailable)
 			return
 		}
 		n.APIHandler().ServeHTTP(w, r)
@@ -135,8 +135,8 @@ func (a *App) requireToken(next http.Handler) http.Handler {
 func (a *App) page(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		data, err := webFS.ReadFile(name)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if err != nil { // embedded at build time
+			http.Error(w, msg("error.internal", nil), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -155,18 +155,25 @@ type saveResult struct {
 func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 	var s settings.Settings
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&s); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, msg("error.bad_request", nil))
 		return
 	}
 	err := a.Apply(s)
+	var p *settings.Problem
 	switch {
 	case err == nil:
 		writeJSON(w, saveResult{Saved: true})
 	case errors.Is(err, ErrNotStarted):
-		writeJSON(w, saveResult{Saved: true, Error: err.Error()})
-	default:
+		writeJSON(w, saveResult{Saved: true, Error: userError(err)})
+	case errors.As(err, &p):
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, saveResult{Error: err.Error()})
+		_ = json.NewEncoder(w).Encode(saveResult{Error: userError(err)})
+	default:
+		a.log.Error("save settings", "err", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(saveResult{Error: msg("error.save", nil)})
 	}
 }
 
@@ -178,7 +185,8 @@ func (a *App) inbox(w http.ResponseWriter, _ *http.Request) {
 	}
 	entries, err := n.Recent(200)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		a.log.Error("inbox", "err", err)
+		writeError(w, http.StatusInternalServerError, msg("error.internal", nil))
 		return
 	}
 	if entries == nil {
@@ -196,7 +204,8 @@ func (a *App) threads(w http.ResponseWriter, _ *http.Request) {
 	}
 	entries, err := n.Recent(200)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		a.log.Error("threads", "err", err)
+		writeError(w, http.StatusInternalServerError, msg("error.internal", nil))
 		return
 	}
 	writeJSON(w, threads(entries))
@@ -205,17 +214,17 @@ func (a *App) threads(w http.ResponseWriter, _ *http.Request) {
 func (a *App) send(w http.ResponseWriter, r *http.Request) {
 	var req node.SendRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, msg("error.bad_request", nil))
 		return
 	}
 	n := a.node()
 	if n == nil {
-		http.Error(w, "node is not running; save settings first", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, msg("error.not_running", nil))
 		return
 	}
-	m, err := n.Send(req.To, req.Body, req.ReplyTo)
+	m, err := n.Send(strings.TrimSpace(req.To), req.Body, req.ReplyTo)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, sendError(err))
 		return
 	}
 	writeJSON(w, m)
@@ -224,4 +233,42 @@ func (a *App) send(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeError answers with {"error": text}; text is already one sentence for the user.
+func writeError(w http.ResponseWriter, code int, text string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": text})
+}
+
+// userError turns a settings or start failure into one sentence of advice.
+func userError(err error) string {
+	var p *settings.Problem
+	var op *net.OpError
+	switch {
+	case errors.As(err, &p):
+		return msg("error."+p.Key, nil)
+	case errors.As(err, &op) && op.Op == "listen":
+		addr := ""
+		if op.Addr != nil {
+			addr = op.Addr.String()
+		}
+		return msg("error.listen", map[string]string{"addr": addr})
+	default:
+		return msg("error.start", nil)
+	}
+}
+
+func sendError(err error) string {
+	switch {
+	case errors.Is(err, node.ErrEmptyBody):
+		return msg("error.empty_body", nil)
+	case errors.Is(err, node.ErrUnknownPeer):
+		return msg("error.unknown_peer", nil)
+	case errors.Is(err, node.ErrNoAreaPeer):
+		return msg("error.no_area_peer", nil)
+	default:
+		return msg("error.send", nil)
+	}
 }

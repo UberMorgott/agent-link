@@ -67,8 +67,8 @@ Write-Host '== build agentlink-tray.exe'
 go -C $root build -ldflags '-H=windowsgui' -o $tray ./cmd/agentlink-tray
 if ($LASTEXITCODE -ne 0) { throw 'build agentlink-tray failed' }
 
-# Same secret on both sides, generated per run; it never leaves $env:TEMP.
-$secret = -join ((1..48) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
+# Same 6-character pairing code on both sides, generated per run.
+$code = -join ((1..6) | ForEach-Object { 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[(Get-Random -Maximum 32)] })
 $a = @{ name = 'morgott'; api = "127.0.0.1:$ApiPortA"; peer = 'nikita'; port = $PeerPortA; peerPort = $PeerPortB }
 $b = @{ name = 'nikita'; api = "127.0.0.1:$ApiPortB"; peer = 'morgott'; port = $PeerPortB; peerPort = $PeerPortA }
 
@@ -80,9 +80,9 @@ foreach ($n in $a, $b) {
     if ($dir.FullName -notlike "$demo*") { throw "refusing to write settings outside $demo" }
     $n.config = Join-Path $dir.FullName 'config.json'
     [ordered]@{
-        node = $n.name; listen = "127.0.0.1:$($n.port)"; peer_name = $n.peer
-        peer_addr = "127.0.0.1:$($n.peerPort)"; secret = $secret; areas = @('demo')
-        handler = 'claude'; work_dir = $WorkDir; autostart = $false; api = $n.api
+        node = $n.name; code = $code; peer_addr = "127.0.0.1:$($n.peerPort)"
+        handler = 'claude'; work_dir = $WorkDir; autostart = $false
+        listen = "127.0.0.1:$($n.port)"; api = $n.api; areas = @('demo')
     } | ConvertTo-Json | Set-Content -Path $n.config -Encoding utf8
 }
 

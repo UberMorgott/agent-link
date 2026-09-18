@@ -85,7 +85,7 @@ async function refresh() {
   try {
     render(await api("GET", "threads"));
   } catch (e) {
-    sendResult.textContent = fmt("inbox.load_failed", { error: e.message });
+    sendResult.textContent = e.message;
   }
 }
 
@@ -105,13 +105,13 @@ sendForm.addEventListener("submit", async (ev) => {
     sendResult.textContent = t("inbox.sent");
     refresh();
   } catch (e) {
-    sendResult.textContent = fmt("inbox.send_failed", { error: e.message });
+    sendResult.textContent = e.message;
   }
 });
 
-api("GET", "settings").then((s) => {
+api("GET", "status").then((s) => {
   const to = document.getElementById("to");
-  if (!to.value) to.value = s.peer_name || "";
+  if (!to.value) to.value = s.peer || "";
 }).catch(() => {});
 
 refresh();

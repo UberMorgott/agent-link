@@ -30,6 +30,8 @@ type App struct {
 	HandlerTimeout time.Duration
 	// QuitFunc ends the program; Quit calls it. Nil makes quitting unavailable.
 	QuitFunc func()
+	// Ifaces lists network interfaces for ZeroTier detection; replaceable in tests.
+	Ifaces func() []settings.Iface
 
 	mu         sync.Mutex
 	s          settings.Settings
@@ -38,6 +40,8 @@ type App struct {
 	stop       context.CancelFunc
 	wg         sync.WaitGroup
 	startErr   error
+	listen     string // effective peer listener address of the last start
+	zeroTier   bool
 }
 
 // Status is a snapshot for the tray and the web UI.
@@ -48,7 +52,13 @@ type Status struct {
 	Peer       string `json:"peer"`
 	Connected  bool   `json:"connected"`
 	Handler    string `json:"handler"`
-	Error      string `json:"error,omitempty"`
+	// Listen is this side's peer address, what the other person types in.
+	Listen   string `json:"listen,omitempty"`
+	ZeroTier bool   `json:"zerotier"`
+	// Problem is a strings key ("link.no_code", "link.no_peer", "link.bad_code", ...).
+	Problem string `json:"problem,omitempty"`
+	// Error is a start failure as one sentence for the user.
+	Error string `json:"error,omitempty"`
 }
 
 // New loads settings from path. log may be nil.
@@ -63,6 +73,7 @@ func New(path string, log *slog.Logger) (*App, error) {
 	return &App{
 		path: path, token: newToken(), log: log, s: s, configured: ok,
 		SetAutostart: setAutostart, HandlerTimeout: worker.DefaultTimeout,
+		Ifaces: settings.SystemIfaces, zeroTier: true,
 	}, nil
 }
 
@@ -123,12 +134,28 @@ func (a *App) Status() Status {
 	st := Status{
 		Configured: a.configured, Running: a.n != nil,
 		Node: a.s.Node, Peer: a.s.PeerName, Handler: a.s.Handler,
+		Listen: a.listen, ZeroTier: a.zeroTier,
 	}
 	if a.n != nil {
-		st.Connected = a.n.Connected(a.s.PeerName)
+		if peers := a.n.Peers(); len(peers) > 0 {
+			st.Peer = peers[0]
+		}
+		st.Connected = st.Peer != "" && a.n.Connected(st.Peer)
 	}
-	if a.startErr != nil {
-		st.Error = a.startErr.Error()
+	switch {
+	case !a.configured || st.Connected:
+	case a.startErr != nil:
+		st.Error = userError(a.startErr)
+	case a.s.Key() == nil:
+		st.Problem = "link.no_code"
+	case a.n != nil && errors.Is(a.n.Problem(), node.ErrAuth):
+		st.Problem = "link.bad_code"
+	case a.n != nil && errors.Is(a.n.Problem(), node.ErrSameName):
+		st.Problem = "link.same_name"
+	case a.n != nil && errors.Is(a.n.Problem(), node.ErrWrongPeer):
+		st.Problem = "link.wrong_peer"
+	case a.s.PeerAddr == "":
+		st.Problem = "link.no_peer"
 	}
 	return st
 }
@@ -144,13 +171,18 @@ func (a *App) Settings() settings.Settings {
 var ErrNotStarted = errors.New("settings saved, but the node did not start")
 
 // Apply validates and saves new settings, updates autostart and restarts the
-// node. Hidden fields (API, HandlerCommand) are kept from the current settings.
+// node. HandlerCommand, an empty API and, while no code is set, the legacy
+// secret are kept from the current settings. A code replaces the secret.
 func (a *App) Apply(s settings.Settings) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	s.API, s.HandlerCommand = a.s.API, a.s.HandlerCommand
-	if s.Handler == "" {
-		s.Handler = worker.HandlerNone
+	s = s.Normalize()
+	s.HandlerCommand, s.Secret = a.s.HandlerCommand, ""
+	if s.API == "" {
+		s.API = a.s.API
+	}
+	if s.Code == "" {
+		s.Secret = a.s.Secret
 	}
 	if err := settings.Save(a.path, s); err != nil {
 		return err
@@ -163,19 +195,34 @@ func (a *App) Apply(s settings.Settings) error {
 	a.stopLocked()
 	a.s, a.configured = s, true
 	if err := a.startLocked(); err != nil {
-		return fmt.Errorf("%w: %v", ErrNotStarted, err)
+		return fmt.Errorf("%w: %w", ErrNotStarted, err)
 	}
 	return nil
 }
 
 func (a *App) startLocked() error {
 	a.startErr = a.startNode()
+	if a.startErr != nil {
+		a.log.Error("node start", "err", a.startErr)
+	}
 	return a.startErr
 }
 
+// startNode runs the node, unless there is no code yet: then nothing can
+// authenticate and Status asks for one.
 func (a *App) startNode() error {
-	cfg := a.s.NodeConfig(a.path)
-	n, err := node.New(cfg, []byte(a.s.Secret), a.log)
+	var ifaces []settings.Iface
+	if a.Ifaces != nil {
+		ifaces = a.Ifaces()
+	}
+	a.listen, a.zeroTier = a.s.ListenAddr(ifaces)
+	key := a.s.Key()
+	if key == nil {
+		a.log.Info("node not started: no pairing code")
+		return nil
+	}
+	cfg := a.s.NodeConfig(a.path, a.listen)
+	n, err := node.New(cfg, key, a.log)
 	if err != nil {
 		return err
 	}

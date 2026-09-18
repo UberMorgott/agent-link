@@ -29,3 +29,8 @@ button[type=submit] { background: var(--accent); color: #fff; border: 0; border-
 pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0; font: inherit; }
 .tag { display: inline-block; font-size: 12px; font-weight: 600; color: var(--muted); }
 #messages .answer { border-top: 1px dashed #8886; margin-top: 6px; padding-top: 6px; }
+input.code { font-family: ui-monospace, Consolas, monospace; letter-spacing: .2em; text-transform: uppercase; }
+details { border: 1px solid #8884; border-radius: 8px; margin: 0 0 16px; padding: 8px 16px; }
+details fieldset { border: 0; padding: 0; margin: 8px 0 0; }
+summary { cursor: pointer; font-weight: 600; }
+#my_addr { color: inherit; font-weight: 600; }

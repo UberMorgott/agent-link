@@ -98,8 +98,8 @@ if ($LASTEXITCODE -ne 0) { throw 'build fakeagent failed' }
 $realBefore = Get-RealState
 if (Test-Path $data) { Remove-Item -Recurse -Force $data }
 $work = New-Item -ItemType Directory -Force (Join-Path $data 'work')
-# The settings page's Generate button: 48 random bytes as hex, pasted on both sides.
-$secret = -join ((1..48) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
+# The settings page's "Создать код" button: 6 letters/digits; b types it in lower case.
+$code = -join ((1..6) | ForEach-Object { 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[(Get-Random -Maximum 32)] })
 $marker = "agentlink-e2e-$(Get-Random)"
 
 $a = @{ name = 'node-a'; port = 7441; api = '127.0.0.1:7541' }
@@ -108,12 +108,15 @@ foreach ($pair in @(@($a, $b), @($b, $a))) {
     $n, $peer = $pair
     $dir = New-Item -ItemType Directory -Force (Join-Path $data $n.name)
     $n.config = Join-Path $dir 'config.json'
+    # The minimal form: name, code, peer address, handler, folder; "Мой адрес" from
+    # "Дополнительно" only because both people share one machine.
     $n.settings = [ordered]@{
-        node = $n.name; listen = "${Address}:$($n.port)"; peer_name = $peer.name; peer_addr = "${Address}:$($peer.port)"
-        secret = $secret; areas = @(); handler = 'none'; work_dir = $work.FullName; autostart = $false
+        node = $n.name; code = $code; peer_addr = "${Address}:$($peer.port)"; handler = 'none'
+        work_dir = $work.FullName; listen = "${Address}:$($n.port)"
     }
 }
 $b.settings.handler = 'claude'
+$b.settings.code = $code.ToLower()
 # The agent command is not editable in the UI; the only pre-seeded field is b's fake agent.
 @{ handler_command = @($fake) } | ConvertTo-Json | Set-Content -Path $b.config
 
@@ -121,6 +124,11 @@ try {
     Write-Host "== start two apps (peer address $Address)"
     Start-Node $a
     Start-Node $b
+    Write-Host '== first save with only a name: saved, waiting for a code'
+    $r = Invoke-Ui $a POST settings @{ node = $a.name }
+    if (-not $r.saved) { throw "name-only save failed: $($r | ConvertTo-Json -Compress)" }
+    $st = Invoke-Ui $a GET status
+    if ($st.running -or $st.problem -ne 'link.no_code') { throw "unexpected status after a name-only save: $($st | ConvertTo-Json -Compress)" }
     Save-Settings $a
     Save-Settings $b
     foreach ($n in $a, $b) {

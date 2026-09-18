@@ -2,38 +2,48 @@
 
 const form = document.getElementById("form");
 const result = document.getElementById("result");
-const secret = document.getElementById("secret");
+const code = document.getElementById("code");
+
+// Letters and digits without 0/O and 1/I: 32 symbols, so a byte & 31 is uniform.
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 async function load() {
   const s = await api("GET", "settings");
-  for (const key of ["node", "listen", "peer_name", "peer_addr", "secret", "work_dir"]) {
+  for (const key of ["node", "code", "peer_addr", "work_dir", "listen", "api", "peer_name"]) {
     form.elements[key].value = s[key] || "";
   }
   form.elements.areas.value = (s.areas || []).join(", ");
   form.elements.handler.value = s.handler || "none";
   form.elements.autostart.checked = !!s.autostart;
+  if (s.listen || s.api || s.peer_name || (s.areas || []).length) document.getElementById("advanced").open = true;
+}
+
+// showMyAddr tells this side's address, the one the other person types in.
+async function showMyAddr() {
+  const el = document.getElementById("my_addr");
+  try {
+    const st = await api("GET", "status");
+    if (!st.configured) { el.textContent = ""; return; }
+    if (!st.zerotier) { el.textContent = t("settings.my_addr.none"); return; }
+    const addr = (st.listen || "").replace(/:7420$/, "");
+    el.textContent = addr ? fmt("settings.my_addr", { addr }) : "";
+  } catch (_) { el.textContent = ""; }
 }
 
 document.getElementById("generate").addEventListener("click", () => {
-  const bytes = new Uint8Array(48);
+  const bytes = new Uint8Array(6);
   crypto.getRandomValues(bytes);
-  secret.value = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  secret.type = "text";
-  result.textContent = t("settings.secret.generated");
-});
-
-document.getElementById("show").addEventListener("click", () => {
-  secret.type = secret.type === "password" ? "text" : "password";
+  code.value = Array.from(bytes, (b) => CODE_ALPHABET[b & 31]).join("");
+  result.textContent = t("settings.code.generated");
 });
 
 document.getElementById("copy").addEventListener("click", async () => {
   try {
-    await navigator.clipboard.writeText(secret.value);
-    result.textContent = t("settings.secret.copied");
+    await navigator.clipboard.writeText(code.value.toUpperCase());
+    result.textContent = t("settings.code.copied");
   } catch (_) {
-    secret.type = "text";
-    secret.select();
-    result.textContent = t("settings.secret.copy_manual");
+    code.select();
+    result.textContent = t("settings.code.copy_manual");
   }
 });
 
@@ -42,23 +52,28 @@ form.addEventListener("submit", async (ev) => {
   const f = form.elements;
   const body = {
     node: f.node.value.trim(),
-    listen: f.listen.value.trim(),
-    peer_name: f.peer_name.value.trim(),
+    code: f.code.value.trim(),
     peer_addr: f.peer_addr.value.trim(),
-    secret: f.secret.value,
-    areas: f.areas.value.split(",").map((a) => a.trim()).filter(Boolean),
     handler: f.handler.value,
     work_dir: f.work_dir.value.trim(),
+    listen: f.listen.value.trim(),
+    api: f.api.value.trim(),
+    areas: f.areas.value.split(",").map((a) => a.trim()).filter(Boolean),
+    peer_name: f.peer_name.value.trim(),
     autostart: f.autostart.checked,
   };
   result.textContent = t("settings.saving");
   try {
     const r = await api("POST", "settings", body);
     result.textContent = r.error ? r.error : t("settings.saved");
+    await load();
     refreshStatus();
+    showMyAddr();
   } catch (e) {
-    result.textContent = fmt("settings.save_failed", { error: e.message });
+    result.textContent = e.message;
   }
 });
 
-load().catch((e) => { result.textContent = fmt("settings.load_failed", { error: e.message }); });
+load().catch((e) => { result.textContent = e.message; });
+showMyAddr();
+setInterval(showMyAddr, 5000);

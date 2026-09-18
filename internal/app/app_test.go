@@ -3,8 +3,10 @@ package app
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,7 +64,7 @@ func (h *harness) tokenHdr() map[string]string { return map[string]string{TokenH
 func validJSON(t *testing.T) string {
 	s := settings.Settings{
 		Node: "alice", Listen: "127.0.0.1:0", PeerName: "bob", PeerAddr: "127.0.0.1:1",
-		Secret: strings.Repeat("k", 32), Areas: []string{"dev"}, Handler: worker.HandlerNone, Autostart: true,
+		Code: "abc123", Areas: []string{"dev"}, Handler: worker.HandlerNone, Autostart: true,
 	}
 	data, err := json.Marshal(s)
 	if err != nil {
@@ -139,7 +141,7 @@ func TestSaveStartsNodeAndPersists(t *testing.T) {
 		t.Fatalf("autostart calls %v", h.autostart)
 	}
 	s, ok, err := settings.Load(h.path)
-	if err != nil || !ok || s.Node != "alice" || len(s.Secret) != 32 {
+	if err != nil || !ok || s.Node != "alice" || s.Code != "ABC123" || s.Secret != "" {
 		t.Fatalf("persisted %+v ok=%v err=%v", s, ok, err)
 	}
 	// The CLI control API is served once the node runs, and still refuses browsers.
@@ -200,12 +202,91 @@ func TestSetAPIAddrPersists(t *testing.T) {
 
 func TestSaveRejectsInvalid(t *testing.T) {
 	h := newHarness(t)
-	bad := strings.Replace(validJSON(t), strings.Repeat("k", 32), "short", 1)
+	bad := strings.Replace(validJSON(t), "abc123", "abc12", 1)
 	code, body := h.do(t, http.MethodPost, "/ui/api/settings", bad, h.tokenHdr())
-	if code != http.StatusBadRequest || !strings.Contains(body, "secret") {
+	if code != http.StatusBadRequest || !strings.Contains(body, uiStrings["error.code"]) {
 		t.Fatalf("save: %d %s", code, body)
 	}
 	if h.app.Configured() {
 		t.Fatal("invalid settings marked configured")
+	}
+}
+
+// The page's first save carries only a name: it must succeed. Without a code
+// the node waits for one; with a code and no peer it runs and waits to be dialed.
+func TestPartialSave(t *testing.T) {
+	h := newHarness(t)
+	name := `{"node":"morgott","code":"","peer_addr":"","handler":"none","work_dir":"","listen":"","api":"","areas":[],"peer_name":"","autostart":false}`
+	code, body := h.do(t, http.MethodPost, "/ui/api/settings", name, h.tokenHdr())
+	if code != http.StatusOK || !strings.Contains(body, `"saved":true`) || strings.Contains(body, "error") {
+		t.Fatalf("name-only save: %d %s", code, body)
+	}
+	if st := h.app.Status(); !st.Configured || st.Running || st.Problem != "link.no_code" || st.Error != "" {
+		t.Fatalf("status after name-only save %+v", st)
+	}
+	withCode := `{"node":"morgott","code":"k7Q2mX","listen":"127.0.0.1:0","handler":"none"}`
+	code, body = h.do(t, http.MethodPost, "/ui/api/settings", withCode, h.tokenHdr())
+	if code != http.StatusOK || strings.Contains(body, "error") {
+		t.Fatalf("name+code save: %d %s", code, body)
+	}
+	if st := h.app.Status(); !st.Running || st.Problem != "link.no_peer" || st.Error != "" {
+		t.Fatalf("status after name+code save %+v", st)
+	}
+	if s, _, _ := settings.Load(h.path); s.Code != "K7Q2MX" {
+		t.Fatalf("code stored as %q, want upper case", s.Code)
+	}
+}
+
+// Every settings error reaches the page as one Russian sentence, never a Go error.
+func TestSaveErrorsAreSentences(t *testing.T) {
+	h := newHarness(t)
+	cases := map[string]string{
+		`{"node":""}`:                                   "error.node",
+		`{"node":"a b"}`:                                "error.node",
+		`{"node":"a","code":"12345!"}`:                  "error.code",
+		`{"node":"a","peer_addr":"10.0.0.1:99999"}`:     "error.peer_addr",
+		`{"node":"a","handler":"claude","work_dir":""}`: "error.work_dir",
+		`{"node":"a","api":"0.0.0.0:7520"}`:             "error.api",
+		`not json`:                                      "error.bad_request",
+	}
+	for body, key := range cases {
+		code, got := h.do(t, http.MethodPost, "/ui/api/settings", body, h.tokenHdr())
+		var r struct{ Error string }
+		if err := json.Unmarshal([]byte(got), &r); err != nil || code != http.StatusBadRequest || r.Error != uiStrings[key] {
+			t.Errorf("%s: %d %s, want %q", body, code, got, uiStrings[key])
+		}
+	}
+	// A bind failure is saved but explained.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	busy := `{"node":"a","code":"ABC123","listen":"` + ln.Addr().String() + `"}`
+	_, got := h.do(t, http.MethodPost, "/ui/api/settings", busy, h.tokenHdr())
+	want := msg("error.listen", map[string]string{"addr": ln.Addr().String()})
+	if !strings.Contains(got, `"saved":true`) || !strings.Contains(got, want) || h.app.Status().Error != want {
+		t.Fatalf("busy listen: %s, want %q", got, want)
+	}
+}
+
+// A config written before pairing codes (long secret, peer name) still runs.
+func TestLegacySecretConfigRuns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	old := `{"node":"alice","listen":"127.0.0.1:0","peer_name":"bob","peer_addr":"127.0.0.1:1",` +
+		`"secret":"` + strings.Repeat("s", 40) + `","areas":[],"handler":"none","work_dir":"","autostart":false}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, err := New(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop()
+	if err := a.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if st := a.Status(); !st.Running || st.Peer != "bob" || st.Problem != "" {
+		t.Fatalf("legacy status %+v", st)
 	}
 }

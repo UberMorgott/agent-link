@@ -27,13 +27,19 @@ async function api(method, path, body) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
   }
-  const resp = await fetch("/ui/api/" + path, opts);
+  let resp;
+  try {
+    resp = await fetch("/ui/api/" + path, opts);
+  } catch (_) {
+    throw new Error(t("error.no_app"));
+  }
   const text = await resp.text();
   let data = text;
   try { data = JSON.parse(text); } catch (_) { /* plain-text error */ }
   if (!resp.ok) {
-    const msg = typeof data === "object" && data && data.error ? data.error : String(data).trim();
-    throw new Error(msg || resp.statusText);
+    // The token changes on every start: a tab left open from before gets 403.
+    if (resp.status === 403) throw new Error(t("error.forbidden"));
+    throw new Error(typeof data === "object" && data && data.error ? data.error : t("error.internal"));
   }
   return data;
 }
@@ -42,11 +48,13 @@ async function refreshStatus() {
   const el = document.getElementById("status");
   try {
     const s = await api("GET", "status");
-    let text, cls;
-    if (!s.configured) { text = t("link.unconfigured"); cls = "off"; }
-    else if (s.error) { text = fmt("link.error", { error: s.error }); cls = "off"; }
+    let text, cls = "off";
+    if (!s.configured) text = t("link.unconfigured");
+    else if (s.error) text = s.error;
     else if (s.connected) { text = fmt("link.on", { peer: s.peer }); cls = "on"; }
-    else { text = fmt("link.off", { peer: s.peer }); cls = "off"; }
+    else if (s.problem) text = t(s.problem);
+    else text = s.peer ? fmt("link.off", { peer: s.peer }) : t("link.waiting");
+    if (s.configured && !s.zerotier) text += " · " + t("link.no_zerotier");
     el.textContent = text;
     el.className = cls;
   } catch (e) {

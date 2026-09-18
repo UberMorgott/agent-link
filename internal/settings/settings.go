@@ -1,5 +1,5 @@
 // Package settings holds the desktop app's per-user configuration, stored
-// with the shared secret in %APPDATA%\agentlink\config.json.
+// with the pairing code in %APPDATA%\agentlink\config.json.
 package settings
 
 import (
@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/worker"
@@ -18,23 +21,36 @@ import (
 // DefaultAPI is the loopback address of the local web UI and control API.
 const DefaultAPI = "127.0.0.1:7520"
 
-// Settings is what the settings page edits.
+// Settings is what the settings page edits. Only Node is required: without a
+// code the node does not start, without PeerAddr it runs and waits to be dialed.
 type Settings struct {
-	Node      string   `json:"node"`
-	Listen    string   `json:"listen"`
-	PeerName  string   `json:"peer_name"`
-	PeerAddr  string   `json:"peer_addr"`
-	Secret    string   `json:"secret"`
-	Areas     []string `json:"areas"`
-	Handler   string   `json:"handler"` // worker.HandlerNone|HandlerClaude|HandlerCodex
-	WorkDir   string   `json:"work_dir"`
-	Autostart bool     `json:"autostart"`
+	Node      string `json:"node"`
+	Code      string `json:"code,omitempty"`      // 6-character pairing code, same on both sides
+	PeerAddr  string `json:"peer_addr,omitempty"` // the other side's ZeroTier IP, port optional
+	Handler   string `json:"handler"`             // worker.HandlerNone|HandlerClaude|HandlerCodex
+	WorkDir   string `json:"work_dir,omitempty"`
+	Autostart bool   `json:"autostart"`
 
-	// Not shown in the UI. API overrides DefaultAPI; HandlerCommand replaces
-	// the built-in agent command (argv, used by tests with a fake agent).
-	API            string   `json:"api,omitempty"`
+	// "Дополнительно" on the page; all optional.
+	Listen   string   `json:"listen,omitempty"` // empty: the ZeroTier IP, else 127.0.0.1
+	API      string   `json:"api,omitempty"`    // empty: DefaultAPI; applies on the next start
+	Areas    []string `json:"areas,omitempty"`
+	PeerName string   `json:"peer_name,omitempty"` // empty: learned from the handshake
+
+	// Secret is the long shared secret of configs written before pairing
+	// codes; used only while Code is empty. Never sent to the page.
+	Secret string `json:"secret,omitempty"`
+	// HandlerCommand replaces the built-in agent command (argv, used by tests).
 	HandlerCommand []string `json:"handler_command,omitempty"`
 }
+
+// Problem is a validation failure. Key names the field or rule; the web UI
+// turns it into one sentence of advice.
+type Problem struct{ Key string }
+
+func (p *Problem) Error() string { return "invalid settings: " + p.Key }
+
+func problem(key string) error { return &Problem{Key: key} }
 
 // DefaultPath returns %APPDATA%\agentlink\config.json (the user config dir elsewhere).
 func DefaultPath() (string, error) {
@@ -45,11 +61,35 @@ func DefaultPath() (string, error) {
 	return filepath.Join(dir, "agentlink", "config.json"), nil
 }
 
-// Load reads settings. A missing file returns ok=false and no error.
+// Defaults are the settings of a fresh install: the Windows user (or computer)
+// name and no handler.
+func Defaults() Settings {
+	return Settings{Node: DefaultName(), Handler: worker.HandlerNone}
+}
+
+var nameJunk = regexp.MustCompile(`[^\p{L}\p{N}_-]+`)
+
+// DefaultName derives a valid node name from the user or computer name.
+func DefaultName() string {
+	host, _ := os.Hostname()
+	for _, raw := range []string{os.Getenv("USERNAME"), os.Getenv("USER"), host} {
+		s := strings.Trim(nameJunk.ReplaceAllString(raw, "-"), "-_")
+		for utf8.RuneCountInString(s) > 64 {
+			_, size := utf8.DecodeLastRuneInString(s)
+			s = s[:len(s)-size]
+		}
+		if config.ValidName(s) {
+			return s
+		}
+	}
+	return "me"
+}
+
+// Load reads settings. A missing file returns Defaults, ok=false and no error.
 func Load(path string) (s Settings, ok bool, err error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Settings{Handler: worker.HandlerNone}, false, nil
+		return Defaults(), false, nil
 	}
 	if err != nil {
 		return Settings{}, false, err
@@ -57,12 +97,35 @@ func Load(path string) (s Settings, ok bool, err error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return Settings{}, false, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if s.Handler == "" {
+		s.Handler = worker.HandlerNone
+	}
 	return s, true, nil
+}
+
+// Normalize trims the fields, upper-cases the code and adds the default port
+// to the peer address. Invalid values are left for Validate to report.
+func (s Settings) Normalize() Settings {
+	s.Node, s.PeerAddr, s.Listen = strings.TrimSpace(s.Node), strings.TrimSpace(s.PeerAddr), strings.TrimSpace(s.Listen)
+	s.API, s.PeerName, s.WorkDir = strings.TrimSpace(s.API), strings.TrimSpace(s.PeerName), strings.TrimSpace(s.WorkDir)
+	s.Code = strings.TrimSpace(s.Code)
+	if c, ok := config.NormalizeCode(s.Code); ok {
+		s.Code = c
+	}
+	if s.PeerAddr != "" {
+		if a, err := config.WithDefaultPort(s.PeerAddr); err == nil {
+			s.PeerAddr = a
+		}
+	}
+	if s.Handler == "" {
+		s.Handler = worker.HandlerNone
+	}
+	return s
 }
 
 // Save validates and writes settings atomically with owner-only permissions.
 func Save(path string, s Settings) error {
-	if err := s.Validate(path); err != nil {
+	if err := s.Validate(); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -98,19 +161,39 @@ func (s Settings) APIAddr() string {
 	return DefaultAPI
 }
 
-// NodeConfig converts settings stored at path into a node configuration. The
-// node's data lives in a "data" directory next to the settings file.
-func (s Settings) NodeConfig(path string) config.Config {
+// Key returns the session key: derived from Code, else the legacy Secret, else
+// nil (the node cannot authenticate anyone and is not started).
+func (s Settings) Key() []byte {
+	if s.Code != "" {
+		if k, err := config.KeyFromCode(s.Code); err == nil {
+			return k
+		}
+		return nil
+	}
+	if len(s.Secret) >= config.MinSecretLen {
+		return []byte(s.Secret)
+	}
+	return nil
+}
+
+// NodeConfig converts settings stored at path into a node configuration that
+// listens on listen. The node's data lives in a "data" directory next to the
+// settings file.
+func (s Settings) NodeConfig(path, listen string) config.Config {
 	c := config.Config{
 		Node:      s.Node,
-		Listen:    s.Listen,
+		Listen:    listen,
 		API:       s.APIAddr(),
 		DataDir:   filepath.Join(filepath.Dir(path), "data"),
-		SecretEnv: "-", // the secret comes from the settings file, not the environment
+		SecretEnv: "-", // the key comes from the settings file, not the environment
 		Areas:     s.Areas,
 	}
-	if s.PeerName != "" || s.PeerAddr != "" {
-		c.Peers = []config.Peer{{Name: s.PeerName, Addr: s.PeerAddr}}
+	if s.PeerAddr != "" {
+		addr, err := config.WithDefaultPort(s.PeerAddr)
+		if err != nil {
+			addr = s.PeerAddr
+		}
+		c.Peers = []config.Peer{{Name: s.PeerName, Addr: addr}}
 	}
 	return c
 }
@@ -126,29 +209,56 @@ func (s Settings) Command() (worker.Command, bool) {
 	return worker.ForHandler(s.Handler)
 }
 
-// Validate checks everything a node and the handler need.
-func (s Settings) Validate(path string) error {
-	var errs []error
-	if err := s.NodeConfig(path).Validate(); err != nil {
-		errs = append(errs, err)
+// Validate reports the first problem, in page order. Empty code and empty
+// peer address are allowed: the node then waits for them.
+func (s Settings) Validate() error {
+	if !config.ValidName(s.Node) {
+		return problem("node")
 	}
-	if s.PeerName == "" || s.PeerAddr == "" {
-		errs = append(errs, errors.New("peer name and peer address are required"))
+	if s.Code != "" {
+		if _, ok := config.NormalizeCode(s.Code); !ok {
+			return problem("code")
+		}
 	}
-	if len(s.Secret) < config.MinSecretLen {
-		errs = append(errs, fmt.Errorf("shared secret must be at least %d characters", config.MinSecretLen))
-	}
-	if strings.TrimSpace(s.Secret) != s.Secret {
-		errs = append(errs, errors.New("shared secret must not start or end with spaces"))
+	if s.PeerAddr != "" {
+		if _, err := config.WithDefaultPort(s.PeerAddr); err != nil {
+			return problem("peer_addr")
+		}
 	}
 	switch s.Handler {
-	case worker.HandlerNone:
+	case worker.HandlerNone, "":
 	case worker.HandlerClaude, worker.HandlerCodex:
 		if st, err := os.Stat(s.WorkDir); s.WorkDir == "" || err != nil || !st.IsDir() {
-			errs = append(errs, fmt.Errorf("working folder %q must be an existing folder", s.WorkDir))
+			return problem("work_dir")
 		}
 	default:
-		errs = append(errs, fmt.Errorf("unknown handler %q", s.Handler))
+		return problem("handler")
 	}
-	return errors.Join(errs...)
+	if s.Listen != "" {
+		// Never all interfaces: the peer port belongs on the private network only.
+		a, err := config.WithDefaultPort(s.Listen)
+		if err != nil {
+			return problem("listen_format")
+		}
+		if host, _, _ := net.SplitHostPort(a); net.ParseIP(host) == nil || net.ParseIP(host).IsUnspecified() {
+			return problem("listen_format")
+		}
+	}
+	if s.API != "" && !config.IsLoopbackAddr(s.API) {
+		return problem("api")
+	}
+	for _, a := range s.Areas {
+		if !config.ValidName(a) {
+			return problem("areas")
+		}
+	}
+	if s.PeerName != "" {
+		if !config.ValidName(s.PeerName) {
+			return problem("peer_name")
+		}
+		if s.PeerName == s.Node {
+			return problem("peer_name_self")
+		}
+	}
+	return nil
 }

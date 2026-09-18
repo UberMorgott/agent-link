@@ -92,9 +92,7 @@ func run() error {
 		_ = srv.Shutdown(ctx)
 	}()
 
-	if err := a.Start(); err != nil {
-		log.Error("node start", "err", err)
-	}
+	_ = a.Start() // a failure is logged and shown on the settings page
 	defer a.Stop()
 
 	if *noTray {
@@ -156,6 +154,8 @@ func statusText(s app.Status) string {
 		return "Error - open settings"
 	case s.Connected:
 		return s.Peer + " connected"
+	case s.Problem != "" || s.Peer == "":
+		return "Not connected - open settings"
 	default:
 		return s.Peer + " offline"
 	}

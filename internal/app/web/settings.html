@@ -13,32 +13,19 @@
 <nav><strong>agentlink</strong> <a href="/ui/settings" class="active" data-t="nav.settings"></a> <a href="/ui/inbox" data-t="nav.inbox"></a> <span id="status"></span></nav>
 <main>
 <h1 data-t="settings.h1"></h1>
-<form id="form">
+<form id="form" novalidate>
   <fieldset>
-    <legend data-t="settings.self.legend"></legend>
-    <label><span data-t="settings.node.label"></span><input name="node" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}"></label>
+    <label><span data-t="settings.node.label"></span><input name="node" autocomplete="off"></label>
     <p class="hint" data-t="settings.node.hint"></p>
-    <label><span data-t="settings.listen.label"></span><input name="listen" required></label>
-    <p class="hint" data-t="settings.listen.hint"></p>
-  </fieldset>
-  <fieldset>
-    <legend data-t="settings.peer.legend"></legend>
-    <label><span data-t="settings.peer_name.label"></span><input name="peer_name" required pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,63}"></label>
-    <p class="hint" data-t="settings.peer_name.hint"></p>
-    <label><span data-t="settings.peer_addr.label"></span><input name="peer_addr" required></label>
-    <p class="hint" data-t="settings.peer_addr.hint"></p>
-    <label><span data-t="settings.secret.label"></span>
-      <span class="row"><input name="secret" id="secret" type="password" required minlength="16" autocomplete="off">
-      <button type="button" id="show" data-t="settings.secret.show"></button>
-      <button type="button" id="generate" data-t="settings.secret.generate"></button>
-      <button type="button" id="copy" data-t="settings.secret.copy"></button></span>
+    <label><span data-t="settings.code.label"></span>
+      <span class="row"><input name="code" id="code" maxlength="6" autocomplete="off" spellcheck="false" class="code">
+      <button type="button" id="generate" data-t="settings.code.generate"></button>
+      <button type="button" id="copy" data-t="settings.code.copy"></button></span>
     </label>
-    <p class="hint" data-t="settings.secret.hint"></p>
-    <label><span data-t="settings.areas.label"></span><input name="areas"></label>
-    <p class="hint" data-t="settings.areas.hint"></p>
-  </fieldset>
-  <fieldset>
-    <legend data-t="settings.handler.legend"></legend>
+    <p class="hint" data-t="settings.code.hint"></p>
+    <label><span data-t="settings.peer_addr.label"></span><input name="peer_addr" autocomplete="off" placeholder="10.147.20.9"></label>
+    <p class="hint" data-t="settings.peer_addr.hint"></p>
+    <p class="hint" id="my_addr"></p>
     <label><span data-t="settings.handler.label"></span>
       <select name="handler">
         <option value="none" data-t="settings.handler.none"></option>
@@ -47,10 +34,23 @@
       </select>
     </label>
     <p class="hint" data-t="settings.handler.hint"></p>
-    <label><span data-t="settings.work_dir.label"></span><input name="work_dir"></label>
+    <label><span data-t="settings.work_dir.label"></span><input name="work_dir" autocomplete="off"></label>
     <p class="hint" data-t="settings.work_dir.hint"></p>
-    <label class="check"><input type="checkbox" name="autostart"> <span data-t="settings.autostart.label"></span></label>
   </fieldset>
+  <details id="advanced">
+    <summary data-t="settings.advanced"></summary>
+    <fieldset>
+      <label><span data-t="settings.listen.label"></span><input name="listen" autocomplete="off"></label>
+      <p class="hint" data-t="settings.listen.hint"></p>
+      <label><span data-t="settings.api.label"></span><input name="api" autocomplete="off" placeholder="127.0.0.1:7520"></label>
+      <p class="hint" data-t="settings.api.hint"></p>
+      <label><span data-t="settings.areas.label"></span><input name="areas" autocomplete="off"></label>
+      <p class="hint" data-t="settings.areas.hint"></p>
+      <label><span data-t="settings.peer_name.label"></span><input name="peer_name" autocomplete="off"></label>
+      <p class="hint" data-t="settings.peer_name.hint"></p>
+      <label class="check"><input type="checkbox" name="autostart"> <span data-t="settings.autostart.label"></span></label>
+    </fieldset>
+  </details>
   <button type="submit" data-t="settings.save"></button>
   <p id="result" role="status"></p>
 </form>

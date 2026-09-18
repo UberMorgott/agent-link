@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -62,6 +64,26 @@ func TestUIStringsCoverPages(t *testing.T) {
 			}
 		}
 		for _, m := range dynPrefix.FindAllStringSubmatch(body, -1) {
+			prefixes[m[1]] = true
+		}
+	}
+	// The server fills some text itself: status problems and error sentences.
+	goFiles, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range goFiles {
+		if strings.HasSuffix(name, "_test.go") || name == "strings.go" {
+			continue
+		}
+		data, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range scriptKey.FindAllStringSubmatch(string(data), -1) {
+			used[m[1]] = true
+		}
+		for _, m := range dynPrefix.FindAllStringSubmatch(string(data), -1) {
 			prefixes[m[1]] = true
 		}
 	}
