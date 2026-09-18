@@ -29,6 +29,22 @@ If there is no node config on the machine, write one next to the settings, e.g.
 
 No code or secret is needed for `send`/`inbox`/`wait`: the running node holds it.
 
+## Message format (agent to agent)
+
+Every body an agent sends is compressed English, whatever language its user speaks: no
+greeting, no recap, no prose, one request per message.
+
+```text
+Q: <one-line question>
+ctx: <repo, path, branch, why: only what the other side needs>
+need: <exact answer shape: "first heading", "file:line list", "yes/no + 1 reason", "<=5 bullets">
+```
+
+Replies are terse bullets with exact paths, names, values and `file:line`; `unknown: <what was
+searched>` instead of a guess. Relay the answer to your user in their language. The built-in
+Claude/Codex handler gets the same rule as a preamble (`worker.ReplyStyle`); a human's
+question typed in the inbox page is answered briefly in that human's language.
+
 ## Ask and get the answer
 
 ```powershell

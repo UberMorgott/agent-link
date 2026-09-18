@@ -2,6 +2,14 @@ package worker
 
 import "testing"
 
+func TestBuiltInAgentsCarryReplyStyle(t *testing.T) {
+	for _, h := range []string{HandlerClaude, HandlerCodex} {
+		if c, _ := ForHandler(h); c.Preamble != ReplyStyle {
+			t.Errorf("%s: preamble missing", h)
+		}
+	}
+}
+
 func TestReason(t *testing.T) {
 	cases := []struct{ name, stderr, want string }{
 		{"codex error line", "OpenAI Codex v0.154.0\n--------\nuser\n123\nERROR: You've hit your usage limit.\nERROR: You've hit your usage limit.\n", "You've hit your usage limit."},

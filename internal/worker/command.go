@@ -20,7 +20,21 @@ const OutputFileArg = "{output_file}"
 type Command struct {
 	Name string
 	Args []string
+	// Preamble, when set, is written to stdin before the request body.
+	Preamble string
 }
+
+// ReplyStyle frames a request for the built-in agents: agent-to-agent traffic
+// stays compact English, a human's question gets an answer in their language.
+const ReplyStyle = `You answer a request that arrived over agent-link from the other developer's machine. You are read-only: read and search only.
+Reply rules:
+- Agent-written request (English, terse bullets or key: value lines) -> reply the same way: English, terse bullets, no preamble, no recap, no pleasantries; exact paths, names, values, file:line.
+- Human-written request (another language or plain prose) -> answer briefly in that person's language.
+- Never include secrets, tokens or config contents.
+Request:
+`
+
+// Claude runs Claude Code headless with read-only built-in tools only: no
 
 // Handler names accepted in settings.
 const (
@@ -41,7 +55,7 @@ var Claude = Command{Name: "claude", Args: []string{
 	"--permission-mode", "dontAsk",
 	"--strict-mcp-config",
 	"--no-session-persistence",
-}}
+}, Preamble: ReplyStyle}
 
 // Codex runs Codex non-interactively in its read-only sandbox; "-" reads the
 // prompt from stdin.
@@ -53,7 +67,7 @@ var Codex = Command{Name: "codex", Args: []string{
 	"--color", "never",
 	"--output-last-message", OutputFileArg,
 	"-",
-}}
+}, Preamble: ReplyStyle}
 
 // ForHandler returns the command for a handler name.
 func ForHandler(h string) (Command, bool) {
@@ -88,7 +102,7 @@ func (c Command) Runner() Runner {
 		}
 		cmd := exec.CommandContext(ctx, c.Name, args...)
 		cmd.Dir = filepath.Clean(dir)
-		cmd.Stdin = strings.NewReader(prompt)
+		cmd.Stdin = strings.NewReader(c.Preamble + prompt)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		cmd.WaitDelay = 5 * time.Second
