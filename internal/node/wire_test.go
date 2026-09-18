@@ -155,7 +155,7 @@ func closedByPeer(w *wire) bool {
 		_, err := w.r.ReadByte()
 		if err != nil {
 			var ne net.Error
-			return !(errors.As(err, &ne) && ne.Timeout())
+			return !errors.As(err, &ne) || !ne.Timeout()
 		}
 	}
 }
@@ -318,14 +318,14 @@ func TestUnauthenticatedConnectionCap(t *testing.T) {
 func TestConnLimit(t *testing.T) {
 	l := newConnLimit(3, 2)
 	ip1, ip2, ip3 := net.ParseIP("203.0.113.1"), net.ParseIP("203.0.113.2"), net.ParseIP("203.0.113.3")
-	if !l.acquire(ip1) || !l.acquire(ip1) || l.acquire(ip1) {
+	if a, b, c := l.acquire(ip1), l.acquire(ip1), l.acquire(ip1); !a || !b || c {
 		t.Fatal("per-source cap")
 	}
 	if !l.acquire(ip2) || l.acquire(ip3) {
 		t.Fatal("global cap")
 	}
 	l.release(ip1)
-	if !l.acquire(ip3) || l.acquire(ip3) {
+	if first, second := l.acquire(ip3), l.acquire(ip3); !first || second {
 		t.Fatal("release")
 	}
 	l.release(ip1)
