@@ -17,17 +17,46 @@ import (
 	"github.com/UberMorgott/agent-link/internal/config"
 )
 
+// Sentinel errors callers can map to their own wording.
+var (
+	// ErrAuth: the peer does not hold the same pairing code or secret.
+	ErrAuth = errors.New("authentication failed")
+	// ErrSameName: the peer announced this node's own name (the address is
+	// this machine, or both sides picked the same name).
+	ErrSameName = errors.New("peer has this node's name")
+	// ErrWrongPeer: the peer at the address announced a different name than configured.
+	ErrWrongPeer = errors.New("unexpected peer name")
+	// ErrUnknownPeer: a message is addressed to a node that never connected.
+	ErrUnknownPeer = errors.New("unknown node")
+	// ErrNoAreaPeer: no known peer subscribed to the area.
+	ErrNoAreaPeer = errors.New("no peer subscribed to the area")
+	// ErrEmptyBody: a request or reply without text.
+	ErrEmptyBody = errors.New("empty body")
+)
+
+// target is one configured peer address; name is fixed by config or learned
+// from the first handshake (guarded by Node.mu).
+type target struct {
+	addr string
+	name string
+}
+
 // Node is one running agentlink peer.
 type Node struct {
-	cfg    config.Config
-	secret []byte
-	store  *store
-	log    *slog.Logger
-	peers  map[string]string // name -> addr
+	cfg     config.Config
+	secret  []byte
+	store   *store
+	log     *slog.Logger
+	targets []*target
+	// open accepts any authenticated peer name: some peer has no configured
+	// name, or no peer is configured at all (the other side dials in).
+	open bool
 
-	mu    sync.Mutex
-	conns map[string]*peerConn
-	areas map[string][]string // last areas each peer announced
+	mu      sync.Mutex
+	known   map[string]bool // configured and learned peer names
+	conns   map[string]*peerConn
+	areas   map[string][]string // last areas each peer announced
+	problem error               // last handshake failure, nil once a session is up
 
 	wg sync.WaitGroup
 
@@ -57,20 +86,30 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	}
 	n := &Node{
 		cfg: cfg, secret: secret, store: st, log: log.With("node", cfg.Node),
-		peers: map[string]string{}, conns: map[string]*peerConn{}, areas: map[string][]string{},
+		known: map[string]bool{}, conns: map[string]*peerConn{}, areas: map[string][]string{},
+		open:        len(cfg.Peers) == 0,
 		resendAfter: 5 * time.Second, resendTick: time.Second,
 		backoffMin: 250 * time.Millisecond, backoffMax: 5 * time.Second,
 		handshakeTimeout: 10 * time.Second,
 	}
 	for _, p := range cfg.Peers {
-		n.peers[p.Name] = p.Addr
+		n.targets = append(n.targets, &target{addr: p.Addr, name: p.Name})
+		if p.Name == "" {
+			n.open = true
+		} else {
+			n.known[p.Name] = true
+		}
 	}
-	known, err := st.loadAreas()
+	// areas.json also remembers peers learned from earlier handshakes.
+	saved, err := st.loadAreas()
 	if err != nil {
 		return nil, err
 	}
-	for peer, areas := range known {
-		if _, ok := n.peers[peer]; ok {
+	for peer, areas := range saved {
+		if n.open && config.ValidName(peer) && peer != cfg.Node {
+			n.known[peer] = true
+		}
+		if n.known[peer] {
 			n.areas[peer] = areas
 		}
 	}
@@ -126,8 +165,8 @@ func (n *Node) Serve(ctx context.Context, peerLn, apiLn net.Listener) error {
 // closes peerLn. Hosts that serve the control API themselves mount APIHandler.
 func (n *Node) Run(ctx context.Context, peerLn net.Listener) {
 	n.wg.Go(func() { n.acceptLoop(ctx, peerLn) })
-	for name, addr := range n.peers {
-		n.wg.Go(func() { n.dialLoop(ctx, name, addr) })
+	for _, t := range n.targets {
+		n.wg.Go(func() { n.dialLoop(ctx, t) })
 	}
 	n.log.Info("serving peers", "listen", peerLn.Addr())
 	<-ctx.Done()
@@ -145,8 +184,44 @@ func (n *Node) Connected(peer string) bool {
 	return n.conns[peer] != nil
 }
 
+// Peers returns the known peer names (configured or learned), connected ones first.
+func (n *Node) Peers() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	out := make([]string, 0, len(n.known))
+	for p := range n.known {
+		out = append(out, p)
+	}
+	slices.SortFunc(out, func(a, b string) int {
+		ca, cb := n.conns[a] != nil, n.conns[b] != nil
+		if ca != cb {
+			if ca {
+				return -1
+			}
+			return 1
+		}
+		return strings.Compare(a, b)
+	})
+	return out
+}
+
+// Problem returns the last handshake failure (ErrAuth, ErrSameName,
+// ErrWrongPeer wrapped), or nil once a session is established.
+func (n *Node) Problem() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.problem
+}
+
+func (n *Node) setProblem(err error) {
+	n.mu.Lock()
+	n.problem = err
+	n.mu.Unlock()
+}
+
 // Send queues a message to a node name or to "area:NAME". Area messages fan
-// out to every peer that announced the area.
+// out to every peer that announced the area. An empty to means the only
+// known peer.
 func (n *Node) Send(to, body, replyTo string) (Message, error) {
 	return n.SendMessage(Message{To: to, Body: body, ReplyTo: replyTo})
 }
@@ -161,7 +236,7 @@ func (n *Node) SendMessage(m Message) (Message, error) {
 	case m.Kind == KindStatus && m.ReplyTo == "":
 		return Message{}, errors.New("status update without reply_to")
 	case m.Body == "" && m.Kind != KindStatus:
-		return Message{}, errors.New("empty body")
+		return Message{}, ErrEmptyBody
 	case m.ReplyTo != "" && !validID(m.ReplyTo):
 		return Message{}, fmt.Errorf("invalid reply_to %q", m.ReplyTo)
 	case m.ID != "" && !validID(m.ID):
@@ -171,6 +246,11 @@ func (n *Node) SendMessage(m Message) (Message, error) {
 		m.ID = newID()
 	}
 	m.From, m.Area, m.CreatedAt = n.cfg.Node, "", time.Now().UTC()
+	if m.To == "" {
+		if peers := n.Peers(); len(peers) == 1 {
+			m.To = peers[0]
+		}
+	}
 	to := m.To
 	var recipients []string
 	if area, ok := strings.CutPrefix(to, AreaPrefix); ok {
@@ -183,12 +263,15 @@ func (n *Node) SendMessage(m Message) (Message, error) {
 		}
 		n.mu.Unlock()
 		if len(recipients) == 0 {
-			return Message{}, fmt.Errorf("no known peer subscribed to area %q", area)
+			return Message{}, fmt.Errorf("%w %q", ErrNoAreaPeer, area)
 		}
 		slices.Sort(recipients)
 	} else {
-		if _, ok := n.peers[to]; !ok {
-			return Message{}, fmt.Errorf("unknown node %q", to)
+		n.mu.Lock()
+		ok := n.known[to]
+		n.mu.Unlock()
+		if !ok {
+			return Message{}, fmt.Errorf("%w %q", ErrUnknownPeer, to)
 		}
 		recipients = []string{to}
 	}
@@ -252,12 +335,15 @@ func (n *Node) handleInbound(ctx context.Context, c net.Conn) {
 	n.runConn(ctx, pc, sc)
 }
 
-func (n *Node) dialLoop(ctx context.Context, peer, addr string) {
+func (n *Node) dialLoop(ctx context.Context, t *target) {
 	backoff := n.backoffMin
 	for {
-		if n.Connected(peer) {
+		n.mu.Lock()
+		name := t.name
+		n.mu.Unlock()
+		if name != "" && n.Connected(name) {
 			backoff = n.backoffMin
-		} else if n.dialOnce(ctx, peer, addr) {
+		} else if n.dialOnce(ctx, t) {
 			backoff = n.backoffMin
 		}
 		select {
@@ -271,23 +357,32 @@ func (n *Node) dialLoop(ctx context.Context, peer, addr string) {
 
 // dialOnce connects, authenticates and serves one session. It reports whether
 // a session was established.
-func (n *Node) dialOnce(ctx context.Context, peer, addr string) bool {
+func (n *Node) dialOnce(ctx context.Context, t *target) bool {
 	d := net.Dialer{Timeout: n.handshakeTimeout}
-	c, err := d.DialContext(ctx, "tcp", addr)
+	c, err := d.DialContext(ctx, "tcp", t.addr)
 	if err != nil {
-		n.log.Debug("dial", "peer", peer, "err", err)
+		n.log.Debug("dial", "addr", t.addr, "err", err)
 		return false
 	}
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 	defer stop()
 	_ = c.SetDeadline(time.Now().Add(n.handshakeTimeout))
 	sc := newScanner(c)
-	areas, err := n.dialHandshake(c, sc, peer)
+	n.mu.Lock()
+	want := t.name
+	n.mu.Unlock()
+	peer, areas, err := n.dialHandshake(c, sc, want)
 	if err != nil {
-		n.log.Warn("outbound handshake failed", "peer", peer, "err", err)
+		n.log.Warn("outbound handshake failed", "addr", t.addr, "err", err)
+		if errors.Is(err, ErrAuth) || errors.Is(err, ErrSameName) || errors.Is(err, ErrWrongPeer) {
+			n.setProblem(err)
+		}
 		_ = c.Close()
 		return false
 	}
+	n.mu.Lock()
+	t.name = peer
+	n.mu.Unlock()
 	_ = c.SetDeadline(time.Time{})
 	pc := newPeerConn(peer, n.cfg.Node, areas, c)
 	if !n.register(pc) {

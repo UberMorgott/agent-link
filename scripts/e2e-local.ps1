@@ -43,7 +43,8 @@ if ($LASTEXITCODE -ne 0) { throw 'go build failed' }
 
 if (Test-Path $data) { Remove-Item -Recurse -Force $data }
 New-Item -ItemType Directory -Force $data | Out-Null
-$env:AGENTLINK_SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) })
+# A 6-character pairing code; node-b.json lists node-a by address only and learns its name.
+$env:AGENTLINK_SECRET = -join ((1..6) | ForEach-Object { 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[(Get-Random -Maximum 32)] })
 
 $procs = @()
 try {
@@ -66,7 +67,8 @@ try {
     if ($msg.id -ne $id -or $msg.from -ne 'node-a' -or $msg.body -ne 'hello from node-a') { throw 'node-b got the wrong message' }
 
     Write-Host '== reply node-b -> node-a'
-    $reply = Invoke-Agentlink send --config $cfgB --to node-a --body 'hello back from node-b' --reply-to $id
+    # No --to: node-b's only peer, whose name it learned from the handshake.
+    $reply = Invoke-Agentlink send --config $cfgB --body 'hello back from node-b' --reply-to $id
     if ($reply.Code -ne 0) { throw 'send b->a failed' }
 
     $back = Receive-One $cfgA

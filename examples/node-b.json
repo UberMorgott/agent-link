@@ -6,6 +6,6 @@
   "secret_env": "AGENTLINK_SECRET",
   "areas": ["dev"],
   "peers": [
-    { "name": "node-a", "addr": "127.0.0.1:7421" }
+    { "addr": "127.0.0.1:7421" }
   ]
 }

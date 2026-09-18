@@ -25,7 +25,7 @@ import (
 
 const usage = `usage:
   agentlink serve --config <path>
-  agentlink send  --config <path> --to <node|area:NAME> --body <text> [--reply-to <id>]
+  agentlink send  --config <path> [--to <node|area:NAME>] --body <text> [--reply-to <id>]   (no --to: the only peer)
   agentlink wait  --config <path> [--timeout 0]    (seconds or duration; 0 = forever; exit 2 on timeout)
   agentlink inbox --config <path> [--limit 50]`
 
@@ -49,7 +49,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "serve":
 		cmd = func(c config.Config) (int, error) { return 0, serve(c) }
 	case "send":
-		to := fs.String("to", "", "node name or area:NAME")
+		to := fs.String("to", "", "node name or area:NAME; empty sends to the only known peer")
 		body := fs.String("body", "", "message text")
 		replyTo := fs.String("reply-to", "", "id of the message being answered")
 		cmd = func(c config.Config) (int, error) { return 0, send(c, *to, *body, *replyTo, stdout) }
@@ -108,8 +108,8 @@ func serve(cfg config.Config) error {
 }
 
 func send(cfg config.Config, to, body, replyTo string, stdout io.Writer) error {
-	if to == "" || body == "" {
-		return errors.New("--to and --body are required")
+	if body == "" {
+		return errors.New("--body is required")
 	}
 	req, err := json.Marshal(node.SendRequest{To: to, Body: body, ReplyTo: replyTo})
 	if err != nil {

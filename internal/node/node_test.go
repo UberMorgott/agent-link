@@ -416,3 +416,102 @@ func TestStatusUpdatesFoldIntoRequest(t *testing.T) {
 		t.Fatalf("stored status updates = %d, want 3 (duplicates dropped)", count)
 	}
 }
+
+// newCodeNode builds a node keyed by a pairing code whose only peer is an
+// address; the peer's name is learned from the handshake.
+func newCodeNode(t *testing.T, name, code string, peerLn, own net.Listener) *testNode {
+	t.Helper()
+	key, err := config.KeyFromCode(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		Node: name, Listen: own.Addr().String(), API: "127.0.0.1:0",
+		DataDir: t.TempDir(), SecretEnv: "UNUSED",
+	}
+	if peerLn != nil {
+		cfg.Peers = []config.Peer{{Addr: peerLn.Addr().String()}}
+	}
+	n, err := New(cfg, key, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.backoffMin, n.backoffMax, n.handshakeTimeout = 20*time.Millisecond, 200*time.Millisecond, 3*time.Second
+	n.resendAfter, n.resendTick = 300*time.Millisecond, 50*time.Millisecond
+	return &testNode{Node: n, peerLn: own}
+}
+
+// Two nodes that know only each other's address and the same code (typed in
+// different case) pair, learn each other's names and exchange messages.
+func TestPairByAddressAndCode(t *testing.T) {
+	lnA, lnB := listen(t), listen(t)
+	a := newCodeNode(t, "morgott", "k7q2mx", lnB, lnA)
+	b := newCodeNode(t, "nikita", "K7Q2MX", lnA, lnB)
+	a.start(t)
+	b.start(t)
+	eventually(t, "names learned", func() bool { return a.Connected("nikita") && b.Connected("morgott") })
+	if p := a.Peers(); len(p) != 1 || p[0] != "nikita" {
+		t.Fatalf("a peers %v", p)
+	}
+	sent, err := a.Send("", "hello by code", "") // empty to: the only peer
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, msgs := waitHTTP(t, b, "10s")
+	if code != http.StatusOK || len(msgs) != 1 || msgs[0].ID != sent.ID || msgs[0].From != "morgott" {
+		t.Fatalf("b wait = %d %+v", code, msgs)
+	}
+	if _, err := b.Send("morgott", "hi back", sent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if code, msgs := waitHTTP(t, a, "10s"); code != http.StatusOK || len(msgs) != 1 || msgs[0].ReplyTo != sent.ID {
+		t.Fatalf("a wait = %d %+v", code, msgs)
+	}
+	if a.Problem() != nil || b.Problem() != nil {
+		t.Fatalf("problems after pairing: %v / %v", a.Problem(), b.Problem())
+	}
+}
+
+// Only one side knows the other's address: the other runs without a peer and
+// still accepts the session.
+func TestPairOneSidedAddress(t *testing.T) {
+	lnA, lnB := listen(t), listen(t)
+	a := newCodeNode(t, "morgott", "ABC123", lnB, lnA)
+	b := newCodeNode(t, "nikita", "abc123", nil, lnB)
+	a.start(t)
+	b.start(t)
+	eventually(t, "connected", func() bool { return a.Connected("nikita") && b.Connected("morgott") })
+	if _, err := b.Send("", "reply without a configured peer", ""); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := waitHTTP(t, a, "10s"); code != http.StatusOK {
+		t.Fatalf("a wait = %d", code)
+	}
+}
+
+func TestWrongCodeRejected(t *testing.T) {
+	lnA, lnB := listen(t), listen(t)
+	a := newCodeNode(t, "morgott", "ABC123", lnB, lnA)
+	b := newCodeNode(t, "nikita", "ABC124", lnA, lnB)
+	a.start(t)
+	b.start(t)
+	eventually(t, "auth problem reported", func() bool {
+		return errors.Is(a.Problem(), ErrAuth) || errors.Is(b.Problem(), ErrAuth)
+	})
+	time.Sleep(300 * time.Millisecond)
+	if a.Connected("nikita") || b.Connected("morgott") || len(a.Peers()) != 0 || len(b.Peers()) != 0 {
+		t.Fatal("nodes with different codes connected or learned a name")
+	}
+	if _, err := a.Send("", "x", ""); !errors.Is(err, ErrUnknownPeer) {
+		t.Fatalf("send before any session: %v, want ErrUnknownPeer", err)
+	}
+}
+
+func TestSameNameReported(t *testing.T) {
+	lnA, lnB := listen(t), listen(t)
+	a := newCodeNode(t, "morgott", "ABC123", lnB, lnA)
+	b := newCodeNode(t, "morgott", "ABC123", nil, lnB)
+	a.start(t)
+	b.start(t)
+	eventually(t, "same-name problem", func() bool { return errors.Is(a.Problem(), ErrSameName) })
+}

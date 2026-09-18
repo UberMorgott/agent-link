@@ -70,6 +70,8 @@ func (n *Node) register(pc *peerConn) bool {
 		return false
 	}
 	n.conns[pc.peer] = pc
+	n.known[pc.peer] = true
+	n.problem = nil
 	n.areas[pc.peer] = pc.areas
 	areas := make(map[string][]string, len(n.areas))
 	for k, v := range n.areas {
