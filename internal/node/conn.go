@@ -127,7 +127,12 @@ func (n *Node) register(pc *peerConn) bool {
 	if firstPAKE {
 		n.pakeSeen[pc.peer] = true
 	}
-	n.problem = nil
+	// A removed node stays told until a live record of it comes back
+	// (mergeSelfLocked): a session some member opened before it learned of the
+	// removal is not a way back in.
+	if self := n.members[n.cfg.Node]; !errors.Is(n.problem, ErrRemoved) || self == nil || !self.Removed {
+		n.problem = nil
+	}
 	n.areas[pc.peer] = pc.areas
 	areas := make(map[string][]string, len(n.areas))
 	maps.Copy(areas, n.areas)

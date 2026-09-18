@@ -115,6 +115,7 @@ func TestMembersMeshAddRemove(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "d back in the mesh", meshed(a, b, c, d))
+	eventually(t, "d no longer reports the removal", func() bool { return d.Problem() == nil })
 }
 
 // A restarted node keeps its table: it dials a member it learned by gossip.
@@ -205,6 +206,22 @@ func TestMembersNameCollision(t *testing.T) {
 	a.mu.Unlock()
 	if pc == nil || pc.id != win.ID() || win.Problem() != nil {
 		t.Fatalf("after settling: holder %v, winner problem %v", pc, win.Problem())
+	}
+}
+
+// A session registered just before a tombstone arrived must not bring the
+// member back when it is noted afterwards.
+func TestNoteSessionKeepsTombstone(t *testing.T) {
+	a := newMeshNode(t, "a")
+	id := newID()
+	a.mergeMembers([]Member{{Name: "d", ID: id, Addrs: []string{"10.0.0.4:7420"}, Ver: 10}})
+	a.mergeMembers([]Member{{Name: "d", ID: id, Ver: 20, Removed: true}})
+	a.noteSession(&peerConn{peer: "d", id: id}, "10.0.0.5:7420")
+	a.mu.Lock()
+	got := *a.members["d"]
+	a.mu.Unlock()
+	if !got.Removed || got.Ver != 20 {
+		t.Fatalf("tombstone after a late session note: %+v", got)
 	}
 }
 

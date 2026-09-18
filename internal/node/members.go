@@ -222,6 +222,9 @@ func (n *Node) mergeSelfLocked(r *Member) bool {
 		return n.assertSelfLocked(r.Ver)
 	case r.ID == n.id:
 		n.members[n.cfg.Node] = r
+		if errors.Is(n.problem, ErrRemoved) {
+			n.problem = nil // added back
+		}
 		n.assertSelfLocked(0) // keep every own address in it
 		return true
 	default:
@@ -286,8 +289,11 @@ func (n *Node) mergeMembers(recs []Member) {
 		}
 	}
 	n.mu.Unlock()
+	// Every member that holds a session tells the removed one: the node that
+	// removed it may have had no session to it, or only one the removed node
+	// had not finished setting up.
 	for _, pc := range drop {
-		pc.close()
+		n.wg.Go(func() { n.tellRemoved(pc) })
 	}
 	switch {
 	case changed:
@@ -316,7 +322,13 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 	l := n.members[pc.peer]
 	changed := false
 	switch {
-	case l == nil || l.Removed:
+	case l != nil && l.Removed:
+		// The tombstone came between register and here: whoever set it already
+		// closes this session. A newer live record would undo the removal
+		// everywhere; only revive (a hand-added address) may do that.
+		n.mu.Unlock()
+		return
+	case l == nil:
 		n.members[pc.peer] = &Member{Name: pc.peer, ID: pc.id, Addrs: addrs, Ver: nextVer(l), Seen: now, App: pc.app}
 		changed = true
 	case (pc.id != "" && pc.id != l.ID) || !containsAll(l.Addrs, addrs):
@@ -396,14 +408,19 @@ func (n *Node) RemoveMember(name string) error {
 	n.mu.Unlock()
 	n.log.Info("member removed", "peer", name)
 	if pc != nil {
-		// It learns why before the session ends; the others learn from the gossip.
-		if pc.has(CapMembers) {
-			_ = pc.write(frame{Type: frameMembers, Members: n.snapshot()})
-		}
-		pc.closeAfterTelling()
+		n.tellRemoved(pc)
 	}
 	n.membersChanged()
 	return nil
+}
+
+// tellRemoved ends the session of a removed member after sending it the
+// table, so it learns why before the session ends.
+func (n *Node) tellRemoved(pc *peerConn) {
+	if pc.has(CapMembers) {
+		_ = pc.write(frame{Type: frameMembers, Members: n.snapshot()})
+	}
+	pc.closeAfterTelling()
 }
 
 // Members lists this node first, then every member that is not removed,
