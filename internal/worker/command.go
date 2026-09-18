@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -137,14 +138,14 @@ func (c Command) Runner() Runner {
 			}
 			args[i] = outFile
 		}
-		cmd := exec.CommandContext(ctx, c.Name, args...)
+		cmd := exec.CommandContext(ctx, c.Name, args...) //nolint:gosec // G204: the agent program the user configured, argv without a shell
 		cmd.Dir = filepath.Clean(dir)
 		cmd.Stdin = strings.NewReader(c.Preamble + prompt)
 		out := &stream{format: c.Format, dir: cmd.Dir, onLine: progress}
 		var stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = out, &stderr
 		cmd.WaitDelay = 5 * time.Second
-		prepare(cmd)
+		prepare(ctx, cmd)
 		err := cmd.Run()
 		out.flush()
 		if err != nil {
@@ -183,7 +184,7 @@ func Version(ctx context.Context, path string) (string, error) {
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	cmd.WaitDelay = 2 * time.Second
-	prepare(cmd)
+	prepare(ctx, cmd)
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("%s --version: %w: %s", path, err, tail(out.String(), 300))
 	}
@@ -198,8 +199,8 @@ func Version(ctx context.Context, path string) (string, error) {
 // whole session banner to stderr), otherwise the tail of stderr.
 func reason(stderr string) string {
 	lines := strings.Split(stderr, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if line := strings.TrimSpace(lines[i]); strings.HasPrefix(line, "ERROR:") {
+	for _, line := range slices.Backward(lines) {
+		if line := strings.TrimSpace(line); strings.HasPrefix(line, "ERROR:") {
 			return strings.TrimSpace(strings.TrimPrefix(line, "ERROR:"))
 		}
 	}

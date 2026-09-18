@@ -1,7 +1,10 @@
 package worker
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"math"
 	"os/exec"
 	"strconv"
 	"syscall"
@@ -16,9 +19,9 @@ const (
 
 // prepare hides the agent's console window (the tray app has none) and kills
 // the whole process tree on cancel, since agent CLIs spawn children.
-func prepare(cmd *exec.Cmd) {
+func prepare(ctx context.Context, cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
-	cmd.Cancel = func() error { return killTree(cmd.Process.Pid) }
+	cmd.Cancel = func() error { return killTree(ctx, cmd.Process.Pid) }
 }
 
 // detach makes cmd a process that outlives this one: its own process group
@@ -33,12 +36,25 @@ func detach(cmd *exec.Cmd, breakaway bool) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: flags}
 }
 
-// killTree kills pid and every process it started.
-func killTree(pid int) error {
-	kill := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid))
+// pid32 converts pid to the DWORD the Win32 process calls take.
+func pid32(pid int) (uint32, error) {
+	if pid < 0 || pid > math.MaxUint32 {
+		return 0, fmt.Errorf("pid %d out of range", pid)
+	}
+	return uint32(pid), nil
+}
+
+// killTree kills pid and every process it started. It runs even when ctx is
+// already done (a cancel is what usually calls it): only ctx's values are used.
+func killTree(ctx context.Context, pid int) error {
+	kill := exec.CommandContext(context.WithoutCancel(ctx), "taskkill", "/T", "/F", "/PID", strconv.Itoa(pid)) //nolint:gosec // G204: fixed system binary, the only variable argument is a formatted integer
 	kill.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
 	if err := kill.Run(); err != nil {
-		p, perr := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
+		id, perr := pid32(pid)
+		if perr != nil {
+			return err
+		}
+		p, perr := windows.OpenProcess(windows.PROCESS_TERMINATE, false, id)
 		if perr != nil {
 			return err
 		}
@@ -51,7 +67,11 @@ func killTree(pid int) error {
 // procStart returns the creation time of a live process pid, which tells it
 // apart from a later process that reuses the pid.
 func procStart(pid int) (int64, error) {
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	id, err := pid32(pid)
+	if err != nil {
+		return 0, err
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, id)
 	if err != nil {
 		return 0, err
 	}
@@ -71,7 +91,11 @@ func startOf(h windows.Handle) (int64, error) {
 // restart). It reports false when pid is gone or is now another process. The
 // exit code is the real one: the handle keeps it readable after exit.
 func attach(pid int, start int64) (*proc, bool) {
-	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	id, err := pid32(pid)
+	if err != nil {
+		return nil, false
+	}
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, id)
 	if err != nil {
 		return nil, false
 	}

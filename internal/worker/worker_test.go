@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -35,7 +36,8 @@ func TestMain(m *testing.M) {
 		time.Sleep(time.Minute)
 	case "tree":
 		// A long-lived child, like the node process behind an agent's .cmd shim.
-		child := exec.Command(os.Args[0])
+		// The child must outlive this fake agent (the test kills the tree).
+		child := exec.CommandContext(context.Background(), os.Args[0]) //nolint:gosec // G204: re-executes this test binary as the fake agent
 		child.Env = append(os.Environ(), "AGENTLINK_FAKE_AGENT=sleep")
 		if err := child.Start(); err != nil {
 			os.Exit(4)
@@ -93,7 +95,7 @@ func fakeLog(line string) {
 	if p == "" {
 		return
 	}
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(filepath.Clean(p), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}

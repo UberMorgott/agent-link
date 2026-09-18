@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strconv"
@@ -11,7 +12,7 @@ import (
 	"time"
 )
 
-func prepare(*exec.Cmd) {}
+func prepare(context.Context, *exec.Cmd) {}
 
 // detach puts cmd in its own process group, so a signal to the app's group
 // does not reach it and killTree can take down its children.
@@ -20,7 +21,7 @@ func detach(cmd *exec.Cmd, _ bool) {
 }
 
 // killTree kills the process group pid leads.
-func killTree(pid int) error {
+func killTree(_ context.Context, pid int) error {
 	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
 		return syscall.Kill(pid, syscall.SIGKILL)
 	}

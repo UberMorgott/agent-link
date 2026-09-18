@@ -78,7 +78,7 @@ func TestSenderObservesStatusSequence(t *testing.T) {
 	})
 	close(release)
 
-	resp, err := http.Get(a.api.URL + "/wait?timeout=20s")
+	resp, err := httpGet(t, a.api.URL+"/wait?timeout=20s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,13 +142,14 @@ func TestAnswerSurvivesDaemonRestart(t *testing.T) {
 	}
 	eventually(t, "agent started", func() bool { return len(runs()) == 1 })
 	stop()
-	ln, err := net.Listen("tcp", addrB)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", addrB)
 	if err != nil {
 		t.Fatal(err)
 	}
 	daemon(ln)
 
-	resp, err := http.Get(a.api.URL + "/wait?timeout=30s")
+	resp, err := httpGet(t, a.api.URL+"/wait?timeout=30s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,9 +170,19 @@ type e2eNode struct {
 	api *httptest.Server
 }
 
+// httpGet sends a GET bounded by the test's context.
+func httpGet(t *testing.T, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return http.DefaultClient.Do(req)
+}
+
 func listenTCP(t *testing.T) net.Listener {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}

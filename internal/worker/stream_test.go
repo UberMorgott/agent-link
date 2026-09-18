@@ -2,6 +2,7 @@ package worker
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -22,7 +23,7 @@ func feed(t *testing.T, s *stream, data []byte) {
 
 func fixture(t *testing.T, name string) []byte {
 	t.Helper()
-	data, err := os.ReadFile("testdata/" + name)
+	data, err := os.ReadFile(filepath.Join("testdata", filepath.Clean(name)))
 	if err != nil {
 		t.Fatal(err)
 	}

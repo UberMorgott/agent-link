@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,7 +29,7 @@ func fakeRunLog(t *testing.T) func() []string {
 	p := filepath.Join(t.TempDir(), "runs.log")
 	t.Setenv("AGENTLINK_FAKE_LOG", p)
 	return func() []string {
-		data, _ := os.ReadFile(p)
+		data, _ := os.ReadFile(filepath.Clean(p))
 		return strings.Fields(string(data))
 	}
 }
@@ -46,7 +47,7 @@ func agentPID(t *testing.T, w *Worker, id string) Proc {
 		rec = *j.Proc
 		return true
 	})
-	t.Cleanup(func() { killLeftover(&rec) })
+	t.Cleanup(func() { killLeftover(context.Background(), &rec) }) // t.Context() is done by cleanup time
 	return rec
 }
 
@@ -210,7 +211,7 @@ func TestDeadAgentIsResumed(t *testing.T) {
 		return strings.Contains(string(data), p.Session)
 	})
 	stop()
-	if err := killTree(p.PID); err != nil {
+	if err := killTree(t.Context(), p.PID); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "agent dead", func() bool { return !alive(p) })
@@ -237,7 +238,7 @@ func TestDeadAgentWithoutSessionStartsOver(t *testing.T) {
 	accept(t, w1, msg(id1, "q"))
 	p := agentPID(t, w1, id1)
 	stop()
-	if err := killTree(p.PID); err != nil {
+	if err := killTree(t.Context(), p.PID); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "agent dead", func() bool { return !alive(p) })

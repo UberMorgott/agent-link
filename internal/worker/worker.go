@@ -240,7 +240,7 @@ func (w *Worker) Job(id string) (Job, bool) {
 // running on disk and retried by the next Run. Without a runner, Run fails
 // the pending jobs and returns.
 func (w *Worker) Run(ctx context.Context) {
-	w.recover()
+	w.recover(ctx)
 	if !w.hasHandler() {
 		for j := w.next(); j != nil; j = w.next() {
 			w.finish(j, node.JobFailed, "", ErrNoHandler)
@@ -310,7 +310,7 @@ func (w *Worker) claim() (j *Job, reattach bool, err error) {
 }
 
 // recover requeues or fails jobs found running and re-sends missing final replies.
-func (w *Worker) recover() {
+func (w *Worker) recover(ctx context.Context) {
 	w.mu.Lock()
 	jobs := make([]*Job, 0, len(w.jobs))
 	for _, j := range w.jobs {
@@ -328,7 +328,7 @@ func (w *Worker) recover() {
 			continue
 		case j.Status == node.JobRunning && j.Proc != nil:
 			// No handler to watch it any more.
-			killLeftover(j.Proc)
+			killLeftover(ctx, j.Proc)
 		}
 		switch {
 		case j.Status == node.JobRunning && j.Attempts >= MaxAttempts:

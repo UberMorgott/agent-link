@@ -68,7 +68,7 @@ func (w *Worker) runBase(id string, attempt int) string {
 
 // launch starts c detached for j's current attempt. resume continues session
 // instead of sending the request again.
-func (w *Worker) launch(j *Job, c Command, session string, resume bool) (*proc, error) {
+func (w *Worker) launch(ctx context.Context, j *Job, c Command, session string, resume bool) (*proc, error) {
 	w.mu.Lock()
 	id, attempt, prompt := j.Request.ID, j.Attempts, j.Request.Body
 	w.mu.Unlock()
@@ -109,14 +109,15 @@ func (w *Worker) launch(j *Job, c Command, session string, resume bool) (*proc, 
 		ext  string
 		flag int
 	}{{".in", os.O_RDONLY}, {".out", os.O_CREATE | os.O_TRUNC | os.O_WRONLY}, {".err", os.O_CREATE | os.O_TRUNC | os.O_WRONLY}} {
-		f, err := os.OpenFile(base+spec.ext, spec.flag, 0o600)
+		f, err := os.OpenFile(filepath.Clean(base+spec.ext), spec.flag, 0o600)
 		if err != nil {
 			return nil, err
 		}
 		files = append(files, f)
 	}
 	start := func(breakaway bool) (*exec.Cmd, error) {
-		cmd := exec.Command(c.Name, args...)
+		// The run outlives this app (see detach): ctx must not end it.
+		cmd := exec.CommandContext(context.WithoutCancel(ctx), c.Name, args...) //nolint:gosec // G204: the agent program the user configured, argv without a shell
 		cmd.Dir = rec.Dir
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = files[0], files[1], files[2]
 		detach(cmd, breakaway)
@@ -158,7 +159,7 @@ func (w *Worker) launch(j *Job, c Command, session string, resume bool) (*proc, 
 // picks up the run a previous app left behind.
 func (w *Worker) handleDetached(ctx context.Context, j *Job, reattach bool) {
 	if !reattach {
-		p, err := w.launch(j, w.opt.Agent(), "", false)
+		p, err := w.launch(ctx, j, w.opt.Agent(), "", false)
 		if err != nil {
 			w.finish(j, node.JobFailed, "", fmt.Sprintf("handler failed: %v", err))
 			return
@@ -200,7 +201,7 @@ func (w *Worker) handleDetached(ctx context.Context, j *Job, reattach bool) {
 		w.log.Error("save job", "id", id, "err", err)
 		return
 	}
-	p, err := w.launch(j, c, s.session, resume)
+	p, err := w.launch(ctx, j, c, s.session, resume)
 	if err != nil {
 		w.finish(j, node.JobFailed, "", fmt.Sprintf("handler failed: %v", err))
 		return
@@ -327,7 +328,7 @@ func (w *Worker) watch(ctx context.Context, j *Job, p *proc) {
 		case <-tick.C:
 		}
 	}
-	if err := killTree(p.pid); err != nil {
+	if err := killTree(ctx, p.pid); err != nil {
 		w.log.Warn("kill agent", "id", m.ID, "pid", p.pid, "err", err)
 	}
 	select {
@@ -335,10 +336,10 @@ func (w *Worker) watch(ctx context.Context, j *Job, p *proc) {
 	case <-time.After(10 * time.Second):
 	}
 	relay.stop()
-	switch stop {
-	case errIdleTimeout:
+	switch {
+	case errors.Is(stop, errIdleTimeout):
 		w.finish(j, node.JobFailed, "", fmt.Sprintf("%s (нет активности %s)", ErrIdle, minutes(w.opt.IdleTimeout)))
-	case errHardTimeout:
+	case errors.Is(stop, errHardTimeout):
 		w.finish(j, node.JobFailed, "", fmt.Sprintf("handler timed out after %s", w.opt.Timeout))
 	default:
 		w.finish(j, node.JobFailed, "", ErrCancelled)
@@ -413,12 +414,12 @@ func (w *Worker) CancelAll() {
 }
 
 // killLeftover kills a detached agent that no handler will watch.
-func killLeftover(rec *Proc) {
+func killLeftover(ctx context.Context, rec *Proc) {
 	if rec == nil {
 		return
 	}
 	if _, ok := attach(rec.PID, rec.Start); ok {
-		_ = killTree(rec.PID)
+		_ = killTree(ctx, rec.PID)
 	}
 }
 

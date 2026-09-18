@@ -266,8 +266,8 @@ func (s *stream) answer() (string, error) {
 // (`"...pwsh.exe" -Command '...'`, `bash -lc '...'`), keeping what it runs.
 func shellBody(cmd string) string {
 	for _, sep := range []string{" -Command ", " -lc ", " -c "} {
-		if i := strings.Index(cmd, sep); i >= 0 {
-			body := strings.TrimSpace(cmd[i+len(sep):])
+		if _, after, ok := strings.Cut(cmd, sep); ok {
+			body := strings.TrimSpace(after)
 			if len(body) >= 2 && (body[0] == '\'' || body[0] == '"') && body[len(body)-1] == body[0] {
 				body = body[1 : len(body)-1]
 			}

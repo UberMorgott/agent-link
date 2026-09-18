@@ -23,7 +23,7 @@ func TestTimeoutKillsProcessTree(t *testing.T) {
 	if got := rec.wait(t, 1)[0]; !strings.Contains(got.Body, "timed out") {
 		t.Fatalf("reply = %+v", got)
 	}
-	data, err := os.ReadFile(pidFile)
+	data, err := os.ReadFile(filepath.Clean(pidFile))
 	if err != nil {
 		t.Fatalf("child pid: %v", err)
 	}
@@ -31,7 +31,11 @@ func TestTimeoutKillsProcessTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_TERMINATE, false, uint32(pid))
+	id, err := pid32(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_TERMINATE, false, id)
 	if err != nil {
 		return // already gone
 	}
