@@ -87,6 +87,7 @@ func TestThreadPeerUsesRemoteParticipant(t *testing.T) {
 	}{
 		{name: "inbound", local: "alice", thread: Thread{Direction: "in", From: "bob", To: "alice"}, want: "bob"},
 		{name: "outbound", local: "alice", thread: Thread{Direction: "out", From: "alice", To: "bob"}, want: "bob"},
+		{name: "outbound after local rename", local: "alice-new", thread: Thread{Direction: "out", From: "alice-old", To: "bob"}, want: "bob"},
 		{name: "reply without its request", local: "alice", thread: Thread{Direction: "in", From: "bob", To: "alice", Answer: "answer"}, want: "bob"},
 		{name: "area delivery", local: "alice", thread: Thread{Direction: "out", From: "alice", To: "bob", Area: "dev"}, want: "bob"},
 	}

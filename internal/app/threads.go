@@ -108,7 +108,7 @@ func newThread(e node.Entry) Thread {
 // threadPeer returns the remote member for a thread. Outbound area deliveries
 // have their concrete recipient in To, set from Entry.Peer by newThread.
 func threadPeer(thread Thread, local string) string {
-	if thread.From == local {
+	if thread.Direction == "out" {
 		return thread.To
 	}
 	return thread.From
