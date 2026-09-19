@@ -21,6 +21,11 @@ function renderRoute(state) {
   document.title = t("page.title." + route);
   if (route === "dashboard") renderOverview(store.get().dashboard);
   if (route === "participants") renderParticipants();
+  if (route === "inbox") {
+    const peer = typeof state.query.peer === "string" ? state.query.peer : store.get().selectedPeer;
+    const message = typeof state.query.message === "string" ? state.query.message : "";
+    selectConversation(peer || store.get().status?.peer || "", message);
+  }
   document.getElementById("view").focus({ preventScroll: true });
 }
 

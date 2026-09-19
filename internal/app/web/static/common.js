@@ -22,7 +22,10 @@ function createStore(initial) {
   };
 }
 
-const store = createStore({ status: null, dashboard: null, participants: null, update: null, settings: null, threads: null });
+const store = createStore({
+  status: null, dashboard: null, participants: null, update: null, settings: null,
+  threads: null, threadFeed: null, selectedPeer: "", selectedMessage: "", drafts: {},
+});
 
 // STRINGS is the application-shell dictionary served by the app; see internal/app/strings.go.
 const STRINGS = JSON.parse(document.querySelector('meta[name="agentlink-strings"]').content);
@@ -110,7 +113,7 @@ const coreFailures = new Map();
 
 function showConnectionProblem(name, error) {
   coreFailures.set(name, error);
-  const region = document.getElementById("toast-region");
+  const region = document.getElementById("connection-banner") || document.getElementById("toast-region");
   if (!region) return;
   if (error.status === 403) {
     reloadRequired = true;
@@ -126,10 +129,24 @@ function showConnectionProblem(name, error) {
 
 function clearConnectionProblem(name) {
   coreFailures.delete(name);
-  if (!reloadRequired && !coreFailures.size) document.getElementById("toast-region")?.replaceChildren();
+  if (!reloadRequired && !coreFailures.size) (document.getElementById("connection-banner") || document.getElementById("toast-region"))?.replaceChildren();
 }
 
 function refreshSlice(name) {
+  if (name === "threads") {
+    return api("GET", "threads").then(async (feed) => {
+      store.patch("threadFeed", feed);
+      const peer = store.get().selectedPeer;
+      if (!peer) {
+        store.patch("threads", feed);
+        clearConnectionProblem(name);
+        return;
+      }
+      const selected = await api("GET", "threads?peer=" + encodeURIComponent(peer));
+      if (store.get().selectedPeer === peer) store.patch("threads", selected);
+      clearConnectionProblem(name);
+    }).catch((error) => showConnectionProblem(name, error));
+  }
   return api("GET", name).then((value) => {
     store.patch(name, value);
     clearConnectionProblem(name);

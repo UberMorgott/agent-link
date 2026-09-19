@@ -138,6 +138,19 @@ try {
         Write-Host "$($n.name): $($st | ConvertTo-Json -Compress)"
     }
 
+    Write-Host '== inbound after dashboard load exposes exactly one new browser notification id'
+    Invoke-Ui $a GET dashboard | Out-Null
+    $knownInbound = @((Invoke-Ui $a GET threads) | Where-Object { $_.direction -eq 'in' } | ForEach-Object { $_.id })
+    $notice = Invoke-Ui $b POST send @{ to = 'node-a'; body = 'dashboard notification' }
+    $newInbound = @(Wait-Until {
+        $ids = @((Invoke-Ui $a GET threads) | Where-Object { $_.direction -eq 'in' } | ForEach-Object { $_.id })
+        $new = @($ids | Where-Object { $_ -notin $knownInbound })
+        if ($new.Count -eq 1) { ,$new }
+    } 'one new inbound notification id')
+    if ($newInbound.Count -ne 1 -or $newInbound[0] -ne $notice.id) {
+        throw "notification ids $($newInbound -join ',') do not match sent id $($notice.id)"
+    }
+
     Write-Host '== request node-a -> node-b, auto-reply in node-a inbox'
     $req = Invoke-Ui $a POST send @{ to = 'node-b'; body = 'ping from node-a' }
     $reply = Wait-Until { Find-Reply $a $req.id } 'auto-reply'

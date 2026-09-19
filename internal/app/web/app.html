@@ -35,21 +35,23 @@
       </section>
       <section data-view="inbox" hidden>
         <h1 data-t="inbox.h1"></h1>
-        <form id="send">
-          <fieldset>
-            <legend data-t="inbox.send.legend"></legend>
-            <label><span data-t="inbox.to.label"></span><input name="to" id="to" autocomplete="off" list="member_names"></label>
-            <datalist id="member_names"></datalist>
-            <p class="hint" data-t="inbox.to.hint"></p>
-            <label><span data-t="inbox.body.label"></span><textarea name="body" id="body" rows="4"></textarea></label>
-            <p class="hint" data-t="inbox.body.hint"></p>
-            <input type="hidden" name="reply_to" id="reply_to">
-            <p id="replying" hidden><span id="replying_text"></span> <button type="button" id="cancel_reply" data-t="inbox.cancel_reply"></button></p>
-            <button type="submit" data-t="inbox.send"></button>
-            <p id="inbox_result" role="status"></p>
-          </fieldset>
-        </form>
-        <ul id="messages"></ul>
+        <div class="conversation-layout">
+          <aside class="conversation-sidebar" aria-label="Список разговоров">
+            <ul id="conversation_list" class="conversation-list"></ul>
+          </aside>
+          <section class="conversation-panel">
+            <h2 id="conversation_title" data-t="inbox.select"></h2>
+            <ul id="messages" class="conversation-timeline"></ul>
+            <form id="send" class="composer">
+              <label class="sr-only"><span data-t="inbox.to.label"></span><input name="to" id="to" autocomplete="off" list="member_names"></label>
+              <datalist id="member_names"></datalist>
+              <label><span class="sr-only" data-t="inbox.body.label"></span><textarea name="body" id="body" rows="4" data-t-placeholder="inbox.body.placeholder"></textarea></label>
+              <input type="hidden" name="reply_to" id="reply_to">
+              <p id="replying" hidden><span id="replying_text"></span> <button type="button" id="cancel_reply" data-t="inbox.cancel_reply"></button></p>
+              <div class="composer-actions"><p id="inbox_result" role="status"></p><button type="submit" id="send_button" data-t="inbox.send"></button></div>
+            </form>
+          </section>
+        </div>
       </section>
       <section data-view="participants" hidden>
         <h1 data-t="participants.h1"></h1>
@@ -134,7 +136,10 @@
       </section>
     </main>
   </section>
-  <div id="toast-region" role="status" aria-live="polite"></div>
+  <div id="toast-region" role="status" aria-live="polite">
+    <div id="connection-banner"></div>
+    <div id="message-toast-region" class="message-toast-region"></div>
+  </div>
 </div>
 <script src="/ui/static/common.js"></script>
 <script src="/ui/static/overview.js"></script>

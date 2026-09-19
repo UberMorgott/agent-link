@@ -710,6 +710,148 @@ func TestThreadsEndpointFiltersDecodedPeerAndUsesCompleteHistory(t *testing.T) {
 	}
 }
 
+// TestInboxConversationState executes the inbox browser module against a tiny
+// DOM. It catches replacing message nodes, losing an in-progress draft/caret,
+// using an unescaped peer query, and sending the same form twice.
+func TestInboxConversationState(t *testing.T) {
+	path, err := filepath.Abs("web/static/inbox.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const program = `
+const fs = require("fs");
+class Element {
+  constructor(id = "") { this.id = id; this.value = ""; this.hidden = false; this.disabled = false; this.textContent = ""; this.className = ""; this.dataset = {}; this.children = []; this.listeners = {}; this.scrollTop = 0; this.scrollHeight = 0; this.clientHeight = 100; this.selectionStart = 0; this.selectionEnd = 0; }
+  append(...nodes) { this.children.push(...nodes); this.scrollHeight = this.children.length * 100; }
+  replaceChildren(...nodes) { this.children = nodes; this.scrollHeight = this.children.length * 100; }
+  addEventListener(name, fn) { this.listeners[name] = fn; }
+  setAttribute(name, value) { this[name] = value; }
+  removeAttribute(name) { delete this[name]; }
+  focus() { document.activeElement = this; }
+  scrollIntoView() { this.scrolled = true; }
+  remove() { this.removed = true; }
+}
+const ids = ["messages", "conversation_list", "send", "inbox_result", "reply_to", "replying", "replying_text", "to", "body", "cancel_reply", "send_button", "message-toast-region"];
+const elements = Object.fromEntries(ids.map((id) => [id, new Element(id)]));
+const document = {
+  activeElement: null,
+  getElementById: (id) => elements[id],
+  createElement: () => new Element(),
+  createTextNode: (text) => ({ textContent: text }),
+};
+const state = { selectedPeer: "", selectedMessage: "", drafts: {}, threads: null, threadFeed: null, status: { node: "local" }, participants: [] };
+const listeners = new Map();
+const store = {
+  get: () => state,
+  patch(name, value) { state[name] = value; for (const fn of listeners.get(name) || []) fn(value, state); },
+  subscribe(name, fn) { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name).add(fn); },
+};
+const calls = [];
+const control = { releaseSend: null };
+const full = Array.from({ length: 205 }, (_, i) => ({ id: "m" + i, direction: i % 2 ? "in" : "out", from: i % 2 ? "карл & sons" : "local", to: i % 2 ? "local" : "карл & sons", body: "line " + i, created_at: new Date(1700000000000 + i * 1000).toISOString(), status: "sent", replyable: i % 2 === 1 }));
+async function api(method, path) {
+  calls.push(method + " " + path);
+  if (method === "GET") return full;
+  return new Promise((resolve) => { control.releaseSend = () => resolve(full[204]); });
+}
+const t = (key) => key;
+const fmt = (key, vars) => key + JSON.stringify(vars);
+let navigation = null;
+function navigate(route, query) { navigation = { route, query }; }
+const localStorage = { values: new Map(), getItem(k) { return this.values.get(k) || null; }, setItem(k, v) { this.values.set(k, v); } };
+const source = fs.readFileSync(process.argv[1], "utf8");
+const test = fs.readFileSync(process.argv[2], "utf8");
+require("vm").runInNewContext(source + test, { document, store, api, t, fmt, navigate, localStorage, calls, control, full, elements, console, process, URLSearchParams, Date, Map, Set, Object, Array, Promise, JSON, String }, { filename: process.argv[1] });
+`
+	const testSource = `
+(async () => {
+  await selectConversation("карл & sons", "m204");
+  if (calls[0] !== "GET threads?peer=%D0%BA%D0%B0%D1%80%D0%BB%20%26%20sons") throw new Error("peer query: " + calls[0]);
+  if (store.get().selectedPeer !== "карл & sons" || elements.messages.children.length !== 205) throw new Error("full conversation was not selected");
+  if (!elements.messages.children[204].scrolled) throw new Error("message anchor was not revealed");
+  const kept = elements.messages.children[10];
+  elements.body.value = "first\nsecond"; elements.body.selectionStart = 3; elements.body.selectionEnd = 3; elements.body.focus();
+  elements.messages.scrollTop = 45; elements.messages.clientHeight = 100; elements.messages.scrollHeight = 20500;
+  const changed = full.map((item) => ({ ...item })); changed[10].activity = "reading";
+  renderTimeline(changed);
+  if (elements.messages.children[10] !== kept) throw new Error("message node was replaced");
+  if (elements.body.value !== "first\nsecond" || document.activeElement !== elements.body || elements.body.selectionStart !== 3) throw new Error("draft focus/caret changed");
+  if (elements.messages.scrollTop !== 45) throw new Error("upward scroll jumped: " + elements.messages.scrollTop);
+  elements.send.listeners.submit({ preventDefault() {} }); elements.send.listeners.submit({ preventDefault() {} });
+  await Promise.resolve();
+  if (calls.filter((call) => call === "POST send").length !== 1 || !elements.send_button.disabled) throw new Error("duplicate send was not blocked");
+  control.releaseSend(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  if (elements.send_button.disabled) throw new Error("send button stayed disabled");
+  store.patch("selectedPeer", "");
+  store.patch("status", { node: "local", peer: "bob" });
+  await Promise.resolve();
+  if (store.get().selectedPeer !== "bob") throw new Error("first connected peer was not selected");
+})().catch((error) => { console.error(error.stack); process.exitCode = 1; });`
+	testPath := filepath.Join(t.TempDir(), "conversation-test.js")
+	if err := os.WriteFile(testPath, []byte(testSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // G204: fixed Node executable runs the checked-in browser module in a deterministic harness.
+	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path, testPath).CombinedOutput(); err != nil {
+		t.Fatalf("conversation state regression: %v\n%s", err, output)
+	}
+}
+
+// TestInboxNotificationWatermark proves that existing messages are seeded
+// silently and only a later inbound request creates one safe, bounded toast.
+func TestInboxNotificationWatermark(t *testing.T) {
+	path, err := filepath.Abs("web/static/inbox.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const program = `
+const fs = require("fs");
+class Element { constructor(id="") { this.id=id; this.value=""; this.hidden=false; this.disabled=false; this.textContent=""; this.children=[]; this.listeners={}; this.dataset={}; } append(...x){this.children.push(...x);this.textContent=this.children.map((n)=>n.textContent||"").join("")} replaceChildren(...x){this.children=x;this.textContent=this.children.map((n)=>n.textContent||"").join("")} addEventListener(n,f){this.listeners[n]=f} setAttribute(){} focus(){} remove(){this.removed=true} }
+const ids=["messages","conversation_list","send","inbox_result","reply_to","replying","replying_text","to","body","cancel_reply","send_button","message-toast-region"];
+const elements=Object.fromEntries(ids.map((id)=>[id,new Element(id)]));
+const document={activeElement:null,getElementById:(id)=>elements[id],createElement:()=>new Element(),createTextNode:(text)=>({textContent:text})};
+const state={selectedPeer:"",selectedMessage:"",drafts:{},threads:null,threadFeed:null,status:{node:"local"},participants:[]};
+const subscriptions=new Map(); const store={get:()=>state,patch(n,v){state[n]=v;for(const f of subscriptions.get(n)||[])f(v,state)},subscribe(n,f){if(!subscriptions.has(n))subscriptions.set(n,new Set());subscriptions.get(n).add(f)}};
+const t=(key)=>key, fmt=(key,vars)=>key+JSON.stringify(vars); async function api(){return []}
+const navState={}; function navigate(route,query){navState.value={route,query}}
+const localStorage={values:new Map(),getItem(k){return this.values.get(k)||null},setItem(k,v){this.values.set(k,v)}};
+const initial=[{id:"old",direction:"in",from:"bob",to:"local",body:"old",created_at:"2026-01-01T00:00:00Z",status:"pending"}];
+const long="😀".repeat(121);
+const next=[...initial,{id:"new",direction:"in",from:"карл & sons",to:"local",body:long,created_at:"2026-01-02T00:00:00Z",status:"pending"},{id:"out",direction:"out",from:"local",to:"bob",body:"ignore",created_at:"2026-01-03T00:00:00Z",status:"sent"}];
+const source=fs.readFileSync(process.argv[1],"utf8");
+const test=fs.readFileSync(process.argv[2],"utf8");
+require("vm").runInNewContext(source+test,{document,store,api,t,fmt,navigate,localStorage,initial,next,elements,navState,console,process,URLSearchParams,Date,Map,Set,Object,Array,Promise,JSON,String},{filename:process.argv[1]});
+`
+	const testSource = `
+processIncomingThreads(initial);
+if(elements["message-toast-region"].children.length) throw new Error("initial history produced a toast");
+processIncomingThreads(next);
+if(elements["message-toast-region"].children.length!==1) throw new Error("new inbound toast count");
+const toast=elements["message-toast-region"].children[0];
+if(!toast.textContent.includes("карл & sons")) throw new Error("sender missing: "+toast.textContent);
+const preview=toast.children.find((child)=>child.className==="message-toast-preview").textContent;
+if(Array.from(preview.replace(/…$/,"" )).length!==120 || !preview.endsWith("…")) throw new Error("preview not code-point bounded: "+Array.from(preview).length);
+toast.listeners.click();
+if(navState.value.route!=="inbox" || navState.value.query.peer!=="карл & sons" || navState.value.query.message!=="new") throw new Error("toast navigation: "+JSON.stringify(navState.value));
+const saved=JSON.parse(localStorage.values.get("agentlink.notifications.v1:local"));
+if(!saved.includes("old") || !saved.includes("new") || saved.includes("out")) throw new Error("watermark: "+JSON.stringify(saved));
+const answered=next.map((item)=>item.id==="out"?{...item,answered:true,answer:"reply from bob",answer_at:"2026-01-04T00:00:00Z"}:item);
+processIncomingThreads(answered);
+if(elements["message-toast-region"].children.length!==2) throw new Error("new reply did not produce a toast");
+const replyToast=elements["message-toast-region"].children[1];
+if(!replyToast.textContent.includes("bob") || !replyToast.textContent.includes("reply from bob")) throw new Error("reply toast content: "+replyToast.textContent);
+replyToast.listeners.click();
+if(navState.value.query.peer!=="bob" || navState.value.query.message!=="out") throw new Error("reply toast target: "+JSON.stringify(navState.value));`
+	testPath := filepath.Join(t.TempDir(), "notification-test.js")
+	if err := os.WriteFile(testPath, []byte(testSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	//nolint:gosec // G204: fixed Node executable runs the checked-in browser module in a deterministic harness.
+	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path, testPath).CombinedOutput(); err != nil {
+		t.Fatalf("notification watermark regression: %v\n%s", err, output)
+	}
+}
+
 func TestDashboardAPIsServeStoppedNodeDefaults(t *testing.T) {
 	h := newHarness(t)
 	code, body := h.do(t, http.MethodGet, "/ui/api/dashboard", "", h.tokenHdr())
