@@ -255,42 +255,48 @@ func TestMergeMemberInfoPublishesOnlyAfterPersistence(t *testing.T) {
 	a := newMeshNode(t, "a")
 	id := newID()
 	a.mergeMembers([]Member{{Name: "b", ID: id, Ver: 10, Seen: 10, App: "1.0"}})
-	changes := make(chan string, 2)
+	type observation struct {
+		topic   string
+		members []Member
+		err     error
+	}
+	changes := make(chan observation, 2)
 	a.SetChangeHook(func(topic string) {
 		_ = a.Members() // proves the observer is outside Node.mu
-		changes <- topic
+		stored, err := a.store.loadMembers()
+		changes <- observation{topic: topic, members: stored, err: err}
 	})
 
 	a.mergeMembers([]Member{{Name: "b", ID: id, Ver: 10, Seen: 20, App: "2.0"}})
+	var observed observation
 	select {
-	case topic := <-changes:
-		if topic != "members" {
-			t.Fatalf("topic = %q, want members", topic)
+	case observed = <-changes:
+		if observed.topic != "members" {
+			t.Fatalf("topic = %q, want members", observed.topic)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("member info persistence did not publish")
 	}
-	stored, err := a.store.loadMembers()
-	if err != nil {
-		t.Fatal(err)
+	if observed.err != nil {
+		t.Fatal(observed.err)
 	}
-	i := slices.IndexFunc(stored, func(m Member) bool { return m.Name == "b" })
-	if i < 0 || stored[i].Seen != 20 || stored[i].App != "2.0" {
-		t.Fatalf("member info was not durable before callback: %+v", stored)
+	i := slices.IndexFunc(observed.members, func(m Member) bool { return m.Name == "b" })
+	if i < 0 || observed.members[i].Seen != 20 || observed.members[i].App != "2.0" {
+		t.Fatalf("member info was not durable inside callback: %+v", observed.members)
 	}
 
 	a.mergeMembers([]Member{{Name: "b", ID: id, Ver: 10, Seen: 20, App: "2.0"}})
 	select {
-	case topic := <-changes:
-		t.Fatalf("no-op merge published %q", topic)
+	case got := <-changes:
+		t.Fatalf("no-op merge published %q", got.topic)
 	default:
 	}
 
 	a.store.dir = filepath.Join(t.TempDir(), "missing")
 	a.mergeMembers([]Member{{Name: "b", ID: id, Ver: 10, Seen: 30, App: "3.0"}})
 	select {
-	case topic := <-changes:
-		t.Fatalf("failed persistence published %q", topic)
+	case got := <-changes:
+		t.Fatalf("failed persistence published %q", got.topic)
 	default:
 	}
 }
@@ -300,40 +306,63 @@ func TestNoteSessionInfoPublishesOnlyWhenChangedAndPersisted(t *testing.T) {
 	id := newID()
 	now := time.Now().Unix()
 	a.mergeMembers([]Member{{Name: "b", ID: id, Ver: 10, Seen: now, App: "1.0"}})
-	changes := make(chan string, 2)
+	type observation struct {
+		topic   string
+		members []Member
+		err     error
+	}
+	changes := make(chan observation, 2)
 	a.SetChangeHook(func(topic string) {
 		_ = a.Members()
-		changes <- topic
+		stored, err := a.store.loadMembers()
+		changes <- observation{topic: topic, members: stored, err: err}
 	})
 
 	pc := &peerConn{peer: "b", id: id, app: "2.0"}
 	a.noteSession(pc, "")
+	var observed observation
 	select {
-	case topic := <-changes:
-		if topic != "members" {
-			t.Fatalf("topic = %q, want members", topic)
+	case observed = <-changes:
+		if observed.topic != "members" {
+			t.Fatalf("topic = %q, want members", observed.topic)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("session info persistence did not publish")
 	}
-	stored, err := a.store.loadMembers()
-	if err != nil {
-		t.Fatal(err)
+	if observed.err != nil {
+		t.Fatal(observed.err)
 	}
-	i := slices.IndexFunc(stored, func(m Member) bool { return m.Name == "b" })
-	if i < 0 || stored[i].App != "2.0" {
-		t.Fatalf("session info was not durable before callback: %+v", stored)
+	i := slices.IndexFunc(observed.members, func(m Member) bool { return m.Name == "b" })
+	if i < 0 || observed.members[i].App != "2.0" {
+		t.Fatalf("session info was not durable inside callback: %+v", observed.members)
 	}
 
-	// Seen has one-second precision. With the current second and same app this
-	// path persists nothing new and must not wake the UI.
-	a.mu.Lock()
-	a.members["b"].Seen = time.Now().Unix()
-	a.mu.Unlock()
+	// Seen has one-second precision. Retry if the call straddled a second;
+	// the accepted iteration proves an exact same-second, same-app no-op.
+	for {
+		second := time.Now().Unix()
+		a.mu.Lock()
+		a.members["b"].Seen, a.members["b"].App = second, pc.app
+		a.mu.Unlock()
+		changes = make(chan observation, 2)
+		a.noteSession(pc, "")
+		if time.Now().Unix() != second {
+			continue
+		}
+		select {
+		case got := <-changes:
+			t.Fatalf("same-second no-op session note published %q", got.topic)
+		default:
+		}
+		break
+	}
+
+	a.store.dir = filepath.Join(t.TempDir(), "missing")
+	pc.app = "3.0"
 	a.noteSession(pc, "")
 	select {
-	case topic := <-changes:
-		t.Fatalf("no-op session note published %q", topic)
+	case got := <-changes:
+		t.Fatalf("failed session persistence published %q", got.topic)
 	default:
 	}
 }
