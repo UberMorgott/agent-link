@@ -304,33 +304,42 @@ func TestThreadsEndpointServesPairs(t *testing.T) {
 }
 
 func TestThreadsEndpointFiltersDecodedPeerAndUsesCompleteHistory(t *testing.T) {
-	entries := make([]node.Entry, 0, 206)
-	for i := range 205 {
-		entries = append(entries, entry("out", fmt.Sprintf("%032x", i+1), "alice", "карл & sons", fmt.Sprintf("m%d", i), at(int64(i))))
-	}
-	entries = append(entries, entry("out", strings.Repeat("f", 32), "alice", "bob", "other", at(999)))
-	got := filterThreads(threads(entries), "карл & sons", "alice")
-	if len(got) != 205 {
-		t.Fatalf("got %d filtered threads, want 205", len(got))
-	}
-
 	h := newHarness(t)
 	if code, body := h.do(t, http.MethodPost, "/ui/api/settings", validJSON(t), h.tokenHdr()); code != http.StatusOK {
 		t.Fatalf("save: %d %s", code, body)
 	}
-	if code, body := h.do(t, http.MethodPost, "/ui/api/send", `{"to":"bob","body":"вопрос"}`, h.tokenHdr()); code != http.StatusOK {
-		t.Fatalf("send: %d %s", code, body)
-	}
-	for _, peer := range []string{"карл & sons", "&?#"} {
-		code, body := h.do(t, http.MethodGet, "/ui/api/threads?peer="+url.QueryEscape(peer), "", h.tokenHdr())
-		if code != http.StatusOK || strings.TrimSpace(body) != "[]" {
-			t.Errorf("peer %q: %d %s, want empty filtered result", peer, code, body)
+	for i := range 205 {
+		body := fmt.Sprintf(`{"to":"bob","body":"вопрос %d"}`, i)
+		if code, got := h.do(t, http.MethodPost, "/ui/api/send", body, h.tokenHdr()); code != http.StatusOK {
+			t.Fatalf("send %d: %d %s", i, code, got)
 		}
 	}
-	code, body := h.do(t, http.MethodGet, "/ui/api/threads?peer=", "", h.tokenHdr())
+	// Network peer names intentionally cannot contain spaces or '&'. Move the
+	// real queued messages only inside this temporary store to prove URL-decoded
+	// filtering also handles a history value containing both.
+	peer := "карл & sons"
+	dataDir := filepath.Join(filepath.Dir(h.path), "data", "outbox")
+	if err := os.Rename(filepath.Join(dataDir, "bob"), filepath.Join(dataDir, peer)); err != nil {
+		t.Fatal(err)
+	}
+	code, body := h.do(t, http.MethodGet, "/ui/api/threads?peer="+url.QueryEscape(peer), "", h.tokenHdr())
+	var got []Thread
+	if err := json.Unmarshal([]byte(body), &got); err != nil || code != http.StatusOK || len(got) != 205 {
+		t.Fatalf("encoded peer: %d threads, status %d, err=%v, body=%s", len(got), code, err, body)
+	}
+	for _, thread := range got {
+		if thread.To != peer {
+			t.Fatalf("thread peer %q, want %q", thread.To, peer)
+		}
+	}
+	code, body = h.do(t, http.MethodGet, "/ui/api/threads?peer=", "", h.tokenHdr())
 	var all []Thread
-	if err := json.Unmarshal([]byte(body), &all); err != nil || code != http.StatusOK || len(all) != 1 {
+	if err := json.Unmarshal([]byte(body), &all); err != nil || code != http.StatusOK || len(all) != 200 {
 		t.Fatalf("empty peer: %d %s err=%v", code, body, err)
+	}
+	code, body = h.do(t, http.MethodGet, "/ui/api/threads?peer=%26%3F%23", "", h.tokenHdr())
+	if code != http.StatusOK || strings.TrimSpace(body) != "[]" {
+		t.Errorf("reserved peer: %d %s, want empty filtered result", code, body)
 	}
 }
 
@@ -343,9 +352,15 @@ func TestDashboardAPIsServeStoppedNodeDefaults(t *testing.T) {
 		dashboard.ActiveRequests != 0 || len(dashboard.Recent) != 0 || dashboard.Status.Running {
 		t.Fatalf("dashboard: %d %s err=%v", code, body, err)
 	}
+	if !strings.Contains(body, `"recent":[]`) {
+		t.Fatalf("dashboard recent is not an array: %s", body)
+	}
 	code, body = h.do(t, http.MethodGet, "/ui/api/participants", "", h.tokenHdr())
 	var participants []ParticipantView
 	if err := json.Unmarshal([]byte(body), &participants); err != nil || code != http.StatusOK || len(participants) != 0 {
 		t.Fatalf("participants: %d %s err=%v", code, body, err)
+	}
+	if strings.TrimSpace(body) != "[]" {
+		t.Fatalf("participants are not an array: %s", body)
 	}
 }
