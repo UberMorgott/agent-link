@@ -1,11 +1,12 @@
 name: Release
 
-# On a pushed v* tag: vet and test, build the stripped UPX-packed executables
-# and checksums.txt with scripts/release.ps1 (the same script as a local
-# release), attest their build provenance and publish the GitHub release that
-# self-update reads (`gh attestation verify <file> --repo UberMorgott/agent-link`).
-# Windows runner: the tests exercise the Windows process and tray code, and the
-# linux executables cross-compile from here.
+# On a pushed v* tag: vet and test, build the stripped UPX-packed agentlink.exe
+# with scripts/release.ps1 (the same script as a local release), attest its
+# build provenance and publish the GitHub release that self-update reads
+# (`gh attestation verify agentlink.exe --repo UberMorgott/agent-link`). The
+# release holds that one file; self-update checks it against the sha256
+# digest GitHub reports for the asset. Windows runner: the tests exercise the
+# Windows process and tray code.
 on:
   push:
     tags:
@@ -33,26 +34,31 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # Linux is not released, but its code must keep compiling.
+      - name: Vet (linux)
+        run: go vet ./...
+        env:
+          GOOS: linux
+
       - name: Test
         run: go test ./...
 
       - name: Install UPX
         run: choco install upx --no-progress -y
 
-      - name: Build (stripped, trimpath, UPX-packed) and checksums.txt
+      - name: Build agentlink.exe (stripped, trimpath, UPX-packed)
         shell: pwsh
         run: ./scripts/release.ps1 -Version "$env:GITHUB_REF_NAME"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: 'dist/agentlink*'
+          subject-path: 'dist/agentlink.exe'
 
       - name: Publish GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $assets = @(Get-ChildItem dist -File | ForEach-Object FullName)
-          gh release create "$env:GITHUB_REF_NAME" @assets --repo "$env:GITHUB_REPOSITORY" --title "$env:GITHUB_REF_NAME" --generate-notes
+          gh release create "$env:GITHUB_REF_NAME" dist/agentlink.exe --repo "$env:GITHUB_REPOSITORY" --title "$env:GITHUB_REF_NAME" --generate-notes
           if ($LASTEXITCODE) { exit 1 }

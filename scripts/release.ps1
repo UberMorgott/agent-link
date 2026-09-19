@@ -1,12 +1,11 @@
-# Builds stripped, UPX-packed release executables and checksums.txt into dist/
-# and, with -Publish, creates the GitHub release or replaces its assets.
+# Builds the stripped, UPX-packed release executable into dist/ and, with
+# -Publish, creates the GitHub release or replaces its asset.
 # .github/workflows/release.yml runs this same script on a pushed v* tag.
 #
-# Asset names (internal/selfupdate.AssetName must match):
-#   windows/amd64  agentlink.exe, agentlink-tray.exe
-#   linux/amd64    agentlink-linux-amd64, agentlink-tray-linux-amd64
-# checksums.txt is `sha256sum` output over the packed files; self-update
-# refuses any release without it.
+# A release has one file per platform; for now only Windows is released:
+#   windows/amd64  agentlink.exe   (internal/selfupdate.AssetName must match)
+# Self-update verifies the download against the sha256 "digest" the GitHub
+# releases API reports for the asset, so no checksums file is published.
 param(
     [Parameter(Mandatory)][string]$Version,
     [switch]$Publish
@@ -20,43 +19,32 @@ $root = Split-Path $PSScriptRoot -Parent
 $dist = Join-Path $root 'dist'
 if (-not (Get-Command upx -ErrorAction SilentlyContinue)) { throw 'upx is not on PATH (winget install upx.upx)' }
 New-Item -ItemType Directory -Force $dist | Out-Null
-Remove-Item (Join-Path $dist 'checksums.txt') -ErrorAction SilentlyContinue
 
 $ldVersion = "-X github.com/UberMorgott/agent-link/internal/selfupdate.Version=$Version"
-$targets = foreach ($os in 'windows', 'linux') {
-    $ext = if ($os -eq 'windows') { '.exe' } else { '-linux-amd64' }
-    @{ OS = $os; Pkg = './cmd/agentlink'; Out = "agentlink$ext"; LdFlags = "-s -w $ldVersion" }
-    $gui = if ($os -eq 'windows') { ' -H=windowsgui' } else { '' }
-    @{ OS = $os; Pkg = './cmd/agentlink-tray'; Out = "agentlink-tray$ext"; LdFlags = "-s -w$gui $ldVersion" }
+$exe = Join-Path $dist 'agentlink.exe'
+Remove-Item $exe -ErrorAction SilentlyContinue
+$env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+try {
+    go build -C $root -trimpath -ldflags "-s -w $ldVersion" -o $exe ./cmd/agentlink
+    if ($LASTEXITCODE) { throw 'go build failed for ./cmd/agentlink (windows/amd64)' }
 }
-$env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
-$assets = foreach ($t in $targets) {
-    $env:GOOS = $t.OS
-    $exe = Join-Path $dist $t.Out
-    Remove-Item $exe -ErrorAction SilentlyContinue
-    go build -C $root -trimpath -ldflags $t.LdFlags -o $exe $t.Pkg
-    if ($LASTEXITCODE) { throw "go build failed for $($t.Pkg) ($($t.OS))" }
-    $stripped = (Get-Item $exe).Length
-    upx --best --lzma -q $exe | Out-Null
-    if ($LASTEXITCODE) { throw "upx failed for $exe" }
-    upx -t -q $exe | Out-Null
-    if ($LASTEXITCODE) { throw "upx test failed for $exe" }
-    '{0}: {1:N0} -> {2:N0} bytes' -f $t.Out, $stripped, (Get-Item $exe).Length | Write-Host
-    $exe
+finally {
+    $env:GOOS = $null; $env:GOARCH = $null; $env:CGO_ENABLED = $null
 }
-Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED
+$stripped = (Get-Item $exe).Length
+upx --best --lzma -q $exe | Out-Null
+if ($LASTEXITCODE) { throw "upx failed for $exe" }
+upx -t -q $exe | Out-Null
+if ($LASTEXITCODE) { throw "upx test failed for $exe" }
+'{0}: {1:N0} -> {2:N0} bytes' -f (Split-Path $exe -Leaf), $stripped, (Get-Item $exe).Length | Write-Host
+$assets = @($exe)
 
-# `sha256sum` format with LF line endings, as internal/selfupdate parses it.
-$sums = Join-Path $dist 'checksums.txt'
-$lines = foreach ($a in $assets) { '{0}  {1}' -f (Get-FileHash $a -Algorithm SHA256).Hash.ToLower(), (Split-Path $a -Leaf) }
-[IO.File]::WriteAllText($sums, ($lines -join "`n") + "`n")
-$assets += $sums
-
-# Smoke: the packed CLI for this machine must start and know its version.
-$cli = Join-Path $dist ($IsWindows ? 'agentlink.exe' : 'agentlink-linux-amd64')
-$got = & $cli version
-if ($LASTEXITCODE -or $got -ne $Version) { throw "packed $cli reports '$got', want $Version" }
-
+# Smoke: the packed executable must start as the CLI, know its version and
+# report it on stdout with exit code 0.
+if ($IsWindows) {
+    $got = & $exe version
+    if ($LASTEXITCODE -or $got -ne $Version) { throw "packed $exe reports '$got', want $Version" }
+}
 if ($Publish) {
     $tag = "v$Version"
     gh release view $tag --repo UberMorgott/agent-link *> $null
