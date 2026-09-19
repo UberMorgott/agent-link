@@ -1,10 +1,3 @@
-// Command agentlink-tray is the desktop agentlink: a tray icon that runs the
-// node in-process, answers requests with a local agent, and opens the
-// settings and inbox pages in the browser.
-//
-// Build as a GUI executable (no console window):
-//
-//	go build -ldflags "-H=windowsgui" -o bin/agentlink-tray.exe ./cmd/agentlink-tray
 package main
 
 import (
@@ -36,26 +29,27 @@ import (
 //go:embed icon.ico
 var icon []byte
 
-func main() {
-	if err := run(); err != nil {
-		fatal(err)
-	}
-}
-
-func run() error {
+// runApp is the desktop app: agentlink without a command. args are its flags.
+func runApp(args []string) error {
 	defPath, err := settings.DefaultPath()
 	if err != nil {
 		return err
 	}
-	cfgPath := flag.String("config", defPath, "settings file; its folder also holds data and the log")
-	apiAddr := flag.String("api", "", "loopback address of the web UI and control API (default from settings, else "+settings.DefaultAPI+")")
-	noTray := flag.Bool("no-tray", false, "run without the tray icon until interrupted or quit via the API (scripts and tests)")
-	idle := flag.Duration("handler-idle-timeout", 0, "fail an agent run that printed nothing this long (default 3m; scripts and tests)")
-	restarted := flag.Bool(restartFlag, false, "started by an update: wait for the previous instance to release the API address")
-	showVersion := flag.Bool("version", false, "print the version and exit")
-	flag.Parse()
+	fs := flag.NewFlagSet("agentlink", flag.ExitOnError)
+	cfgPath := fs.String("config", defPath, "settings file; its folder also holds data and the log")
+	apiAddr := fs.String("api", "", "loopback address of the web UI and control API (default from settings, else "+settings.DefaultAPI+")")
+	noTray := fs.Bool("no-tray", false, "run without the tray icon until interrupted or quit via the API (scripts and tests)")
+	idle := fs.Duration("handler-idle-timeout", 0, "fail an agent run that printed nothing this long (default 3m; scripts and tests)")
+	restarted := fs.Bool(restartFlag, false, "started by an update: wait for the previous instance to release the API address")
+	showVersion := fs.Bool("version", false, "print the version and exit")
+	_ = fs.Parse(args) // ExitOnError
 	if *showVersion {
 		fmt.Println(selfupdate.Version)
+		return nil
+	}
+	// The tray app needs no console: leave the one Windows opened for a
+	// double-click, or let the terminal that started it go on.
+	if !*noTray && leaveConsole(args) {
 		return nil
 	}
 	// Captured before an update can rename the running file.
@@ -85,6 +79,10 @@ func run() error {
 	// makes sense for the default settings file.
 	if filepath.Clean(*cfgPath) != filepath.Clean(defPath) {
 		a.SetAutostart = nil
+	} else if moved, err := app.MigrateAutostart(exe); err != nil {
+		log.Warn("autostart migration", "err", err)
+	} else if moved {
+		log.Info("autostart now starts this executable", "exe", exe)
 	}
 	quitCtx, quit := context.WithCancel(context.Background())
 	defer quit()
@@ -99,7 +97,7 @@ func run() error {
 	log.Info("start", "version", selfupdate.Version, "exe", exe)
 	go cleanupUpdate(exe, log)
 	a.SetExecutable(exe)
-	a.Relaunch = func() error { return selfupdate.Start(exe, relaunchArgs(os.Args[1:])) }
+	a.Relaunch = func() error { return selfupdate.Start(exe, relaunchArgs(args)) }
 	go a.RunUpdates(quitCtx)
 	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {

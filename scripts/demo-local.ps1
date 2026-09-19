@@ -24,7 +24,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent $PSScriptRoot
-$tray = Join-Path $root 'bin/agentlink-tray.exe'
+$tray = Join-Path $root 'bin/agentlink.exe'
 $demo = Join-Path $env:TEMP 'agentlink-demo'
 $statePath = Join-Path $demo 'demo-state.json'
 
@@ -63,9 +63,9 @@ if (-not (Test-Path -PathType Container $WorkDir)) { throw "working folder $Work
 if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { throw 'claude is not on PATH; the handler needs it' }
 if (Test-Path $statePath) { throw "a demo is already running (state: $statePath). Stop it first: scripts/demo-local.ps1 -Stop" }
 
-Write-Host '== build agentlink-tray.exe'
-go -C $root build -ldflags '-H=windowsgui' -o $tray ./cmd/agentlink-tray
-if ($LASTEXITCODE -ne 0) { throw 'build agentlink-tray failed' }
+Write-Host '== build agentlink.exe'
+go -C $root build -o $tray ./cmd/agentlink
+if ($LASTEXITCODE -ne 0) { throw 'build agentlink failed' }
 
 # Same 6-character pairing code on both sides, generated per run.
 $code = -join ((1..6) | ForEach-Object { 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[(Get-Random -Maximum 32)] })
@@ -89,7 +89,7 @@ foreach ($n in $a, $b) {
 try {
     Write-Host '== start both apps (tray icons visible)'
     foreach ($n in $a, $b) {
-        $n.proc = Start-Process -FilePath $tray -ArgumentList @('-config', $n.config) -PassThru
+        $n.proc = Start-Process -FilePath $tray -ArgumentList @('-config', $n.config) -PassThru -WindowStyle Hidden
         $page = Wait-Until { Invoke-WebRequest -Uri "http://$($n.api)/ui/inbox" -TimeoutSec 2 } "$($n.name) web UI" $ConnectTimeoutSeconds
         if ($page.Content -notmatch 'name="agentlink-token" content="([0-9a-f]+)"') { throw "$($n.name): no token in the inbox page" }
         $n.token = $Matches[1]

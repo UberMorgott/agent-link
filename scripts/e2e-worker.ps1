@@ -1,5 +1,5 @@
 #Requires -Version 7
-# End-to-end loopback run of the desktop app: two agentlink-tray nodes in
+# End-to-end loopback run of the desktop app: two agentlink desktop apps in
 # -no-tray mode, node-b answers requests with a fake echo agent, node-a sends a
 # request and must receive the automatic reply.
 # -RealClaude / -RealCodex run the installed `claude` / `codex` CLI instead of the fake agent (one real smoke);
@@ -20,14 +20,12 @@ if ($TimeoutSeconds -le 0) { $TimeoutSeconds = if ($real) { 300 } else { 30 } }
 
 $root = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $root 'bin'
-$tray = Join-Path $bin 'agentlink-tray.exe'
 $cli = Join-Path $bin 'agentlink.exe'
+$tray = $cli # the desktop app is agentlink.exe without a command
 $fake = Join-Path $bin 'fakeagent.exe'
 $data = Join-Path $root '.data/e2e-worker'
 
 Write-Host '== build'
-go -C $root build -ldflags '-H=windowsgui' -o $tray ./cmd/agentlink-tray
-if ($LASTEXITCODE -ne 0) { throw 'build agentlink-tray failed' }
 go -C $root build -o $cli ./cmd/agentlink
 if ($LASTEXITCODE -ne 0) { throw 'build agentlink failed' }
 go -C $root build -o $fake ./internal/worker/testdata/fakeagent
@@ -68,7 +66,7 @@ $procs = @()
 try {
     Write-Host '== start nodes'
     foreach ($name in 'node-a', 'node-b') {
-        $procs += Start-Process -FilePath $tray -ArgumentList '-no-tray', '-config', $nodes[$name].config -PassThru
+        $procs += Start-Process -FilePath $tray -ArgumentList '-no-tray', '-config', $nodes[$name].config -PassThru -WindowStyle Hidden
     }
     foreach ($name in 'node-a', 'node-b') {
         $deadline = (Get-Date).AddSeconds($TimeoutSeconds)

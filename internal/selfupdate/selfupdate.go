@@ -1,16 +1,16 @@
-// Package selfupdate replaces agentlink's executables with the latest GitHub
-// release, gated on the SHA-256 published in that release's checksums.txt.
+// Package selfupdate replaces agentlink's executable with the latest GitHub
+// release, gated on the SHA-256 digest GitHub reports for the release asset.
 //
 // The release pipeline (.github/workflows/release.yml, scripts/release.ps1)
-// publishes plain UPX-packed executables plus a `sha256sum` checksums.txt to
-// the public repository UberMorgott/agent-link. So the whole job is one REST
-// call without a token, an exact asset-name match, a SHA-256 compare and the
-// rename dance that works on a running Windows executable.
+// publishes one plain UPX-packed executable per platform to the public
+// repository UberMorgott/agent-link. The releases API lists every asset with
+// a "digest" field ("sha256:<hex>") that GitHub computes on upload. So the
+// whole job is one REST call without a token, an exact asset-name match, a
+// SHA-256 compare against that digest and the rename dance that works on a
+// running Windows executable.
 //
-// Both programs live in one folder and are replaced together: the running one
-// and its sibling, when it is there. Every download is verified before any
-// file on disk is touched, and a failed swap rolls back what was already
-// swapped. Nothing here writes to stdout or stderr.
+// The download is verified before any file on disk is touched, and a failed
+// swap puts the old executable back. Nothing here writes to stdout or stderr.
 package selfupdate
 
 import (
@@ -46,17 +46,18 @@ const Repo = "UberMorgott/agent-link"
 // -ldflags -X) can point it at a local server; production never changes it.
 var apiBase = "https://api.github.com"
 
-// ChecksumsAsset lists the SHA-256 of every release executable, one
-// "<hash>  <name>" line each (`sha256sum` format). A release without it is
-// never applied: the update path has no other authenticity gate.
-const ChecksumsAsset = "checksums.txt"
+// Program is the one executable of a release: the desktop app and the CLI.
+const Program = "agentlink"
 
-// Programs are the executables of a release, replaced together.
-var Programs = []string{"agentlink", "agentlink-tray"}
+// legacy are programs older releases shipped next to Program. Cleanup
+// removes them: the one executable replaces them.
+var legacy = []string{"agentlink-tray"}
+
+// digestPrefix starts the asset "digest" field of the releases API.
+const digestPrefix = "sha256:"
 
 const (
 	maxJSONSize  = 4 << 20   // 4 MiB
-	maxSumsSize  = 1 << 20   // 1 MiB
 	maxAssetSize = 256 << 20 // 256 MiB, far above a ~10 MB build
 )
 
@@ -73,7 +74,7 @@ func Valid(v string) bool {
 }
 
 // AssetName is the release asset of program for goos/goarch. Windows amd64
-// keeps the plain names the releases always had ("agentlink.exe"); any other
+// keeps the plain name the releases always had ("agentlink.exe"); any other
 // platform is "<program>-<goos>-<goarch>[.exe]".
 func AssetName(program, goos, goarch string) string {
 	if goos == "windows" && goarch == "amd64" {
@@ -107,11 +108,11 @@ func newPath(exePath string) string {
 	return filepath.Join(dir, "."+base+".new")
 }
 
-// Release is the latest published release with executables for this platform.
+// Release is the latest published release with an executable for this platform.
 type Release struct {
-	version string            // without the leading "v"
-	assets  map[string]string // program -> download URL
-	sumsURL string
+	version string // without the leading "v"
+	url     string // download URL of this platform's executable
+	sha256  string // lowercase hex from the asset's digest; "" when missing or not SHA-256
 }
 
 // Version is the release version without a leading "v".
@@ -140,137 +141,92 @@ func Latest(ctx context.Context) (*Release, error) {
 	var gh struct {
 		TagName string `json:"tag_name"`
 		Assets  []struct {
-			Name string `json:"name"`
-			URL  string `json:"browser_download_url"`
+			Name   string `json:"name"`
+			URL    string `json:"browser_download_url"`
+			Digest string `json:"digest"`
 		} `json:"assets"`
 	}
 	if err := json.Unmarshal(body, &gh); err != nil {
 		return nil, fmt.Errorf("parse release JSON: %w", err)
 	}
-	rel := &Release{version: strings.TrimPrefix(strings.TrimSpace(gh.TagName), "v"), assets: map[string]string{}}
+	rel := &Release{version: strings.TrimPrefix(strings.TrimSpace(gh.TagName), "v")}
 	if !Valid(rel.version) {
 		return nil, fmt.Errorf("release tag %q is not a version", gh.TagName)
 	}
+	name := AssetName(Program, runtime.GOOS, runtime.GOARCH)
 	for _, a := range gh.Assets {
-		if a.Name == ChecksumsAsset {
-			rel.sumsURL = a.URL
-		}
-		for _, p := range Programs {
-			if a.Name == AssetName(p, runtime.GOOS, runtime.GOARCH) {
-				rel.assets[p] = a.URL
-			}
+		if a.Name == name {
+			rel.url, rel.sha256 = a.URL, parseDigest(a.Digest)
 		}
 	}
-	if len(rel.assets) == 0 {
+	if rel.url == "" {
 		return nil, nil
 	}
-	for _, u := range rel.assets {
-		if err := requireHTTPS(u); err != nil {
-			return nil, err
-		}
-	}
-	if rel.sumsURL != "" {
-		if err := requireHTTPS(rel.sumsURL); err != nil {
-			return nil, err
-		}
+	if err := requireHTTPS(rel.url); err != nil {
+		return nil, err
 	}
 	return rel, nil
 }
 
 // Check returns the latest release and whether it is newer than current. A
-// newer release without checksums.txt is an error: it could not be applied.
+// newer release without a SHA-256 digest is an error: it could not be applied.
 func Check(ctx context.Context, current string) (rel *Release, newer bool, err error) {
 	rel, err = Latest(ctx)
 	if err != nil || rel == nil {
 		return nil, false, err
 	}
 	newer = rel.Newer(current)
-	if newer && rel.sumsURL == "" {
-		return rel, false, fmt.Errorf("release v%s has no %s: refusing an unverifiable update", rel.version, ChecksumsAsset)
+	if newer && rel.sha256 == "" {
+		return rel, false, rel.noDigest()
 	}
 	return rel, newer, nil
 }
 
-// Targets returns the executables an update of exePath replaces: exePath
-// itself (it must be one of Programs) and each sibling program in its folder.
-func Targets(exePath string) (map[string]string, error) {
-	dir, base := filepath.Split(exePath)
-	out := map[string]string{}
-	for _, p := range Programs {
-		name := fileName(p)
-		switch {
-		case strings.EqualFold(base, name):
-			out[p] = exePath
-		default:
-			path := filepath.Join(dir, name)
-			if st, err := os.Stat(path); err == nil && st.Mode().IsRegular() {
-				out[p] = path
-			}
-		}
-	}
-	for _, path := range out {
-		if path == exePath {
-			return out, nil
-		}
-	}
-	return nil, fmt.Errorf("%s is not an agentlink executable (%s)", base, strings.Join(Programs, ", "))
+func (r *Release) noDigest() error {
+	return fmt.Errorf("release v%s has no sha256 digest for %s: refusing an unverifiable update",
+		r.version, AssetName(Program, runtime.GOOS, runtime.GOARCH))
 }
 
-// Apply downloads the release executables for exePath's folder (Targets),
-// verifies each against checksums.txt and swaps them all in. It returns the
-// replaced paths. A hash that is missing or wrong aborts before anything on
-// disk is touched.
+// Apply downloads the release executable, verifies it against the asset's
+// SHA-256 digest and swaps it in for exePath, which must be an agentlink
+// executable. It returns the replaced path. A missing or wrong digest aborts
+// before anything on disk is touched.
 func (r *Release) Apply(ctx context.Context, exePath string) ([]string, error) {
-	targets, err := Targets(exePath)
-	if err != nil {
-		return nil, err
+	if base := filepath.Base(exePath); !strings.EqualFold(base, fileName(Program)) {
+		return nil, fmt.Errorf("%s is not the agentlink executable (%s)", base, fileName(Program))
 	}
-	if r.sumsURL == "" {
-		return nil, fmt.Errorf("release v%s has no %s: refusing an unverifiable update", r.version, ChecksumsAsset)
+	if r.sha256 == "" {
+		return nil, r.noDigest()
 	}
-	sums, code, err := httpGet(ctx, r.sumsURL, "application/octet-stream", maxSumsSize)
+	name := AssetName(Program, runtime.GOOS, runtime.GOARCH)
+	data, code, err := httpGet(ctx, r.url, "application/octet-stream", maxAssetSize)
 	if err != nil {
-		return nil, fmt.Errorf("download %s: %w", ChecksumsAsset, err)
+		return nil, fmt.Errorf("download %s: %w", name, err)
 	}
 	if code != http.StatusOK {
-		return nil, fmt.Errorf("download %s: HTTP %d", ChecksumsAsset, code)
+		return nil, fmt.Errorf("download %s: HTTP %d", name, code)
 	}
-	var files []file
-	for _, p := range Programs {
-		path, ok := targets[p]
-		if !ok {
-			continue
-		}
-		name := AssetName(p, runtime.GOOS, runtime.GOARCH)
-		url, ok := r.assets[p]
-		if !ok {
-			return nil, fmt.Errorf("release v%s has no %s", r.version, name)
-		}
-		want, err := sumFor(sums, name)
-		if err != nil {
-			return nil, err
-		}
-		data, code, err := httpGet(ctx, url, "application/octet-stream", maxAssetSize)
-		if err != nil {
-			return nil, fmt.Errorf("download %s: %w", name, err)
-		}
-		if code != http.StatusOK {
-			return nil, fmt.Errorf("download %s: HTTP %d", name, code)
-		}
-		sum := sha256.Sum256(data)
-		if got := hex.EncodeToString(sum[:]); got != want {
-			return nil, fmt.Errorf("checksum mismatch for %s: got %s, %s lists %s", name, got, ChecksumsAsset, want)
-		}
-		files = append(files, file{path: path, data: data})
+	sum := sha256.Sum256(data)
+	if got := hex.EncodeToString(sum[:]); got != r.sha256 {
+		return nil, fmt.Errorf("checksum mismatch for %s: got sha256 %s, the release lists %s", name, got, r.sha256)
 	}
-	if err := replace(files); err != nil {
+	if err := replace([]file{{path: exePath, data: data}}); err != nil {
 		return nil, err
 	}
-	paths := make([]string, len(files))
-	for i, f := range files {
-		paths[i] = f.path
+	return []string{exePath}, nil
+}
+
+// parseDigest returns the lowercase hex of a "sha256:<hex>" asset digest, or
+// "" for anything else: an absent digest or another algorithm.
+func parseDigest(d string) string {
+	hexSum, ok := strings.CutPrefix(strings.TrimSpace(d), digestPrefix)
+	if !ok || len(hexSum) != sha256.Size*2 {
+		return ""
 	}
-	return paths, nil
+	if _, err := hex.DecodeString(hexSum); err != nil {
+		return ""
+	}
+	return strings.ToLower(hexSum)
 }
 
 type file struct {
@@ -336,35 +292,40 @@ func replace(files []file) error {
 	return nil
 }
 
-// Cleanup removes what an update left next to exePath's programs: the
-// replaced executables (locked until their process exited) and unfinished
-// ".new" files. It reports the first file that is still there, so a caller
-// starting right after an update can retry until the old process is gone.
+// Cleanup removes what an update left next to exePath: the replaced
+// executable (locked until its process exited), an unfinished ".new" file,
+// and the executables of older releases (agentlink-tray) that the one
+// agentlink executable replaces. It reports the first file that is still
+// there, so a caller starting right after an update can retry until the old
+// process is gone.
 func Cleanup(exePath string) error {
 	dir := filepath.Dir(exePath)
 	var first error
-	for _, p := range Programs {
-		path := filepath.Join(dir, fileName(p))
-		for _, leftover := range []string{OldPath(path), newPath(path)} {
-			if err := os.Remove(leftover); err != nil && !errors.Is(err, fs.ErrNotExist) && first == nil {
-				first = err
-			}
+	remove := func(path string) {
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) && first == nil {
+			first = err
 		}
+	}
+	for _, p := range append([]string{Program}, legacy...) {
+		path := filepath.Join(dir, fileName(p))
+		remove(OldPath(path))
+		remove(newPath(path))
+	}
+	for _, p := range legacy {
+		remove(filepath.Join(dir, fileName(p)))
 	}
 	return first
 }
 
-// sumFor finds the SHA-256 of name in `sha256sum` output ("<hash>  <name>",
-// or "<hash> *<name>" in binary mode). An unlisted asset is an error: it must
-// never fall through to "no hash, install anyway".
-func sumFor(sums []byte, name string) (string, error) {
-	for line := range strings.Lines(string(sums)) {
-		f := strings.Fields(line)
-		if len(f) == 2 && strings.TrimPrefix(f[1], "*") == name && len(f[0]) == sha256.Size*2 {
-			return strings.ToLower(f[0]), nil
+// LegacyName reports whether base is the file name of an executable older
+// releases shipped next to agentlink (agentlink-tray.exe).
+func LegacyName(base string) bool {
+	for _, p := range legacy {
+		if strings.EqualFold(base, fileName(p)) {
+			return true
 		}
 	}
-	return "", fmt.Errorf("%s does not list %s: refusing an unverifiable update", ChecksumsAsset, name)
+	return false
 }
 
 // requireHTTPS refuses a plaintext asset URL. The URLs come from the API

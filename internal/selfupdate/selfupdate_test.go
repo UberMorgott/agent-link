@@ -15,29 +15,32 @@ import (
 	"testing"
 )
 
-func asset(p string) string { return AssetName(p, runtime.GOOS, runtime.GOARCH) }
+// digestOf is the releases API "digest" of b.
+func digestOf(b []byte) string {
+	h := sha256.Sum256(b)
+	return digestPrefix + hex.EncodeToString(h[:])
+}
 
-// fakeGitHub serves one release with tag: bins maps a program to its
-// executable (nil: no asset), sums is checksums.txt (nil: no such asset).
-// apiBase points at it for the test.
-func fakeGitHub(t *testing.T, tag string, bins map[string][]byte, sums []byte) {
+// fakeGitHub serves one release with tag whose asset for this platform is bin
+// (nil: no such asset) with the given digest ("": no digest field). apiBase
+// points at it for the test.
+func fakeGitHub(t *testing.T, tag string, bin []byte, digest string) {
 	t.Helper()
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/"+Repo+"/releases/latest":
-			var list []string
-			for p := range bins {
-				list = append(list, fmt.Sprintf(`{"name":%q,"browser_download_url":"%s/dl/%s"}`, asset(p), srv.URL, p))
-			}
-			if sums != nil {
-				list = append(list, fmt.Sprintf(`{"name":%q,"browser_download_url":"%s/sums"}`, ChecksumsAsset, srv.URL))
+		switch r.URL.Path {
+		case "/repos/" + Repo + "/releases/latest":
+			list := []string{fmt.Sprintf(`{"name":"someone-else","browser_download_url":"%s/other","digest":%q}`, srv.URL, digestOf([]byte("other")))}
+			if bin != nil {
+				d := ""
+				if digest != "" {
+					d = fmt.Sprintf(`,"digest":%q`, digest)
+				}
+				list = append(list, fmt.Sprintf(`{"name":%q,"browser_download_url":"%s/dl"%s}`, AssetName(Program, runtime.GOOS, runtime.GOARCH), srv.URL, d))
 			}
 			_, _ = fmt.Fprintf(w, `{"tag_name":%q,"assets":[%s]}`, tag, strings.Join(list, ","))
-		case strings.HasPrefix(r.URL.Path, "/dl/"):
-			_, _ = w.Write(bins[strings.TrimPrefix(r.URL.Path, "/dl/")])
-		case r.URL.Path == "/sums":
-			_, _ = w.Write(sums)
+		case "/dl":
+			_, _ = w.Write(bin)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -48,30 +51,19 @@ func fakeGitHub(t *testing.T, tag string, bins map[string][]byte, sums []byte) {
 	t.Cleanup(func() { apiBase = saved })
 }
 
-// sumsOf lists bins in `sha256sum` format, after an unrelated line.
-func sumsOf(bins map[string][]byte) []byte {
-	s := strings.Repeat("0", 64) + "  someone-else\n"
-	for p, b := range bins {
-		h := sha256.Sum256(b)
-		s += hex.EncodeToString(h[:]) + "  " + asset(p) + "\n"
-	}
-	return []byte(s)
-}
+var newBin = []byte("new agentlink")
 
-func newBins() map[string][]byte {
-	return map[string][]byte{"agentlink": []byte("new cli"), "agentlink-tray": []byte("new tray")}
-}
+// fakeRelease serves newBin as tag with its honest digest.
+func fakeRelease(t *testing.T, tag string) { fakeGitHub(t, tag, newBin, digestOf(newBin)) }
 
-// install writes the old programs into a folder and returns the tray's path.
+// install writes the old program into a folder and returns its path.
 func install(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	for _, p := range Programs {
-		if err := os.WriteFile(filepath.Join(dir, fileName(p)), []byte("old "+p), 0o755); err != nil { // #nosec G306
-			t.Fatal(err)
-		}
+	exe := filepath.Join(t.TempDir(), fileName(Program))
+	if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil { // #nosec G306
+		t.Fatal(err)
 	}
-	return filepath.Join(dir, fileName("agentlink-tray"))
+	return exe
 }
 
 func read(t *testing.T, path string) string {
@@ -83,14 +75,11 @@ func read(t *testing.T, path string) string {
 	return string(b)
 }
 
-func sibling(exe, p string) string { return filepath.Join(filepath.Dir(exe), fileName(p)) }
-
 func TestAssetNames(t *testing.T) {
 	cases := map[[3]string]string{
-		{"agentlink", "windows", "amd64"}:      "agentlink.exe",
-		{"agentlink-tray", "windows", "amd64"}: "agentlink-tray.exe",
-		{"agentlink", "linux", "amd64"}:        "agentlink-linux-amd64",
-		{"agentlink-tray", "windows", "arm64"}: "agentlink-tray-windows-arm64.exe",
+		{"agentlink", "windows", "amd64"}: "agentlink.exe",
+		{"agentlink", "linux", "amd64"}:   "agentlink-linux-amd64",
+		{"agentlink", "windows", "arm64"}: "agentlink-windows-arm64.exe",
 	}
 	for in, want := range cases {
 		if got := AssetName(in[0], in[1], in[2]); got != want {
@@ -127,7 +116,6 @@ func TestNewer(t *testing.T) {
 }
 
 func TestCheck(t *testing.T) {
-	bins := newBins()
 	for _, c := range []struct {
 		name, tag, cur string
 		newer          bool
@@ -137,7 +125,7 @@ func TestCheck(t *testing.T) {
 		{"equal", "v0.4.0", "0.4.0", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			fakeGitHub(t, c.tag, bins, sumsOf(bins))
+			fakeRelease(t, c.tag)
 			rel, newer, err := Check(context.Background(), c.cur)
 			if err != nil || rel == nil {
 				t.Fatalf("Check = %v, %v", rel, err)
@@ -149,21 +137,21 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-// An older release without checksums (v0.3.0 was published that way) is not
-// an error; a newer one is: it could never be applied.
-func TestCheckMissingChecksums(t *testing.T) {
-	fakeGitHub(t, "v0.3.0", newBins(), nil)
+// An older release without a digest is not an error; a newer one is: it
+// could never be applied.
+func TestCheckMissingDigest(t *testing.T) {
+	fakeGitHub(t, "v0.3.0", newBin, "")
 	if _, newer, err := Check(context.Background(), "0.4.0"); err != nil || newer {
-		t.Fatalf("older release without checksums: newer=%v err=%v", newer, err)
+		t.Fatalf("older release without a digest: newer=%v err=%v", newer, err)
 	}
-	fakeGitHub(t, "v0.5.0", newBins(), nil)
-	if _, newer, err := Check(context.Background(), "0.4.0"); err == nil || newer || !strings.Contains(err.Error(), ChecksumsAsset) {
-		t.Fatalf("newer release without checksums: newer=%v err=%v", newer, err)
+	fakeGitHub(t, "v0.5.0", newBin, "")
+	if _, newer, err := Check(context.Background(), "0.4.0"); err == nil || newer || !strings.Contains(err.Error(), "digest") {
+		t.Fatalf("newer release without a digest: newer=%v err=%v", newer, err)
 	}
 }
 
 func TestLatestNothingToUpdateTo(t *testing.T) {
-	fakeGitHub(t, "v0.5.0", nil, []byte("x"))
+	fakeGitHub(t, "v0.5.0", nil, "")
 	if rel, err := Latest(context.Background()); rel != nil || err != nil {
 		t.Fatalf("no asset for this platform: %v, %v", rel, err)
 	}
@@ -176,7 +164,7 @@ func TestLatestNothingToUpdateTo(t *testing.T) {
 }
 
 func TestLatestRejectsNonVersionTag(t *testing.T) {
-	fakeGitHub(t, "nightly", newBins(), sumsOf(newBins()))
+	fakeRelease(t, "nightly")
 	if rel, err := Latest(context.Background()); err == nil {
 		t.Fatalf("accepted tag nightly: %+v", rel)
 	}
@@ -191,85 +179,59 @@ func latest(t *testing.T) *Release {
 	return rel
 }
 
-func TestApplyReplacesBothPrograms(t *testing.T) {
-	bins := newBins()
-	fakeGitHub(t, "v0.5.0", bins, sumsOf(bins))
+func TestApplyReplacesTheExecutable(t *testing.T) {
+	fakeRelease(t, "v0.5.0")
 	exe := install(t)
 	paths, err := latest(t).Apply(context.Background(), exe)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 2 {
-		t.Fatalf("replaced %v, want both programs", paths)
+	if len(paths) != 1 || paths[0] != exe {
+		t.Fatalf("replaced %v, want %s", paths, exe)
 	}
-	for _, p := range Programs {
-		path := sibling(exe, p)
-		if got := read(t, path); got != string(bins[p]) {
-			t.Errorf("%s = %q, want %q", p, got, bins[p])
-		}
-		if _, err := os.Stat(newPath(path)); !os.IsNotExist(err) {
-			t.Errorf("%s: .new left behind", p)
-		}
+	if got := read(t, exe); got != string(newBin) {
+		t.Errorf("executable = %q, want %q", got, newBin)
+	}
+	if _, err := os.Stat(newPath(exe)); !os.IsNotExist(err) {
+		t.Error(".new left behind")
 	}
 	if err := Cleanup(exe); err != nil {
 		t.Fatalf("Cleanup: %v", err)
 	}
 	entries, _ := os.ReadDir(filepath.Dir(exe))
-	if len(entries) != 2 {
-		t.Fatalf("folder after cleanup has %d entries, want 2", len(entries))
-	}
-}
-
-// Without the CLI next to it, only the running program is replaced.
-func TestApplyOnlyExistingSiblings(t *testing.T) {
-	bins := newBins()
-	fakeGitHub(t, "v0.5.0", bins, sumsOf(bins))
-	exe := install(t)
-	if err := os.Remove(sibling(exe, "agentlink")); err != nil {
-		t.Fatal(err)
-	}
-	paths, err := latest(t).Apply(context.Background(), exe)
-	if err != nil || len(paths) != 1 || paths[0] != exe {
-		t.Fatalf("Apply = %v, %v", paths, err)
-	}
-	if _, err := os.Stat(sibling(exe, "agentlink")); !os.IsNotExist(err) {
-		t.Fatal("Apply created the missing CLI")
+	if len(entries) != 1 {
+		t.Fatalf("folder after cleanup has %d entries, want 1", len(entries))
 	}
 }
 
 func TestApplyRefusesUnknownExecutable(t *testing.T) {
-	bins := newBins()
-	fakeGitHub(t, "v0.5.0", bins, sumsOf(bins))
-	other := filepath.Join(t.TempDir(), "other.exe")
-	if err := os.WriteFile(other, []byte("x"), 0o755); err != nil { // #nosec G306
-		t.Fatal(err)
-	}
-	if _, err := latest(t).Apply(context.Background(), other); err == nil {
-		t.Fatal("Apply replaced a program that is not agentlink")
+	fakeRelease(t, "v0.5.0")
+	for _, name := range []string{"other", "agentlink-tray"} {
+		other := filepath.Join(t.TempDir(), fileName(name))
+		if err := os.WriteFile(other, []byte("x"), 0o755); err != nil { // #nosec G306
+			t.Fatal(err)
+		}
+		if _, err := latest(t).Apply(context.Background(), other); err == nil {
+			t.Fatalf("Apply replaced %s, which is not agentlink", name)
+		}
 	}
 }
 
-// assertUntouched checks the old programs are in place and nothing was parked.
+// assertUntouched checks the old program is in place and nothing was parked.
 func assertUntouched(t *testing.T, exe string) {
 	t.Helper()
-	for _, p := range Programs {
-		path := sibling(exe, p)
-		if got := read(t, path); got != "old "+p {
-			t.Errorf("%s = %q after a refused update", p, got)
-		}
-		for _, leftover := range []string{OldPath(path), newPath(path)} {
-			if _, err := os.Stat(leftover); !os.IsNotExist(err) {
-				t.Errorf("%s left behind", filepath.Base(leftover))
-			}
+	if got := read(t, exe); got != "old" {
+		t.Errorf("executable = %q after a refused update", got)
+	}
+	for _, leftover := range []string{OldPath(exe), newPath(exe)} {
+		if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+			t.Errorf("%s left behind", filepath.Base(leftover))
 		}
 	}
 }
 
-func TestApplyRefusesBadChecksum(t *testing.T) {
-	bins := newBins()
-	honest := sumsOf(bins)
-	bins["agentlink"] = []byte("EVIL")
-	fakeGitHub(t, "v0.5.0", bins, honest)
+func TestApplyRefusesBadDigest(t *testing.T) {
+	fakeGitHub(t, "v0.5.0", []byte("EVIL"), digestOf(newBin))
 	exe := install(t)
 	_, err := latest(t).Apply(context.Background(), exe)
 	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
@@ -278,29 +240,28 @@ func TestApplyRefusesBadChecksum(t *testing.T) {
 	assertUntouched(t, exe)
 }
 
-func TestApplyRefusesMissingChecksums(t *testing.T) {
-	bins := newBins()
-	fakeGitHub(t, "v0.5.0", bins, nil)
+func TestApplyRefusesMissingDigest(t *testing.T) {
 	exe := install(t)
-	if _, err := latest(t).Apply(context.Background(), exe); err == nil {
-		t.Fatal("Apply installed a release without checksums.txt")
+	for _, digest := range []string{
+		"",                                   // no digest field
+		"sha512:" + strings.Repeat("ab", 64), // another algorithm
+		digestPrefix + "abc",                 // not a SHA-256
+		digestPrefix + strings.Repeat("zz", 32),
+	} {
+		fakeGitHub(t, "v0.5.0", newBin, digest)
+		if _, err := latest(t).Apply(context.Background(), exe); err == nil || !strings.Contains(err.Error(), "digest") {
+			t.Fatalf("digest %q: Apply = %v, want a missing-digest refusal", digest, err)
+		}
+		assertUntouched(t, exe)
 	}
-	// A checksums.txt that does not list one of the programs is refused too.
-	one := map[string][]byte{"agentlink-tray": bins["agentlink-tray"]}
-	fakeGitHub(t, "v0.5.0", bins, sumsOf(one))
-	if _, err := latest(t).Apply(context.Background(), exe); err == nil || !strings.Contains(err.Error(), "does not list") {
-		t.Fatalf("Apply = %v, want an unlisted-asset refusal", err)
-	}
-	assertUntouched(t, exe)
 }
 
-// A failure while swapping the second program puts the first one back.
+// A failure while swapping puts the old executable back.
 func TestApplyRollsBack(t *testing.T) {
-	bins := newBins()
-	fakeGitHub(t, "v0.5.0", bins, sumsOf(bins))
+	fakeRelease(t, "v0.5.0")
 	exe := install(t)
 	rel := latest(t)
-	for fail := 1; fail <= 4; fail++ {
+	for fail := 1; fail <= 2; fail++ {
 		t.Run(fmt.Sprint("rename ", fail), func(t *testing.T) {
 			n := 0
 			rename = func(from, to string) error {
@@ -319,22 +280,37 @@ func TestApplyRollsBack(t *testing.T) {
 	}
 }
 
-func TestSumFor(t *testing.T) {
-	h := strings.Repeat("ab", 32)
-	for _, sums := range []string{
-		"deadbeef  other\n" + h + "  agentlink.exe\n",
-		h + " *agentlink.exe\n",
-		h + "  agentlink.exe",
-	} {
-		if got, err := sumFor([]byte(sums), "agentlink.exe"); err != nil || got != h {
-			t.Errorf("sumFor(%q) = %q, %v", sums, got, err)
+// Cleanup sweeps update leftovers and the executables of older releases.
+func TestCleanupRemovesLegacy(t *testing.T) {
+	exe := install(t)
+	dir := filepath.Dir(exe)
+	tray := filepath.Join(dir, fileName("agentlink-tray"))
+	for _, p := range []string{tray, OldPath(tray), OldPath(exe), newPath(exe)} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if _, err := sumFor([]byte("abc  agentlink.exe\n"), "agentlink.exe"); err == nil {
-		t.Error("sumFor accepted a hash that is not SHA-256")
+	if err := Cleanup(exe); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := sumFor([]byte(h+"  agentlink-tray.exe\n"), "agentlink.exe"); err == nil {
-		t.Error("sumFor accepted an unlisted asset")
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(exe) {
+		t.Fatalf("folder after cleanup: %v", entries)
+	}
+	if !LegacyName("AgentLink-Tray"+filepath.Ext(tray)) || LegacyName(filepath.Base(exe)) {
+		t.Fatal("LegacyName")
+	}
+}
+
+func TestParseDigest(t *testing.T) {
+	h := strings.Repeat("ab", 32)
+	if got := parseDigest("sha256:" + strings.ToUpper(h)); got != h {
+		t.Errorf("parseDigest = %q", got)
+	}
+	for _, d := range []string{"", h, "sha256:", "md5:" + h, "sha256:" + h + "00"} {
+		if got := parseDigest(d); got != "" {
+			t.Errorf("parseDigest(%q) = %q, want empty", d, got)
+		}
 	}
 }
 
@@ -348,8 +324,8 @@ func TestRequireHTTPS(t *testing.T) {
 }
 
 func TestOldPath(t *testing.T) {
-	exe := filepath.Join("C:", "tools", "agentlink-tray.exe")
-	if got, want := OldPath(exe), filepath.Join("C:", "tools", ".agentlink-tray.exe.old"); got != want {
+	exe := filepath.Join("C:", "tools", "agentlink.exe")
+	if got, want := OldPath(exe), filepath.Join("C:", "tools", ".agentlink.exe.old"); got != want {
 		t.Fatalf("OldPath = %q, want %q", got, want)
 	}
 }

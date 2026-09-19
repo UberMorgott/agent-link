@@ -1,9 +1,14 @@
 // Command fakerelease stands in for the GitHub releases API in
 // scripts/e2e-update.ps1: it serves one release, tag, whose assets are the
-// files in dir. A test build points selfupdate's apiBase at it via -ldflags.
+// files in dir, each with the "digest" GitHub reports. The digests are taken
+// once at start, as GitHub fixes them at upload: a file changed afterwards
+// no longer matches, which is how the e2e script tampers with a release. A
+// test build points selfupdate's apiBase at it via -ldflags.
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"log"
@@ -20,20 +25,25 @@ func main() {
 	flag.Parse()
 
 	type asset struct {
-		Name string `json:"name"`
-		URL  string `json:"browser_download_url"`
+		Name   string `json:"name"`
+		URL    string `json:"browser_download_url"`
+		Digest string `json:"digest"`
+	}
+	assets := []asset{}
+	entries, err := os.ReadDir(*dir)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, e := range entries {
+		data, err := os.ReadFile(filepath.Join(*dir, e.Name()))
+		if err != nil {
+			log.Fatal(err)
+		}
+		sum := sha256.Sum256(data)
+		assets = append(assets, asset{Name: e.Name(), URL: "http://" + *addr + "/download/" + e.Name(), Digest: "sha256:" + hex.EncodeToString(sum[:])})
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/UberMorgott/agent-link/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
-		entries, err := os.ReadDir(*dir)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		assets := []asset{}
-		for _, e := range entries {
-			assets = append(assets, asset{Name: e.Name(), URL: "http://" + *addr + "/download/" + e.Name()})
-		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": *tag, "assets": assets})
 	})

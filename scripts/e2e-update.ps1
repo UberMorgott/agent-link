@@ -1,17 +1,19 @@
 #Requires -Version 7
-# Self-update end to end, on one machine, without GitHub. Builds agentlink and
-# agentlink-tray as version 0.0.1 into an install folder and as 0.0.2 into a
-# release folder with checksums.txt; both builds point selfupdate at a local
-# fake releases API (fakerelease) through -ldflags. Two headless tray apps pair
-# as in e2e-tray.ps1: node-a is a plain build, node-b runs from the install
-# folder with a fake agent.
+# Self-update end to end, on one machine, without GitHub. Builds agentlink.exe
+# as version 0.0.1 into an install folder and as 0.0.2 into a release folder;
+# both builds point selfupdate at a local fake releases API (fakerelease, which
+# reports each asset's sha256 digest as GitHub does) through -ldflags. Two
+# headless apps pair as in e2e-tray.ps1: node-a is a plain build, node-b runs
+# from the install folder with a fake agent. The install folder also holds an
+# agentlink-tray.exe, the desktop app of older releases.
 #
-# Checks: `agentlink update --check` sees 0.0.2; while node-b's agent runs a
-# slow job, node-b checks and installs 0.0.2 through the web UI; the old app
-# quits the normal way and the new one starts from the same path, reports
-# 0.0.2 and reattaches to the agent, which was never restarted: the job
-# completes once. Both executables are replaced, the parked old files are
-# swept, the CLI then reports up to date, and a bad checksum is refused.
+# Checks: `agentlink update --check` sees 0.0.2; node-b's first start removes
+# the old agentlink-tray.exe; while node-b's agent runs a slow job, node-b
+# checks and installs 0.0.2 through the web UI; the old app quits the normal
+# way and the new one starts from the same path, reports 0.0.2 and reattaches
+# to the agent, which was never restarted: the job completes once. The one
+# executable is replaced, the parked old file is swept, the CLI then reports
+# up to date, and a release whose file does not match its digest is refused.
 [CmdletBinding()]
 param([int]$TimeoutSeconds = 45)
 
@@ -20,7 +22,7 @@ Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $root 'bin'
-$tray = Join-Path $bin 'agentlink-tray.exe'
+$plain = Join-Path $bin 'agentlink.exe'
 $fake = Join-Path $bin 'fakeagent.exe'
 $fakeRelease = Join-Path $bin 'fakerelease.exe'
 $data = Join-Path $root '.data/e2e-update'
@@ -41,15 +43,8 @@ function Wait-Until([scriptblock]$Condition, [string]$What) {
 
 function Build([string]$Version, [string]$Dir) {
     $x = "-X $pkg.Version=$Version -X $pkg.apiBase=http://$ghAddr"
-    go -C $root build -ldflags "-H=windowsgui $x" -o (Join-Path $Dir 'agentlink-tray.exe') ./cmd/agentlink-tray
-    if ($LASTEXITCODE -ne 0) { throw "build agentlink-tray $Version failed" }
     go -C $root build -ldflags $x -o (Join-Path $Dir 'agentlink.exe') ./cmd/agentlink
     if ($LASTEXITCODE -ne 0) { throw "build agentlink $Version failed" }
-}
-
-function Write-Checksums {
-    $lines = Get-ChildItem $release -Filter *.exe | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
-    Set-Content -Path (Join-Path $release 'checksums.txt') -Value $lines
 }
 
 # Connect-Node reads the page token of the app answering at n.api.
@@ -61,7 +56,7 @@ function Connect-Node([hashtable]$n) {
 }
 
 function Start-Node([hashtable]$n) {
-    $n.proc = Start-Process -FilePath $n.exe -ArgumentList @('-no-tray', '-config', $n.config, '-api', $n.api) -PassThru
+    $n.proc = Start-Process -FilePath $n.exe -ArgumentList @('-no-tray', '-config', $n.config, '-api', $n.api) -PassThru -WindowStyle Hidden
     Connect-Node $n
 }
 
@@ -75,16 +70,18 @@ function Get-Inbox([hashtable]$n) { @((Invoke-Ui $n GET inbox) | ForEach-Object 
 
 function Get-Out([hashtable]$n, [string]$Id) { Get-Inbox $n | Where-Object { $_.direction -eq 'out' -and $_.id -eq $Id } }
 
-function Get-Trays { @(Get-CimInstance Win32_Process -Filter "Name='agentlink-tray.exe'" | Where-Object { $_.ExecutablePath -like "$install*" }) }
+function Get-Trays { @(Get-CimInstance Win32_Process -Filter "Name='agentlink.exe'" | Where-Object { $_.ExecutablePath -like "$install*" }) }
 
 Write-Host '== build 0.0.1 (installed) and 0.0.2 (released)'
 if (Test-Path $data) { Remove-Item -Recurse -Force $data }
 New-Item -ItemType Directory -Force $install, $release | Out-Null
 Build '0.0.1' $install
 Build '0.0.2' $release
-Write-Checksums
-go -C $root build -ldflags '-H=windowsgui' -o $tray ./cmd/agentlink-tray
-if ($LASTEXITCODE -ne 0) { throw 'build agentlink-tray failed' }
+# The desktop app of older releases, next to the one executable that replaces it.
+$legacy = Join-Path $install 'agentlink-tray.exe'
+Copy-Item (Join-Path $install 'agentlink.exe') $legacy
+go -C $root build -o $plain ./cmd/agentlink
+if ($LASTEXITCODE -ne 0) { throw 'build agentlink failed' }
 go -C $root build -o $fake ./internal/worker/testdata/fakeagent
 if ($LASTEXITCODE -ne 0) { throw 'build fakeagent failed' }
 go -C $root build -o $fakeRelease ./internal/selfupdate/testdata/fakerelease
@@ -92,8 +89,8 @@ if ($LASTEXITCODE -ne 0) { throw 'build fakerelease failed' }
 
 $work = New-Item -ItemType Directory -Force (Join-Path $data 'work')
 $code = -join ((1..6) | ForEach-Object { 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[(Get-Random -Maximum 32)] })
-$a = @{ name = 'node-a'; port = 7443; api = '127.0.0.1:7543'; exe = $tray }
-$b = @{ name = 'node-b'; port = 7444; api = '127.0.0.1:7544'; exe = (Join-Path $install 'agentlink-tray.exe') }
+$a = @{ name = 'node-a'; port = 7443; api = '127.0.0.1:7543'; exe = $plain }
+$b = @{ name = 'node-b'; port = 7444; api = '127.0.0.1:7544'; exe = (Join-Path $install 'agentlink.exe') }
 foreach ($pair in @(@($a, $b), @($b, $a))) {
     $n, $peer = $pair
     $dir = New-Item -ItemType Directory -Force (Join-Path $data $n.name)
@@ -125,6 +122,7 @@ try {
     Start-Node $b
     foreach ($n in $a, $b) { Invoke-Ui $n POST settings $n.settings | Out-Null }
     foreach ($n in $a, $b) { Wait-Until { (Invoke-Ui $n GET status).connected } "$($n.name) connected" | Out-Null }
+    Wait-Until { -not (Test-Path $legacy) } 'the old agentlink-tray.exe removed' | Out-Null
     $st = Invoke-Ui $b GET update
     if ($st.current -ne '0.0.1' -or -not $st.enabled -or $st.auto) { throw "node-b update state: $($st | ConvertTo-Json -Compress)" }
 
@@ -159,24 +157,24 @@ try {
     $runs = (Get-Content $runlog) -join ','
     if ($runs -ne 'job1') { throw "agent runs: $runs" }
 
-    Write-Host '== both executables replaced, leftovers swept'
+    Write-Host '== the executable replaced, leftovers swept'
     $v = & $cli version
     if ($v -ne '0.0.2') { throw "CLI after the update reports $v" }
-    foreach ($name in 'agentlink.exe', 'agentlink-tray.exe') {
-        if ((Get-FileHash (Join-Path $install $name)).Hash -ne (Get-FileHash (Join-Path $release $name)).Hash) { throw "$name was not replaced" }
-    }
-    Wait-Until { -not @(Get-ChildItem -Force $install | Where-Object { $_.Name -like '.*' }).Count } 'old executables removed' | Out-Null
+    if ((Get-FileHash $cli).Hash -ne (Get-FileHash (Join-Path $release 'agentlink.exe')).Hash) { throw 'agentlink.exe was not replaced' }
+    Wait-Until { -not @(Get-ChildItem -Force $install | Where-Object { $_.Name -like '.*' }).Count } 'old executable removed' | Out-Null
+    $files = @(Get-ChildItem -Force $install).Name -join ','
+    if ($files -ne 'agentlink.exe') { throw "install folder holds $files" }
     $out = & $cli update --check
     Write-Host $out
     if ($out -notmatch 'up to date') { throw 'CLI does not report up to date' }
 
     Write-Host '== a tampered release is refused'
     Build '0.0.3' $release
-    Write-Checksums
-    Set-Content -Path (Join-Path $release 'agentlink.exe') -Value 'tampered'
     Stop-Process -Id $gh.Id -Force
     $gh = Start-Process -FilePath $fakeRelease -ArgumentList @('-addr', $ghAddr, '-dir', $release, '-tag', 'v0.0.3') -PassThru -WindowStyle Hidden
     Wait-Until { Invoke-RestMethod "http://$ghAddr/repos/UberMorgott/agent-link/releases/latest" -TimeoutSec 2 } 'fake releases API' | Out-Null
+    # fakerelease took the digest at its start; the file it serves now no longer matches.
+    Set-Content -Path (Join-Path $release 'agentlink.exe') -Value 'tampered'
     $out = & $cli update 2>&1
     Write-Host "$out"
     if ($LASTEXITCODE -eq 0 -or "$out" -notmatch 'checksum mismatch') { throw 'a tampered release was not refused' }

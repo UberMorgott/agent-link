@@ -32,7 +32,7 @@ this file is the contract and the install path. Do not duplicate README content 
 A network of N machines, one node each, all holding the same code. Every node keeps a TCP
 session to every other member (over ZeroTier, the LAN or an external address), gossips the
 member table so all members see each other, finds members on local networks by UDP beacon,
-and carries messages between the developers' agent sessions (README "Members and discovery"). `agentlink-tray.exe` is the same node plus a
+and carries messages between the developers' agent sessions (README "Members and discovery"). `agentlink.exe` without a command is the same node plus a
 tray icon, a browser settings page, an inbox page and an optional read-only handler agent.
 
 ## Prerequisites
@@ -53,23 +53,24 @@ tray icon, a browser settings page, an inbox page and an optional read-only hand
 
 ## Install
 
-Release asset (preferred): download `agentlink-tray.exe` (and `agentlink.exe` for the CLI) from
-the GitHub release, put them in a folder of your choice, run the tray exe. Nothing else is
-installed; all state lives under `%APPDATA%\agentlink`. From then on the app updates both files
-in that folder from GitHub releases by itself (README "Updates"; `agentlink update` for the CLI).
+Release asset (preferred): download `agentlink.exe`, the one file of the GitHub release, put it
+in a folder of your choice and run it. Without a command it is the tray app; with one
+(`agentlink.exe members`, …) it is the CLI. Nothing else is installed; all state lives under
+`%APPDATA%\agentlink`. From then on the app updates that file from GitHub releases by itself
+(README "Updates"; `agentlink update` from a terminal).
 
 From source:
 
 ```powershell
 go build -o bin/agentlink.exe ./cmd/agentlink
-go build -ldflags "-H=windowsgui" -o bin/agentlink-tray.exe ./cmd/agentlink-tray
 ```
 
-`go build ./cmd/...` builds both, but without `-H=windowsgui` the tray app keeps a console window.
+It is a console program on purpose (terminals then wait for CLI commands and get their exit
+code); the tray app releases its console at start. Do not build it with `-H=windowsgui`.
 
 ## First run
 
-Start `agentlink-tray.exe`; it opens the settings page (later: tray icon → «Открыть настройки»).
+Start `agentlink.exe`; it opens the settings page (later: tray icon → «Открыть настройки»).
 Fields: name (prefilled), code `XXXX-XXXX-XXXX` (**Создать код** on one member, typed on the
 others), **Участники сети** (the member list, **Добавить участника по адресу** + **Добавить**,
 **Удалить**), who answers, working folder; Save. Everything else is under the collapsed
@@ -172,12 +173,14 @@ qgate                                # quality gate; qgate -All when deps or bui
   attached, not tracked.
 - Release binaries are always stripped and UPX-packed and carry their version: build them only
   with `scripts/release.ps1` (`-trimpath -ldflags "-s -w -X …/selfupdate.Version=<x.y.z>"`,
-  `upx --best --lzma`, `upx -t`, `checksums.txt`), never attach a plain `go build` output. A
+  `upx --best --lzma`, `upx -t`), never attach a plain `go build` output. A release holds exactly
+  one file per released OS; today only `agentlink.exe` (windows/amd64). A
   release is cut by pushing a `vX.Y.Z` tag: `.github/workflows/release.yml` vets, tests, runs
   that script, attests provenance and publishes. `pwsh -File scripts/release.ps1 -Version <x.y.z>
-  -Publish` is the manual fallback. Asset names and `checksums.txt` are what self-update reads
-  (`internal/selfupdate.AssetName`); renaming one breaks every installed app's update.
-- Self-update never skips the SHA-256 check, never downgrades, and restarts the app through its
+  -Publish` is the manual fallback. The asset name and the SHA-256 `digest` GitHub reports for it
+  are what self-update reads (`internal/selfupdate.AssetName`); renaming it breaks every installed
+  app's update.
+- Self-update never skips the SHA-256 digest check, never downgrades, and restarts the app through its
   normal quit, never `Worker.CancelAll`: running agent jobs must survive an update.
 - `reference/` is an untracked third-party checkout (see README). Read it, never edit it, never
   add it back to git.

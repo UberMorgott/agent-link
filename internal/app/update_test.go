@@ -52,7 +52,7 @@ type updHarness struct {
 func newUpdHarness(t *testing.T, rel *fakeRelease, newer bool) *updHarness {
 	t.Helper()
 	u := &updHarness{rel: rel, newer: newer}
-	exe := filepath.Join(t.TempDir(), "agentlink-tray.exe")
+	exe := filepath.Join(t.TempDir(), "agentlink.exe")
 	if err := os.WriteFile(exe, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}

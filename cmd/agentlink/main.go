@@ -1,5 +1,14 @@
-// Command agentlink runs an agent-to-agent messaging node and talks to its
-// local control API.
+// Command agentlink is the one agentlink executable. Without a command (a
+// double-click, the autostart entry, or only flags such as -config/-no-tray)
+// it is the desktop app: a tray icon that runs the node in-process, answers
+// requests with a local agent, and opens the settings and inbox pages in the
+// browser. With a command (serve, send, wait, ...) it is the CLI that runs a
+// plain node or talks to a node's local control API.
+//
+// It is a console program, so a terminal waits for a command and sees its
+// output and exit code; the desktop app leaves the console (console_windows.go).
+//
+//	go build -o bin/agentlink.exe ./cmd/agentlink
 package main
 
 import (
@@ -17,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/UberMorgott/agent-link/internal/config"
@@ -25,6 +35,7 @@ import (
 )
 
 const usage = `usage:
+  agentlink [-config <settings.json>] [-no-tray] [-api <addr>]   (no command: the desktop app with its tray icon)
   agentlink serve --config <path>
   agentlink send  --config <path> [--to <node|area:NAME>] --body <text> [--reply-to <id>]   (no --to: the only peer; with several it fails and lists them)
   agentlink wait  --config <path> [--timeout 0]    (seconds or duration; 0 = forever; exit 2 on timeout)
@@ -39,7 +50,20 @@ const usage = `usage:
 const exitTimeout = 2
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	args := os.Args[1:]
+	if appMode(args) {
+		if err := runApp(args); err != nil {
+			fatal(err)
+		}
+		return
+	}
+	os.Exit(run(args, os.Stdout, os.Stderr))
+}
+
+// appMode reports whether args start the desktop app: none at all, or only
+// its flags. A first argument that is a word is a CLI command.
+func appMode(args []string) bool {
+	return len(args) == 0 || strings.HasPrefix(args[0], "-")
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -227,8 +251,7 @@ func members(cfg config.Config, path string, req *node.MemberRequest, stdout io.
 }
 
 // update reports the latest release and, unless check, installs it over this
-// program and agentlink-tray next to it. A running tray keeps the old version
-// until it restarts.
+// program. A running desktop app keeps the old version until it restarts.
 func update(check bool, stdout io.Writer) error {
 	cur := selfupdate.Version
 	if !selfupdate.Valid(cur) {
@@ -264,7 +287,7 @@ func update(check bool, stdout io.Writer) error {
 			return err
 		}
 	}
-	_, err = fmt.Fprintf(stdout, "agentlink %s -> %s; restart agentlink-tray if it is running\n", cur, rel.Version())
+	_, err = fmt.Fprintf(stdout, "agentlink %s -> %s; restart the agentlink app if it is running\n", cur, rel.Version())
 	return err
 }
 

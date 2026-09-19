@@ -1,6 +1,6 @@
 #Requires -Version 7
 # End-to-end loopback run of parallel jobs, activity relay and the idle timeout:
-# two agentlink-tray nodes in -no-tray mode; node-b answers with max_jobs = 2 and
+# two agentlink desktop apps in -no-tray mode; node-b answers with max_jobs = 2 and
 # a fake streaming agent (Claude stream-json) and a 4s idle timeout. node-a sends
 # three requests at once: a long streaming job, a job that streams once and then
 # hangs, and a short streaming job. Asserts: two jobs run at the same time, never
@@ -15,14 +15,12 @@ Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $root 'bin'
-$tray = Join-Path $bin 'agentlink-tray.exe'
 $cli = Join-Path $bin 'agentlink.exe'
+$tray = $cli # the desktop app is agentlink.exe without a command
 $fake = Join-Path $bin 'fakeagent.exe'
 $data = Join-Path $root '.data/e2e-parallel'
 
 Write-Host '== build'
-go -C $root build -ldflags '-H=windowsgui' -o $tray ./cmd/agentlink-tray
-if ($LASTEXITCODE -ne 0) { throw 'build agentlink-tray failed' }
 go -C $root build -o $cli ./cmd/agentlink
 if ($LASTEXITCODE -ne 0) { throw 'build agentlink failed' }
 go -C $root build -o $fake ./internal/worker/testdata/fakeagent
@@ -60,7 +58,7 @@ try {
     foreach ($name in 'node-a', 'node-b') {
         $trayArgs = @('-no-tray', '-config', $nodes[$name].config)
         if ($name -eq 'node-b') { $trayArgs += @('-handler-idle-timeout', '4s') }
-        $procs += Start-Process -FilePath $tray -ArgumentList $trayArgs -PassThru
+        $procs += Start-Process -FilePath $tray -ArgumentList $trayArgs -PassThru -WindowStyle Hidden
     }
     foreach ($name in 'node-a', 'node-b') {
         $deadline = (Get-Date).AddSeconds(30)

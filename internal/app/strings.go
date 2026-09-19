@@ -36,7 +36,7 @@ var uiStrings = map[string]string{
 	"link.weak_code":       "старый короткий код связи, а agentlink доступен не только из локальной сети — нажмите «Создать код», сохраните и сообщите новый код участникам",
 	"link.legacy_public":   "участник по добавленному адресу — старая версия agentlink, а она подключается только из локальной сети или ZeroTier — попросите его обновиться",
 
-	// Tray menu (cmd/agentlink-tray, see tray.go).
+	// Tray menu (cmd/agentlink app.go, see tray.go).
 	"tray.starting":      "Запуск…",
 	"tray.open_settings": "Открыть настройки",
 	"tray.open_inbox":    "Открыть сообщения",
@@ -183,7 +183,7 @@ var uiStrings = map[string]string{
 	"error.save":                   "Не удалось записать настройки на диск — проверьте, что папка %APPDATA%\\agentlink доступна, и попробуйте снова.",
 	"error.bad_request":            "Страница прислала неверные данные — обновите её (F5) и попробуйте снова.",
 	"error.forbidden":              "Страница устарела — обновите её (F5).",
-	"error.no_app":                 "agentlink не отвечает — запустите agentlink-tray.exe и обновите страницу.",
+	"error.no_app":                 "agentlink не отвечает — запустите agentlink.exe и обновите страницу.",
 	"error.internal":               "Что-то пошло не так — подробности в файле agentlink.log рядом с настройками.",
 	"error.not_running":            "agentlink ещё не подключён — впишите код связи в настройках и сохраните.",
 	"error.empty_body":             "Напишите текст сообщения.",

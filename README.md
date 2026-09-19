@@ -13,21 +13,28 @@ git clone --depth 1 --branch v12.2.2 https://github.com/AgentWorkforce/relay.git
 
 ## Desktop app (recommended)
 
-`agentlink-tray.exe` is the whole thing in one program: a tray icon that runs the node, a settings
-page and an inbox page in your browser, and an optional agent that answers requests for you.
+`agentlink.exe` is the whole thing in one program. Started without a command (double-click,
+the autostart entry, or only flags such as `-config` / `-no-tray`) it is the desktop app: a tray
+icon that runs the node, a settings page and an inbox page in your browser, and an optional agent
+that answers requests for you. Started with a command (`agentlink.exe members`, `update`, …) it is
+the CLI below. It is a console program so terminals wait for commands and get their output and
+exit code; the desktop app leaves its console at once (started from a terminal, it starts itself
+detached and hands the terminal back).
 
 ### Install
 
+Download `agentlink.exe` from the latest GitHub release (the one file of the release), or build it:
+
 ```powershell
-go build -ldflags "-H=windowsgui" -o bin/agentlink-tray.exe ./cmd/agentlink-tray
+go build -o bin/agentlink.exe ./cmd/agentlink
 ```
 
-Copy `agentlink-tray.exe` anywhere and double-click it. Members reach each other over ZeroTier
+Copy `agentlink.exe` anywhere and double-click it. Members reach each other over ZeroTier
 (or another VPN), the local network, or an address reachable from the internet.
 
 ### First run (every member)
 
-1. Start `agentlink-tray.exe`; the settings page opens. Later use the tray icon, «Открыть настройки».
+1. Start `agentlink.exe`; the settings page opens. Later use the tray icon, «Открыть настройки».
 2. **Ваше имя** is already filled with your Windows name; change it if you like. Names must
    differ between members.
 3. **Код связи**: one person clicks **Создать код** and tells everyone the code, 12 symbols
@@ -112,15 +119,19 @@ and errors, and the **Обновлять автоматически** switch (`a
 default; it saves at once and is not part of **Сохранить**). With it on, the app checks a minute
 after start and then every 6 hours (±10%) and installs a newer release by itself.
 
-An update downloads `checksums.txt` and the release executables for the app's folder over HTTPS
-(`api.github.com/repos/UberMorgott/agent-link/releases/latest`, no token), checks each file's
-SHA-256 against it and refuses anything unlisted, mismatched, older or equal, or a release
-without `checksums.txt`. Only then does it swap `agentlink-tray.exe` and, when it is next to it,
-`agentlink.exe`: each running file is renamed to a hidden `.<name>.old` and the new one takes its
-place; a failure puts back every file already swapped. The app then starts the new executable
+An update reads the latest release over HTTPS
+(`api.github.com/repos/UberMorgott/agent-link/releases/latest`, no token), downloads its
+`agentlink.exe` and checks the file's SHA-256 against the `digest` (`sha256:<hex>`) GitHub
+reports for that asset. It refuses a mismatch, a release that is older or equal, and a release
+whose asset has no SHA-256 digest. Only then does it swap `agentlink.exe`: the running file is
+renamed to a hidden `.agentlink.exe.old` and the new one takes its place; a failure puts the old
+one back. The app then starts the new executable
 (with `-restarted`, which waits up to 30 s for the API address) and quits the normal way, never
 the kill path: running agent jobs stay up and the new app reattaches to them. The next start
-deletes the `.old` files. A plain `go build` has version `dev` and never updates itself;
+deletes the `.old` file, and an `agentlink-tray.exe` left next to it by an older release
+(0.4.x shipped the tray app separately); an autostart entry that still starts
+`agentlink-tray.exe` is pointed at `agentlink.exe`. 0.4.x apps cannot update to this layout by
+themselves: download `agentlink.exe` once by hand, quit the old tray app and start the new one. A plain `go build` has version `dev` and never updates itself;
 `agentlink update` (below) is the same for the CLI.
 
 ### Handler agent
@@ -239,9 +250,9 @@ agentlink update --check                                   # is there a newer re
 agentlink update                                           # install it next to agentlink.exe
 ```
 
-`update` replaces `agentlink.exe` and `agentlink-tray.exe` in its folder with the latest release,
-verified as in "Updates"; a running tray keeps the old version until it restarts (with automatic updates on, its next
-check does that).
+`update` replaces `agentlink.exe` with the latest release, verified as in "Updates"; a running
+desktop app keeps the old version until it restarts (with automatic updates on, its next check
+does that).
 
 `wait` exits 0 after printing every undelivered inbound message (they are then marked
 delivered), exits 2 with no output when `--timeout` (seconds or a Go duration, `0` = forever)
@@ -285,7 +296,7 @@ runs two tray apps headless (`-no-tray`) with a fake agent and checks the automa
 `-RealClaude` / `-RealCodex` use the installed `claude` / `codex` instead (and must show at least
 one activity line at the sender); `-WorkDir <dir> -Prompt <text>` asks the real agent your own
 question. `scripts/e2e-parallel.ps1` runs b with `max_jobs` 2, a fake streaming agent and a 4 s
-idle timeout (`agentlink-tray -handler-idle-timeout`), sends three requests and checks that two
+idle timeout (`agentlink -handler-idle-timeout`), sends three requests and checks that two
 run at once, activity reaches a, and the one that hangs fails by the idle timeout while the
 others complete.
 `scripts/e2e-tray.ps1` plays both people on one machine: two tray apps with their own settings

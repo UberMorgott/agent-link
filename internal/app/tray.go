@@ -2,7 +2,7 @@ package app
 
 import "strconv"
 
-// Tray menu labels (uiStrings "tray.*"), for cmd/agentlink-tray.
+// Tray menu labels (uiStrings "tray.*"), for the desktop app (cmd/agentlink/app.go).
 const (
 	TrayStarting     = "tray.starting"
 	TrayOpenSettings = "tray.open_settings"

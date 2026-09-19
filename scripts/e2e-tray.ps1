@@ -1,5 +1,5 @@
 #Requires -Version 7
-# Two desktop apps on one machine as two people. Each agentlink-tray runs
+# Two desktop apps on one machine as two people. Each agentlink app runs
 # headless (-no-tray) with its own settings folder and API port, never touching
 # %APPDATA%\agentlink or the autostart entry. Setup, sending, reading the inbox
 # and quitting all go through the web UI endpoints the way the pages call them
@@ -21,7 +21,7 @@ Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $root 'bin'
-$tray = Join-Path $bin 'agentlink-tray.exe'
+$tray = Join-Path $bin 'agentlink.exe'
 $fake = Join-Path $bin 'fakeagent.exe'
 $data = Join-Path $root '.data/e2e-tray'
 
@@ -48,7 +48,7 @@ function Wait-Until([scriptblock]$Condition, [string]$What) {
 function Start-Node([hashtable]$n, [switch]$NoApiFlag) {
     $argv = @('-no-tray', '-config', $n.config)
     if (-not $NoApiFlag) { $argv += '-api', $n.api }
-    $n.proc = Start-Process -FilePath $tray -ArgumentList $argv -PassThru
+    $n.proc = Start-Process -FilePath $tray -ArgumentList $argv -PassThru -WindowStyle Hidden
     $base = "http://$($n.api)"
     $page = Wait-Until { Invoke-WebRequest -Uri "$base/ui/settings" -TimeoutSec 2 } "$($n.name) web UI"
     if ($page.Content -notmatch 'name="agentlink-token" content="([0-9a-f]+)"') { throw "$($n.name): no token in page" }
@@ -91,8 +91,8 @@ function Get-Leftovers([string]$Marker) {
 }
 
 Write-Host '== build'
-go -C $root build -ldflags '-H=windowsgui' -o $tray ./cmd/agentlink-tray
-if ($LASTEXITCODE -ne 0) { throw 'build agentlink-tray failed' }
+go -C $root build -o $tray ./cmd/agentlink
+if ($LASTEXITCODE -ne 0) { throw 'build agentlink failed' }
 go -C $root build -o $fake ./internal/worker/testdata/fakeagent
 if ($LASTEXITCODE -ne 0) { throw 'build fakeagent failed' }
 
