@@ -399,20 +399,6 @@ func (w *Worker) Cancel(id string) bool {
 	return queued
 }
 
-// CancelAll kills every running detached agent and fails its job: the
-// "shut down and kill jobs" path. Stopping Run alone leaves agents running.
-func (w *Worker) CancelAll() {
-	w.mu.Lock()
-	ids := make([]string, 0, len(w.live))
-	for id := range w.live {
-		ids = append(ids, id)
-	}
-	w.mu.Unlock()
-	for _, id := range ids {
-		w.Cancel(id)
-	}
-}
-
 // killLeftover kills a detached agent that no handler will watch.
 func killLeftover(ctx context.Context, rec *Proc) {
 	if rec == nil {

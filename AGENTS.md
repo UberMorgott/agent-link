@@ -181,7 +181,7 @@ qgate                                # quality gate; qgate -All when deps or bui
   are what self-update reads (`internal/selfupdate.AssetName`); renaming it breaks every installed
   app's update.
 - Self-update never skips the SHA-256 digest check, never downgrades, and restarts the app through its
-  normal quit, never `Worker.CancelAll`: running agent jobs must survive an update.
+  normal quit, never by cancelling jobs: running agent jobs must survive an update.
 - `reference/` is an untracked third-party checkout (see README). Read it, never edit it, never
   add it back to git.
 - Conventional commits with explicit paths.

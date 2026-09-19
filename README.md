@@ -210,8 +210,7 @@ a reply. A completed job's run files are removed; a failed one keeps them for di
 agent error, the 10-minute timeout (counted from the attempt's start, across restarts), or 3
 minutes without any output from the agent («агент завис (нет активности 3 мин)») kills the
 agent's process tree and fails the job at once, without a retry; so does `Worker.Cancel`
-(`Worker.CancelAll` is the "shut down and kill jobs" path; the app's normal stop leaves agents
-running).
+(the app's normal stop leaves agents running).
 Switching the handler to "None" fails jobs that were still waiting, with the reply "no handler
 configured".
 
