@@ -255,6 +255,36 @@ func TestSettingsHasNoParticipantsAndParticipantsOwnControls(t *testing.T) {
 	}
 }
 
+func TestInboxKeepsAccessibleAreaRecipientChooser(t *testing.T) {
+	doc, err := html.Parse(strings.NewReader(webFiles(t)["web/app.html"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recipient *html.Node
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "input" {
+			for _, attr := range n.Attr {
+				if attr.Key == "id" && attr.Val == "to" {
+					recipient = n
+				}
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(doc)
+	if recipient == nil || recipient.Parent == nil || recipient.Parent.Data != "label" {
+		t.Fatal("#to must have a visible label")
+	}
+	for _, attr := range recipient.Parent.Attr {
+		if attr.Key == "class" && strings.Contains(attr.Val, "sr-only") {
+			t.Fatal("#to is hidden; area fan-out is not usable")
+		}
+	}
+}
+
 func TestParticipantControlsAreLocalizedAndGuardMutations(t *testing.T) {
 	files := webFiles(t)
 	htmlBody := files["web/app.html"]
@@ -721,15 +751,20 @@ func TestInboxConversationState(t *testing.T) {
 	const program = `
 const fs = require("fs");
 class Element {
-  constructor(id = "") { this.id = id; this.value = ""; this.hidden = false; this.disabled = false; this.textContent = ""; this.className = ""; this.dataset = {}; this.children = []; this.listeners = {}; this.scrollTop = 0; this.scrollHeight = 0; this.clientHeight = 100; this.selectionStart = 0; this.selectionEnd = 0; }
-  append(...nodes) { this.children.push(...nodes); this.scrollHeight = this.children.length * 100; }
-  replaceChildren(...nodes) { this.children = nodes; this.scrollHeight = this.children.length * 100; }
+  constructor(id = "") { this.id = id; this.value = ""; this.hidden = false; this.disabled = false; this.textContent = ""; this.className = ""; this.dataset = {}; this.children = []; this.listeners = {}; this.scrollTop = 0; this.scrollHeight = 0; this.clientHeight = 100; this.selectionStart = 0; this.selectionEnd = 0; this.replacements = 0; }
+  append(...nodes) { for (const node of nodes) { if (node.parentElement) node.parentElement.children = node.parentElement.children.filter((item) => item !== node); node.parentElement = this; this.children.push(node); } this.scrollHeight = this.children.length * 100; }
+  insertBefore(node, before) { if (node.parentElement) node.parentElement.children = node.parentElement.children.filter((item) => item !== node); node.parentElement = this; const index = before ? this.children.indexOf(before) : -1; if (index < 0) this.children.push(node); else this.children.splice(index, 0, node); this.scrollHeight = this.children.length * 100; }
+  replaceChildren(...nodes) { this.replacements++; this.children = []; this.append(...nodes); }
   addEventListener(name, fn) { this.listeners[name] = fn; }
   setAttribute(name, value) { this[name] = value; }
   removeAttribute(name) { delete this[name]; }
   focus() { document.activeElement = this; }
   scrollIntoView() { this.scrolled = true; }
-  remove() { this.removed = true; }
+  setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
+  get childElementCount() { return this.children.length; }
+  get firstElementChild() { return this.children[0] || null; }
+  get lastElementChild() { return this.children[this.children.length - 1] || null; }
+  remove() { this.removed = true; if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((node) => node !== this); }
 }
 const ids = ["messages", "conversation_list", "send", "inbox_result", "reply_to", "replying", "replying_text", "to", "body", "cancel_reply", "send_button", "message-toast-region"];
 const elements = Object.fromEntries(ids.map((id) => [id, new Element(id)]));
@@ -739,7 +774,7 @@ const document = {
   createElement: () => new Element(),
   createTextNode: (text) => ({ textContent: text }),
 };
-const state = { selectedPeer: "", selectedMessage: "", drafts: {}, threads: null, threadFeed: null, status: { node: "local" }, participants: [] };
+const state = { selectedPeer: "", selectedMessage: "", drafts: {}, conversationReads: {}, threads: null, threadFeed: null, status: { node: "local" }, participants: [] };
 const listeners = new Map();
 const store = {
   get: () => state,
@@ -747,11 +782,13 @@ const store = {
   subscribe(name, fn) { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name).add(fn); },
 };
 const calls = [];
+const sentBodies = [];
 const control = { releaseSend: null };
 const full = Array.from({ length: 205 }, (_, i) => ({ id: "m" + i, direction: i % 2 ? "in" : "out", from: i % 2 ? "карл & sons" : "local", to: i % 2 ? "local" : "карл & sons", body: "line " + i, created_at: new Date(1700000000000 + i * 1000).toISOString(), status: "sent", replyable: i % 2 === 1 }));
-async function api(method, path) {
+async function api(method, path, body) {
   calls.push(method + " " + path);
   if (method === "GET") return full;
+  sentBodies.push(body);
   return new Promise((resolve) => { control.releaseSend = () => resolve(full[204]); });
 }
 const t = (key) => key;
@@ -761,7 +798,7 @@ function navigate(route, query) { navigation = { route, query }; }
 const localStorage = { values: new Map(), getItem(k) { return this.values.get(k) || null; }, setItem(k, v) { this.values.set(k, v); } };
 const source = fs.readFileSync(process.argv[1], "utf8");
 const test = fs.readFileSync(process.argv[2], "utf8");
-require("vm").runInNewContext(source + test, { document, store, api, t, fmt, navigate, localStorage, calls, control, full, elements, console, process, URLSearchParams, Date, Map, Set, Object, Array, Promise, JSON, String }, { filename: process.argv[1] });
+require("vm").runInNewContext(source + test, { document, store, api, t, fmt, navigate, localStorage, calls, sentBodies, control, full, elements, console, process, URLSearchParams, Date, Map, Set, Object, Array, Promise, JSON, String }, { filename: process.argv[1] });
 `
 	const testSource = `
 (async () => {
@@ -769,23 +806,36 @@ require("vm").runInNewContext(source + test, { document, store, api, t, fmt, nav
   if (calls[0] !== "GET threads?peer=%D0%BA%D0%B0%D1%80%D0%BB%20%26%20sons") throw new Error("peer query: " + calls[0]);
   if (store.get().selectedPeer !== "карл & sons" || elements.messages.children.length !== 205) throw new Error("full conversation was not selected");
   if (!elements.messages.children[204].scrolled) throw new Error("message anchor was not revealed");
-  const kept = elements.messages.children[10];
+  const kept = elements.messages.children[11];
+  const replyControl = kept.children[kept.children.length - 1];
+  replyControl.focus();
+  const replacements = kept.replacements;
+  const unchanged = full.map((item) => ({ ...item }));
+  renderTimeline(unchanged);
+  if (kept.replacements !== replacements || kept.children[kept.children.length - 1] !== replyControl || document.activeElement !== replyControl) throw new Error("unchanged message controls were rebuilt");
   elements.body.value = "first\nsecond"; elements.body.selectionStart = 3; elements.body.selectionEnd = 3; elements.body.focus();
   elements.messages.scrollTop = 45; elements.messages.clientHeight = 100; elements.messages.scrollHeight = 20500;
-  const changed = full.map((item) => ({ ...item })); changed[10].activity = "reading";
+  const changed = full.map((item) => ({ ...item })); changed[11].activity = "reading";
   renderTimeline(changed);
-  if (elements.messages.children[10] !== kept) throw new Error("message node was replaced");
+  if (elements.messages.children[11] !== kept || kept.children[kept.children.length - 1] !== replyControl) throw new Error("message controls were replaced");
   if (elements.body.value !== "first\nsecond" || document.activeElement !== elements.body || elements.body.selectionStart !== 3) throw new Error("draft focus/caret changed");
   if (elements.messages.scrollTop !== 45) throw new Error("upward scroll jumped: " + elements.messages.scrollTop);
+  elements.to.value = "area:dev";
   elements.send.listeners.submit({ preventDefault() {} }); elements.send.listeners.submit({ preventDefault() {} });
   await Promise.resolve();
-  if (calls.filter((call) => call === "POST send").length !== 1 || !elements.send_button.disabled) throw new Error("duplicate send was not blocked");
+  if (calls.filter((call) => call === "POST send").length !== 1 || !elements.send_button.disabled || sentBodies[0].to !== "area:dev") throw new Error("area send or duplicate guard failed");
   control.releaseSend(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
   if (elements.send_button.disabled) throw new Error("send button stayed disabled");
   store.patch("selectedPeer", "");
   store.patch("status", { node: "local", peer: "bob" });
   await Promise.resolve();
   if (store.get().selectedPeer !== "bob") throw new Error("first connected peer was not selected");
+  store.patch("participants", [{ name: "bob", online: true, total: 4, latest_preview: "hello", latest_at: "2026-01-01T00:00:00Z" }, { name: "alice", online: false, total: 2, latest_preview: "latest from alice", latest_at: "2026-01-02T00:00:00Z" }]);
+  store.patch("dashboard", { recent: [{ peer: "alice", preview: "latest from alice", latest_at: "2026-01-02T00:00:00Z", direction: "in" }] });
+  const aliceRow = elements.conversation_list.children[1];
+  const rowText = (node) => [node.textContent, ...(node.children || []).flatMap((child) => rowText(child))];
+  const aliceText = rowText(aliceRow).join(" ");
+  if (!aliceText.includes("latest from alice") || !aliceText.includes("inbox.unread") || !aliceText.includes("inbox.peer_offline")) throw new Error("conversation summary missing: " + aliceText);
 })().catch((error) => { console.error(error.stack); process.exitCode = 1; });`
 	testPath := filepath.Join(t.TempDir(), "conversation-test.js")
 	if err := os.WriteFile(testPath, []byte(testSource), 0o600); err != nil {
@@ -806,7 +856,7 @@ func TestInboxNotificationWatermark(t *testing.T) {
 	}
 	const program = `
 const fs = require("fs");
-class Element { constructor(id="") { this.id=id; this.value=""; this.hidden=false; this.disabled=false; this.textContent=""; this.children=[]; this.listeners={}; this.dataset={}; } append(...x){this.children.push(...x);this.textContent=this.children.map((n)=>n.textContent||"").join("")} replaceChildren(...x){this.children=x;this.textContent=this.children.map((n)=>n.textContent||"").join("")} addEventListener(n,f){this.listeners[n]=f} setAttribute(){} focus(){} remove(){this.removed=true} }
+class Element { constructor(id="") { this.id=id; this.value=""; this.hidden=false; this.disabled=false; this.textContent=""; this.children=[]; this.listeners={}; this.dataset={}; } append(...x){for(const node of x){node.parentElement=this;this.children.push(node)}this.textContent=this.children.map((n)=>n.textContent||"").join("")} replaceChildren(...x){this.children=[];this.append(...x)} addEventListener(n,f){this.listeners[n]=f} setAttribute(){} focus(){} get childElementCount(){return this.children.length} get firstElementChild(){return this.children[0]||null} remove(){this.removed=true;if(this.parentElement){this.parentElement.children=this.parentElement.children.filter((node)=>node!==this);this.parentElement.textContent=this.parentElement.children.map((n)=>n.textContent||"").join("")}} }
 const ids=["messages","conversation_list","send","inbox_result","reply_to","replying","replying_text","to","body","cancel_reply","send_button","message-toast-region"];
 const elements=Object.fromEntries(ids.map((id)=>[id,new Element(id)]));
 const document={activeElement:null,getElementById:(id)=>elements[id],createElement:()=>new Element(),createTextNode:(text)=>({textContent:text})};
@@ -841,7 +891,10 @@ if(elements["message-toast-region"].children.length!==2) throw new Error("new re
 const replyToast=elements["message-toast-region"].children[1];
 if(!replyToast.textContent.includes("bob") || !replyToast.textContent.includes("reply from bob")) throw new Error("reply toast content: "+replyToast.textContent);
 replyToast.listeners.click();
-if(navState.value.query.peer!=="bob" || navState.value.query.message!=="out") throw new Error("reply toast target: "+JSON.stringify(navState.value));`
+if(navState.value.query.peer!=="bob" || navState.value.query.message!=="out") throw new Error("reply toast target: "+JSON.stringify(navState.value));
+const many=[...answered,...Array.from({length:4},(_,i)=>({id:"bulk"+i,direction:"in",from:"peer"+i,to:"local",body:"bulk "+i,created_at:new Date(1760000000000+i*1000).toISOString(),status:"pending"}))];
+processIncomingThreads(many);
+if(elements["message-toast-region"].childElementCount!==3) throw new Error("visible toast limit: "+elements["message-toast-region"].childElementCount);`
 	testPath := filepath.Join(t.TempDir(), "notification-test.js")
 	if err := os.WriteFile(testPath, []byte(testSource), 0o600); err != nil {
 		t.Fatal(err)

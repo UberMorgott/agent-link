@@ -214,6 +214,7 @@ var uiStrings = map[string]string{
 	// Inbox page: the send form.
 	"inbox.h1":                 "Сообщения",
 	"inbox.to.label":           "Кому",
+	"inbox.to.placeholder":     "Имя или area:тема",
 	"inbox.body.label":         "Текст",
 	"inbox.body.placeholder":   "Напишите сообщение…",
 	"inbox.send":               "Отправить",
@@ -225,6 +226,7 @@ var uiStrings = map[string]string{
 	"inbox.empty_conversation": "В этой переписке пока нет сообщений.",
 	"inbox.peer_online":        "на связи · сообщений: {total}",
 	"inbox.peer_offline":       "не в сети · сообщений: {total}",
+	"inbox.unread":             "Новое",
 
 	// Inbox page: one request with its answer.
 	"inbox.dir.out":   "Исходящее",

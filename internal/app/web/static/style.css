@@ -41,6 +41,8 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0; font: inheri
 .conversation-panel h2 { margin-top: 0; }
 .conversation-timeline { max-height: 60vh; overflow-y: auto; scrollbar-gutter: stable; }
 .composer { position: sticky; bottom: 0; padding-top: 10px; background: Canvas; }
+.composer-recipient { display: grid; grid-template-columns: auto minmax(150px, 260px); align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.composer-recipient input { margin: 0; }
 .composer textarea { resize: vertical; min-height: 76px; }
 .composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .composer-actions #inbox_result { flex: 1; margin: 0; }
@@ -50,6 +52,9 @@ pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0; font: inheri
 .message-toast:hover { border-color: var(--accent); }
 .message-toast-preview { color: var(--muted); overflow-wrap: anywhere; }
 .message:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+.conversation-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.conversation-foot { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; }
+.conversation-unread { color: var(--accent); font-weight: 700; }
 @media (max-width: 700px) {
   .conversation-layout { grid-template-columns: 1fr; }
   .conversation-sidebar { border-right: 0; border-bottom: 1px solid #8884; padding: 0 0 10px; }

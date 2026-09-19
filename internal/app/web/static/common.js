@@ -24,7 +24,7 @@ function createStore(initial) {
 
 const store = createStore({
   status: null, dashboard: null, participants: null, update: null, settings: null,
-  threads: null, threadFeed: null, selectedPeer: "", selectedMessage: "", drafts: {},
+  threads: null, threadFeed: null, selectedPeer: "", selectedMessage: "", drafts: {}, conversationReads: {},
 });
 
 // STRINGS is the application-shell dictionary served by the app; see internal/app/strings.go.

@@ -14,6 +14,7 @@ let notificationNode = "";
 let notificationIDs = null;
 
 if (composer) composer.placeholder = t("inbox.body.placeholder");
+if (recipient) recipient.placeholder = t("inbox.to.placeholder");
 
 function setReply(id, from) {
   replyTo.value = id || "";
@@ -38,53 +39,73 @@ function block(labelKey, value, cls) {
   return wrap;
 }
 
-function patchMessageNode(node, thread) {
-  node.className = "message " + thread.direction;
-  node.dataset.messageId = thread.id;
-  node.tabIndex = -1;
+function createMessageNode() {
+  const node = document.createElement("li");
   const head = document.createElement("div");
   head.className = "head";
   const direction = document.createElement("strong");
-  direction.textContent = t(thread.direction === "in" ? "inbox.dir.in" : "inbox.dir.out");
-  const parts = [fmt("inbox.route", { from: thread.from, to: thread.to })];
-  if (thread.area) parts.push(fmt("inbox.area", { area: thread.area }));
-  parts.push(when(thread.created_at), statusText(thread.status));
-  head.append(direction, document.createTextNode(" · " + parts.join(" · ")));
-  const children = [head, block("inbox.question", thread.body, "question")];
-  if (thread.answered) {
-    children.push(block("inbox.answer", thread.answer, "answer"));
-    if (thread.answer_at) {
-      const answerAt = document.createElement("div");
-      answerAt.className = "head";
-      answerAt.textContent = when(thread.answer_at);
-      children.push(answerAt);
-    }
-  } else {
-    const pending = document.createElement("p");
-    pending.className = "hint";
-    pending.textContent = t("inbox.no_answer");
-    children.push(pending);
-    if (thread.activity) {
-      const activity = document.createElement("p");
-      activity.className = "activity";
-      activity.textContent = fmt("inbox.activity", { activity: thread.activity });
-      children.push(activity);
-    }
-    if (thread.no_news_min) {
-      const silent = document.createElement("p");
-      silent.className = "warn";
-      silent.textContent = fmt("inbox.no_news", { min: String(thread.no_news_min) });
-      children.push(silent);
-    }
+  const meta = document.createTextNode("");
+  head.append(direction, meta);
+  const question = block("inbox.question", "", "question");
+  const answer = block("inbox.answer", "", "answer");
+  const answerAt = document.createElement("div");
+  answerAt.className = "head";
+  const pending = document.createElement("p");
+  pending.className = "hint";
+  const activity = document.createElement("p");
+  activity.className = "activity";
+  const silent = document.createElement("p");
+  silent.className = "warn";
+  const reply = document.createElement("button");
+  reply.type = "button";
+  reply.textContent = t("inbox.reply");
+  reply.addEventListener("click", () => setReply(node._thread.id, node._thread.from));
+  node.append(head, question, answer, answerAt, pending, activity, silent, reply);
+  node._parts = { direction, meta, questionBody: question.children[1], answer, answerBody: answer.children[1], answerAt, pending, activity, silent, reply };
+  return node;
+}
+
+function threadVersion(thread) {
+  return JSON.stringify([
+    thread.direction, thread.from, thread.to, thread.area, thread.body, thread.created_at,
+    thread.status, thread.answer, thread.answer_at, thread.answered, thread.replyable,
+    thread.activity, thread.no_news_min,
+  ]);
+}
+
+function patchMessageNode(node, thread) {
+  const version = threadVersion(thread);
+  if (node._version === version) return;
+  node._version = version;
+  node._thread = thread;
+  node.className = "message " + thread.direction;
+  node.dataset.messageId = thread.id;
+  node.tabIndex = -1;
+  const refs = node._parts;
+  refs.direction.textContent = t(thread.direction === "in" ? "inbox.dir.in" : "inbox.dir.out");
+  const metadata = [fmt("inbox.route", { from: thread.from, to: thread.to })];
+  if (thread.area) metadata.push(fmt("inbox.area", { area: thread.area }));
+  metadata.push(when(thread.created_at), statusText(thread.status));
+  refs.meta.textContent = " · " + metadata.join(" · ");
+  node._parts.questionBody.textContent = thread.body || "";
+  node._parts.answer.hidden = !thread.answered;
+  node._parts.answerBody.textContent = thread.answer || "";
+  node._parts.answerAt.hidden = !thread.answer_at;
+  node._parts.answerAt.textContent = thread.answer_at ? when(thread.answer_at) : "";
+  node._parts.pending.hidden = Boolean(thread.answered);
+  node._parts.pending.textContent = thread.answered ? "" : t("inbox.no_answer");
+  node._parts.activity.hidden = Boolean(thread.answered || !thread.activity);
+  node._parts.activity.textContent = thread.activity ? fmt("inbox.activity", { activity: thread.activity }) : "";
+  node._parts.silent.hidden = Boolean(thread.answered || !thread.no_news_min);
+  node._parts.silent.textContent = thread.no_news_min ? fmt("inbox.no_news", { min: String(thread.no_news_min) }) : "";
+  node._parts.reply.hidden = !thread.replyable;
+}
+
+function reconcileTimeline(nodes) {
+  for (let index = 0; index < nodes.length; index++) {
+    if (list.children[index] !== nodes[index]) list.insertBefore(nodes[index], list.children[index] || null);
   }
-  if (thread.replyable) {
-    const reply = document.createElement("button");
-    reply.type = "button";
-    reply.textContent = t("inbox.reply");
-    reply.addEventListener("click", () => setReply(thread.id, thread.from));
-    children.push(reply);
-  }
-  node.replaceChildren(...children);
+  while (list.children.length > nodes.length) list.lastElementChild.remove();
 }
 
 function renderTimeline(items) {
@@ -105,7 +126,7 @@ function renderTimeline(items) {
   const nodes = ordered.map((thread) => {
     let node = messageNodes.get(thread.id);
     if (!node) {
-      node = document.createElement("li");
+      node = createMessageNode();
       messageNodes.set(thread.id, node);
     }
     patchMessageNode(node, thread);
@@ -116,7 +137,7 @@ function renderTimeline(items) {
     empty.className = "empty";
     empty.textContent = store.get().selectedPeer ? t("inbox.empty_conversation") : t("inbox.select_hint");
     list.replaceChildren(empty);
-  } else list.replaceChildren(...nodes);
+  } else reconcileTimeline(nodes);
   if (active === composer) {
     composer.focus({ preventScroll: true });
     if (selectionStart !== null && typeof composer.setSelectionRange === "function") composer.setSelectionRange(selectionStart, selectionEnd);
@@ -136,7 +157,11 @@ function conversationPeers() {
   const peers = new Map();
   for (const person of store.get().participants || []) peers.set(person.name, person);
   for (const recent of store.get().dashboard?.recent || []) {
-    if (!peers.has(recent.peer)) peers.set(recent.peer, { name: recent.peer, online: false, total: 0 });
+    const person = Object.assign({}, peers.get(recent.peer) || { name: recent.peer, online: false, total: 0 });
+    person.latest_preview = recent.preview || person.latest_preview;
+    person.latest_at = recent.latest_at || person.latest_at;
+    person.latest_direction = recent.direction;
+    peers.set(recent.peer, person);
   }
   const selected = store.get().selectedPeer;
   if (selected && !peers.has(selected)) peers.set(selected, { name: selected, online: false, total: 0 });
@@ -155,7 +180,20 @@ function renderConversationList() {
     name.textContent = person.name;
     const meta = document.createElement("span");
     meta.textContent = fmt(person.online ? "inbox.peer_online" : "inbox.peer_offline", { total: person.total || 0 });
-    button.append(name, meta);
+    const preview = document.createElement("span");
+    preview.className = "conversation-preview";
+    preview.textContent = person.latest_preview || "";
+    const foot = document.createElement("span");
+    foot.className = "conversation-foot";
+    const timestamp = document.createElement("span");
+    timestamp.textContent = person.latest_at ? when(person.latest_at) : "";
+    const unread = document.createElement("span");
+    unread.className = "conversation-unread";
+    const readAt = store.get().conversationReads[person.name] || "";
+    unread.hidden = !(person.latest_direction === "in" && person.name !== selected && (!readAt || new Date(person.latest_at) > new Date(readAt)));
+    unread.textContent = unread.hidden ? "" : t("inbox.unread");
+    foot.append(timestamp, unread);
+    button.append(name, meta, preview, foot);
     button.addEventListener("click", () => navigate("inbox", { peer: person.name }));
     row.append(button);
     return row;
@@ -172,6 +210,7 @@ async function selectConversation(peer, messageID) {
   if (previous && previous !== peer) saveDraft(previous);
   store.patch("selectedPeer", peer || "");
   store.patch("selectedMessage", messageID || "");
+  if (peer) store.patch("conversationReads", Object.assign({}, store.get().conversationReads, { [peer]: new Date().toISOString() }));
   recipient.value = peer || "";
   composer.value = store.get().drafts[peer] || "";
   setReply("");
@@ -187,7 +226,8 @@ async function selectConversation(peer, messageID) {
 
 async function submitMessage() {
   if (sending) return;
-  const peer = store.get().selectedPeer || recipient.value.trim();
+  const selectedPeer = store.get().selectedPeer;
+  const peer = recipient.value.trim() || selectedPeer;
   const draft = composer.value;
   sending = true;
   sendButton.disabled = true;
@@ -197,13 +237,14 @@ async function submitMessage() {
     const current = store.get().threads || [];
     const optimistic = { id: sent.id, direction: "out", from: store.get().status?.node || "", to: peer, body: sent.body || draft, created_at: sent.created_at || new Date().toISOString(), status: sent.status || "queued", answered: false, replyable: false };
     store.patch("threads", current.some((item) => item.id === optimistic.id) ? current : current.concat(optimistic));
-    store.patch("drafts", Object.assign({}, store.get().drafts, { [peer]: "" }));
-    if (store.get().selectedPeer === peer) composer.value = "";
+    const draftPeer = selectedPeer || peer;
+    store.patch("drafts", Object.assign({}, store.get().drafts, { [draftPeer]: "" }));
+    if (store.get().selectedPeer === selectedPeer) composer.value = "";
     setReply("");
     sendResult.textContent = t("inbox.sent");
-    if (store.get().selectedPeer === peer) {
-      const refreshed = await api("GET", "threads?peer=" + encodeURIComponent(peer));
-      if (store.get().selectedPeer === peer) store.patch("threads", refreshed);
+    if (selectedPeer && store.get().selectedPeer === selectedPeer) {
+      const refreshed = await api("GET", "threads?peer=" + encodeURIComponent(selectedPeer));
+      if (store.get().selectedPeer === selectedPeer) store.patch("threads", refreshed);
     }
   } catch (error) { sendResult.textContent = error.message; }
   finally { sending = false; sendButton.disabled = false; sendForm.removeAttribute("aria-busy"); }
