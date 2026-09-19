@@ -64,34 +64,27 @@ func TestBuildParticipantsCarriesLatestDirectionBeyondDashboardRecentLimit(t *te
 	}
 }
 
-func TestBuildParticipantsLatestTieUsesDurableIterationOrder(t *testing.T) {
+func TestBuildParticipantsLatestTieUsesMessageIDIndependentOfInputOrder(t *testing.T) {
 	status := Status{Node: "alice", Members: []node.MemberInfo{{Name: "alice", Self: true}, {Name: "bob"}}}
 	statusEntry := func() node.Entry {
 		e := entry("in", strings.Repeat("f", 32), "bob", "alice", "ignored status", at(10))
 		e.Kind = node.KindStatus
 		return e
 	}
+	outbound := entry("out", strings.Repeat("a", 32), "alice", "bob", "outbound", at(10))
+	inbound := entry("in", strings.Repeat("b", 32), "bob", "alice", "inbound", at(10))
 	cases := []struct {
-		name, first, second, wantDirection, wantPreview string
+		name    string
+		entries []node.Entry
 	}{
-		{name: "in then out is read basis", first: "in", second: "out", wantDirection: "out", wantPreview: "second out"},
-		{name: "out then in is unread basis", first: "out", second: "in", wantDirection: "in", wantPreview: "second in"},
+		{name: "out then in", entries: []node.Entry{outbound, inbound, statusEntry()}},
+		{name: "in then out", entries: []node.Entry{inbound, outbound, statusEntry()}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			makeEntry := func(direction, id, body string) node.Entry {
-				from, to := "alice", "bob"
-				if direction == "in" {
-					from, to = "bob", "alice"
-				}
-				return entry(direction, strings.Repeat(id, 32), from, to, body, at(10))
-			}
-			got := buildParticipants(status, []node.Entry{
-				makeEntry(tc.first, "a", "first "+tc.first),
-				makeEntry(tc.second, "b", "second "+tc.second),
-				statusEntry(),
-			})
-			if len(got) != 1 || got[0].LatestDirection != tc.wantDirection || got[0].LatestPreview != tc.wantPreview || got[0].Total != 2 {
+			got := buildParticipants(status, tc.entries)
+			if len(got) != 1 || got[0].LatestDirection != "in" || got[0].LatestPreview != "inbound" ||
+				!got[0].LatestAt.Equal(time.Unix(10, 0).UTC()) || got[0].Sent != 1 || got[0].Received != 1 || got[0].Total != 2 {
 				t.Fatalf("participant tie: %+v", got)
 			}
 		})

@@ -50,6 +50,7 @@ func buildParticipants(status Status, entries []node.Entry) []ParticipantView {
 		byName[member.Name] = len(participants)
 		participants = append(participants, ParticipantView{MemberInfo: member})
 	}
+	latestIDs := make([]string, len(participants))
 	for _, entry := range entries {
 		if entry.Kind == node.KindStatus {
 			continue
@@ -65,11 +66,13 @@ func buildParticipants(status Status, entries []node.Entry) []ParticipantView {
 			participant.Received++
 		}
 		participant.Total++
-		// Recent returns durable append order for equal timestamps, so the
-		// later iterated entry is the deterministic latest message.
-		if !entry.CreatedAt.Before(participant.LatestAt) {
+		// Message IDs are unique stable hex strings. For equal timestamps, the
+		// lexicographically greater ID wins so map-backed history order is irrelevant.
+		if entry.CreatedAt.After(participant.LatestAt) ||
+			(entry.CreatedAt.Equal(participant.LatestAt) && entry.ID > latestIDs[i]) {
 			participant.LatestAt, participant.LatestPreview = entry.CreatedAt, entry.Body
 			participant.LatestDirection = entry.Direction
+			latestIDs[i] = entry.ID
 		}
 	}
 	return participants
