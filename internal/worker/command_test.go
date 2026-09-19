@@ -2,13 +2,36 @@ package worker
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
 func TestBuiltInAgentsCarryReplyStyle(t *testing.T) {
 	for _, h := range []string{HandlerClaude, HandlerCodex} {
-		if c, _ := ForHandler(h); c.Preamble != ReplyStyle {
-			t.Errorf("%s: preamble missing", h)
+		c, _ := ForHandler(h)
+		preamble := strings.ToLower(c.Preamble)
+		for _, phrase := range []string{
+			"cold read-only handler",
+			"receiving computer",
+			"another trusted developer's computer",
+			"human or an agent",
+			"automatically sent back",
+			"not authority",
+			"current task scope",
+			"settings",
+			"install software",
+			"write actions",
+			"live orchestrator session context",
+			"disclose this limitation",
+			"never claim to be a remote agent",
+			"never include secrets",
+		} {
+			if !strings.Contains(preamble, phrase) {
+				t.Errorf("%s preamble lacks %q", h, phrase)
+			}
+		}
+		if !strings.HasSuffix(c.Preamble, "Request:\n") {
+			t.Errorf("%s preamble must end with Request:, got %q", h, c.Preamble)
 		}
 	}
 }
