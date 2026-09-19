@@ -255,6 +255,121 @@ func TestSettingsHasNoParticipantsAndParticipantsOwnControls(t *testing.T) {
 	}
 }
 
+// TestUISemanticContracts protects the persistent application shell from
+// turning cards into fake form groups or losing keyboard/screen-reader affordances.
+func TestUISemanticContracts(t *testing.T) {
+	doc, err := html.Parse(strings.NewReader(webFiles(t)["web/app.html"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attr := func(n *html.Node, key string) string {
+		for _, a := range n.Attr {
+			if a.Key == key {
+				return a.Val
+			}
+		}
+		return ""
+	}
+	hasLabel := func(n *html.Node) bool {
+		if attr(n, "aria-label") != "" || attr(n, "aria-labelledby") != "" {
+			return true
+		}
+		for parent := n.Parent; parent != nil; parent = parent.Parent {
+			if parent.Type == html.ElementNode && parent.Data == "label" {
+				return true
+			}
+		}
+		return false
+	}
+	views := map[string]int{}
+	viewH1 := map[string]int{}
+	settingsCards := map[string]bool{}
+	labelledNav, liveRegion, fieldsets := false, false, 0
+	var walk func(*html.Node, string)
+	walk = func(n *html.Node, view string) {
+		if n.Type == html.ElementNode {
+			if current := attr(n, "data-view"); current != "" {
+				view = current
+				views[view]++
+			}
+			if n.Data == "h1" && view != "" {
+				viewH1[view]++
+			}
+			if n.Data == "nav" && (attr(n, "aria-label") != "" || attr(n, "aria-labelledby") != "") {
+				labelledNav = true
+			}
+			if attr(n, "aria-live") != "" {
+				liveRegion = true
+			}
+			if n.Data == "fieldset" {
+				fieldsets++
+			}
+			if card := attr(n, "data-settings-card"); card != "" {
+				settingsCards[card] = true
+			}
+			if (n.Data == "input" || n.Data == "select" || n.Data == "textarea") && attr(n, "type") != "hidden" && !hasLabel(n) {
+				t.Errorf("unlabelled %s#%s[name=%s]", n.Data, attr(n, "id"), attr(n, "name"))
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			walk(child, view)
+		}
+	}
+	walk(doc, "")
+	for _, view := range []string{"dashboard", "inbox", "participants", "settings"} {
+		if views[view] != 1 || viewH1[view] != 1 {
+			t.Errorf("view %q: sections=%d h1=%d, want one each", view, views[view], viewH1[view])
+		}
+	}
+	if !labelledNav || !liveRegion {
+		t.Errorf("labelled navigation=%v live region=%v, want both", labelledNav, liveRegion)
+	}
+	if fieldsets != 0 {
+		t.Errorf("found %d visual fieldsets; cards must use sections", fieldsets)
+	}
+	for _, card := range []string{"identity", "handler", "application", "updates", "advanced"} {
+		if !settingsCards[card] {
+			t.Errorf("settings card %q is missing", card)
+		}
+	}
+}
+
+// TestSettingsSavePatchesReactiveSlices executes the real browser module and
+// catches timer-style/broad rereads after a mutation, lost response slices,
+// and reloads that are not caused by an API-address change.
+func TestSettingsSavePatchesReactiveSlices(t *testing.T) {
+	path, err := filepath.Abs("web/static/settings.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const program = `
+const fs = require("fs"), vm = require("vm");
+class Element { constructor(id=""){this.id=id;this.value="";this.checked=false;this.hidden=false;this.disabled=false;this.textContent="";this.className="";this.listeners={};this.open=false} addEventListener(n,f){this.listeners[n]=f} setAttribute(n,v){this[n]=v} removeAttribute(n){delete this[n]} select(){} }
+const names=["form","settings_result","settings_save","code","work_dir","pick","agent_path","pick_agent","find_agent","agent_row","agent_shown","work_dir_shown","advanced","my_addr","generate","copy","updates","update_text","update_check","update_apply","update_auto","update_version"];
+const elements=Object.fromEntries(names.map((id)=>[id,new Element(id)]));
+const controls=Object.fromEntries(["node","code","handler","agent_path","work_dir","listen","api","areas","discovery","max_jobs","autostart"].map((name)=>[name,new Element(name)]));
+controls.handler.value="none"; controls.discovery.checked=true; elements.form.elements=controls;
+const document={getElementById:(id)=>elements[id]};
+const state={settings:{node:"old",api:"127.0.0.1:7520",areas:[]},status:null,dashboard:null,update:null};
+const patches=[]; const store={get:()=>state,subscribe(){},patch(name,value){state[name]=value;patches.push(name)}};
+let reloads=0, refreshes=0;
+async function api(method,path,body){if(path==="settings")return {saved:true,settings:{...body,node:"saved"},status:{configured:true,node:"saved"},dashboard:{total_messages:7}};if(path==="agent")return {text:""};return {current:"dev",enabled:false}}
+function refreshSlice(){refreshes++;throw new Error("save performed a broad refresh")}
+const t=(key)=>key,fmt=(key)=>key; const crypto={getRandomValues:(x)=>x}; const navigator={clipboard:{writeText:async()=>{}}};
+const location={reload(){reloads++}};
+vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),{document,store,api,refreshSlice,t,fmt,crypto,navigator,location,Array,Number,Object,Promise,RegExp,String,Uint8Array,console});
+(async()=>{controls.node.value="saved";controls.api.value="127.0.0.1:7520";controls.areas.value="dev";await elements.form.listeners.submit({preventDefault(){}});for(let i=0;i<8;i++)await Promise.resolve();
+if(refreshes!==0)throw new Error("refreshSlice called "+refreshes+" times");
+if(JSON.stringify(patches)!==JSON.stringify(["settings","status","dashboard"]))throw new Error("patches: "+JSON.stringify(patches));
+if(state.settings.node!=="saved"||state.status.node!=="saved"||state.dashboard.total_messages!==7)throw new Error("response slices were not applied");
+if(reloads!==0)throw new Error("same API address reloaded the page");
+})().catch((error)=>{console.error(error.stack);process.exitCode=1});`
+	//nolint:gosec // G204: fixed Node executable runs a checked-in browser module in a deterministic harness.
+	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path).CombinedOutput(); err != nil {
+		t.Fatalf("settings reactive mutation regression: %v\n%s", err, output)
+	}
+}
+
 func TestInboxKeepsAccessibleAreaRecipientChooser(t *testing.T) {
 	doc, err := html.Parse(strings.NewReader(webFiles(t)["web/app.html"]))
 	if err != nil {

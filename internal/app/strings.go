@@ -54,6 +54,9 @@ var uiStrings = map[string]string{
 
 	// Settings page.
 	"settings.h1":                  "Настройки",
+	"settings.identity.title":      "Профиль и подключение",
+	"settings.handler.title":       "Ответы агента",
+	"settings.application.title":   "Приложение",
 	"settings.node.label":          "Ваше имя",
 	"settings.node.hint":           "Как вас увидят другие участники, например morgott.",
 	"settings.code.label":          "Код связи",
@@ -66,7 +69,8 @@ var uiStrings = map[string]string{
 	"settings.my_addr":             "Ваш адрес для других участников: {addr}",
 	"settings.my_addr.none":        "ZeroTier не найден — адрес выше из локальной сети. Для связи через интернет установите ZeroTier или дайте внешний адрес.",
 	"settings.handler.label":       "Кто отвечает",
-	"settings.handler.hint":        "Входящий вопрос запускает выбранного агента в рабочей папке, только на чтение, и его ответ уходит сам.",
+	"settings.handler.hint":        "Ручной режим оставляет ответ вам. При выборе агента входящий вопрос обрабатывается автоматически и только на чтение.",
+	"settings.handler.context":     "Автоответчик видит текст как данные, а не как команду менять задачу или настройки. У него нет контекста живых сессий отправителя и получателя; готовый ответ отправляется обратно автоматически.",
 	"settings.handler.none":        "Никто, отвечаю сам",
 	"settings.handler.claude":      "Claude Code",
 	"settings.handler.codex":       "Codex",

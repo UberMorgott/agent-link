@@ -8,6 +8,7 @@ const pick = document.getElementById("pick");
 const agentPath = document.getElementById("agent_path");
 const pickAgent = document.getElementById("pick_agent");
 const findAgent = document.getElementById("find_agent");
+const saveButton = document.getElementById("settings_save");
 
 // Letters and digits without 0/O and 1/I: 32 symbols, so a byte & 31 is uniform.
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -162,14 +163,23 @@ form.addEventListener("submit", async (ev) => {
     max_jobs: f.max_jobs.value.trim() === "" ? 0 : (/^\d+$/.test(f.max_jobs.value.trim()) ? Number(f.max_jobs.value.trim()) : -1),
     autostart: f.autostart.checked,
   };
+  const previousAPI = String(store.get().settings?.api || "").trim();
   result.textContent = t("settings.saving");
+  saveButton.disabled = true;
+  form.setAttribute("aria-busy", "true");
   try {
     const r = await api("POST", "settings", body);
     const text = r.error ? r.error : t("settings.saved");
     result.textContent = r.found ? text + " " + r.found : text;
-    await Promise.all([refreshSlice("settings"), refreshSlice("status")]);
+    store.patch("settings", r.settings || body);
+    if (r.status) store.patch("status", r.status);
+    if (r.dashboard) store.patch("dashboard", r.dashboard);
+    if (String(body.api || "").trim() !== previousAPI) location.reload();
   } catch (e) {
     result.textContent = e.message;
+  } finally {
+    saveButton.disabled = false;
+    form.removeAttribute("aria-busy");
   }
 });
 
@@ -198,7 +208,8 @@ async function updateAction(path, body, busyText) {
   if (busyText) updText.textContent = busyText;
   updCheck.disabled = updApply.disabled = true;
   try {
-    showUpdate(await api("POST", path, body));
+    const update = await api("POST", path, body);
+    store.patch("update", update);
   } catch (e) {
     updText.textContent = e.message;
     updCheck.disabled = updApply.disabled = false;

@@ -13,8 +13,8 @@
 <body>
 <div id="app-shell" class="app-shell">
   <aside id="sidebar" aria-label="Основная навигация">
-    <strong>agentlink</strong>
-    <nav>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">a</span><strong>agentlink</strong></div>
+    <nav aria-label="Разделы приложения">
       <a href="/ui/dashboard" data-route="dashboard" data-t="nav.dashboard"></a>
       <a href="/ui/inbox" data-route="inbox" data-t="nav.inbox"></a>
       <a href="/ui/participants" data-route="participants" data-t="nav.participants"></a>
@@ -25,7 +25,7 @@
     <header id="topbar"><span id="status"></span></header>
     <main id="view" tabindex="-1">
       <section data-view="dashboard">
-        <h1 data-t="dashboard.h1"></h1>
+        <header class="view-header"><h1 data-t="dashboard.h1"></h1></header>
         <p id="dashboard_summary" class="hint"></p>
         <div id="dashboard_cards" class="dashboard-cards"></div>
         <section aria-labelledby="dashboard_recent_title">
@@ -34,7 +34,7 @@
         </section>
       </section>
       <section data-view="inbox" hidden>
-        <h1 data-t="inbox.h1"></h1>
+        <header class="view-header"><h1 data-t="inbox.h1"></h1></header>
         <div class="conversation-layout">
           <aside class="conversation-sidebar" aria-label="Список разговоров">
             <ul id="conversation_list" class="conversation-list"></ul>
@@ -54,25 +54,25 @@
         </div>
       </section>
       <section data-view="participants" hidden>
-        <h1 data-t="participants.h1"></h1>
-        <form id="participant_add" novalidate>
-          <fieldset>
-            <legend data-t="participants.add.legend"></legend>
+        <header class="view-header"><h1 data-t="participants.h1"></h1></header>
+        <form id="participant_add" class="card participant-add" novalidate>
+            <h2 data-t="participants.add.legend"></h2>
             <label><span data-t="participants.add.label"></span>
               <span class="row"><input name="participant_addr" id="participant_addr" autocomplete="off" spellcheck="false">
               <button type="submit" id="add_participant" data-t="participants.add.submit"></button></span>
             </label>
             <p class="hint" data-t="participants.add.hint"></p>
             <p id="participants_result" role="status"></p>
-          </fieldset>
         </form>
         <p id="participants_empty" class="hint" hidden data-t="participants.empty"></p>
         <ul id="participants" class="participant-list"></ul>
       </section>
       <section data-view="settings" hidden>
-        <h1 data-t="settings.h1"></h1>
+        <header class="view-header"><h1 data-t="settings.h1"></h1></header>
         <form id="form" novalidate>
-          <fieldset>
+          <div class="settings-grid">
+          <section class="card settings-card" data-settings-card="identity" aria-labelledby="settings_identity_title">
+            <h2 id="settings_identity_title" data-t="settings.identity.title"></h2>
             <label><span data-t="settings.node.label"></span><input name="node" autocomplete="off"></label>
             <p class="hint" data-t="settings.node.hint"></p>
             <label><span data-t="settings.code.label"></span>
@@ -81,6 +81,9 @@
               <button type="button" id="copy" data-t="settings.code.copy"></button></span>
             </label>
             <p class="hint" data-t="settings.code.hint"></p>
+          </section>
+          <section class="card settings-card" data-settings-card="handler" aria-labelledby="settings_handler_title">
+            <h2 id="settings_handler_title" data-t="settings.handler.title"></h2>
             <label><span data-t="settings.handler.label"></span>
               <select name="handler">
                 <option value="none" data-t="settings.handler.none"></option>
@@ -89,6 +92,7 @@
               </select>
             </label>
             <p class="hint" data-t="settings.handler.hint"></p>
+            <p class="handler-note" data-t="settings.handler.context"></p>
             <div id="agent_row">
               <span data-t="settings.agent.label"></span>
               <span class="row"><span id="agent_shown"></span>
@@ -97,16 +101,30 @@
               <input type="hidden" name="agent_path" id="agent_path">
               <p class="hint" data-t="settings.agent.hint"></p>
             </div>
+          </section>
+          <section class="card settings-card" data-settings-card="application" aria-labelledby="settings_application_title">
+            <h2 id="settings_application_title" data-t="settings.application.title"></h2>
             <label><span data-t="settings.work_dir.label"></span>
               <span class="row"><input name="work_dir" id="work_dir" autocomplete="off" spellcheck="false">
               <button type="button" id="pick" data-t="settings.work_dir.pick"></button></span>
             </label>
             <p class="path" id="work_dir_shown"></p>
             <p class="hint" data-t="settings.work_dir.hint"></p>
-          </fieldset>
+            <label class="check"><input type="checkbox" name="autostart"> <span data-t="settings.autostart.label"></span></label>
+          </section>
+          <section id="updates" class="card settings-card" data-settings-card="updates" aria-labelledby="settings_updates_title">
+            <h2 id="settings_updates_title" data-t="update.legend"></h2>
+            <p class="row update-actions"><span id="update_version"></span>
+              <button type="button" id="update_check" data-t="update.check"></button>
+              <button type="button" id="update_apply" hidden></button></p>
+            <p class="hint" id="update_text" role="status"></p>
+            <label class="check"><input type="checkbox" id="update_auto"> <span data-t="update.auto"></span></label>
+            <p class="hint" data-t="update.auto.hint"></p>
+          </section>
+          <section class="card settings-card settings-advanced" data-settings-card="advanced">
           <details id="advanced">
-            <summary data-t="settings.advanced"></summary>
-            <fieldset>
+            <summary><span data-t="settings.advanced"></span></summary>
+            <div class="advanced-fields">
               <label><span data-t="settings.listen.label"></span><input name="listen" autocomplete="off"></label>
               <p class="hint" data-t="settings.listen.hint"></p>
               <p class="hint" id="my_addr"></p>
@@ -118,21 +136,12 @@
               <p class="hint" data-t="settings.discovery.hint"></p>
               <label><span data-t="settings.max_jobs.label"></span><input name="max_jobs" type="number" min="1" max="4" step="1" placeholder="2"></label>
               <p class="hint" data-t="settings.max_jobs.hint"></p>
-              <label class="check"><input type="checkbox" name="autostart"> <span data-t="settings.autostart.label"></span></label>
-            </fieldset>
+            </div>
           </details>
-          <button type="submit" data-t="settings.save"></button>
-          <p id="settings_result" role="status"></p>
+          </section>
+          <footer class="settings-actions"><p id="settings_result" role="status"></p><button type="submit" id="settings_save" data-t="settings.save"></button></footer>
+          </div>
         </form>
-        <fieldset id="updates">
-          <legend data-t="update.legend"></legend>
-          <p class="row"><span id="update_version"></span>
-            <button type="button" id="update_check" data-t="update.check"></button>
-            <button type="button" id="update_apply" hidden></button></p>
-          <p class="hint" id="update_text" role="status"></p>
-          <label class="check"><input type="checkbox" id="update_auto"> <span data-t="update.auto"></span></label>
-          <p class="hint" data-t="update.auto.hint"></p>
-        </fieldset>
       </section>
     </main>
   </section>
