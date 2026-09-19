@@ -299,7 +299,9 @@ func (n *Node) mergeMembers(recs []Member) {
 	case changed:
 		n.membersChanged()
 	case seen:
-		n.persistMembers()
+		if n.persistMembers() {
+			n.changed("members")
+		}
 	}
 }
 
@@ -320,7 +322,7 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 	now := time.Now().Unix()
 	n.mu.Lock()
 	l := n.members[pc.peer]
-	changed := false
+	changed, infoChanged := false, false
 	switch {
 	case l != nil && l.Removed:
 		// The tombstone came between register and here: whoever set it already
@@ -342,6 +344,7 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 		n.members[pc.peer] = r
 		changed = true
 	default:
+		infoChanged = l.Seen != now || (pc.app != "" && l.App != pc.app)
 		l.Seen = now
 		if pc.app != "" {
 			l.App = pc.app
@@ -352,7 +355,9 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 		n.membersChanged()
 		return
 	}
-	n.persistMembers()
+	if n.persistMembers() && infoChanged {
+		n.changed("members")
+	}
 	n.sendMembers(pc)
 }
 
