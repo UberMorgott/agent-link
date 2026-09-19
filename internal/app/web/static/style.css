@@ -18,7 +18,7 @@ input:not([type=checkbox]), select, textarea { display: block; width: 100%; padd
 button { font: inherit; padding: 6px 14px; cursor: pointer; }
 button[type=submit] { background: var(--accent); color: #fff; border: 0; border-radius: 6px; }
 .hint { color: var(--muted); font-size: 13px; margin: 4px 0 8px; }
-#result { min-height: 1.4em; }
+#inbox_result, #settings_result { min-height: 1.4em; }
 #messages { list-style: none; padding: 0; }
 #messages li { border: 1px solid #8884; border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
 #messages li.out { border-left: 4px solid var(--accent); }
