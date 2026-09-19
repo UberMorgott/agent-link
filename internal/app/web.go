@@ -41,6 +41,7 @@ func (a *App) URL(page string) string {
 // Handler serves the web UI under /ui/ and the node's control API elsewhere.
 //
 //	GET  /ui/dashboard, /ui/inbox, /ui/participants, /ui/settings  application shell with the per-run token embedded
+//	GET  /ui/open                 public launcher that activates or adopts the dashboard tab
 //	GET  /ui/api/status            Status
 //	GET  /ui/api/settings          settings.Settings
 //	POST /ui/api/settings          settings.Settings -> save, restart node
@@ -66,6 +67,7 @@ func (a *App) Handler() http.Handler {
 	for _, path := range []string{"/ui/dashboard", "/ui/inbox", "/ui/participants", "/ui/settings"} {
 		ui.HandleFunc("GET "+path, a.page("web/app.html"))
 	}
+	ui.HandleFunc("GET /ui/open", a.page("web/open.html"))
 	static, _ := fs.Sub(webFS, "web/static") // constant path inside the embed
 	ui.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServerFS(static)))
 	api := http.NewServeMux()

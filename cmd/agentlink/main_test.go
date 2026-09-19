@@ -2,9 +2,13 @@ package main
 
 import (
 	"bytes"
+	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/UberMorgott/agent-link/internal/app"
 )
 
 func TestAppMode(t *testing.T) {
@@ -59,5 +63,18 @@ func TestClickDebounce(t *testing.T) {
 		if got := d.allow(t0.Add(c.after)); got != c.want {
 			t.Errorf("click at +%v: allow = %v, want %v", c.after, got, c.want)
 		}
+	}
+}
+
+func TestDashboardURLUsesLauncher(t *testing.T) {
+	a, err := app.New(filepath.Join(t.TempDir(), "config.json"), slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetAPIAddr("127.0.0.1:7631"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := dashboardURL(a), "http://127.0.0.1:7631/ui/open"; got != want {
+		t.Fatalf("dashboardURL() = %q, want %q", got, want)
 	}
 }

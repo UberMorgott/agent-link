@@ -1,6 +1,39 @@
 "use strict";
 
 const ROUTES = new Set(["dashboard", "inbox", "participants", "settings"]);
+const DASHBOARD_WINDOW_NAME = "agentlink-dashboard";
+const DASHBOARD_HEARTBEAT_KEY = "agentlink" + ".dashboard.heartbeat";
+const DASHBOARD_ACTIVATION_KEY = "agentlink" + ".dashboard.activate";
+const DASHBOARD_CHANNEL = "agentlink" + ".dashboard";
+
+window.name = DASHBOARD_WINDOW_NAME;
+
+function writeDashboardHeartbeat() {
+  try { localStorage.setItem(DASHBOARD_HEARTBEAT_KEY, String(Date.now())); } catch (_) { /* storage unavailable */ }
+}
+
+function activateDashboard(message) {
+  if (!message || !ROUTES.has(message.route)) return;
+  navigate(message.route);
+  try { window.focus(); } catch (_) { /* focus remains browser-controlled */ }
+}
+
+function parseActivation(raw) {
+  try { return JSON.parse(raw); } catch (_) { return null; }
+}
+
+writeDashboardHeartbeat();
+setInterval(writeDashboardHeartbeat, 1000);
+document.addEventListener("visibilitychange", writeDashboardHeartbeat);
+addEventListener("storage", (event) => {
+  if (event.key === DASHBOARD_ACTIVATION_KEY && event.newValue) activateDashboard(parseActivation(event.newValue));
+});
+if (typeof BroadcastChannel !== "undefined") {
+  try {
+    const dashboardChannel = new BroadcastChannel(DASHBOARD_CHANNEL);
+    dashboardChannel.addEventListener("message", (event) => activateDashboard(event.data));
+  } catch (_) { /* channel unavailable */ }
+}
 
 function routeFromPath(pathname) {
   const route = pathname.replace(/^\/ui\/?/, "").split("/")[0];

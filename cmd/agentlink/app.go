@@ -123,12 +123,12 @@ func runApp(args []string) error {
 		return nil
 	}
 	if !a.Configured() {
-		openBrowser(a.URL("settings"))
+		openBrowser(dashboardURL(a))
 	}
 	clicks := &debounce{gap: clickGap}
 	systray.SetOnTapped(func() { // left click; a right click shows the menu
 		if clicks.allow(time.Now()) {
-			openBrowser(a.URL("settings"))
+			openBrowser(dashboardURL(a))
 		}
 	})
 	autostartChanged := make(chan struct{}, 1)
@@ -227,7 +227,7 @@ func onReady(a *app.App, log *slog.Logger, autostartChanged <-chan struct{}) {
 				on, _ := a.Autostart()
 				setChecked(autostart, on)
 			case <-open.ClickedCh:
-				openBrowser(a.URL("settings"))
+				openBrowser(dashboardURL(a))
 			case <-quit.ClickedCh:
 				a.Quit()
 				return
@@ -265,6 +265,9 @@ func (d *debounce) allow(now time.Time) bool {
 	d.last = now
 	return true
 }
+
+func dashboardURL(a *app.App) string { return a.URL("open") }
+
 func openLog(path string) (io.WriteCloser, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err

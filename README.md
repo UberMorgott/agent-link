@@ -114,9 +114,12 @@ Autostart is the `agentlink` value under `HKCU\Software\Microsoft\Windows\Curren
 it: an entry switched off in Task Manager (`...\Explorer\StartupApproved\Run`) counts as off, and
 turning it on again clears that mark.
 
-The tray icon: a left click opens the settings page (the inbox is one link away), a right
-click shows a fixed menu — «Запускать вместе с Windows», «Открыть в браузере», «Выход». Members,
-messages and updates live on the web pages; the tooltip carries the state and a newer version.
+The tray icon: a left click opens the dashboard, and another click activates the existing
+dashboard tab in the same browser profile when the browser permits it. A right click shows a
+fixed menu — «Запускать вместе с Windows», «Открыть в браузере», «Выход». Members, messages and
+updates live on the web pages; the tooltip carries the state and a newer version. Browsers decide
+whether a tab opened by the operating system may close itself: when they refuse, the small launcher
+turns into a working dashboard, so that browser may leave a second dashboard tab instead.
 
 ### Updates
 
