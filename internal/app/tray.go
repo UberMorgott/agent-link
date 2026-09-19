@@ -17,10 +17,13 @@ const (
 const maxTooltip = 127
 
 // TrayTooltip is the tray icon's tooltip: the state, and a newer version when
-// one can be installed, e.g. "agentlink — На связи 7 из 12 · доступна v0.6.0".
+// one can be installed or when GitHub rate-limits the update, e.g. "agentlink — На связи 7 из 12 · доступна v0.6.0".
 func TrayTooltip(s Status, u UpdateStatus) string {
 	t := "agentlink — " + s.Summary()
-	if u.Available && u.Latest != "" {
+	switch {
+	case u.Failed && u.RetryAt != "":
+		t += " · " + msg("tray.update_retry", map[string]string{"time": u.RetryAt})
+	case u.Available && u.Latest != "":
 		t += " · " + msg("tray.update", map[string]string{"version": u.Latest})
 	}
 	if len(utf16.Encode([]rune(t))) <= maxTooltip {

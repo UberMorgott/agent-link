@@ -6,13 +6,17 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // digestOf is the releases API "digest" of b.
@@ -21,40 +25,70 @@ func digestOf(b []byte) string {
 	return digestPrefix + hex.EncodeToString(h[:])
 }
 
+// fake is a fake github.com and api.github.com in one server, which webBase
+// and apiBase point at for the test.
+type fake struct {
+	url      string
+	location string      // releases/latest redirect ("": answer 200, no redirect)
+	status   int         // releases/latest status (0: 302)
+	bin      []byte      // this platform's asset (nil: no such asset)
+	digest   string      // its "digest" field ("": none)
+	limited  http.Header // non-nil: the API answers 403 with these headers
+	apiCalls atomic.Int32
+}
+
 // fakeGitHub serves one release with tag whose asset for this platform is bin
-// (nil: no such asset) with the given digest ("": no digest field). apiBase
-// points at it for the test.
-func fakeGitHub(t *testing.T, tag string, bin []byte, digest string) {
+// with the given digest.
+func fakeGitHub(t *testing.T, tag string, bin []byte, digest string) *fake {
 	t.Helper()
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/" + Repo + "/releases/latest":
-			list := []string{fmt.Sprintf(`{"name":"someone-else","browser_download_url":"%s/other","digest":%q}`, srv.URL, digestOf([]byte("other")))}
-			if bin != nil {
+	f := &fake{location: "/" + Repo + "/releases/tag/" + tag, bin: bin, digest: digest}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/"+Repo+"/releases/latest":
+			if f.location == "" {
+				_, _ = w.Write([]byte("<html>no redirect</html>"))
+				return
+			}
+			code := f.status
+			if code == 0 {
+				code = http.StatusFound
+			}
+			w.Header().Set("Location", f.location)
+			w.WriteHeader(code)
+		case r.URL.Path == "/repos/"+Repo+"/releases/tags/"+tag:
+			f.apiCalls.Add(1)
+			if f.limited != nil {
+				maps.Copy(w.Header(), f.limited)
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			list := []string{fmt.Sprintf(`{"name":"someone-else","digest":%q}`, digestOf([]byte("other")))}
+			if f.bin != nil {
 				d := ""
-				if digest != "" {
-					d = fmt.Sprintf(`,"digest":%q`, digest)
+				if f.digest != "" {
+					d = fmt.Sprintf(`,"digest":%q`, f.digest)
 				}
-				list = append(list, fmt.Sprintf(`{"name":%q,"browser_download_url":"%s/dl"%s}`, AssetName(Program, runtime.GOOS, runtime.GOARCH), srv.URL, d))
+				list = append(list, fmt.Sprintf(`{"name":%q%s}`, AssetName(Program, runtime.GOOS, runtime.GOARCH), d))
 			}
 			_, _ = fmt.Fprintf(w, `{"tag_name":%q,"assets":[%s]}`, tag, strings.Join(list, ","))
-		case "/dl":
-			_, _ = w.Write(bin)
+		case r.URL.Path == "/"+Repo+"/releases/download/"+tag+"/"+AssetName(Program, runtime.GOOS, runtime.GOARCH) && f.bin != nil:
+			_, _ = w.Write(f.bin)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	t.Cleanup(srv.Close)
-	saved := apiBase
-	apiBase = srv.URL
-	t.Cleanup(func() { apiBase = saved })
+	f.url = srv.URL
+	savedWeb, savedAPI := webBase, apiBase
+	webBase, apiBase = srv.URL, srv.URL
+	t.Cleanup(func() { webBase, apiBase = savedWeb, savedAPI })
+	return f
 }
 
 var newBin = []byte("new agentlink")
 
 // fakeRelease serves newBin as tag with its honest digest.
-func fakeRelease(t *testing.T, tag string) { fakeGitHub(t, tag, newBin, digestOf(newBin)) }
+func fakeRelease(t *testing.T, tag string) *fake { return fakeGitHub(t, tag, newBin, digestOf(newBin)) }
 
 // install writes the old program into a folder and returns its path.
 func install(t *testing.T) string {
@@ -137,32 +171,106 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-// An older release without a digest is not an error; a newer one is: it
-// could never be applied.
-func TestCheckMissingDigest(t *testing.T) {
-	fakeGitHub(t, "v0.3.0", newBin, "")
-	if _, newer, err := Check(context.Background(), "0.4.0"); err != nil || newer {
-		t.Fatalf("older release without a digest: newer=%v err=%v", newer, err)
-	}
-	fakeGitHub(t, "v0.5.0", newBin, "")
-	if _, newer, err := Check(context.Background(), "0.4.0"); err == nil || newer || !strings.Contains(err.Error(), "digest") {
-		t.Fatalf("newer release without a digest: newer=%v err=%v", newer, err)
+func TestLatestRedirect(t *testing.T) {
+	for _, c := range []struct {
+		name, location string
+		status         int
+		version        string // "": no release
+		fails          bool
+	}{
+		{"relative", "/" + Repo + "/releases/tag/v0.5.2", 0, "0.5.2", false},
+		{"absolute", "{srv}/" + Repo + "/releases/tag/v1.10.0", 0, "1.10.0", false},
+		{"moved permanently", "/" + Repo + "/releases/tag/v0.6.0", http.StatusMovedPermanently, "0.6.0", false},
+		{"no release yet", "/" + Repo + "/releases", 0, "", false},
+		{"not a version", "/" + Repo + "/releases/tag/nightly", 0, "", true},
+		{"escaped slash", "/" + Repo + "/releases/tag/v0.5.2-a%2F..", 0, "", true},
+		{"another repo", "/someone/else/releases/tag/v0.5.2", 0, "", true},
+		{"another host", "https://evil.example/" + Repo + "/releases/tag/v0.5.2", 0, "", true},
+		{"empty location", " ", 0, "", true},
+		{"no redirect", "", 0, "", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := fakeGitHub(t, "v0.0.0", newBin, digestOf(newBin))
+			f.location, f.status = strings.ReplaceAll(c.location, "{srv}", f.url), c.status
+			rel, err := Latest(context.Background())
+			switch {
+			case c.fails:
+				if err == nil {
+					t.Fatalf("Latest = %+v, want an error", rel)
+				}
+			case err != nil:
+				t.Fatal(err)
+			case c.version == "" && rel != nil, c.version != "" && (rel == nil || rel.Version() != c.version):
+				t.Fatalf("Latest = %+v, want version %q", rel, c.version)
+			}
+			if f.apiCalls.Load() != 0 {
+				t.Fatalf("a check called the API %d times", f.apiCalls.Load())
+			}
+		})
 	}
 }
 
 func TestLatestNothingToUpdateTo(t *testing.T) {
-	fakeGitHub(t, "v0.5.0", nil, "")
-	if rel, err := Latest(context.Background()); rel != nil || err != nil {
-		t.Fatalf("no asset for this platform: %v, %v", rel, err)
-	}
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
-	apiBase = srv.URL
+	saved := webBase
+	webBase = srv.URL
+	defer func() { webBase = saved }()
 	if rel, err := Latest(context.Background()); rel != nil || err != nil {
 		t.Fatalf("no release: %v, %v", rel, err)
 	}
 }
 
+// A release without an executable for this platform cannot be installed.
+func TestApplyRefusesMissingAsset(t *testing.T) {
+	fakeGitHub(t, "v0.5.0", nil, "")
+	exe := install(t)
+	if _, err := latest(t).Apply(context.Background(), exe); err == nil || !strings.Contains(err.Error(), "for this platform") {
+		t.Fatalf("Apply = %v, want a missing-asset refusal", err)
+	}
+	assertUntouched(t, exe)
+}
+
+// A rate-limited API on install is a *RateLimitError with GitHub's reset
+// time, and nothing is installed.
+func TestApplyRateLimited(t *testing.T) {
+	reset := time.Now().Add(37 * time.Minute).Truncate(time.Second)
+	for _, c := range []struct {
+		name    string
+		headers http.Header
+		want    time.Time
+	}{
+		{"x-ratelimit-reset", http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {strconv.FormatInt(reset.Unix(), 10)}}, reset},
+		{"retry-after", http.Header{"Retry-After": {"120"}}, time.Now().Add(2 * time.Minute)},
+		{"no reset", http.Header{"X-Ratelimit-Remaining": {"0"}}, time.Now().Add(time.Hour)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := fakeRelease(t, "v0.5.0")
+			f.limited = c.headers
+			exe := install(t)
+			_, err := latest(t).Apply(context.Background(), exe)
+			var rl *RateLimitError
+			if !errors.As(err, &rl) || !errors.Is(err, ErrRateLimited) {
+				t.Fatalf("Apply = %v, want a *RateLimitError", err)
+			}
+			if d := rl.Reset.Sub(c.want); d < -5*time.Second || d > 5*time.Second {
+				t.Fatalf("reset %v, want about %v", rl.Reset, c.want)
+			}
+			assertUntouched(t, exe)
+		})
+	}
+}
+
+// A 403 that is not a rate limit is an ordinary error.
+func TestApplyForbiddenIsNotRateLimit(t *testing.T) {
+	f := fakeRelease(t, "v0.5.0")
+	f.limited = http.Header{"X-Ratelimit-Remaining": {"42"}}
+	exe := install(t)
+	if _, err := latest(t).Apply(context.Background(), exe); err == nil || errors.Is(err, ErrRateLimited) {
+		t.Fatalf("Apply = %v, want a plain HTTP 403 error", err)
+	}
+	assertUntouched(t, exe)
+}
 func TestLatestRejectsNonVersionTag(t *testing.T) {
 	fakeRelease(t, "nightly")
 	if rel, err := Latest(context.Background()); err == nil {

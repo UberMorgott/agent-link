@@ -23,6 +23,7 @@ func TestTrayTooltip(t *testing.T) {
 		{"members", online, UpdateStatus{}, "agentlink — На связи 7 из 12"},
 		{"update", online, UpdateStatus{Available: true, Latest: "0.6.0"}, "agentlink — На связи 7 из 12 · доступна v0.6.0"},
 		{"checked, none newer", online, UpdateStatus{Latest: "0.5.1"}, "agentlink — На связи 7 из 12"},
+		{"rate limited", online, UpdateStatus{Available: true, Latest: "0.6.0", Failed: true, RetryAt: "15:04"}, "agentlink — На связи 7 из 12 · обновление после 15:04"},
 		{"not set up", Status{}, UpdateStatus{}, "agentlink — Не настроено — откройте настройки"},
 	}
 	for _, c := range cases {

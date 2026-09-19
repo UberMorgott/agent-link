@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"math/rand/v2"
 	"os"
 	"sync"
@@ -32,6 +33,9 @@ type UpdateStatus struct {
 	Enabled bool   `json:"enabled"`
 	Text    string `json:"text,omitempty"`
 	Failed  bool   `json:"failed,omitempty"`
+	// RetryAt: GitHub rate-limited the last step; it accepts requests again
+	// at this local time ("15:04").
+	RetryAt string `json:"retry_at,omitempty"`
 }
 
 // Update check timing: the first check shortly after start, then every
@@ -39,6 +43,8 @@ type UpdateStatus struct {
 const (
 	updateFirst = time.Minute
 	updateEvery = 6 * time.Hour
+	// rateLimitJitter spreads retries after a GitHub rate limit ends.
+	rateLimitJitter = 5 * time.Minute
 )
 
 type updater struct {
@@ -48,6 +54,7 @@ type updater struct {
 	state   string // "", "check", "apply", "restart"
 	text    string
 	failed  bool
+	retryAt time.Time   // GitHub's rate limit ends; zero when not limited
 	exeStat os.FileInfo // the executable as it was at start
 }
 
@@ -90,6 +97,9 @@ func (a *App) updateStatusLocked(auto bool) UpdateStatus {
 		Busy: a.upd.state != "", Restarting: a.upd.state == "restart", Auto: auto,
 		Enabled: a.updatesEnabled(), Text: a.upd.text, Failed: a.upd.failed,
 	}
+	if !a.upd.retryAt.IsZero() {
+		st.RetryAt = a.upd.retryAt.Local().Format("15:04")
+	}
 	if !st.Enabled {
 		st.Text, st.Available = msg("update.disabled", nil), false
 	}
@@ -103,8 +113,20 @@ func (a *App) begin(state, text string) bool {
 	if a.upd.state != "" {
 		return false
 	}
-	a.upd.state, a.upd.text, a.upd.failed = state, text, false
+	a.upd.state, a.upd.text, a.upd.failed, a.upd.retryAt = state, text, false, time.Time{}
 	return true
+}
+
+// failLocked records a failed update step: a GitHub rate limit gets its own
+// message with the time to retry, anything else the message of key.
+func (a *App) failLocked(key string, err error) {
+	a.upd.state, a.upd.failed = "", true
+	if rl, ok := errors.AsType[*selfupdate.RateLimitError](err); ok {
+		a.upd.retryAt = rl.Reset
+		a.upd.text = msg("update.error.ratelimit", map[string]string{"time": rl.Reset.Local().Format("15:04")})
+		return
+	}
+	a.upd.text = msg(key, nil)
 }
 
 // CheckUpdate asks GitHub for the latest release.
@@ -118,7 +140,7 @@ func (a *App) CheckUpdate(ctx context.Context) UpdateStatus {
 	switch {
 	case err != nil:
 		a.log.Warn("update check", "err", err)
-		a.upd.text, a.upd.failed = msg("update.error.check", nil), true
+		a.failLocked("update.error.check", err)
 	case rel == nil:
 		a.upd.text = msg("update.none", nil)
 	case newer:
@@ -167,7 +189,7 @@ func (a *App) InstallUpdate(ctx context.Context) UpdateStatus {
 	a.upd.mu.Lock()
 	if err != nil {
 		a.log.Error("update install", "err", err)
-		a.upd.state, a.upd.text, a.upd.failed = "", msg("update.error.apply", nil), true
+		a.failLocked("update.error.apply", err)
 		a.upd.mu.Unlock()
 		return a.UpdateStatus()
 	}
@@ -248,7 +270,20 @@ func (a *App) RunUpdates(ctx context.Context) {
 				return
 			}
 		}
-		jitter := every / 10
-		t.Reset(every - jitter + rand.N(2*jitter+1)) // #nosec G404 -- spreading polls, not a secret
+		t.Reset(a.nextUpdate(every))
 	}
+}
+
+// nextUpdate is the wait before the next automatic check: every ±10%, or
+// while GitHub rate-limits this network, until its reset plus up to
+// rateLimitJitter so machines behind one address do not retry in step.
+func (a *App) nextUpdate(every time.Duration) time.Duration {
+	a.upd.mu.Lock()
+	retryAt := a.upd.retryAt
+	a.upd.mu.Unlock()
+	if wait := time.Until(retryAt); wait > 0 {
+		return wait + rand.N(rateLimitJitter) // #nosec G404 -- spreading retries, not a secret
+	}
+	jitter := every / 10
+	return every - jitter + rand.N(2*jitter+1) // #nosec G404 -- spreading polls, not a secret
 }

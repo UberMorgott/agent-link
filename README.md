@@ -127,11 +127,17 @@ and errors, and the **Обновлять автоматически** switch (`a
 default; it saves at once and is not part of **Сохранить**). With it on, the app checks a minute
 after start and then every 6 hours (±10%) and installs a newer release by itself.
 
-An update reads the latest release over HTTPS
-(`api.github.com/repos/UberMorgott/agent-link/releases/latest`, no token), downloads its
-`agentlink.exe` and checks the file's SHA-256 against the `digest` (`sha256:<hex>`) GitHub
-reports for that asset. It refuses a mismatch, a release that is older or equal, and a release
-whose asset has no SHA-256 digest. Only then does it swap `agentlink.exe`: the running file is
+A check reads the latest release's tag from the redirect of
+`https://github.com/UberMorgott/agent-link/releases/latest`, without the REST API (whose
+unauthenticated limit, 60 requests an hour, is shared by everyone behind one IP address). An
+install asks the API once for that release by tag
+(`api.github.com/repos/UberMorgott/agent-link/releases/tags/vX.Y.Z`, no token), downloads
+`github.com/UberMorgott/agent-link/releases/download/vX.Y.Z/agentlink.exe` and checks the
+file's SHA-256 against the `digest` (`sha256:<hex>`) GitHub reports for that asset. It refuses a
+mismatch, a release that is older or equal, and a release whose asset has no SHA-256 digest.
+When GitHub rate-limits that API call nothing is installed: the page says when to retry
+(«GitHub временно ограничил запросы, повторите после HH:MM»), and automatic updates retry
+after that time instead of waiting the usual hours. Only then does it swap `agentlink.exe`: the running file is
 renamed to a hidden `.agentlink.exe.old` and the new one takes its place; a failure puts the old
 one back. The app then starts the new executable
 (with `-restarted`, which waits up to 30 s for the API address) and quits the normal way, never

@@ -1,9 +1,12 @@
-// Command fakerelease stands in for the GitHub releases API in
-// scripts/e2e-update.ps1: it serves one release, tag, whose assets are the
-// files in dir, each with the "digest" GitHub reports. The digests are taken
-// once at start, as GitHub fixes them at upload: a file changed afterwards
-// no longer matches, which is how the e2e script tampers with a release. A
-// test build points selfupdate's apiBase at it via -ldflags.
+// Command fakerelease stands in for github.com and the GitHub releases API in
+// scripts/e2e-update.ps1: it serves one release, tag, through the
+// releases/latest redirect, the release-by-tag API and the download URLs,
+// whose assets are the files in dir, each with the "digest" GitHub reports.
+// The digests are taken once at start, as GitHub fixes them at upload: a file
+// changed afterwards no longer matches, which is how the e2e script tampers
+// with a release. With -limited the API answers as GitHub does when its rate
+// limit is used up. A test build points selfupdate's webBase and apiBase at
+// it via -ldflags.
 package main
 
 import (
@@ -15,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -22,11 +26,11 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:7549", "listen address")
 	dir := flag.String("dir", ".", "folder whose files are the release assets")
 	tag := flag.String("tag", "v0.0.2", "release tag")
+	limited := flag.Bool("limited", false, "the API answers 403 rate limit exceeded")
 	flag.Parse()
 
 	type asset struct {
 		Name   string `json:"name"`
-		URL    string `json:"browser_download_url"`
 		Digest string `json:"digest"`
 	}
 	assets := []asset{}
@@ -40,14 +44,32 @@ func main() {
 			log.Fatal(err)
 		}
 		sum := sha256.Sum256(data)
-		assets = append(assets, asset{Name: e.Name(), URL: "http://" + *addr + "/download/" + e.Name(), Digest: "sha256:" + hex.EncodeToString(sum[:])})
+		assets = append(assets, asset{Name: e.Name(), Digest: "sha256:" + hex.EncodeToString(sum[:])})
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /repos/UberMorgott/agent-link/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
+	const repo = "/UberMorgott/agent-link"
+	mux.HandleFunc("GET "+repo+"/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, repo+"/releases/tag/"+*tag, http.StatusFound)
+	})
+	mux.HandleFunc("GET /repos"+repo+"/releases/tags/{tag}", func(w http.ResponseWriter, r *http.Request) {
+		if *limited {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10))
+			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+			return
+		}
+		if r.PathValue("tag") != *tag {
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": *tag, "assets": assets})
 	})
-	mux.HandleFunc("GET /download/{name}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET "+repo+"/releases/download/{tag}/{name}", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("tag") != *tag {
+			http.NotFound(w, r)
+			return
+		}
 		http.ServeFile(w, r, filepath.Join(*dir, filepath.Base(r.PathValue("name"))))
 	})
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}

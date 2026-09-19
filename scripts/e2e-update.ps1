@@ -1,8 +1,9 @@
 #Requires -Version 7
 # Self-update end to end, on one machine, without GitHub. Builds agentlink.exe
 # as version 0.0.1 into an install folder and as 0.0.2 into a release folder;
-# both builds point selfupdate at a local fake releases API (fakerelease, which
-# reports each asset's sha256 digest as GitHub does) through -ldflags. Two
+# both builds point selfupdate at a local fake github.com and releases API
+# (fakerelease, which reports each asset's sha256 digest as GitHub does)
+# through -ldflags. Two
 # headless apps pair as in e2e-tray.ps1: node-a is a plain build, node-b runs
 # from the install folder with a fake agent. The install folder also holds an
 # agentlink-tray.exe, the desktop app of older releases.
@@ -13,7 +14,8 @@
 # way and the new one starts from the same path, reports 0.0.2 and reattaches
 # to the agent, which was never restarted: the job completes once. The one
 # executable is replaced, the parked old file is swept, the CLI then reports
-# up to date, and a release whose file does not match its digest is refused.
+# up to date, a release whose file does not match its digest is refused, and
+# with the API rate-limited a check still works while an install is refused.
 [CmdletBinding()]
 param([int]$TimeoutSeconds = 45)
 
@@ -42,7 +44,7 @@ function Wait-Until([scriptblock]$Condition, [string]$What) {
 }
 
 function Build([string]$Version, [string]$Dir) {
-    $x = "-X $pkg.Version=$Version -X $pkg.apiBase=http://$ghAddr"
+    $x = "-X $pkg.Version=$Version -X $pkg.apiBase=http://$ghAddr -X $pkg.webBase=http://$ghAddr"
     go -C $root build -ldflags $x -o (Join-Path $Dir 'agentlink.exe') ./cmd/agentlink
     if ($LASTEXITCODE -ne 0) { throw "build agentlink $Version failed" }
 }
@@ -107,7 +109,7 @@ $b.settings.handler = 'claude'
 $gh = $null
 try {
     $gh = Start-Process -FilePath $fakeRelease -ArgumentList @('-addr', $ghAddr, '-dir', $release, '-tag', 'v0.0.2') -PassThru -WindowStyle Hidden
-    Wait-Until { Invoke-RestMethod "http://$ghAddr/repos/UberMorgott/agent-link/releases/latest" -TimeoutSec 2 } 'fake releases API' | Out-Null
+    Wait-Until { (Invoke-WebRequest "http://$ghAddr/UberMorgott/agent-link/releases/latest" -MaximumRedirection 0 -SkipHttpErrorCheck -TimeoutSec 2 -ErrorAction SilentlyContinue).StatusCode -eq 302 } 'fake releases API' | Out-Null
 
     Write-Host '== CLI: version and update --check'
     $cli = Join-Path $install 'agentlink.exe'
@@ -172,13 +174,27 @@ try {
     Build '0.0.3' $release
     Stop-Process -Id $gh.Id -Force
     $gh = Start-Process -FilePath $fakeRelease -ArgumentList @('-addr', $ghAddr, '-dir', $release, '-tag', 'v0.0.3') -PassThru -WindowStyle Hidden
-    Wait-Until { Invoke-RestMethod "http://$ghAddr/repos/UberMorgott/agent-link/releases/latest" -TimeoutSec 2 } 'fake releases API' | Out-Null
+    Wait-Until { (Invoke-WebRequest "http://$ghAddr/UberMorgott/agent-link/releases/latest" -MaximumRedirection 0 -SkipHttpErrorCheck -TimeoutSec 2 -ErrorAction SilentlyContinue).StatusCode -eq 302 } 'fake releases API' | Out-Null
     # fakerelease took the digest at its start; the file it serves now no longer matches.
     Set-Content -Path (Join-Path $release 'agentlink.exe') -Value 'tampered'
     $out = & $cli update 2>&1
     Write-Host "$out"
     if ($LASTEXITCODE -eq 0 -or "$out" -notmatch 'checksum mismatch') { throw 'a tampered release was not refused' }
     if ((& $cli version) -ne '0.0.2') { throw 'a refused update changed the CLI' }
+
+    Write-Host '== the API rate-limited: check works, install refused'
+    Remove-Item (Join-Path $release 'agentlink.exe') # the tampered file is no Go build output
+    Build '0.0.3' $release
+    Stop-Process -Id $gh.Id -Force
+    $gh = Start-Process -FilePath $fakeRelease -ArgumentList @('-addr', $ghAddr, '-dir', $release, '-tag', 'v0.0.3', '-limited') -PassThru -WindowStyle Hidden
+    Wait-Until { (Invoke-WebRequest "http://$ghAddr/UberMorgott/agent-link/releases/latest" -MaximumRedirection 0 -SkipHttpErrorCheck -TimeoutSec 2 -ErrorAction SilentlyContinue).StatusCode -eq 302 } 'fake releases API' | Out-Null
+    $out = & $cli update --check
+    Write-Host $out
+    if ($LASTEXITCODE -ne 0 -or $out -notmatch 'update available: 0\.0\.3') { throw 'update --check failed with the API rate-limited' }
+    $out = & $cli update 2>&1
+    Write-Host "$out"
+    if ($LASTEXITCODE -eq 0 -or "$out" -notmatch 'rate limit exceeded.*retry after \d\d:\d\d') { throw 'a rate-limited install was not refused as such' }
+    if ((& $cli version) -ne '0.0.2') { throw 'a rate-limited update changed the CLI' }
 
     Write-Host '== quit both'
     foreach ($n in $a, $b) {

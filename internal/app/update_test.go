@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/UberMorgott/agent-link/internal/selfupdate"
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
 
@@ -149,6 +151,39 @@ func TestUpdateInstallFailures(t *testing.T) {
 	waitFor(t, "relaunch error", func() bool { return u.app.UpdateStatus().Failed })
 	if st := u.app.UpdateStatus(); st.Text != msg("update.error.restart", nil) || u.quits.Load() != 0 {
 		t.Fatalf("failed relaunch: %+v, quits %d", st, u.quits.Load())
+	}
+}
+
+// A GitHub rate limit says when to retry instead of blaming the network, and
+// the automatic updater waits for it rather than the usual hours.
+func TestUpdateRateLimited(t *testing.T) {
+	reset := time.Now().Add(20 * time.Minute)
+	hhmm := reset.Local().Format("15:04")
+	want := msg("update.error.ratelimit", map[string]string{"time": hhmm})
+	rl := &selfupdate.RateLimitError{Reset: reset}
+
+	u := newUpdHarness(t, nil, false)
+	u.checkErr.set(rl)
+	if st := u.post(t, "update/check", ""); !st.Failed || st.Text != want || st.RetryAt != hhmm {
+		t.Fatalf("rate-limited check: %+v", st)
+	}
+
+	u = newUpdHarness(t, &fakeRelease{version: "0.5.0"}, true)
+	u.rel.err.set(fmt.Errorf("apply: %w", rl))
+	st := u.post(t, "update/apply", "")
+	if st.Restarting || !st.Failed || st.Text != want || st.RetryAt != hhmm || u.relaunch.Load() != 0 {
+		t.Fatalf("rate-limited install: %+v", st)
+	}
+	if d := u.app.nextUpdate(6 * time.Hour); d < time.Until(reset)-time.Second || d > time.Until(reset)+rateLimitJitter {
+		t.Fatalf("next automatic check in %v, want at the reset (%v) plus jitter", d, time.Until(reset))
+	}
+	// A later successful check clears the limit.
+	u.rel.err.set(nil)
+	if st := u.post(t, "update/check", ""); st.Failed || st.RetryAt != "" {
+		t.Fatalf("check after the limit: %+v", st)
+	}
+	if d := u.app.nextUpdate(6 * time.Hour); d < 5*time.Hour {
+		t.Fatalf("next automatic check in %v, want the usual interval", d)
 	}
 }
 

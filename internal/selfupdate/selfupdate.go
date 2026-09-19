@@ -3,11 +3,15 @@
 //
 // The release pipeline (.github/workflows/release.yml, scripts/release.ps1)
 // publishes one plain UPX-packed executable per platform to the public
-// repository UberMorgott/agent-link. The releases API lists every asset with
-// a "digest" field ("sha256:<hex>") that GitHub computes on upload. So the
-// whole job is one REST call without a token, an exact asset-name match, a
-// SHA-256 compare against that digest and the rename dance that works on a
-// running Windows executable.
+// repository UberMorgott/agent-link. A check never calls the REST API: the
+// unauthenticated API allows 60 requests an hour per IP address, shared by
+// everyone behind one NAT or VPN. Instead it reads the tag from the redirect
+// of github.com/<repo>/releases/latest (no rate limit of that kind). Only an
+// install makes one API call, for the release by tag, whose asset list has
+// the "digest" field ("sha256:<hex>") GitHub computes on upload; without it
+// nothing is installed. Then the download from github.com, a SHA-256 compare
+// against that digest and the rename dance that works on a running Windows
+// executable.
 //
 // The download is verified before any file on disk is touched, and a failed
 // swap puts the old executable back. Nothing here writes to stdout or stderr.
@@ -23,6 +27,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -42,9 +47,13 @@ var Version = "dev"
 // Repo is the GitHub repository releases come from.
 const Repo = "UberMorgott/agent-link"
 
-// apiBase is the GitHub REST root. A var so tests (and the e2e build, via
-// -ldflags -X) can point it at a local server; production never changes it.
-var apiBase = "https://api.github.com"
+// webBase is the GitHub web root (release redirects and downloads) and apiBase
+// the REST root. Vars so tests (and the e2e build, via -ldflags -X) can point
+// them at a local server; production never changes them.
+var (
+	webBase = "https://github.com"
+	apiBase = "https://api.github.com"
+)
 
 // Program is the one executable of a release: the desktop app and the CLI.
 const Program = "agentlink"
@@ -63,6 +72,49 @@ const (
 
 // client bounds every request; a hung connection must not wedge the updater.
 var client = &http.Client{Timeout: 5 * time.Minute}
+
+// noRedirect is client for releases/latest, whose redirect is the answer.
+var noRedirect = &http.Client{
+	Timeout:       time.Minute,
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
+// ErrRateLimited is what a *RateLimitError matches with errors.Is.
+var ErrRateLimited = errors.New("GitHub rate limit")
+
+// RateLimitError is GitHub refusing a request for its rate limit (the API's
+// 60 requests an hour per IP without a token). Nothing was installed; Reset
+// is when GitHub accepts requests again.
+type RateLimitError struct{ Reset time.Time }
+
+func (e *RateLimitError) Error() string {
+	return "GitHub rate limit exceeded for this network; retry after " + e.Reset.Local().Format("15:04")
+}
+
+// Is makes errors.Is(err, ErrRateLimited) true.
+func (e *RateLimitError) Is(target error) bool { return target == ErrRateLimited }
+
+// rateLimit returns a *RateLimitError for a 403 or 429 that GitHub marks as
+// a rate limit (X-RateLimit-Remaining 0 or a Retry-After), else nil. Reset
+// comes from Retry-After (seconds), else X-RateLimit-Reset (unix time), else
+// an hour from now: GitHub's window.
+func rateLimit(r *response) error {
+	if r.code != http.StatusForbidden && r.code != http.StatusTooManyRequests {
+		return nil
+	}
+	retry := strings.TrimSpace(r.header.Get("Retry-After"))
+	if retry == "" && strings.TrimSpace(r.header.Get("X-RateLimit-Remaining")) != "0" {
+		return nil
+	}
+	now := time.Now()
+	reset := now.Add(time.Hour)
+	if s, err := strconv.ParseInt(retry, 10, 64); err == nil && s >= 0 {
+		reset = now.Add(time.Duration(s) * time.Second)
+	} else if u, err := strconv.ParseInt(strings.TrimSpace(r.header.Get("X-RateLimit-Reset")), 10, 64); err == nil && u > 0 {
+		reset = time.Unix(u, 0)
+	}
+	return &RateLimitError{Reset: reset}
+}
 
 // rename is os.Rename; tests replace it to fail one step of the swap.
 var rename = os.Rename
@@ -108,11 +160,11 @@ func newPath(exePath string) string {
 	return filepath.Join(dir, "."+base+".new")
 }
 
-// Release is the latest published release with an executable for this platform.
+// Release is the latest published release. Whether it has an executable for
+// this platform, and its digest, only Apply learns (from the API).
 type Release struct {
 	version string // without the leading "v"
-	url     string // download URL of this platform's executable
-	sha256  string // lowercase hex from the asset's digest; "" when missing or not SHA-256
+	tag     string // as published, e.g. "v0.5.2"
 }
 
 // Version is the release version without a leading "v".
@@ -123,63 +175,75 @@ func (r *Release) Version() string { return r.version }
 // (a "dev" build, a garbled tag) is never newer.
 func (r *Release) Newer(current string) bool { return compareVer(r.version, current) > 0 }
 
-// Latest fetches the newest non-draft, non-prerelease release. A repository
-// with no release, or a release without an executable for this platform, is
-// (nil, nil): nothing to update to, not a failure.
+// Latest finds the newest non-draft, non-prerelease release from the redirect
+// of github.com/<repo>/releases/latest to its tag page, without the API. A
+// repository with no release is (nil, nil): nothing to update to.
 func Latest(ctx context.Context) (*Release, error) {
-	body, code, err := httpGet(ctx, apiBase+"/repos/"+Repo+"/releases/latest", "application/vnd.github+json", maxJSONSize)
+	u := webBase + "/" + Repo + "/releases/latest"
+	resp, err := httpGet(ctx, noRedirect, u, "text/html", maxJSONSize)
 	if err != nil {
 		return nil, err
 	}
-	switch code {
-	case http.StatusOK:
+	if err := rateLimit(resp); err != nil {
+		return nil, err
+	}
+	switch resp.code {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
 	case http.StatusNotFound:
 		return nil, nil
 	default:
-		return nil, fmt.Errorf("github releases API: HTTP %d", code)
+		return nil, fmt.Errorf("github releases/latest: HTTP %d, want a redirect to the release tag", resp.code)
 	}
-	var gh struct {
-		TagName string `json:"tag_name"`
-		Assets  []struct {
-			Name   string `json:"name"`
-			URL    string `json:"browser_download_url"`
-			Digest string `json:"digest"`
-		} `json:"assets"`
-	}
-	if err := json.Unmarshal(body, &gh); err != nil {
-		return nil, fmt.Errorf("parse release JSON: %w", err)
-	}
-	rel := &Release{version: strings.TrimPrefix(strings.TrimSpace(gh.TagName), "v")}
-	if !Valid(rel.version) {
-		return nil, fmt.Errorf("release tag %q is not a version", gh.TagName)
-	}
-	name := AssetName(Program, runtime.GOOS, runtime.GOARCH)
-	for _, a := range gh.Assets {
-		if a.Name == name {
-			rel.url, rel.sha256 = a.URL, parseDigest(a.Digest)
-		}
-	}
-	if rel.url == "" {
-		return nil, nil
-	}
-	if err := requireHTTPS(rel.url); err != nil {
-		return nil, err
-	}
-	return rel, nil
+	return parseLatest(u, resp.header.Get("Location"))
 }
 
-// Check returns the latest release and whether it is newer than current. A
-// newer release without a SHA-256 digest is an error: it could not be applied.
+// parseLatest reads the release from the Location of the releases/latest
+// redirect, from, on the same host: ".../<repo>/releases/tag/<tag>". A
+// redirect to ".../<repo>/releases" means the repository has no release.
+func parseLatest(from, location string) (*Release, error) {
+	base, err := url.Parse(from)
+	if err != nil {
+		return nil, err
+	}
+	loc, err := base.Parse(strings.TrimSpace(location))
+	if err != nil || location == "" {
+		return nil, fmt.Errorf("github releases/latest: bad redirect %q", location)
+	}
+	if loc.Host != base.Host {
+		return nil, fmt.Errorf("github releases/latest: redirect to another host %q", location)
+	}
+	prefix := "/" + Repo + "/releases"
+	if strings.TrimSuffix(loc.Path, "/") == prefix {
+		return nil, nil
+	}
+	tag, ok := strings.CutPrefix(loc.Path, prefix+"/tag/")
+	if !ok || !validTag(tag) {
+		return nil, fmt.Errorf("github releases/latest: redirect %q is not a release tag", location)
+	}
+	return &Release{version: strings.TrimPrefix(tag, "v"), tag: tag}, nil
+}
+
+// validTag reports a version tag ("v0.5.2") made only of characters that are
+// safe in a URL path segment.
+func validTag(tag string) bool {
+	if !Valid(tag) {
+		return false
+	}
+	for _, c := range tag {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && c != '.' && c != '-' && c != '+' {
+			return false
+		}
+	}
+	return true
+}
+
+// Check returns the latest release and whether it is newer than current.
 func Check(ctx context.Context, current string) (rel *Release, newer bool, err error) {
 	rel, err = Latest(ctx)
 	if err != nil || rel == nil {
 		return nil, false, err
 	}
-	newer = rel.Newer(current)
-	if newer && rel.sha256 == "" {
-		return rel, false, rel.noDigest()
-	}
-	return rel, newer, nil
+	return rel, rel.Newer(current), nil
 }
 
 func (r *Release) noDigest() error {
@@ -187,30 +251,73 @@ func (r *Release) noDigest() error {
 		r.version, AssetName(Program, runtime.GOOS, runtime.GOARCH))
 }
 
-// Apply downloads the release executable, verifies it against the asset's
-// SHA-256 digest and swaps it in for exePath, which must be an agentlink
-// executable. It returns the replaced path. A missing or wrong digest aborts
-// before anything on disk is touched.
+// digest asks the releases API (one call) for the SHA-256 digest of name in
+// this release. A rate limit is a *RateLimitError; a missing asset or digest
+// is an error too: nothing unverified is installed.
+func (r *Release) digest(ctx context.Context, name string) (string, error) {
+	resp, err := httpGet(ctx, client, apiBase+"/repos/"+Repo+"/releases/tags/"+url.PathEscape(r.tag), "application/vnd.github+json", maxJSONSize)
+	if err != nil {
+		return "", err
+	}
+	if err := rateLimit(resp); err != nil {
+		return "", err
+	}
+	if resp.code != http.StatusOK {
+		return "", fmt.Errorf("github releases API: HTTP %d", resp.code)
+	}
+	var gh struct {
+		Assets []struct {
+			Name   string `json:"name"`
+			Digest string `json:"digest"`
+		} `json:"assets"`
+	}
+	if err := json.Unmarshal(resp.body, &gh); err != nil {
+		return "", fmt.Errorf("parse release JSON: %w", err)
+	}
+	for _, a := range gh.Assets {
+		if a.Name == name {
+			if d := parseDigest(a.Digest); d != "" {
+				return d, nil
+			}
+			return "", r.noDigest()
+		}
+	}
+	return "", fmt.Errorf("release v%s has no %s for this platform", r.version, name)
+}
+
+// Apply fetches the asset's SHA-256 digest from the API, downloads the
+// release executable from github.com, verifies it and swaps it in for
+// exePath, which must be an agentlink executable. It returns the replaced
+// path. A rate limit, a missing or wrong digest aborts before anything on
+// disk is touched.
 func (r *Release) Apply(ctx context.Context, exePath string) ([]string, error) {
 	if base := filepath.Base(exePath); !strings.EqualFold(base, fileName(Program)) {
 		return nil, fmt.Errorf("%s is not the agentlink executable (%s)", base, fileName(Program))
 	}
-	if r.sha256 == "" {
-		return nil, r.noDigest()
-	}
 	name := AssetName(Program, runtime.GOOS, runtime.GOARCH)
-	data, code, err := httpGet(ctx, r.url, "application/octet-stream", maxAssetSize)
+	want, err := r.digest(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	dl := webBase + "/" + Repo + "/releases/download/" + url.PathEscape(r.tag) + "/" + name
+	if err := requireHTTPS(dl); err != nil {
+		return nil, err
+	}
+	resp, err := httpGet(ctx, client, dl, "application/octet-stream", maxAssetSize)
 	if err != nil {
 		return nil, fmt.Errorf("download %s: %w", name, err)
 	}
-	if code != http.StatusOK {
-		return nil, fmt.Errorf("download %s: HTTP %d", name, code)
+	if err := rateLimit(resp); err != nil {
+		return nil, err
 	}
-	sum := sha256.Sum256(data)
-	if got := hex.EncodeToString(sum[:]); got != r.sha256 {
-		return nil, fmt.Errorf("checksum mismatch for %s: got sha256 %s, the release lists %s", name, got, r.sha256)
+	if resp.code != http.StatusOK {
+		return nil, fmt.Errorf("download %s: HTTP %d", name, resp.code)
 	}
-	if err := replace([]file{{path: exePath, data: data}}); err != nil {
+	sum := sha256.Sum256(resp.body)
+	if got := hex.EncodeToString(sum[:]); got != want {
+		return nil, fmt.Errorf("checksum mismatch for %s: got sha256 %s, the release lists %s", name, got, want)
+	}
+	if err := replace([]file{{path: exePath, data: resp.body}}); err != nil {
 		return nil, err
 	}
 	return []string{exePath}, nil
@@ -328,11 +435,10 @@ func LegacyName(base string) bool {
 	return false
 }
 
-// requireHTTPS refuses a plaintext asset URL. The URLs come from the API
-// response, which is only as trustworthy as the TLS connection that delivered
-// it. Skipped when apiBase itself is not https: only a test build does that.
+// requireHTTPS refuses a plaintext asset URL. Skipped when webBase itself is
+// not https: only a test build does that.
 func requireHTTPS(u string) error {
-	if !strings.HasPrefix(apiBase, "https://") {
+	if !strings.HasPrefix(webBase, "https://") {
 		return nil
 	}
 	if !strings.HasPrefix(u, "https://") {
@@ -341,30 +447,37 @@ func requireHTTPS(u string) error {
 	return nil
 }
 
-// httpGet fetches url and returns the body (at most limit bytes) with the
-// status code. Redirects are followed, which is how a GitHub
-// browser_download_url resolves to its storage host.
-func httpGet(ctx context.Context, url, accept string, limit int64) ([]byte, int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// response is what httpGet read.
+type response struct {
+	code   int
+	header http.Header
+	body   []byte
+}
+
+// httpGet fetches u through c and returns the status, headers and body (at
+// most limit bytes). client follows redirects, which is how a GitHub release
+// download resolves to its storage host; noRedirect does not.
+func httpGet(ctx context.Context, c *http.Client, u, accept string, limit int64) (*response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", "agentlink-selfupdate/"+Version) // GitHub rejects requests without one
-	resp, err := client.Do(req)
+	resp, err := c.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
 	if err != nil {
-		return nil, resp.StatusCode, err
+		return nil, err
 	}
 	if int64(len(body)) == limit {
-		return nil, resp.StatusCode, fmt.Errorf("response from %s exceeds %d bytes", url, limit)
+		return nil, fmt.Errorf("response from %s exceeds %d bytes", u, limit)
 	}
-	return body, resp.StatusCode, nil
+	return &response{code: resp.StatusCode, header: resp.Header, body: body}, nil
 }
 
 // compareVer compares two "X.Y.Z[-pre][+build]" versions (a leading "v"
