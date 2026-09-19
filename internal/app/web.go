@@ -46,6 +46,8 @@ func (a *App) URL(page string) string {
 //	POST /ui/api/settings          settings.Settings -> save, restart node
 //	GET  /ui/api/inbox             []node.Entry
 //	GET  /ui/api/threads           []Thread (inbox entries paired by reply_to)
+//	GET  /ui/api/dashboard         DashboardSummary
+//	GET  /ui/api/participants      []ParticipantView
 //	POST /ui/api/send              node.SendRequest -> node.Message
 //	POST /ui/api/members/add       {"addr"} -> keep and dial that address -> Status
 //	POST /ui/api/members/remove    {"name"} -> remove the member everywhere -> Status
@@ -75,6 +77,8 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /ui/api/settings", a.saveSettings)
 	api.HandleFunc("GET /ui/api/inbox", a.inbox)
 	api.HandleFunc("GET /ui/api/threads", a.threads)
+	api.HandleFunc("GET /ui/api/dashboard", a.dashboard)
+	api.HandleFunc("GET /ui/api/participants", a.participants)
 	api.HandleFunc("POST /ui/api/send", a.send)
 	api.HandleFunc("POST /ui/api/members/add", a.memberAction(func(r node.MemberRequest) error { return a.AddMember(r.Addr) }))
 	api.HandleFunc("POST /ui/api/members/remove", a.memberAction(func(r node.MemberRequest) error { return a.RemoveMember(r.Name) }))
@@ -223,37 +227,63 @@ func (a *App) setAutoUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) inbox(w http.ResponseWriter, _ *http.Request) {
-	n := a.node()
-	if n == nil {
-		writeJSON(w, []node.Entry{})
-		return
-	}
-	entries, err := n.Recent(200)
+	entries, err := a.recent(200)
 	if err != nil {
 		a.log.Error("inbox", "err", err)
 		writeError(w, http.StatusInternalServerError, msg("error.internal", nil))
 		return
 	}
-	if entries == nil {
-		entries = []node.Entry{}
-	}
 	writeJSON(w, entries)
 }
 
-// threads serves the inbox as questions paired with their answers.
-func (a *App) threads(w http.ResponseWriter, _ *http.Request) {
+// recent loads local history, treating an unconfigured or stopped node as an
+// empty history so the UI can render its initial state without special cases.
+func (a *App) recent(limit int) ([]node.Entry, error) {
 	n := a.node()
 	if n == nil {
-		writeJSON(w, []Thread{})
-		return
+		return []node.Entry{}, nil
 	}
-	entries, err := n.Recent(200)
+	entries, err := n.Recent(limit)
+	if entries == nil {
+		entries = []node.Entry{}
+	}
+	return entries, err
+}
+
+// threads serves the inbox as questions paired with their answers.
+func (a *App) threads(w http.ResponseWriter, r *http.Request) {
+	peer := r.URL.Query().Get("peer")
+	limit := 200
+	if peer != "" {
+		limit = 0
+	}
+	entries, err := a.recent(limit)
 	if err != nil {
 		a.log.Error("threads", "err", err)
 		writeError(w, http.StatusInternalServerError, msg("error.internal", nil))
 		return
 	}
-	writeJSON(w, threads(entries))
+	writeJSON(w, filterThreads(threads(entries), peer, a.Status().Node))
+}
+
+func (a *App) dashboard(w http.ResponseWriter, _ *http.Request) {
+	entries, err := a.recent(0)
+	if err != nil {
+		a.log.Error("dashboard", "err", err)
+		writeError(w, http.StatusInternalServerError, msg("error.internal", nil))
+		return
+	}
+	writeJSON(w, buildDashboard(a.Status(), entries))
+}
+
+func (a *App) participants(w http.ResponseWriter, _ *http.Request) {
+	entries, err := a.recent(0)
+	if err != nil {
+		a.log.Error("participants", "err", err)
+		writeError(w, http.StatusInternalServerError, msg("error.internal", nil))
+		return
+	}
+	writeJSON(w, buildParticipants(a.Status(), entries))
 }
 
 func (a *App) send(w http.ResponseWriter, r *http.Request) {

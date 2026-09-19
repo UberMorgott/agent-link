@@ -113,6 +113,15 @@ func TestAPITokenGuard(t *testing.T) {
 	}
 }
 
+func TestDashboardAPIsRequireToken(t *testing.T) {
+	h := newHarness(t)
+	for _, path := range []string{"/ui/api/dashboard", "/ui/api/participants", "/ui/api/threads?peer=bob"} {
+		if code, _ := h.do(t, http.MethodGet, path, "", nil); code != http.StatusForbidden {
+			t.Errorf("%s: %d, want 403", path, code)
+		}
+	}
+}
+
 func TestRebindingHostRejected(t *testing.T) {
 	h := newHarness(t)
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, h.srv.URL+"/ui/settings", nil)

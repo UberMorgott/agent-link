@@ -2,8 +2,10 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -298,5 +300,52 @@ func TestThreadsEndpointServesPairs(t *testing.T) {
 	if len(got) != 1 || got[0].Direction != "out" || got[0].From != "alice" || got[0].To != "bob" ||
 		got[0].Body != "вопрос" || got[0].Answered {
 		t.Fatalf("thread %+v", got)
+	}
+}
+
+func TestThreadsEndpointFiltersDecodedPeerAndUsesCompleteHistory(t *testing.T) {
+	entries := make([]node.Entry, 0, 206)
+	for i := range 205 {
+		entries = append(entries, entry("out", fmt.Sprintf("%032x", i+1), "alice", "карл & sons", fmt.Sprintf("m%d", i), at(int64(i))))
+	}
+	entries = append(entries, entry("out", strings.Repeat("f", 32), "alice", "bob", "other", at(999)))
+	got := filterThreads(threads(entries), "карл & sons", "alice")
+	if len(got) != 205 {
+		t.Fatalf("got %d filtered threads, want 205", len(got))
+	}
+
+	h := newHarness(t)
+	if code, body := h.do(t, http.MethodPost, "/ui/api/settings", validJSON(t), h.tokenHdr()); code != http.StatusOK {
+		t.Fatalf("save: %d %s", code, body)
+	}
+	if code, body := h.do(t, http.MethodPost, "/ui/api/send", `{"to":"bob","body":"вопрос"}`, h.tokenHdr()); code != http.StatusOK {
+		t.Fatalf("send: %d %s", code, body)
+	}
+	for _, peer := range []string{"карл & sons", "&?#"} {
+		code, body := h.do(t, http.MethodGet, "/ui/api/threads?peer="+url.QueryEscape(peer), "", h.tokenHdr())
+		if code != http.StatusOK || strings.TrimSpace(body) != "[]" {
+			t.Errorf("peer %q: %d %s, want empty filtered result", peer, code, body)
+		}
+	}
+	code, body := h.do(t, http.MethodGet, "/ui/api/threads?peer=", "", h.tokenHdr())
+	var all []Thread
+	if err := json.Unmarshal([]byte(body), &all); err != nil || code != http.StatusOK || len(all) != 1 {
+		t.Fatalf("empty peer: %d %s err=%v", code, body, err)
+	}
+}
+
+func TestDashboardAPIsServeStoppedNodeDefaults(t *testing.T) {
+	h := newHarness(t)
+	code, body := h.do(t, http.MethodGet, "/ui/api/dashboard", "", h.tokenHdr())
+	var dashboard DashboardSummary
+	if err := json.Unmarshal([]byte(body), &dashboard); err != nil || code != http.StatusOK ||
+		dashboard.SentMessages != 0 || dashboard.ReceivedMessages != 0 || dashboard.TotalMessages != 0 ||
+		dashboard.ActiveRequests != 0 || len(dashboard.Recent) != 0 || dashboard.Status.Running {
+		t.Fatalf("dashboard: %d %s err=%v", code, body, err)
+	}
+	code, body = h.do(t, http.MethodGet, "/ui/api/participants", "", h.tokenHdr())
+	var participants []ParticipantView
+	if err := json.Unmarshal([]byte(body), &participants); err != nil || code != http.StatusOK || len(participants) != 0 {
+		t.Fatalf("participants: %d %s err=%v", code, body, err)
 	}
 }
