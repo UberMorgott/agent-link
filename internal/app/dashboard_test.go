@@ -33,12 +33,34 @@ func TestBuildParticipantsCountsRealMessagesOnly(t *testing.T) {
 		t.Fatalf("got %d participants, want 2: %+v", len(got), got)
 	}
 	if got[0].Name != "bob" || got[0].Sent != 1 || got[0].Received != 1 || got[0].Total != 2 ||
-		!got[0].LatestAt.Equal(time.Unix(20, 0).UTC()) || got[0].LatestPreview != "a" {
+		!got[0].LatestAt.Equal(time.Unix(20, 0).UTC()) || got[0].LatestPreview != "a" || got[0].LatestDirection != "in" {
 		t.Fatalf("bob: %+v", got[0])
 	}
 	if got[1].Name != "карл" || got[1].Sent != 1 || got[1].Received != 1 || got[1].Total != 2 ||
-		!got[1].LatestAt.Equal(time.Unix(40, 0).UTC()) || got[1].LatestPreview != "ответ" {
+		!got[1].LatestAt.Equal(time.Unix(40, 0).UTC()) || got[1].LatestPreview != "ответ" || got[1].LatestDirection != "in" {
 		t.Fatalf("карл: %+v", got[1])
+	}
+}
+
+func TestBuildParticipantsCarriesLatestDirectionBeyondDashboardRecentLimit(t *testing.T) {
+	status := Status{Node: "alice", Members: []node.MemberInfo{{Name: "alice", Self: true}}}
+	entries := make([]node.Entry, 0, 6)
+	for i := range 6 {
+		peer := fmt.Sprintf("peer-%d", i)
+		status.Members = append(status.Members, node.MemberInfo{Name: peer})
+		direction, from, to := "out", "alice", peer
+		if i == 0 {
+			direction, from, to = "in", peer, "alice"
+		}
+		entries = append(entries, entry(direction, fmt.Sprintf("%032x", i+1), from, to, "latest "+peer, at(int64(i+1))))
+	}
+
+	participants := buildParticipants(status, entries)
+	if len(buildDashboard(status, entries).Recent) != 5 {
+		t.Fatal("fixture must put one participant outside the dashboard recent cap")
+	}
+	if participants[0].Name != "peer-0" || participants[0].LatestDirection != "in" || participants[0].LatestPreview != "latest peer-0" {
+		t.Fatalf("oldest participant lost unread basis: %+v", participants[0])
 	}
 }
 

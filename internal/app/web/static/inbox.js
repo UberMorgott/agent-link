@@ -157,11 +157,12 @@ function conversationPeers() {
   const peers = new Map();
   for (const person of store.get().participants || []) peers.set(person.name, person);
   for (const recent of store.get().dashboard?.recent || []) {
-    const person = Object.assign({}, peers.get(recent.peer) || { name: recent.peer, online: false, total: 0 });
-    person.latest_preview = recent.preview || person.latest_preview;
-    person.latest_at = recent.latest_at || person.latest_at;
-    person.latest_direction = recent.direction;
-    peers.set(recent.peer, person);
+    if (!peers.has(recent.peer)) {
+      peers.set(recent.peer, {
+        name: recent.peer, online: false, total: 0, latest_preview: recent.preview,
+        latest_at: recent.latest_at, latest_direction: recent.direction,
+      });
+    }
   }
   const selected = store.get().selectedPeer;
   if (selected && !peers.has(selected)) peers.set(selected, { name: selected, online: false, total: 0 });

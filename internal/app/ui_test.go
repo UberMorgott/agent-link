@@ -830,8 +830,8 @@ require("vm").runInNewContext(source + test, { document, store, api, t, fmt, nav
   store.patch("status", { node: "local", peer: "bob" });
   await Promise.resolve();
   if (store.get().selectedPeer !== "bob") throw new Error("first connected peer was not selected");
-  store.patch("participants", [{ name: "bob", online: true, total: 4, latest_preview: "hello", latest_at: "2026-01-01T00:00:00Z" }, { name: "alice", online: false, total: 2, latest_preview: "latest from alice", latest_at: "2026-01-02T00:00:00Z" }]);
-  store.patch("dashboard", { recent: [{ peer: "alice", preview: "latest from alice", latest_at: "2026-01-02T00:00:00Z", direction: "in" }] });
+  store.patch("participants", [{ name: "bob", online: true, total: 4, latest_preview: "hello", latest_at: "2026-01-01T00:00:00Z", latest_direction: "out" }, { name: "alice", online: false, total: 2, latest_preview: "latest from alice", latest_at: "2026-01-02T00:00:00Z", latest_direction: "in" }]);
+  store.patch("dashboard", { recent: [] });
   const aliceRow = elements.conversation_list.children[1];
   const rowText = (node) => [node.textContent, ...(node.children || []).flatMap((child) => rowText(child))];
   const aliceText = rowText(aliceRow).join(" ");

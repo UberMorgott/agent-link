@@ -20,11 +20,12 @@ type ConversationSummary struct {
 // ParticipantView combines a known member with its local message history.
 type ParticipantView struct {
 	node.MemberInfo
-	Sent          int       `json:"sent"`
-	Received      int       `json:"received"`
-	Total         int       `json:"total"`
-	LatestAt      time.Time `json:"latest_at,omitzero"`
-	LatestPreview string    `json:"latest_preview,omitempty"`
+	Sent            int       `json:"sent"`
+	Received        int       `json:"received"`
+	Total           int       `json:"total"`
+	LatestAt        time.Time `json:"latest_at,omitzero"`
+	LatestPreview   string    `json:"latest_preview,omitempty"`
+	LatestDirection string    `json:"latest_direction,omitempty"`
 }
 
 // DashboardSummary contains the activity visible on the dashboard overview.
@@ -66,6 +67,7 @@ func buildParticipants(status Status, entries []node.Entry) []ParticipantView {
 		participant.Total++
 		if entry.CreatedAt.After(participant.LatestAt) {
 			participant.LatestAt, participant.LatestPreview = entry.CreatedAt, entry.Body
+			participant.LatestDirection = entry.Direction
 		}
 	}
 	return participants
