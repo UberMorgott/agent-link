@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"fyne.io/systray"
@@ -78,7 +79,7 @@ func runApp(args []string) error {
 	// The Run entry starts the executable without flags, so autostart only
 	// makes sense for the default settings file.
 	if filepath.Clean(*cfgPath) != filepath.Clean(defPath) {
-		a.SetAutostart = nil
+		a.SetAutostart, a.AutostartState = nil, nil
 	} else if moved, err := app.MigrateAutostart(exe); err != nil {
 		log.Warn("autostart migration", "err", err)
 	} else if moved {
@@ -124,7 +125,20 @@ func runApp(args []string) error {
 	if !a.Configured() {
 		openBrowser(a.URL("settings"))
 	}
-	systray.Run(func() { onReady(a) }, nil)
+	clicks := &debounce{gap: clickGap}
+	systray.SetOnTapped(func() { // left click; a right click shows the menu
+		if clicks.allow(time.Now()) {
+			openBrowser(a.URL("settings"))
+		}
+	})
+	autostartChanged := make(chan struct{}, 1)
+	a.AutostartChanged = func(bool) {
+		select {
+		case autostartChanged <- struct{}{}:
+		default: // one pending refresh reads the latest state anyway
+		}
+	}
+	systray.Run(func() { onReady(a, log, autostartChanged) }, nil)
 	log.Info("quit")
 	return nil
 }
@@ -172,39 +186,28 @@ func cleanupUpdate(exe string, log *slog.Logger) {
 	log.Warn("update leftovers", "err", err)
 }
 
-func onReady(a *app.App) {
+// onReady builds the tray menu once. It never changes while it may be open:
+// Windows redraws (and on some builds closes) a popup menu whose items are
+// modified under TrackPopupMenu, so live state goes to the tooltip instead
+// and the checkbox changes only in response to a click or a settings save.
+func onReady(a *app.App, log *slog.Logger, autostartChanged <-chan struct{}) {
 	systray.SetIcon(icon)
 	systray.SetTitle("agentlink")
-	status := systray.AddMenuItem(app.Text(app.TrayStarting, nil), "")
-	status.Disable()
-	membersItem := systray.AddMenuItem(app.Text(app.TrayMembers, nil), "")
-	memberItems := make([]*systray.MenuItem, maxTrayMembers)
-	for i := range memberItems {
-		memberItems[i] = membersItem.AddSubMenuItem("", "")
-		memberItems[i].Disable()
-		memberItems[i].Hide()
+	on, available := a.Autostart()
+	autostart := systray.AddMenuItemCheckbox(app.Text(app.TrayAutostart, nil), "", on)
+	if !available {
+		autostart.Disable()
 	}
-	systray.AddSeparator()
-	settingsItem := systray.AddMenuItem(app.Text(app.TrayOpenSettings, nil), "")
-	inboxItem := systray.AddMenuItem(app.Text(app.TrayOpenInbox, nil), "")
-	systray.AddSeparator()
-	versionItem := systray.AddMenuItem(app.Text("update.version", map[string]string{"version": a.Version}), "")
-	versionItem.Disable()
-	updText := systray.AddMenuItem("", "")
-	updText.Disable()
-	checkItem := systray.AddMenuItem(app.Text("update.check", nil), "")
-	applyItem := systray.AddMenuItem("", "")
-	autoItem := systray.AddMenuItemCheckbox(app.Text("update.auto", nil), "", a.UpdateStatus().Auto)
+	open := systray.AddMenuItem(app.Text(app.TrayOpenBrowser, nil), "")
 	systray.AddSeparator()
 	quit := systray.AddMenuItem(app.Text(app.TrayQuit, nil), "")
 
+	var tip string
 	refresh := func() {
-		st := a.Status()
-		text := st.Summary()
-		status.SetTitle(text)
-		systray.SetTooltip("agentlink: " + text)
-		showMembers(st, membersItem, memberItems)
-		showUpdate(a.UpdateStatus(), updText, checkItem, applyItem, autoItem)
+		if t := app.TrayTooltip(a.Status(), a.UpdateStatus()); t != tip {
+			tip = t
+			systray.SetTooltip(t)
+		}
 	}
 	refresh()
 	go func() {
@@ -214,17 +217,17 @@ func onReady(a *app.App) {
 			select {
 			case <-tick.C:
 				refresh()
-			case <-settingsItem.ClickedCh:
+			case <-autostart.ClickedCh:
+				if err := a.SetAutostartNow(!autostart.Checked()); err != nil {
+					log.Warn("autostart", "err", err)
+				}
+				on, _ := a.Autostart()
+				setChecked(autostart, on)
+			case <-autostartChanged: // saved on the settings page
+				on, _ := a.Autostart()
+				setChecked(autostart, on)
+			case <-open.ClickedCh:
 				openBrowser(a.URL("settings"))
-			case <-inboxItem.ClickedCh:
-				openBrowser(a.URL("inbox"))
-			case <-checkItem.ClickedCh:
-				go func() { a.CheckUpdate(context.Background()); refresh() }()
-			case <-applyItem.ClickedCh:
-				go func() { a.InstallUpdate(context.Background()); refresh() }()
-			case <-autoItem.ClickedCh:
-				_ = a.SetAutoUpdate(!autoItem.Checked())
-				refresh()
 			case <-quit.ClickedCh:
 				a.Quit()
 				return
@@ -233,65 +236,35 @@ func onReady(a *app.App) {
 	}()
 }
 
-// showUpdate mirrors the settings page's update section in the menu.
-func showUpdate(u app.UpdateStatus, text, check, apply, auto *systray.MenuItem) {
-	if u.Text == "" {
-		text.Hide()
+func setChecked(it *systray.MenuItem, on bool) {
+	if on {
+		it.Check()
 	} else {
-		text.SetTitle(u.Text)
-		text.Show()
-	}
-	if u.Available {
-		apply.SetTitle(app.Text("update.apply", map[string]string{"version": u.Latest}))
-		apply.Show()
-	} else {
-		apply.Hide()
-	}
-	for _, it := range []*systray.MenuItem{check, apply, auto} {
-		if u.Enabled && !u.Busy {
-			it.Enable()
-		} else {
-			it.Disable()
-		}
-	}
-	if u.Auto {
-		auto.Check()
-	} else {
-		auto.Uncheck()
+		it.Uncheck()
 	}
 }
 
-// maxTrayMembers bounds the members listed in the tray submenu.
-const maxTrayMembers = 16
+// clickGap is the debounce of a left click on the tray icon: a double click
+// sends WM_LBUTTONUP twice, and should still open one browser tab.
+const clickGap = time.Second
 
-// showMembers lists the other members, online ones first, in the submenu.
-func showMembers(st app.Status, parent *systray.MenuItem, items []*systray.MenuItem) {
-	var others []string
-	for _, m := range st.Members {
-		if m.Self {
-			continue
-		}
-		key := app.TrayMemberOff
-		if m.Online {
-			key = app.TrayMemberOn
-		}
-		others = append(others, app.Text(key, map[string]string{"name": m.Name}))
-	}
-	if len(others) == 0 {
-		parent.Hide()
-	} else {
-		parent.Show()
-	}
-	for i, it := range items {
-		if i < len(others) {
-			it.SetTitle(others[i])
-			it.Show()
-		} else {
-			it.Hide()
-		}
-	}
+// debounce passes the first call and drops any that follow within gap of
+// the last one passed.
+type debounce struct {
+	gap  time.Duration
+	mu   sync.Mutex
+	last time.Time
 }
 
+func (d *debounce) allow(now time.Time) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.last.IsZero() && now.Sub(d.last) < d.gap {
+		return false
+	}
+	d.last = now
+	return true
+}
 func openLog(path string) (io.WriteCloser, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err

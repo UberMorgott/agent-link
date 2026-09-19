@@ -27,7 +27,15 @@ type App struct {
 	log   *slog.Logger
 
 	// SetAutostart applies the autostart choice on save; replaceable in tests.
+	// Nil makes autostart unavailable (a settings file other than the default).
 	SetAutostart func(enable bool) error
+	// AutostartState reads whether Windows starts the app at sign-in: the Run
+	// entry exists and Task Manager has not switched it off. Nil uses the
+	// saved setting.
+	AutostartState func() (bool, error)
+	// AutostartChanged, if set, is told the new state after a settings save
+	// switched autostart, so the tray checkbox follows the page.
+	AutostartChanged func(on bool)
 	// Worker tunes the job queue (timeouts, activity pacing); MaxJobs comes
 	// from the settings.
 	Worker worker.Options
@@ -113,8 +121,8 @@ func New(path string, log *slog.Logger) (*App, error) {
 	}
 	return &App{
 		path: path, token: newToken(), log: log, s: s, configured: ok,
-		SetAutostart: setAutostart,
-		Ifaces:       settings.SystemIfaces, PickFolder: pickFolder, PickFile: pickFile,
+		SetAutostart: setAutostart, AutostartState: autostartEnabled,
+		Ifaces: settings.SystemIfaces, PickFolder: pickFolder, PickFile: pickFile,
 		Agents: settings.SystemFinder, zeroTier: true, Discovery: true,
 		Version: selfupdate.Version, Latest: latestRelease,
 	}, nil
@@ -276,9 +284,11 @@ func (a *App) Apply(ctx context.Context, s settings.Settings) (found settings.Fo
 	if err := settings.Save(a.path, s); err != nil {
 		return settings.Found{}, err
 	}
-	if a.SetAutostart != nil && (s.Autostart != a.s.Autostart || !a.configured) {
+	if a.SetAutostart != nil && (s.Autostart != a.autostartLocked() || !a.configured) {
 		if err := a.SetAutostart(s.Autostart); err != nil {
 			a.log.Warn("autostart", "err", err)
+		} else if a.AutostartChanged != nil {
+			a.AutostartChanged(s.Autostart)
 		}
 	}
 	a.stopLocked()

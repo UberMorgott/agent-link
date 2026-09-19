@@ -37,13 +37,10 @@ var uiStrings = map[string]string{
 	"link.legacy_public":   "участник по добавленному адресу — старая версия agentlink, а она подключается только из локальной сети или ZeroTier — попросите его обновиться",
 
 	// Tray menu (cmd/agentlink app.go, see tray.go).
-	"tray.starting":      "Запуск…",
-	"tray.open_settings": "Открыть настройки",
-	"tray.open_inbox":    "Открыть сообщения",
-	"tray.members":       "Участники",
-	"tray.member_on":     "{name} — на связи",
-	"tray.member_off":    "{name} — нет связи",
-	"tray.quit":          "Выйти",
+	"tray.autostart":     "Запускать вместе с Windows",
+	"tray.open_browser":  "Открыть в браузере",
+	"tray.quit":          "Выход",
+	"tray.update":        "доступна v{version}",
 	"tray.not_set_up":    "Не настроено — откройте настройки",
 	"tray.error":         "Ошибка — откройте настройки",
 	"tray.connected":     "{peer} — на связи",

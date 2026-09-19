@@ -32,7 +32,8 @@ func newHarness(t *testing.T, setup ...func(*App)) *harness {
 		t.Fatal(err)
 	}
 	a.SetAutostart = func(on bool) error { h.autostart = append(h.autostart, on); return nil }
-	a.Discovery = false // tests find each other by address only
+	a.AutostartState = nil // the saved setting; never the real registry
+	a.Discovery = false    // tests find each other by address only
 	for _, f := range setup {
 		f(a)
 	}

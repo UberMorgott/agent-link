@@ -34,7 +34,7 @@ Copy `agentlink.exe` anywhere and double-click it. Members reach each other over
 
 ### First run (every member)
 
-1. Start `agentlink.exe`; the settings page opens. Later use the tray icon, «Открыть настройки».
+1. Start `agentlink.exe`; the settings page opens. Later click the tray icon (or its menu, «Открыть в браузере»).
 2. **Ваше имя** is already filled with your Windows name; change it if you like. Names must
    differ between members.
 3. **Код связи**: one person clicks **Создать код** and tells everyone the code, 12 symbols
@@ -101,19 +101,27 @@ A network is everyone holding the same code; every member sees every other membe
   the PAKE handshake (see "Security") connects only from a private address and is listed as
   «старая версия — вход без защиты кода, только из локальной сети».
 - With several members `send` needs a recipient: an empty «Кому» / `--to` fails and lists the
-  names. The tray menu shows «Участники» with each member's state.
+  names. The settings page lists every member with its state; the tray icon's tooltip counts
+  them («agentlink — На связи 7 из 12»).
 
 The two web pages are in Russian; every visible string lives in `internal/app/strings.go`, so a
 second language means a second map, not a page rewrite.
 
 Settings, including the code, live in `%APPDATA%\agentlink\config.json` (per user, never in a
 repo); messages in `%APPDATA%\agentlink\data`, the log in `%APPDATA%\agentlink\agentlink.log`.
-Autostart is the `agentlink` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+Autostart is the `agentlink` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+(the quoted path of the executable). The settings page and the tray menu show it as Windows has
+it: an entry switched off in Task Manager (`...\Explorer\StartupApproved\Run`) counts as off, and
+turning it on again clears that mark.
+
+The tray icon: a left click opens the settings page (the inbox is one link away), a right
+click shows a fixed menu — «Запускать вместе с Windows», «Открыть в браузере», «Выход». Members,
+messages and updates live on the web pages; the tooltip carries the state and a newer version.
 
 ### Updates
 
 The app updates itself from this repository's GitHub releases. **Обновления** at the bottom of
-the settings page and the tray menu show the version, **Проверить обновления** (the latest
+the settings page shows the version, **Проверить обновления** (the latest
 release, or «У вас актуальная версия»), **Обновить до X.Y.Z** when a newer one exists, progress
 and errors, and the **Обновлять автоматически** switch (`auto_update` in the config, on by
 default; it saves at once and is not part of **Сохранить**). With it on, the app checks a minute

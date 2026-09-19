@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAppMode(t *testing.T) {
@@ -38,5 +39,25 @@ func TestRunExitCodes(t *testing.T) {
 	}
 	if code := run([]string{"members"}, &out, &errw); code != 1 {
 		t.Fatalf("members without --config: code %d", code)
+	}
+}
+
+func TestClickDebounce(t *testing.T) {
+	d := &debounce{gap: clickGap}
+	t0 := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		after time.Duration
+		want  bool
+	}{
+		{0, true},                        // first click opens the page
+		{200 * time.Millisecond, false},  // second WM_LBUTTONUP of a double click
+		{900 * time.Millisecond, false},  // still within the gap of the first
+		{1200 * time.Millisecond, true},  // a new click
+		{1300 * time.Millisecond, false}, // measured from the last one passed
+		{2300 * time.Millisecond, true},
+	} {
+		if got := d.allow(t0.Add(c.after)); got != c.want {
+			t.Errorf("click at +%v: allow = %v, want %v", c.after, got, c.want)
+		}
 	}
 }

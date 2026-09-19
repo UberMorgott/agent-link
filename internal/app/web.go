@@ -69,6 +69,7 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("GET /ui/api/settings", func(w http.ResponseWriter, _ *http.Request) {
 		s := a.Settings()
 		s.Secret, s.HandlerCommand = "", nil
+		s.Autostart, _ = a.Autostart() // as Windows has it, also after a change in the tray or Task Manager
 		writeJSON(w, s)
 	})
 	api.HandleFunc("POST /ui/api/settings", a.saveSettings)

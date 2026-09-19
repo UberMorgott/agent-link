@@ -70,7 +70,7 @@ code); the tray app releases its console at start. Do not build it with `-H=wind
 
 ## First run
 
-Start `agentlink.exe`; it opens the settings page (later: tray icon → «Открыть настройки»).
+Start `agentlink.exe`; it opens the settings page (later: click the tray icon).
 Fields: name (prefilled), code `XXXX-XXXX-XXXX` (**Создать код** on one member, typed on the
 others), **Участники сети** (the member list, **Добавить участника по адресу** + **Добавить**,
 **Удалить**), who answers, working folder; Save. Everything else is under the collapsed
