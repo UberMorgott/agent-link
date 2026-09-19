@@ -325,13 +325,19 @@ func TestSlots(t *testing.T) {
 			var mu sync.Mutex
 			running, maxRunning := 0, 0
 			var started []string
+			// Jobs hold their slot until the test has seen every slot busy, so a
+			// slow machine cannot finish one job before the last slot starts.
+			release := make(chan struct{})
 			run := func(ctx context.Context, _, prompt string, _ func(string)) (string, error) {
 				mu.Lock()
 				running++
 				maxRunning = max(maxRunning, running)
 				started = append(started, prompt)
 				mu.Unlock()
-				time.Sleep(100 * time.Millisecond)
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
 				mu.Lock()
 				running--
 				mu.Unlock()
@@ -347,6 +353,19 @@ func TestSlots(t *testing.T) {
 				accept(t, w, msg(id, strconv.Itoa(i)))
 			}
 			start(t, w)
+			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+				mu.Lock()
+				busy := running
+				mu.Unlock()
+				if busy >= slots {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("only %d of %d slots busy", busy, slots)
+				}
+			}
+			time.Sleep(50 * time.Millisecond) // room for an extra job to start if the cap were broken
+			close(release)
 			rec.wait(t, len(ids))
 			mu.Lock()
 			defer mu.Unlock()
