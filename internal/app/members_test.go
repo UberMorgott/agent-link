@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/UberMorgott/agent-link/internal/node"
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
 
@@ -18,6 +20,29 @@ func errorText(t *testing.T, body string) string {
 		t.Fatalf("not an error answer: %s", body)
 	}
 	return r.Error
+}
+
+func TestParticipantsExcludeSelfAndPreserveDetailsAndCounts(t *testing.T) {
+	seen := time.Unix(1_750_000_000, 0).UTC()
+	status := Status{Members: []node.MemberInfo{
+		{Name: "alice", Self: true, Online: true, Addrs: []string{"127.0.0.1:7420"}},
+		{Name: "bob", Online: false, Seen: seen, App: "v0.9.0", Addrs: []string{"10.0.0.2:7420"}},
+	}}
+	entries := []node.Entry{
+		entry("out", strings.Repeat("a", 32), "alice", "bob", "one"),
+		entry("out", strings.Repeat("b", 32), "alice", "bob", "two"),
+		entry("in", strings.Repeat("c", 32), "bob", "alice", "three"),
+	}
+
+	got := buildParticipants(status, entries)
+	if len(got) != 1 {
+		t.Fatalf("participants = %+v, want one remote member", got)
+	}
+	p := got[0]
+	if p.Self || p.Name != "bob" || p.Online || !p.Seen.Equal(seen) || p.App != "v0.9.0" ||
+		len(p.Addrs) != 1 || p.Addrs[0] != "10.0.0.2:7420" || p.Sent != 2 || p.Received != 1 || p.Total != 3 {
+		t.Fatalf("participant fields/counts changed: %+v", p)
+	}
 }
 
 // «Добавить» keeps the address and connects; «Удалить» removes the member

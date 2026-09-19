@@ -16,7 +16,6 @@ function showSettings(s) {
   for (const key of ["node", "code", "work_dir", "listen", "api"]) {
     form.elements[key].value = s[key] || "";
   }
-  form.elements.peer_addr.value = "";
   form.elements.areas.value = (s.areas || []).join(", ");
   form.elements.handler.value = s.handler || "none";
   agentPath.value = s.agent_path || "";
@@ -116,82 +115,15 @@ pickAgent.addEventListener("click", async () => {
   }
 });
 
-// showMyAddr tells this side's address, the one the others type in, and
-// lists the members of the network.
-function showMyAddr(st) {
+// showLocalAddress keeps this machine's advertised address with the advanced
+// network configuration instead of presenting it as a participant.
+function showLocalAddress(st) {
   const el = document.getElementById("my_addr");
-  showMembers(st);
   if (!st.configured) { el.textContent = ""; return; }
   const addr = (st.listen || "").replace(/:7420$/, "");
   el.textContent = addr ? fmt("settings.my_addr", { addr }) : "";
   if (!st.zerotier) el.textContent += " " + t("settings.my_addr.none");
 }
-
-// showMembers renders the member table: this node first, then the others.
-function showMembers(st) {
-  const list = document.getElementById("members");
-  const others = (st.members || []).filter((m) => !m.self);
-  document.getElementById("members_none").hidden = !st.configured || others.length > 0;
-  list.replaceChildren();
-  for (const m of st.members || []) {
-    const li = document.createElement("li");
-    const who = document.createElement("span");
-    who.className = "who";
-    const name = document.createElement("strong");
-    name.textContent = m.self ? fmt("settings.members.self", { name: m.name }) : m.name;
-    who.append(name, " ");
-    if (!m.self) {
-      const state = document.createElement("span");
-      state.className = m.online ? "on" : "off";
-      state.textContent = t(m.online ? "settings.members.online" : "settings.members.lost");
-      who.append(state);
-    }
-    const details = [];
-    if (m.app) details.push(fmt("settings.members.version", { version: m.app }));
-    if (m.old_auth) details.push(t("settings.members.old_auth"));
-    else if (m.legacy) details.push(t("settings.members.legacy"));
-    if (!m.online && m.seen) details.push(fmt("settings.members.seen", { when: new Date(m.seen).toLocaleString("ru-RU") }));
-    if ((m.addrs || []).length) details.push(m.addrs.join(", "));
-    if (details.length) {
-      const d = document.createElement("span");
-      d.className = "detail";
-      d.textContent = details.join(" · ");
-      who.append(d);
-    }
-    li.append(who);
-    if (!m.self) {
-      const rm = document.createElement("button");
-      rm.type = "button";
-      rm.textContent = t("settings.members.remove");
-      rm.addEventListener("click", () => removeMember(m.name));
-      li.append(rm);
-    }
-    list.append(li);
-  }
-}
-
-async function removeMember(name) {
-  if (!confirm(fmt("settings.members.confirm", { name }))) return;
-  try {
-    showMembers(await api("POST", "members/remove", { name }));
-    result.textContent = fmt("settings.members.removed", { name });
-  } catch (e) {
-    result.textContent = e.message;
-  }
-}
-
-// «Добавить» keeps the address and dials it now, without «Сохранить».
-document.getElementById("add_peer").addEventListener("click", async () => {
-  const addr = form.elements.peer_addr.value.trim();
-  if (!addr) { result.textContent = t("settings.peer_addr.empty"); return; }
-  try {
-    showMembers(await api("POST", "members/add", { addr }));
-    form.elements.peer_addr.value = "";
-    result.textContent = fmt("settings.peer_addr.added", { addr });
-  } catch (e) {
-    result.textContent = e.message;
-  }
-});
 
 // 12 symbols, 60 bits, shown as XXXX-XXXX-XXXX.
 document.getElementById("generate").addEventListener("click", () => {
@@ -218,7 +150,6 @@ form.addEventListener("submit", async (ev) => {
   const body = {
     node: f.node.value.trim(),
     code: f.code.value.trim(),
-    peer_addr: f.peer_addr.value.trim(),
     handler: f.handler.value,
     agent_path: agentPath.value,
     work_dir: f.work_dir.value.trim(),
@@ -279,8 +210,8 @@ updApply.addEventListener("click", () => updateAction("update/apply", undefined,
 updAuto.addEventListener("change", () => updateAction("update/auto", { auto: updAuto.checked }));
 
 store.subscribe("settings", showSettings);
-store.subscribe("status", showMyAddr);
+store.subscribe("status", showLocalAddress);
 store.subscribe("update", showUpdate);
 if (store.get().settings) showSettings(store.get().settings);
-if (store.get().status) showMyAddr(store.get().status);
+if (store.get().status) showLocalAddress(store.get().status);
 if (store.get().update) showUpdate(store.get().update);

@@ -53,8 +53,19 @@
       </section>
       <section data-view="participants" hidden>
         <h1 data-t="participants.h1"></h1>
+        <form id="participant_add" novalidate>
+          <fieldset>
+            <legend data-t="participants.add.legend"></legend>
+            <label><span data-t="participants.add.label"></span>
+              <span class="row"><input name="participant_addr" id="participant_addr" autocomplete="off" spellcheck="false" placeholder="10.147.20.9">
+              <button type="submit" id="add_participant" data-t="participants.add.submit"></button></span>
+            </label>
+            <p class="hint" data-t="participants.add.hint"></p>
+            <p id="participants_result" role="status"></p>
+          </fieldset>
+        </form>
         <p id="participants_empty" class="hint" hidden data-t="participants.empty"></p>
-        <ul id="participants" class="members"></ul>
+        <ul id="participants" class="participant-list"></ul>
       </section>
       <section data-view="settings" hidden>
         <h1 data-t="settings.h1"></h1>
@@ -68,17 +79,6 @@
               <button type="button" id="copy" data-t="settings.code.copy"></button></span>
             </label>
             <p class="hint" data-t="settings.code.hint"></p>
-            <div id="members_row">
-              <span data-t="settings.members.label"></span>
-              <ul id="members" class="members"></ul>
-              <p class="hint" id="members_none" data-t="settings.members.none" hidden></p>
-            </div>
-            <label><span data-t="settings.peer_addr.label"></span>
-              <span class="row"><input name="peer_addr" id="peer_addr" autocomplete="off" spellcheck="false" placeholder="10.147.20.9">
-              <button type="button" id="add_peer" data-t="settings.peer_addr.add"></button></span>
-            </label>
-            <p class="hint" data-t="settings.peer_addr.hint"></p>
-            <p class="hint" id="my_addr"></p>
             <label><span data-t="settings.handler.label"></span>
               <select name="handler">
                 <option value="none" data-t="settings.handler.none"></option>
@@ -107,6 +107,7 @@
             <fieldset>
               <label><span data-t="settings.listen.label"></span><input name="listen" autocomplete="off"></label>
               <p class="hint" data-t="settings.listen.hint"></p>
+              <p class="hint" id="my_addr"></p>
               <label><span data-t="settings.api.label"></span><input name="api" autocomplete="off" placeholder="127.0.0.1:7520"></label>
               <p class="hint" data-t="settings.api.hint"></p>
               <label><span data-t="settings.areas.label"></span><input name="areas" autocomplete="off"></label>

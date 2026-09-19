@@ -198,6 +198,63 @@ func TestUIShellKeepsOneLiveRegionAndRealRoutes(t *testing.T) {
 	}
 }
 
+func TestSettingsHasNoParticipantsAndParticipantsOwnControls(t *testing.T) {
+	files := webFiles(t)
+	body := files["web/app.html"]
+	doc, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	views := map[string]*html.Node{}
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			for _, attr := range n.Attr {
+				if attr.Key == "data-view" {
+					views[attr.Val] = n
+				}
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(doc)
+	has := func(root *html.Node, attr, value string) bool {
+		found := false
+		var inspect func(*html.Node)
+		inspect = func(n *html.Node) {
+			if n.Type == html.ElementNode {
+				for _, a := range n.Attr {
+					if a.Key == attr && a.Val == value {
+						found = true
+					}
+				}
+			}
+			for child := n.FirstChild; child != nil; child = child.NextSibling {
+				inspect(child)
+			}
+		}
+		inspect(root)
+		return found
+	}
+	participants, settings := views["participants"], views["settings"]
+	for _, control := range []struct{ attr, value string }{
+		{"id", "participants"}, {"id", "participant_addr"}, {"id", "add_participant"}, {"id", "participants_result"},
+	} {
+		if participants == nil || !has(participants, control.attr, control.value) {
+			t.Errorf("participants view is missing %s=%q", control.attr, control.value)
+		}
+	}
+	for _, legacy := range []struct{ attr, value string }{
+		{"id", "members"}, {"id", "add_peer"}, {"name", "peer_addr"},
+	} {
+		if settings != nil && has(settings, legacy.attr, legacy.value) {
+			t.Errorf("settings still contains participant control %s=%q", legacy.attr, legacy.value)
+		}
+	}
+}
+
 // TestDashboardRefreshReflectsNodeChanges verifies that a stable dashboard
 // route and token receive fresh node counts on the next API request.
 func TestDashboardRefreshReflectsNodeChanges(t *testing.T) {
