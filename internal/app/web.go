@@ -71,10 +71,7 @@ func (a *App) Handler() http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("GET /ui/api/status", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.Status()) })
 	api.HandleFunc("GET /ui/api/settings", func(w http.ResponseWriter, _ *http.Request) {
-		s := a.Settings()
-		s.Secret, s.HandlerCommand = "", nil
-		s.Autostart, _ = a.Autostart() // as Windows has it, also after a change in the tray or Task Manager
-		writeJSON(w, s)
+		writeJSON(w, a.webSettings())
 	})
 	api.HandleFunc("POST /ui/api/settings", a.saveSettings)
 	api.HandleFunc("GET /ui/api/inbox", a.inbox)
@@ -178,10 +175,31 @@ func (a *App) page(name string) http.HandlerFunc {
 }
 
 type saveResult struct {
-	Saved bool   `json:"saved"`
-	Error string `json:"error,omitempty"`
+	Saved     bool               `json:"saved"`
+	Error     string             `json:"error,omitempty"`
+	Settings  *settings.Settings `json:"settings,omitempty"`
+	Status    *Status            `json:"status,omitempty"`
+	Dashboard *DashboardSummary  `json:"dashboard,omitempty"`
 	// Found says where the agent program was found on save, if it was looked for.
 	Found string `json:"found,omitempty"`
+}
+
+func (a *App) webSettings() settings.Settings {
+	s := a.Settings()
+	s.Secret, s.HandlerCommand = "", nil
+	s.Autostart, _ = a.Autostart() // reflect Windows after tray or Task Manager changes
+	return s
+}
+
+func (a *App) savedStateResult(found, userErr string) saveResult {
+	s, status := a.webSettings(), a.Status()
+	entries, err := a.recent(0)
+	if err != nil {
+		a.log.Error("dashboard after settings save", "err", err)
+		entries = []node.Entry{}
+	}
+	dashboard := buildDashboard(status, entries)
+	return saveResult{Saved: true, Error: userErr, Found: found, Settings: &s, Status: &status, Dashboard: &dashboard}
 }
 
 func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
@@ -198,9 +216,9 @@ func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
 	var p *settings.Problem
 	switch {
 	case err == nil:
-		writeJSON(w, saveResult{Saved: true, Found: found})
+		writeJSON(w, a.savedStateResult(found, ""))
 	case errors.Is(err, ErrNotStarted):
-		writeJSON(w, saveResult{Saved: true, Error: userError(err), Found: found})
+		writeJSON(w, a.savedStateResult(found, userError(err)))
 	case errors.As(err, &p):
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)

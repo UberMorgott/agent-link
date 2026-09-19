@@ -353,7 +353,8 @@ const document={getElementById:(id)=>elements[id]};
 const state={settings:{node:"old",api:"127.0.0.1:7520",areas:[]},status:null,dashboard:null,update:null};
 const patches=[]; const store={get:()=>state,subscribe(){},patch(name,value){state[name]=value;patches.push(name)}};
 let reloads=0, refreshes=0;
-async function api(method,path,body){if(path==="settings")return {saved:true,settings:{...body,node:"saved"},status:{configured:true,node:"saved"},dashboard:{total_messages:7}};if(path==="agent")return {text:""};return {current:"dev",enabled:false}}
+let saveResponse={saved:true,settings:{node:"saved",api:"127.0.0.1:7520",areas:["dev"]},status:{configured:true,node:"saved"},dashboard:{total_messages:7}};
+async function api(method,path,body){if(path==="settings")return saveResponse;if(path==="agent")return {text:""};return {current:"dev",enabled:false}}
 function refreshSlice(){refreshes++;throw new Error("save performed a broad refresh")}
 const t=(key)=>key,fmt=(key)=>key; const crypto={getRandomValues:(x)=>x}; const navigator={clipboard:{writeText:async()=>{}}};
 const location={reload(){reloads++}};
@@ -363,6 +364,12 @@ if(refreshes!==0)throw new Error("refreshSlice called "+refreshes+" times");
 if(JSON.stringify(patches)!==JSON.stringify(["settings","status","dashboard"]))throw new Error("patches: "+JSON.stringify(patches));
 if(state.settings.node!=="saved"||state.status.node!=="saved"||state.dashboard.total_messages!==7)throw new Error("response slices were not applied");
 if(reloads!==0)throw new Error("same API address reloaded the page");
+patches.length=0; controls.node.value="request-only"; saveResponse={saved:true}; await elements.form.listeners.submit({preventDefault(){}}); for(let i=0;i<8;i++)await Promise.resolve();
+if(patches.length||state.settings.node!=="saved")throw new Error("request body was patched without response fields");
+controls.api.value=""; saveResponse={saved:true,settings:{node:"saved",api:"127.0.0.1:7520",areas:[]}}; await elements.form.listeners.submit({preventDefault(){}}); for(let i=0;i<8;i++)await Promise.resolve();
+if(reloads!==0)throw new Error("clearing API reloaded despite normalized server value");
+controls.api.value="127.0.0.1:7599"; saveResponse={saved:true,settings:{node:"saved",api:"127.0.0.1:7599",areas:[]}}; await elements.form.listeners.submit({preventDefault(){}}); for(let i=0;i<8;i++)await Promise.resolve();
+if(reloads!==1)throw new Error("changed effective API did not reload exactly once: "+reloads);
 })().catch((error)=>{console.error(error.stack);process.exitCode=1});`
 	//nolint:gosec // G204: fixed Node executable runs a checked-in browser module in a deterministic harness.
 	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path).CombinedOutput(); err != nil {
@@ -420,6 +427,34 @@ func TestParticipantControlsAreLocalizedAndGuardMutations(t *testing.T) {
 		if !strings.Contains(script, contract) {
 			t.Errorf("participants script is missing mutation/accessibility contract %q", contract)
 		}
+	}
+}
+
+func TestParticipantRowsAreKeyboardFocusableChatControls(t *testing.T) {
+	path, err := filepath.Abs("web/static/participants.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const program = `
+const fs=require("fs"),vm=require("vm");
+class Element { constructor(id="",tag="DIV"){this.id=id;this.tagName=tag.toUpperCase();this.tabIndex=0;this.value="";this.hidden=false;this.disabled=false;this.textContent="";this.className="";this.children=[];this.listeners={}} append(...nodes){this.children.push(...nodes)} replaceChildren(...nodes){this.children=[...nodes]} addEventListener(name,fn){this.listeners[name]=fn} setAttribute(name,value){this[name]=value} removeAttribute(name){delete this[name]} focus(){this.focused=true} }
+const ids=["participants","participants_result","participant_addr","participant_add","add_participant","participants_empty"];
+const elements=Object.fromEntries(ids.map((id)=>[id,new Element(id)]));
+const document={getElementById:(id)=>elements[id],createElement:(tag)=>new Element("",tag)};
+const state={participants:null}; const store={get:()=>state,subscribe(){},patch(name,value){state[name]=value}};
+const t=(key)=>key,fmt=(key,vars)=>key+JSON.stringify(vars); let navigation=null;
+function navigate(route,query){navigation={route,query}} async function api(){return {}} function confirm(){return true}
+const context=vm.createContext({document,store,t,fmt,navigate,api,confirm,Date,Array,Object,Promise,String,console});
+vm.runInContext(fs.readFileSync(process.argv[1],"utf8"),context);
+vm.runInContext('renderParticipants([{name:"bob",online:true,total:2,sent:1,received:1}])',context);
+const row=elements.participants.children[0],open=row.children[0];
+if(open.tagName!=="BUTTON"||open.type!=="button"||open.tabIndex<0)throw new Error("participant row is not a keyboard-focusable button");
+if(!String(open["aria-label"]||"").includes("bob"))throw new Error("participant row has no accessible name");
+open.listeners.click();
+if(!navigation||navigation.route!=="inbox"||navigation.query.peer!=="bob")throw new Error("participant keyboard control does not open chat");`
+	//nolint:gosec // G204: fixed Node executable runs the checked-in browser module in a deterministic harness.
+	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path).CombinedOutput(); err != nil {
+		t.Fatalf("participant keyboard regression: %v\n%s", err, output)
 	}
 }
 
@@ -866,7 +901,7 @@ func TestInboxConversationState(t *testing.T) {
 	const program = `
 const fs = require("fs");
 class Element {
-  constructor(id = "") { this.id = id; this.value = ""; this.hidden = false; this.disabled = false; this.textContent = ""; this.className = ""; this.dataset = {}; this.children = []; this.listeners = {}; this.scrollTop = 0; this.scrollHeight = 0; this.clientHeight = 100; this.selectionStart = 0; this.selectionEnd = 0; this.replacements = 0; }
+  constructor(id = "", tagName = "DIV") { this.id = id; this.tagName = tagName.toUpperCase(); this.tabIndex = 0; this.value = ""; this.hidden = false; this.disabled = false; this.textContent = ""; this.className = ""; this.dataset = {}; this.children = []; this.listeners = {}; this.scrollTop = 0; this.scrollHeight = 0; this.clientHeight = 100; this.selectionStart = 0; this.selectionEnd = 0; this.replacements = 0; }
   append(...nodes) { for (const node of nodes) { if (node.parentElement) node.parentElement.children = node.parentElement.children.filter((item) => item !== node); node.parentElement = this; this.children.push(node); } this.scrollHeight = this.children.length * 100; }
   insertBefore(node, before) { if (node.parentElement) node.parentElement.children = node.parentElement.children.filter((item) => item !== node); node.parentElement = this; const index = before ? this.children.indexOf(before) : -1; if (index < 0) this.children.push(node); else this.children.splice(index, 0, node); this.scrollHeight = this.children.length * 100; }
   replaceChildren(...nodes) { this.replacements++; this.children = []; this.append(...nodes); }
@@ -886,7 +921,7 @@ const elements = Object.fromEntries(ids.map((id) => [id, new Element(id)]));
 const document = {
   activeElement: null,
   getElementById: (id) => elements[id],
-  createElement: () => new Element(),
+  createElement: (tagName) => new Element("", tagName),
   createTextNode: (text) => ({ textContent: text }),
 };
 const state = { selectedPeer: "", selectedMessage: "", drafts: {}, conversationReads: {}, threads: null, threadFeed: null, status: { node: "local" }, participants: [] };
@@ -951,6 +986,7 @@ require("vm").runInNewContext(source + test, { document, store, api, t, fmt, nav
   const rowText = (node) => [node.textContent, ...(node.children || []).flatMap((child) => rowText(child))];
   const aliceText = rowText(aliceRow).join(" ");
   if (!aliceText.includes("latest from alice") || !aliceText.includes("inbox.unread") || !aliceText.includes("inbox.peer_offline")) throw new Error("conversation summary missing: " + aliceText);
+  if (aliceRow.children[0].tagName !== "BUTTON" || aliceRow.children[0].tabIndex < 0) throw new Error("conversation row is not keyboard focusable");
 })().catch((error) => { console.error(error.stack); process.exitCode = 1; });`
 	testPath := filepath.Join(t.TempDir(), "conversation-test.js")
 	if err := os.WriteFile(testPath, []byte(testSource), 0o600); err != nil {

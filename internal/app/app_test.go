@@ -172,6 +172,42 @@ func TestSaveStartsNodeAndPersists(t *testing.T) {
 	}
 }
 
+func TestSaveReturnsSanitizedNormalizedReactiveSlices(t *testing.T) {
+	h := newHarness(t)
+	h.app.mu.Lock()
+	h.app.s.API = "127.0.0.1:7599"
+	h.app.s.Secret = strings.Repeat("s", 32)
+	h.app.s.HandlerCommand = []string{"private-agent.exe", "--private-argument"}
+	h.app.mu.Unlock()
+
+	body := `{"node":"  alice  ","code":"","handler":"none","api":""}`
+	code, raw := h.do(t, http.MethodPost, "/ui/api/settings", body, h.tokenHdr())
+	if code != http.StatusOK {
+		t.Fatalf("save: %d %s", code, raw)
+	}
+	var got struct {
+		Saved     bool               `json:"saved"`
+		Settings  *settings.Settings `json:"settings"`
+		Status    *Status            `json:"status"`
+		Dashboard *DashboardSummary  `json:"dashboard"`
+	}
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Saved || got.Settings == nil || got.Status == nil || got.Dashboard == nil {
+		t.Fatalf("reactive slices missing: %+v", got)
+	}
+	if got.Settings.Node != "alice" || got.Settings.API != "127.0.0.1:7599" {
+		t.Fatalf("settings are not normalized/current: %+v", got.Settings)
+	}
+	if got.Settings.Secret != "" || len(got.Settings.HandlerCommand) != 0 || strings.Contains(raw, "private-agent") || strings.Contains(raw, strings.Repeat("s", 32)) {
+		t.Fatalf("private settings leaked: %s", raw)
+	}
+	if got.Status.Node != "alice" || got.Dashboard.Status.Node != "alice" {
+		t.Fatalf("status/dashboard do not describe saved state: status=%+v dashboard=%+v", got.Status, got.Dashboard)
+	}
+}
+
 func TestQuitEndpoint(t *testing.T) {
 	noQuit := newHarness(t)
 	if code, _ := noQuit.do(t, http.MethodPost, "/ui/api/quit", "", noQuit.tokenHdr()); code != http.StatusNotImplemented {

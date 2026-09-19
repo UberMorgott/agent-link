@@ -16,6 +16,7 @@ import (
 var uiStrings = map[string]string{
 	// Navigation, page titles and the connection indicator.
 	"nav.dashboard":           "Обзор",
+	"nav.label":               "Разделы приложения",
 	"nav.inbox":               "Сообщения",
 	"nav.participants":        "Участники",
 	"nav.settings":            "Настройки",

@@ -12,9 +12,10 @@
 </head>
 <body>
 <div id="app-shell" class="app-shell">
-  <aside id="sidebar" aria-label="Основная навигация">
+  <aside id="sidebar" aria-labelledby="nav_label">
     <div class="brand"><span class="brand-mark" aria-hidden="true">a</span><strong>agentlink</strong></div>
-    <nav aria-label="Разделы приложения">
+    <span id="nav_label" class="sr-only" data-t="nav.label"></span>
+    <nav aria-labelledby="nav_label">
       <a href="/ui/dashboard" data-route="dashboard" data-t="nav.dashboard"></a>
       <a href="/ui/inbox" data-route="inbox" data-t="nav.inbox"></a>
       <a href="/ui/participants" data-route="participants" data-t="nav.participants"></a>

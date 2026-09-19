@@ -12,6 +12,11 @@ const saveButton = document.getElementById("settings_save");
 
 // Letters and digits without 0/O and 1/I: 32 symbols, so a byte & 31 is uniform.
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const DEFAULT_API = "127.0.0.1:7520";
+
+function effectiveAPI(settings) {
+  return String(settings?.api || DEFAULT_API).trim();
+}
 
 function showSettings(s) {
   for (const key of ["node", "code", "work_dir", "listen", "api"]) {
@@ -163,7 +168,7 @@ form.addEventListener("submit", async (ev) => {
     max_jobs: f.max_jobs.value.trim() === "" ? 0 : (/^\d+$/.test(f.max_jobs.value.trim()) ? Number(f.max_jobs.value.trim()) : -1),
     autostart: f.autostart.checked,
   };
-  const previousAPI = String(store.get().settings?.api || "").trim();
+  const previousAPI = effectiveAPI(store.get().settings);
   result.textContent = t("settings.saving");
   saveButton.disabled = true;
   form.setAttribute("aria-busy", "true");
@@ -171,10 +176,10 @@ form.addEventListener("submit", async (ev) => {
     const r = await api("POST", "settings", body);
     const text = r.error ? r.error : t("settings.saved");
     result.textContent = r.found ? text + " " + r.found : text;
-    store.patch("settings", r.settings || body);
+    if (r.settings) store.patch("settings", r.settings);
     if (r.status) store.patch("status", r.status);
     if (r.dashboard) store.patch("dashboard", r.dashboard);
-    if (String(body.api || "").trim() !== previousAPI) location.reload();
+    if (r.settings && effectiveAPI(r.settings) !== previousAPI) location.reload();
   } catch (e) {
     result.textContent = e.message;
   } finally {
