@@ -36,7 +36,20 @@ func TestValidateRejectsHandlerNotOnPath(t *testing.T) {
 	}
 }
 
+// fakeClaudeOnPath makes Validate find a claude executable without the real
+// CLI installed (CI runners have none).
+func fakeClaudeOnPath(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"claude", "claude.exe"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+}
+
 func TestSaveLoadRoundTrip(t *testing.T) {
+	fakeClaudeOnPath(t)
 	path := filepath.Join(t.TempDir(), "agentlink", "config.json")
 	if _, ok, err := Load(path); ok || err != nil {
 		t.Fatalf("missing file: ok=%v err=%v", ok, err)
