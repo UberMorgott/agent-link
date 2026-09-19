@@ -123,7 +123,7 @@ func runApp(args []string) error {
 		return nil
 	}
 	if !a.Configured() {
-		openBrowser(dashboardURL(a))
+		openBrowser(startupURL(a, false))
 	}
 	clicks := &debounce{gap: clickGap}
 	systray.SetOnTapped(func() { // left click; a right click shows the menu
@@ -267,6 +267,13 @@ func (d *debounce) allow(now time.Time) bool {
 }
 
 func dashboardURL(a *app.App) string { return a.URL("open") }
+
+func startupURL(a *app.App, configured bool) string {
+	if !configured {
+		return a.URL("settings")
+	}
+	return dashboardURL(a)
+}
 
 func openLog(path string) (io.WriteCloser, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

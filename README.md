@@ -119,7 +119,7 @@ dashboard tab in the same browser profile when the browser permits it. A right c
 fixed menu — «Запускать вместе с Windows», «Открыть в браузере», «Выход». Members, messages and
 updates live on the web pages; the tooltip carries the state and a newer version. Browsers decide
 whether a tab opened by the operating system may close itself: when they refuse, the small launcher
-turns into a working dashboard, so that browser may leave a second dashboard tab instead.
+tab may remain open, but the named dashboard is still reused instead of creating another one.
 
 ### Updates
 

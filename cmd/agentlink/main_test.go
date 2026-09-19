@@ -78,3 +78,19 @@ func TestDashboardURLUsesLauncher(t *testing.T) {
 		t.Fatalf("dashboardURL() = %q, want %q", got, want)
 	}
 }
+
+func TestStartupURLShowsSettingsUntilConfigured(t *testing.T) {
+	a, err := app.New(filepath.Join(t.TempDir(), "config.json"), slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetAPIAddr("127.0.0.1:7631"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := startupURL(a, false), "http://127.0.0.1:7631/ui/settings"; got != want {
+		t.Fatalf("unconfigured startupURL() = %q, want %q", got, want)
+	}
+	if got, want := startupURL(a, true), "http://127.0.0.1:7631/ui/open"; got != want {
+		t.Fatalf("configured startupURL() = %q, want %q", got, want)
+	}
+}

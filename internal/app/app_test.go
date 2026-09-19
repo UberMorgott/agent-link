@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -103,57 +102,28 @@ func TestOpenPageIsPublicLauncher(t *testing.T) {
 	}
 }
 
-func TestLauncherDecision(t *testing.T) {
-	path, err := filepath.Abs("web/static/open.js")
+func TestLauncherAlwaysTargetsNamedDashboard(t *testing.T) {
+	script, err := webFS.ReadFile("web/static/open.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	program := `const {launcherDecision} = require(process.argv[1]);
-const cases = [[10000,"9001","activate"],[10000,"5001","activate"],[10000,"5000","adopt"],[10000,"10001","adopt"],[10000,"bad","adopt"],[10000,null,"adopt"]];
-for (const [now, heartbeat, want] of cases) {
-  const got = launcherDecision(now, heartbeat);
-  if (got !== want) throw new Error(JSON.stringify({now, heartbeat, got, want}));
-}`
-	//nolint:gosec // G204: fixed Node executable runs a checked-in browser module in a deterministic harness.
-	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path).CombinedOutput(); err != nil {
-		t.Fatalf("launcher decision: %v\n%s", err, output)
+	body := string(script)
+	for _, required := range []string{
+		`window.open(DASHBOARD_PATH, DASHBOARD_WINDOW_NAME)`,
+		`if (!target)`,
+		`window.name = DASHBOARD_WINDOW_NAME`,
+		`location.replace(DASHBOARD_PATH)`,
+		`target.focus()`,
+		`window.close()`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Errorf("launcher missing contract %q", required)
+		}
 	}
-}
-
-func TestLauncherFlows(t *testing.T) {
-	path, err := filepath.Abs("web/static/open.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	program := `const {launchDashboard} = require(process.argv[1]);
-function run(heartbeat, options = {}) {
-  const calls = [];
-  const target = {focus() { calls.push("focus"); if (options.focusFails) throw new Error("focus"); }};
-  const result = launchDashboard({
-    now: () => 10000,
-    heartbeat: () => heartbeat,
-    open: () => { calls.push("open"); return options.blocked ? null : target; },
-    signal: () => calls.push("signal"),
-    close: () => { calls.push("close"); if (options.closeFails) throw new Error("close"); },
-    closed: () => options.closed !== false,
-    afterClose: (callback) => { calls.push("afterClose"); callback(); },
-    adopt: () => calls.push("adopt"),
-  });
-  return {result, calls};
-}
-const cases = [
-  [run(null), {result:"adopt", calls:["adopt"]}],
-  [run("9001"), {result:"activate", calls:["open","focus","signal","close","afterClose"]}],
-  [run("9001", {blocked:true}), {result:"fallback", calls:["open","adopt"]}],
-  [run("9001", {focusFails:true}), {result:"fallback", calls:["open","focus","adopt"]}],
-  [run("9001", {closed:false}), {result:"activate", calls:["open","focus","signal","close","afterClose","adopt"]}],
-];
-for (const [got, want] of cases) {
-  if (JSON.stringify(got) !== JSON.stringify(want)) throw new Error(JSON.stringify({got, want}));
-}`
-	//nolint:gosec // G204: fixed Node executable runs a checked-in browser module in a deterministic harness.
-	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path).CombinedOutput(); err != nil {
-		t.Fatalf("launcher flows: %v\n%s", err, output)
+	for _, forbidden := range []string{"launcherDecision", "DASHBOARD_HEARTBEAT_KEY", "module.exports", "setTimeout"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("launcher still depends on %q", forbidden)
+		}
 	}
 }
 
