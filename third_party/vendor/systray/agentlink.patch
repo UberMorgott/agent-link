@@ -1,0 +1,126 @@
+diff --git a/systray_windows.go b/systray_windows.go
+index 84ee6a2..02e51c9 100644
+--- a/systray_windows.go
++++ b/systray_windows.go
+@@ -230,9 +230,10 @@ type winTray struct {
+ 	visibleItems    map[uint32][]uint32
+ 	muVisibleItems  sync.RWMutex
+ 
+-	nid   *notifyIconData
+-	muNID sync.RWMutex
+-	wcex  *wndClassEx
++	nid     *notifyIconData
++	iconSrc string // agentlink patch: the tray icon file, reloaded on a DPI change
++	muNID   sync.RWMutex
++	wcex    *wndClassEx
+ 
+ 	wmSystrayMessage,
+ 	wmTaskbarCreated uint32
+@@ -261,6 +262,7 @@ func (t *winTray) setIcon(src string) error {
+ 
+ 	t.muNID.Lock()
+ 	defer t.muNID.Unlock()
++	t.iconSrc = src
+ 	t.nid.Icon = h
+ 	t.nid.Flags |= NIF_ICON
+ 	t.nid.Size = uint32(unsafe.Sizeof(*t.nid))
+@@ -302,6 +304,9 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
+ 		WM_ENDSESSION = 0x0016
+ 		WM_CLOSE      = 0x0010
+ 		WM_DESTROY    = 0x0002
++
++		WM_DPICHANGED    = 0x02E0 // agentlink patch
++		WM_DISPLAYCHANGE = 0x007E // agentlink patch
+ 	)
+ 	switch message {
+ 	case WM_COMMAND:
+@@ -331,8 +336,25 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
+ 		case WM_RBUTTONUP:
+ 			systrayRightClick()
+ 		}
++	case WM_DPICHANGED, WM_DISPLAYCHANGE: // agentlink patch: reload at the new small-icon size
++		t.muNID.RLock()
++		src := t.iconSrc
++		t.muNID.RUnlock()
++		if src != "" {
++			t.setIcon(src)
++		}
+ 	case t.wmTaskbarCreated: // on explorer.exe restarts
++		t.muNID.RLock()
++		src := t.iconSrc
++		t.muNID.RUnlock()
++		var h windows.Handle
++		if src != "" {
++			h, _ = t.loadIconFrom(src) // agentlink patch: the size may have changed
++		}
+ 		t.muNID.Lock()
++		if h != 0 {
++			t.nid.Icon = h
++		}
+ 		t.nid.add()
+ 		t.muNID.Unlock()
+ 	default:
+@@ -807,8 +829,10 @@ func (t *winTray) loadIconFrom(src string) (windows.Handle, error) {
+ 	const LR_DEFAULTSIZE = 0x00000040  // Loads default-size icon for windows(SM_CXICON x SM_CYICON) if cx, cy are set to zero
+ 
+ 	// Save and reuse handles of loaded images
++	cx, cy := t.smallIconSize()
++	key := fmt.Sprintf("%s|%dx%d", src, cx, cy)
+ 	t.muLoadedImages.RLock()
+-	h, ok := t.loadedImages[src]
++	h, ok := t.loadedImages[key]
+ 	t.muLoadedImages.RUnlock()
+ 	if !ok {
+ 		srcPtr, err := windows.UTF16PtrFromString(src)
+@@ -819,21 +843,47 @@ func (t *winTray) loadIconFrom(src string) (windows.Handle, error) {
+ 			0,
+ 			uintptr(unsafe.Pointer(srcPtr)),
+ 			IMAGE_ICON,
+-			0,
+-			0,
+-			LR_LOADFROMFILE|LR_DEFAULTSIZE,
++			cx,
++			cy,
++			LR_LOADFROMFILE,
+ 		)
+ 		if res == 0 {
+ 			return 0, err
+ 		}
+ 		h = windows.Handle(res)
+ 		t.muLoadedImages.Lock()
+-		t.loadedImages[src] = h
++		t.loadedImages[key] = h
+ 		t.muLoadedImages.Unlock()
+ 	}
+ 	return h, nil
+ }
+ 
++// agentlink patch.
++var (
++	pGetDpiForWindow        = u32.NewProc("GetDpiForWindow")
++	pGetSystemMetricsForDpi = u32.NewProc("GetSystemMetricsForDpi")
++)
++
++// smallIconSize is the notification-area icon size at the window's DPI
++// (agentlink patch). LR_DEFAULTSIZE would load SM_CXICON, the large icon, and
++// the shell would then shrink it; before Windows 10 1607 the system DPI's
++// size is used.
++func (t *winTray) smallIconSize() (cx, cy uintptr) {
++	const SM_CXSMICON, SM_CYSMICON = 49, 50
++	if pGetDpiForWindow.Find() == nil && pGetSystemMetricsForDpi.Find() == nil {
++		if dpi, _, _ := pGetDpiForWindow.Call(uintptr(t.window)); dpi != 0 {
++			cx, _, _ = pGetSystemMetricsForDpi.Call(SM_CXSMICON, dpi)
++			cy, _, _ = pGetSystemMetricsForDpi.Call(SM_CYSMICON, dpi)
++			if cx != 0 && cy != 0 {
++				return cx, cy
++			}
++		}
++	}
++	cx, _, _ = pGetSystemMetrics.Call(SM_CXSMICON)
++	cy, _, _ = pGetSystemMetrics.Call(SM_CYSMICON)
++	return cx, cy
++}
++
+ func iconToBitmap(hIcon windows.Handle) (windows.Handle, error) {
+ 	const SM_CXSMICON = 49
+ 	const SM_CYSMICON = 50

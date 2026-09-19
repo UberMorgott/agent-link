@@ -14,3 +14,5 @@ require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 )
+
+replace fyne.io/systray => ./third_party/vendor/systray

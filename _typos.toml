@@ -1,0 +1,2 @@
+[files]
+extend-exclude = ["third_party/"]
