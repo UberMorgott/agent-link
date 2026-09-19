@@ -104,3 +104,27 @@ func newThread(e node.Entry) Thread {
 	}
 	return t
 }
+
+// threadPeer returns the remote member for a thread. Outbound area deliveries
+// have their concrete recipient in To, set from Entry.Peer by newThread.
+func threadPeer(thread Thread, local string) string {
+	if thread.From == local {
+		return thread.To
+	}
+	return thread.From
+}
+
+// filterThreads returns every thread for peer. An empty peer keeps the
+// unfiltered compatibility feed.
+func filterThreads(all []Thread, peer, local string) []Thread {
+	if peer == "" {
+		return all
+	}
+	filtered := make([]Thread, 0, len(all))
+	for _, thread := range all {
+		if threadPeer(thread, local) == peer {
+			filtered = append(filtered, thread)
+		}
+	}
+	return filtered
+}
