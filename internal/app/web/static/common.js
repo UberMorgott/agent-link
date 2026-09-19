@@ -106,8 +106,10 @@ function renderStatus(s) {
 }
 
 let reloadRequired = false;
+const coreFailures = new Map();
 
-function showConnectionProblem(error) {
+function showConnectionProblem(name, error) {
+  coreFailures.set(name, error);
   const region = document.getElementById("toast-region");
   if (!region) return;
   if (error.status === 403) {
@@ -122,15 +124,16 @@ function showConnectionProblem(error) {
   if (!reloadRequired) region.textContent = error.message || t("link.app_not_running");
 }
 
-function clearConnectionProblem() {
-  if (!reloadRequired) document.getElementById("toast-region")?.replaceChildren();
+function clearConnectionProblem(name) {
+  coreFailures.delete(name);
+  if (!reloadRequired && !coreFailures.size) document.getElementById("toast-region")?.replaceChildren();
 }
 
 function refreshSlice(name) {
   return api("GET", name).then((value) => {
     store.patch(name, value);
-    clearConnectionProblem();
-  }).catch((error) => showConnectionProblem(error));
+    clearConnectionProblem(name);
+  }).catch((error) => showConnectionProblem(name, error));
 }
 
 function refreshCore() {

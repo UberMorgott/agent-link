@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -219,6 +220,56 @@ func TestDashboardRefreshReflectsNodeChanges(t *testing.T) {
 	after := read()
 	if before.Status.Total == after.Status.Total || before.TotalMessages == after.TotalMessages {
 		t.Fatalf("dashboard did not refresh counts: before=%+v after=%+v", before, after)
+	}
+}
+
+// TestReactiveStoreKeepsWarningUntilEveryCoreEndpointRecovers prevents a
+// successful core request from hiding another endpoint's current failure.
+func TestReactiveStoreKeepsWarningUntilEveryCoreEndpointRecovers(t *testing.T) {
+	path, err := filepath.Abs("web/static/common.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const program = `
+const fs = require("fs");
+const vm = require("vm");
+const deferred = new Map();
+const toast = { textContent: "", replaceChildren(...nodes) { this.textContent = nodes.map((node) => node.textContent || node).join(""); } };
+const status = { textContent: "", className: "" };
+function deferredFetch(url) {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  deferred.set(url, { promise, resolve });
+  return promise;
+}
+const document = {
+  title: "",
+  querySelector(selector) {
+    if (selector === 'meta[name="agentlink-token"]') return { content: "test" };
+    if (selector === 'meta[name="agentlink-strings"]') return { content: "{}" };
+    return null;
+  },
+  querySelectorAll() { return []; },
+  getElementById(id) { return id === "toast-region" ? toast : (id === "status" ? status : null); },
+  createElement() { return { textContent: "", addEventListener() {} }; },
+  createTextNode(text) { return { textContent: text }; },
+};
+const source = fs.readFileSync(process.argv[1], "utf8");
+vm.runInNewContext(source, { document, fetch: deferredFetch, setInterval() {}, location: { reload() {} }, Map, Set, Object, Promise, Error, JSON }, { filename: process.argv[1] });
+const response = (ok, status, body) => ({ ok, status, text: async () => body });
+const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+(async () => {
+  deferred.get("/ui/api/dashboard").resolve(response(false, 500, '{"error":"dashboard down"}'));
+  await flush();
+  if (toast.textContent !== "dashboard down") throw new Error("failure did not show in the shared banner: " + toast.textContent);
+  deferred.get("/ui/api/status").resolve(response(true, 200, '{"configured":false}'));
+  await flush();
+  if (toast.textContent !== "dashboard down") throw new Error("successful status request cleared dashboard failure: " + toast.textContent);
+})().catch((error) => { console.error(error.stack); process.exitCode = 1; });
+`
+	//nolint:gosec // G204: the fixed Node executable runs this test's embedded harness against the repository script.
+	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path).CombinedOutput(); err != nil {
+		t.Fatalf("reactive store regression: %v\n%s", err, output)
 	}
 }
 
