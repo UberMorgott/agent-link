@@ -345,6 +345,8 @@ git commit -m "feat(ui): add reactive dashboard shell"
 
 - Modify: `internal/app/web/static/app.js`
 - Modify: `internal/app/web/static/common.js`
+- Modify: `internal/app/web/static/inbox.js`
+- Modify: `internal/app/web/static/settings.js`
 - Modify: `internal/app/web/static/overview.js`
 - Modify: `internal/app/web/app.html`
 - Modify: `internal/app/strings.go`
@@ -352,11 +354,17 @@ git commit -m "feat(ui): add reactive dashboard shell"
 - Create: `internal/app/events.go`
 - Create: `internal/app/events_test.go`
 - Modify: `internal/app/app.go`
+- Modify: `internal/app/app_test.go`
+- Modify: `internal/app/members.go`
+- Modify: `internal/app/autostart.go`
+- Modify: `internal/app/update.go`
 - Modify: `internal/app/web.go`
 - Modify: `internal/node/node.go`
+- Modify: `internal/node/node_test.go`
 - Modify: `internal/node/conn.go`
 - Modify: `internal/node/members.go`
 - Modify: `internal/worker/worker.go`
+- Modify: `internal/worker/worker_test.go`
 
 **Interfaces:**
 
