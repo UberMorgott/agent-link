@@ -120,6 +120,22 @@ func TestUIStringsAreRussian(t *testing.T) {
 	}
 }
 
+// TestApplicationShellSeparatesViewResults keeps async feedback in the view
+// that initiated it instead of writing it into another hidden route.
+func TestApplicationShellSeparatesViewResults(t *testing.T) {
+	files := webFiles(t)
+	for _, c := range []struct{ file, id string }{
+		{"web/app.html", "inbox_result"},
+		{"web/app.html", "settings_result"},
+		{"web/static/inbox.js", "inbox_result"},
+		{"web/static/settings.js", "settings_result"},
+	} {
+		if !strings.Contains(files[c.file], `"`+c.id+`"`) {
+			t.Errorf("%s does not use #%s", c.file, c.id)
+		}
+	}
+}
+
 // TestPagesServeRussianText renders the application shell and its scripts and
 // checks that they carry the dictionary and no English user-visible text.
 func TestPagesServeRussianText(t *testing.T) {

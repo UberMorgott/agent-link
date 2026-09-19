@@ -1,7 +1,7 @@
 "use strict";
 
 const form = document.getElementById("form");
-const result = document.getElementById("result");
+const result = document.getElementById("settings_result");
 const code = document.getElementById("code");
 const workDir = document.getElementById("work_dir");
 const pick = document.getElementById("pick");

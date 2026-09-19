@@ -2,7 +2,7 @@
 
 const list = document.getElementById("messages");
 const sendForm = document.getElementById("send");
-const sendResult = document.getElementById("result");
+const sendResult = document.getElementById("inbox_result");
 const replyTo = document.getElementById("reply_to");
 
 function setReply(id, from) {
