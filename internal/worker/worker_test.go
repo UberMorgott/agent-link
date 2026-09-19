@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/UberMorgott/agent-link/internal/node"
+	"go.uber.org/goleak"
 )
 
 // The test binary doubles as a fake agent CLI when AGENTLINK_FAKE_AGENT is set:
@@ -23,7 +24,7 @@ import (
 func TestMain(m *testing.M) {
 	switch os.Getenv("AGENTLINK_FAKE_AGENT") {
 	case "":
-		os.Exit(m.Run())
+		goleak.VerifyTestMain(m)
 	case "echo":
 		in, _ := io.ReadAll(os.Stdin)
 		out := "echo: " + string(in)

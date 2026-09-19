@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -202,16 +203,35 @@ func TestNoDowngradeAfterPAKE(t *testing.T) {
 }
 
 // fakeLegacyAcceptor answers one dial per connection like a pre-v0.6 node named name.
+// Cleanup closes the listener and every accepted connection, then waits for its
+// goroutines.
 func fakeLegacyAcceptor(t *testing.T, ln net.Listener, name string) {
 	t.Helper()
 	signer := manualNode(t, name)
-	go func() {
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		conns []net.Conn
+	)
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+		mu.Unlock()
+		wg.Wait()
+	})
+	wg.Go(func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			go func() {
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+			wg.Go(func() {
 				defer func() { _ = c.Close() }()
 				sc := newScanner(c)
 				h, err := readFrame(sc, "hello")
@@ -230,9 +250,9 @@ func fakeLegacyAcceptor(t *testing.T, ln net.Listener, name string) {
 				_ = writeFrame(c, frame{Type: "ok"})
 				for sc.Scan() { // hold the session
 				}
-			}()
+			})
 		}
-	}()
+	})
 }
 
 func manualNode(t *testing.T, name string) *Node {

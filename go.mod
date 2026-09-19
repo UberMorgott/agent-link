@@ -5,6 +5,7 @@ go 1.27
 require (
 	fyne.io/systray v1.12.2
 	github.com/gtank/ristretto255 v0.2.0
+	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.59.0
 	golang.org/x/sys v0.48.0
