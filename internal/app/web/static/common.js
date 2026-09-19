@@ -2,7 +2,7 @@
 
 const TOKEN = document.querySelector('meta[name="agentlink-token"]').content;
 
-// STRINGS is the page dictionary served by the app; see internal/app/strings.go.
+// STRINGS is the application-shell dictionary served by the app; see internal/app/strings.go.
 const STRINGS = JSON.parse(document.querySelector('meta[name="agentlink-strings"]').content);
 
 // t returns the text for a key; fmt also fills its {name} placeholders.
@@ -14,7 +14,7 @@ function fmt(key, vars) {
   return t(key).replace(/\{(\w+)\}/g, (m, name) => (name in vars ? String(vars[name]) : m));
 }
 
-// applyStrings fills every [data-t] element and the page title.
+// applyStrings fills every [data-t] element and the shell's initial page title.
 function applyStrings(root) {
   for (const el of (root || document).querySelectorAll("[data-t]")) el.textContent = t(el.dataset.t);
   const title = document.querySelector('meta[name="agentlink-title"]');

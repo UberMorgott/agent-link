@@ -22,7 +22,7 @@ var (
 	dataTKey   = regexp.MustCompile(`data-t="([^"]+)"`)
 	titleKey   = regexp.MustCompile(`content="(page\.[^"]+)"`)
 	scriptKey  = regexp.MustCompile(`"([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+)"`)
-	dynPrefix  = regexp.MustCompile(`"([a-z][a-z0-9_]*\.)"\s*\+`)
+	dynPrefix  = regexp.MustCompile(`"([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*\.)"\s*\+`)
 	cyrillic   = regexp.MustCompile(`\p{Cyrillic}`)
 	englishOut = []string{
 		"Settings", "Inbox", "Save", "Send", "Reply", "Replying", "Generate", "Copy", "Show",
@@ -120,11 +120,35 @@ func TestUIStringsAreRussian(t *testing.T) {
 	}
 }
 
-// TestPagesServeRussianText renders both pages and the scripts and checks that
-// they carry the dictionary and no English user-visible text.
+// TestPagesServeRussianText renders the application shell and its scripts and
+// checks that they carry the dictionary and no English user-visible text.
 func TestPagesServeRussianText(t *testing.T) {
 	h := newHarness(t)
-	paths := []string{"/ui/settings", "/ui/inbox", "/ui/static/common.js", "/ui/static/inbox.js", "/ui/static/settings.js"}
+	client := *h.srv.Client()
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, h.srv.URL+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/ui/dashboard" {
+		t.Fatalf("root redirect: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	for _, path := range []string{"/ui/dashboard", "/ui/inbox", "/ui/participants", "/ui/settings"} {
+		code, body := h.do(t, http.MethodGet, path, "", nil)
+		if code != http.StatusOK || !strings.Contains(body, `id="app-shell"`) || !strings.Contains(body, h.app.token) {
+			t.Fatalf("%s: %d", path, code)
+		}
+	}
+	paths := []string{"/ui/static/common.js", "/ui/static/app.js", "/ui/static/overview.js", "/ui/static/inbox.js", "/ui/static/participants.js", "/ui/static/settings.js"}
 	for _, p := range paths {
 		code, body := h.do(t, http.MethodGet, p, "", nil)
 		if code != http.StatusOK {
@@ -136,7 +160,7 @@ func TestPagesServeRussianText(t *testing.T) {
 			}
 		}
 	}
-	for _, page := range []string{"/ui/settings", "/ui/inbox"} {
+	for _, page := range []string{"/ui/dashboard", "/ui/inbox", "/ui/participants", "/ui/settings"} {
 		_, body := h.do(t, http.MethodGet, page, "", nil)
 		if strings.Contains(body, "{{STRINGS}}") {
 			t.Fatalf("%s: dictionary not substituted", page)

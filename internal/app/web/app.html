@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="agentlink-token" content="{{TOKEN}}">
+<meta name="agentlink-strings" content="{{STRINGS}}">
+<meta name="agentlink-title" content="page.title.dashboard">
+<title></title>
+<link rel="icon" href="/ui/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/ui/static/style.css">
+</head>
+<body>
+<div id="app-shell" class="app-shell">
+  <aside id="sidebar" aria-label="Основная навигация">
+    <strong>agentlink</strong>
+    <nav>
+      <a href="/ui/dashboard" data-route="dashboard" data-t="nav.dashboard"></a>
+      <a href="/ui/inbox" data-route="inbox" data-t="nav.inbox"></a>
+      <a href="/ui/participants" data-route="participants" data-t="nav.participants"></a>
+      <a href="/ui/settings" data-route="settings" data-t="nav.settings"></a>
+    </nav>
+  </aside>
+  <section class="workspace">
+    <header id="topbar"><span id="status"></span></header>
+    <main id="view" tabindex="-1">
+      <section data-view="dashboard">
+        <h1 data-t="dashboard.h1"></h1>
+        <p id="dashboard_summary" class="hint"></p>
+      </section>
+      <section data-view="inbox" hidden>
+        <h1 data-t="inbox.h1"></h1>
+        <form id="send">
+          <fieldset>
+            <legend data-t="inbox.send.legend"></legend>
+            <label><span data-t="inbox.to.label"></span><input name="to" id="to" autocomplete="off" list="member_names"></label>
+            <datalist id="member_names"></datalist>
+            <p class="hint" data-t="inbox.to.hint"></p>
+            <label><span data-t="inbox.body.label"></span><textarea name="body" id="body" rows="4"></textarea></label>
+            <p class="hint" data-t="inbox.body.hint"></p>
+            <input type="hidden" name="reply_to" id="reply_to">
+            <p id="replying" hidden><span id="replying_text"></span> <button type="button" id="cancel_reply" data-t="inbox.cancel_reply"></button></p>
+            <button type="submit" data-t="inbox.send"></button>
+            <p id="result" role="status"></p>
+          </fieldset>
+        </form>
+        <ul id="messages"></ul>
+      </section>
+      <section data-view="participants" hidden>
+        <h1 data-t="participants.h1"></h1>
+        <p id="participants_empty" class="hint" hidden data-t="participants.empty"></p>
+        <ul id="participants" class="members"></ul>
+      </section>
+      <section data-view="settings" hidden>
+        <h1 data-t="settings.h1"></h1>
+        <form id="form" novalidate>
+          <fieldset>
+            <label><span data-t="settings.node.label"></span><input name="node" autocomplete="off"></label>
+            <p class="hint" data-t="settings.node.hint"></p>
+            <label><span data-t="settings.code.label"></span>
+              <span class="row"><input name="code" id="code" maxlength="16" autocomplete="off" spellcheck="false" class="code">
+              <button type="button" id="generate" data-t="settings.code.generate"></button>
+              <button type="button" id="copy" data-t="settings.code.copy"></button></span>
+            </label>
+            <p class="hint" data-t="settings.code.hint"></p>
+            <div id="members_row">
+              <span data-t="settings.members.label"></span>
+              <ul id="members" class="members"></ul>
+              <p class="hint" id="members_none" data-t="settings.members.none" hidden></p>
+            </div>
+            <label><span data-t="settings.peer_addr.label"></span>
+              <span class="row"><input name="peer_addr" id="peer_addr" autocomplete="off" spellcheck="false" placeholder="10.147.20.9">
+              <button type="button" id="add_peer" data-t="settings.peer_addr.add"></button></span>
+            </label>
+            <p class="hint" data-t="settings.peer_addr.hint"></p>
+            <p class="hint" id="my_addr"></p>
+            <label><span data-t="settings.handler.label"></span>
+              <select name="handler">
+                <option value="none" data-t="settings.handler.none"></option>
+                <option value="claude" data-t="settings.handler.claude"></option>
+                <option value="codex" data-t="settings.handler.codex"></option>
+              </select>
+            </label>
+            <p class="hint" data-t="settings.handler.hint"></p>
+            <div id="agent_row">
+              <span data-t="settings.agent.label"></span>
+              <span class="row"><span id="agent_shown"></span>
+              <button type="button" id="find_agent" data-t="settings.agent.find"></button>
+              <button type="button" id="pick_agent" data-t="settings.agent.pick"></button></span>
+              <input type="hidden" name="agent_path" id="agent_path">
+              <p class="hint" data-t="settings.agent.hint"></p>
+            </div>
+            <label><span data-t="settings.work_dir.label"></span>
+              <span class="row"><input name="work_dir" id="work_dir" autocomplete="off" spellcheck="false">
+              <button type="button" id="pick" data-t="settings.work_dir.pick"></button></span>
+            </label>
+            <p class="path" id="work_dir_shown"></p>
+            <p class="hint" data-t="settings.work_dir.hint"></p>
+          </fieldset>
+          <details id="advanced">
+            <summary data-t="settings.advanced"></summary>
+            <fieldset>
+              <label><span data-t="settings.listen.label"></span><input name="listen" autocomplete="off"></label>
+              <p class="hint" data-t="settings.listen.hint"></p>
+              <label><span data-t="settings.api.label"></span><input name="api" autocomplete="off" placeholder="127.0.0.1:7520"></label>
+              <p class="hint" data-t="settings.api.hint"></p>
+              <label><span data-t="settings.areas.label"></span><input name="areas" autocomplete="off"></label>
+              <p class="hint" data-t="settings.areas.hint"></p>
+              <label class="check"><input type="checkbox" name="discovery"> <span data-t="settings.discovery.label"></span></label>
+              <p class="hint" data-t="settings.discovery.hint"></p>
+              <label><span data-t="settings.max_jobs.label"></span><input name="max_jobs" type="number" min="1" max="4" step="1" placeholder="2"></label>
+              <p class="hint" data-t="settings.max_jobs.hint"></p>
+              <label class="check"><input type="checkbox" name="autostart"> <span data-t="settings.autostart.label"></span></label>
+            </fieldset>
+          </details>
+          <button type="submit" data-t="settings.save"></button>
+        </form>
+        <fieldset id="updates">
+          <legend data-t="update.legend"></legend>
+          <p class="row"><span id="update_version"></span>
+            <button type="button" id="update_check" data-t="update.check"></button>
+            <button type="button" id="update_apply" hidden></button></p>
+          <p class="hint" id="update_text" role="status"></p>
+          <label class="check"><input type="checkbox" id="update_auto"> <span data-t="update.auto"></span></label>
+          <p class="hint" data-t="update.auto.hint"></p>
+        </fieldset>
+      </section>
+    </main>
+  </section>
+  <div id="toast-region" role="status" aria-live="polite"></div>
+</div>
+<script src="/ui/static/common.js"></script>
+<script src="/ui/static/overview.js"></script>
+<script src="/ui/static/inbox.js"></script>
+<script src="/ui/static/participants.js"></script>
+<script src="/ui/static/settings.js"></script>
+<script src="/ui/static/app.js"></script>
+</body>
+</html>

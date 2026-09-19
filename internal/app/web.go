@@ -33,14 +33,14 @@ func newToken() string {
 	return hex.EncodeToString(b)
 }
 
-// URL returns the address of a web UI page, e.g. "settings" or "inbox".
+// URL returns the address of a web UI route, e.g. "dashboard" or "inbox".
 func (a *App) URL(page string) string {
 	return "http://" + a.APIAddr() + "/ui/" + page
 }
 
 // Handler serves the web UI under /ui/ and the node's control API elsewhere.
 //
-//	GET  /ui/settings, /ui/inbox   pages with the per-run token embedded
+//	GET  /ui/dashboard, /ui/inbox, /ui/participants, /ui/settings  application shell with the per-run token embedded
 //	GET  /ui/api/status            Status
 //	GET  /ui/api/settings          settings.Settings
 //	POST /ui/api/settings          settings.Settings -> save, restart node
@@ -62,8 +62,9 @@ func (a *App) URL(page string) string {
 //	POST /ui/api/quit              exit the app (same path as the tray's Quit)
 func (a *App) Handler() http.Handler {
 	ui := http.NewServeMux()
-	ui.HandleFunc("GET /ui/settings", a.page("web/settings.html"))
-	ui.HandleFunc("GET /ui/inbox", a.page("web/inbox.html"))
+	for _, path := range []string{"/ui/dashboard", "/ui/inbox", "/ui/participants", "/ui/settings"} {
+		ui.HandleFunc("GET "+path, a.page("web/app.html"))
+	}
 	static, _ := fs.Sub(webFS, "web/static") // constant path inside the embed
 	ui.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServerFS(static)))
 	api := http.NewServeMux()
@@ -106,7 +107,7 @@ func (a *App) Handler() http.Handler {
 	root := http.NewServeMux()
 	root.Handle("/ui/", ui)
 	root.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/settings", http.StatusFound)
+		http.Redirect(w, r, "/ui/dashboard", http.StatusFound)
 	})
 	root.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		n := a.node()
