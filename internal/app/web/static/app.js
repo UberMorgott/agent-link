@@ -19,7 +19,7 @@ function renderRoute(state) {
   for (const view of document.querySelectorAll("[data-view]")) view.hidden = view.dataset.view !== route;
   for (const link of document.querySelectorAll("[data-route]")) link.classList.toggle("active", link.dataset.route === route);
   document.title = t("page.title." + route);
-  if (route === "dashboard") renderOverview();
+  if (route === "dashboard") renderOverview(store.get().dashboard);
   if (route === "participants") renderParticipants();
   document.getElementById("view").focus({ preventScroll: true });
 }

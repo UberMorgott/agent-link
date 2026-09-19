@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/UberMorgott/agent-link/internal/node"
+	"golang.org/x/net/html"
 )
 
 // --- the page dictionary ---
@@ -133,6 +134,91 @@ func TestApplicationShellSeparatesViewResults(t *testing.T) {
 		if !strings.Contains(files[c.file], `"`+c.id+`"`) {
 			t.Errorf("%s does not use #%s", c.file, c.id)
 		}
+	}
+}
+
+// TestUIShellKeepsOneLiveRegionAndRealRoutes protects the persistent shell:
+// route changes update its views without duplicating navigation or alerts.
+func TestUIShellKeepsOneLiveRegionAndRealRoutes(t *testing.T) {
+	h := newHarness(t)
+	code, body := h.do(t, http.MethodGet, "/ui/dashboard", "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("dashboard shell: %d", code)
+	}
+	doc, err := html.Parse(strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	routes := map[string]string{}
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			var id, href, route, live string
+			for _, attr := range n.Attr {
+				switch attr.Key {
+				case "id":
+					id = attr.Val
+				case "href":
+					href = attr.Val
+				case "data-route":
+					route = attr.Val
+				case "aria-live":
+					live = attr.Val
+				}
+			}
+			if id == "app-shell" {
+				counts["shell"]++
+			}
+			if live != "" {
+				counts["live"]++
+			}
+			if n.Data == "a" && route != "" {
+				routes[route] = href
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(doc)
+	if counts["shell"] != 1 || counts["live"] != 1 {
+		t.Fatalf("shell=%d live=%d, want one each", counts["shell"], counts["live"])
+	}
+	for _, route := range []string{"dashboard", "inbox", "participants", "settings"} {
+		if routes[route] != "/ui/"+route {
+			t.Errorf("route %q href=%q, want /ui/%s", route, routes[route], route)
+		}
+	}
+	for _, id := range []string{"dashboard_cards", "dashboard_recent"} {
+		if !strings.Contains(body, `id="`+id+`"`) {
+			t.Errorf("dashboard view is missing #%s", id)
+		}
+	}
+}
+
+// TestDashboardRefreshReflectsNodeChanges verifies that a stable dashboard
+// route and token receive fresh node counts on the next API request.
+func TestDashboardRefreshReflectsNodeChanges(t *testing.T) {
+	h := newHarness(t)
+	read := func() DashboardSummary {
+		code, body := h.do(t, http.MethodGet, "/ui/api/dashboard", "", h.tokenHdr())
+		var summary DashboardSummary
+		if err := json.Unmarshal([]byte(body), &summary); err != nil || code != http.StatusOK {
+			t.Fatalf("dashboard: %d %s err=%v", code, body, err)
+		}
+		return summary
+	}
+	before := read()
+	if code, body := h.do(t, http.MethodPost, "/ui/api/settings", validJSON(t), h.tokenHdr()); code != http.StatusOK {
+		t.Fatalf("save: %d %s", code, body)
+	}
+	if code, body := h.do(t, http.MethodPost, "/ui/api/send", `{"to":"bob","body":"проверь обновление"}`, h.tokenHdr()); code != http.StatusOK {
+		t.Fatalf("send: %d %s", code, body)
+	}
+	after := read()
+	if before.Status.Total == after.Status.Total || before.TotalMessages == after.TotalMessages {
+		t.Fatalf("dashboard did not refresh counts: before=%+v after=%+v", before, after)
 	}
 }
 

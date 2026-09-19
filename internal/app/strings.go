@@ -23,10 +23,8 @@ var uiStrings = map[string]string{
 	"page.title.inbox":        "agentlink — сообщения",
 	"page.title.participants": "agentlink — участники",
 	"page.title.settings":     "agentlink — настройки",
-	"link.on":                 "связь есть: {peer}",
 	"link.on_many":            "на связи {online} из {total}",
-	"link.off":                "нет связи: {peer}",
-	"link.waiting":            "ждём участников",
+	"link.off_count":          "нет связи: {online} из {total}",
 	"link.unconfigured":       "не настроено",
 	"link.app_not_running":    "agentlink не запущен",
 	"link.no_code":            "нет кода связи — нажмите «Создать код» или впишите код, который вам дали",
@@ -143,10 +141,17 @@ var uiStrings = map[string]string{
 	"settings.saved":               "Сохранено.",
 
 	// Dashboard and participants routes.
-	"dashboard.h1":       "Обзор",
-	"dashboard.summary":  "На связи: {online} из {total}; сообщений: {messages}.",
-	"participants.h1":    "Участники",
-	"participants.empty": "Пока нет участников.",
+	"dashboard.h1":           "Обзор",
+	"dashboard.summary":      "На связи: {online} из {total}; сообщений: {messages}.",
+	"dashboard.online":       "Участники",
+	"dashboard.messages":     "Сообщения",
+	"dashboard.active":       "Активные запросы",
+	"dashboard.handler":      "Обработчик",
+	"dashboard.recent":       "Последние разговоры",
+	"dashboard.recent.empty": "Пока нет разговоров.",
+	"connection.reload":      "Обновить страницу",
+	"participants.h1":        "Участники",
+	"participants.empty":     "Пока нет участников.",
 
 	// Updates: the settings page section and the tray menu.
 	"update.legend":          "Обновления",
