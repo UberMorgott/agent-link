@@ -65,7 +65,9 @@ func buildParticipants(status Status, entries []node.Entry) []ParticipantView {
 			participant.Received++
 		}
 		participant.Total++
-		if entry.CreatedAt.After(participant.LatestAt) {
+		// Recent returns durable append order for equal timestamps, so the
+		// later iterated entry is the deterministic latest message.
+		if !entry.CreatedAt.Before(participant.LatestAt) {
 			participant.LatestAt, participant.LatestPreview = entry.CreatedAt, entry.Body
 			participant.LatestDirection = entry.Direction
 		}

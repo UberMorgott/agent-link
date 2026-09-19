@@ -64,6 +64,40 @@ func TestBuildParticipantsCarriesLatestDirectionBeyondDashboardRecentLimit(t *te
 	}
 }
 
+func TestBuildParticipantsLatestTieUsesDurableIterationOrder(t *testing.T) {
+	status := Status{Node: "alice", Members: []node.MemberInfo{{Name: "alice", Self: true}, {Name: "bob"}}}
+	statusEntry := func() node.Entry {
+		e := entry("in", strings.Repeat("f", 32), "bob", "alice", "ignored status", at(10))
+		e.Kind = node.KindStatus
+		return e
+	}
+	cases := []struct {
+		name, first, second, wantDirection, wantPreview string
+	}{
+		{name: "in then out is read basis", first: "in", second: "out", wantDirection: "out", wantPreview: "second out"},
+		{name: "out then in is unread basis", first: "out", second: "in", wantDirection: "in", wantPreview: "second in"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			makeEntry := func(direction, id, body string) node.Entry {
+				from, to := "alice", "bob"
+				if direction == "in" {
+					from, to = "bob", "alice"
+				}
+				return entry(direction, strings.Repeat(id, 32), from, to, body, at(10))
+			}
+			got := buildParticipants(status, []node.Entry{
+				makeEntry(tc.first, "a", "first "+tc.first),
+				makeEntry(tc.second, "b", "second "+tc.second),
+				statusEntry(),
+			})
+			if len(got) != 1 || got[0].LatestDirection != tc.wantDirection || got[0].LatestPreview != tc.wantPreview || got[0].Total != 2 {
+				t.Fatalf("participant tie: %+v", got)
+			}
+		})
+	}
+}
+
 func TestBuildDashboardAggregatesActivityAndRecentConversations(t *testing.T) {
 	request := strings.Repeat("a", 32)
 	entries := []node.Entry{
