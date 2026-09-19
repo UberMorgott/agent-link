@@ -4,7 +4,7 @@
 
 **Goal:** Replace the current settings/inbox pages with a polished, fully reactive dashboard for overview, conversations, remote participants, settings, notifications, and tray-driven tab reuse.
 
-**Architecture:** Keep the Go server, embedded assets, durable message store, and vanilla JavaScript. Add application-layer view models that aggregate existing messages and membership data, then serve one reactive HTML shell for all UI routes; small JavaScript modules own routing, state polling, and individual views without a build step.
+**Architecture:** Keep the Go server, embedded assets, durable message store, and vanilla JavaScript. Add application-layer view models that aggregate existing messages and membership data, then serve one reactive HTML shell for all UI routes. One authenticated SSE stream publishes mutation topics from the Go process; small JavaScript modules refresh only affected slices and render individual views without a build step or scheduled polling.
 
 **Tech Stack:** Go 1.27+, `net/http`, embedded HTML/CSS/vanilla JavaScript, PowerShell 7 end-to-end scripts, Windows tray app.
 
@@ -18,7 +18,8 @@
 - Continue sourcing every user-visible string from `internal/app/strings.go`.
 - Preserve full local message history and existing request/reply/status semantics; status frames do not count as messages.
 - Keep ordinary UI workflows reactive: no document reload except restart/update, expired token, or unrecoverable shell-version mismatch.
-- Preserve drafts, focus, selected conversation, and scroll position across background refreshes.
+- Preserve drafts, focus, selected conversation, and scroll position across event-driven refreshes.
+- UI data must not be refreshed on a timer. SSE keepalives may hold the connection open but must not trigger API reads.
 - Use the browser-tab launcher as same-profile best effort; never add browser automation, an extension, or WebView2.
 - Run `qgate` after file changes. If the gate is provably incorrect, do not bypass it: capture `qgate where` and open an issue in `UberMorgott/quality-gate`.
 - Commit only intended paths using Conventional Commits; never push unless explicitly requested.
@@ -27,7 +28,7 @@
 
 - Peer names containing spaces, Cyrillic, `&`, `?`, or `#` must survive query routing via `URLSearchParams` and render as text; Task 6 adds a browser verification and Task 2 pins server filtering.
 - A peer with more than 200 stored entries must expose complete history and correct counts; Tasks 1 and 2 use fixtures above that boundary.
-- Polling during a multiline draft or while reading older history must not reset the composer, focus, selected peer, or scroll position; Task 4 adds a state/render contract and Task 6 verifies it live.
+- Push events during a multiline draft or while reading older history must not reset the composer, focus, selected peer, or scroll position; Task 4 adds the event/store contract and Task 6 verifies it live.
 - Stale launcher heartbeats, blocked popups, and an absent named tab must leave the user in one usable dashboard tab; Task 9 tests the launcher decision function and verifies browser fallback.
 - Node stop/restart and token rotation must retain the last good view, show one compact error, and reload only on 403; Tasks 4 and 10 cover these transitions.
 
@@ -38,11 +39,12 @@
 - `internal/app/dashboard.go`: pure aggregation of status, participants, message counts, active work, and conversation summaries.
 - `internal/app/dashboard_test.go`: table-driven aggregation and boundary tests.
 - `internal/app/threads.go`: request/reply view model plus peer filtering helpers.
-- `internal/app/web.go`: UI routes and JSON handlers only; it delegates aggregation and rendering.
+- `internal/app/web.go`: UI routes, JSON handlers, and the authenticated SSE endpoint; it delegates aggregation and rendering.
+- `internal/app/events.go`: non-blocking coalescing UI event broadcaster owned by `App`.
 - `internal/app/web/app.html`: the one application shell and semantic containers for all views.
 - `internal/app/web/open.html`: tiny same-profile tab-reuse launcher.
 - `internal/app/web/static/common.js`: token-aware API client, translations, formatting, safe DOM helpers, and URL routing.
-- `internal/app/web/static/app.js`: central state store, polling, view lifecycle, toast dispatch, and startup.
+- `internal/app/web/static/app.js`: central state store, SSE lifecycle, view lifecycle, toast dispatch, and startup.
 - `internal/app/web/static/overview.js`: overview projection and DOM renderer.
 - `internal/app/web/static/inbox.js`: conversation list, message timeline, composer, and reply actions.
 - `internal/app/web/static/participants.js`: participant list, statistics, add/remove actions, and open-chat actions.
@@ -337,7 +339,7 @@ git rm internal/app/web/inbox.html internal/app/web/settings.html
 git commit -m "feat(ui): add reactive dashboard shell"
 ```
 
-### Task 4: Add the Reactive Store, Polling, and Overview
+### Task 4: Add Server-Push Reactivity, the Store, and Overview
 
 **Files:**
 
@@ -347,11 +349,19 @@ git commit -m "feat(ui): add reactive dashboard shell"
 - Modify: `internal/app/web/app.html`
 - Modify: `internal/app/strings.go`
 - Modify: `internal/app/ui_test.go`
+- Create: `internal/app/events.go`
+- Create: `internal/app/events_test.go`
+- Modify: `internal/app/app.go`
+- Modify: `internal/app/web.go`
+- Modify: `internal/node/node.go`
+- Modify: `internal/node/conn.go`
+- Modify: `internal/node/members.go`
+- Modify: `internal/worker/worker.go`
 
 **Interfaces:**
 
-- Consumes: `GET status`, `GET dashboard`, `GET participants`, `GET update`, route helpers from Task 3.
-- Produces: `createStore(initial)`, `store.get()`, `store.patch(slice, value)`, `store.subscribe(slice, listener)`, `refreshCore()`, and `renderOverview(summary)`.
+- Consumes: node/member/message/worker/settings/update mutation callbacks, `GET status`, `GET dashboard`, `GET participants`, `GET update`, and route helpers from Task 3.
+- Produces: authenticated `GET /ui/api/events`, a coalescing revision/topic broadcaster, `createStore(initial)`, `store.get()`, `store.patch(slice, value)`, `store.subscribe(slice, listener)`, event-driven slice refresh, and `renderOverview(summary)`.
 
 - [ ] **Step 1: Add failing static contracts for reactive state**
 
@@ -360,15 +370,30 @@ Extend `ui_test.go` to parse the rendered shell and assert one shell, one
 implementation text; pin changing data through the HTTP integration behavior
 below and verify browser state in Step 5.
 
-Add an HTTP integration test that changes node state between two `/dashboard` calls and asserts the second response contains updated online/active counts without changing route or token.
+Add HTTP integration tests proving `/ui/api/events` rejects missing/wrong tokens, immediately emits an initial event, emits a higher revision after representative mutations, unsubscribes on cancellation, and coalesces for a slow subscriber. Add an executable JavaScript contract proving there is no periodic data refresh and an SSE event refreshes only its named slices.
 
 - [ ] **Step 2: Run the focused tests and verify RED**
 
 Run: `go test ./internal/app -run 'Test(Reactive|DashboardRefresh|UIShell)'`
 
-Expected: missing store/view contract or unchanged dashboard response.
+Expected: missing broadcaster/SSE/store contract.
 
-- [ ] **Step 3: Implement store and refresh lifecycle**
+- [ ] **Step 3: Implement the event broadcaster and mutation hooks**
+
+Own one broadcaster on `App`. Subscribers receive a buffered, coalesced revision
+and topic set; publishing must never block node, worker, or HTTP paths. Invoke
+callbacks only after durable mutations and outside node/worker/app locks.
+
+Publish topics for peer connect/disconnect, member-table changes, inbound and
+outbound message persistence/delivery, worker request/activity transitions,
+successful settings/member mutations, and update state changes. Do not change
+the network wire protocol.
+
+Serve `GET /ui/api/events` behind the existing token middleware. Stream an
+initial `event: change` record, later revision/topic records, and comment-only
+keepalives about every 15 seconds. Do not put the control token in the URL.
+
+- [ ] **Step 4: Implement store and stream lifecycle**
 
 Use one state object and slice subscriptions:
 
@@ -392,24 +417,31 @@ function createStore(initial) {
 }
 ```
 
-Poll core data every three seconds with one in-flight request per endpoint. Preserve the last good slice on failure. Convert HTTP 403 into a single localized reload action; other failures update one connection banner and retry without stacking errors.
+Open the stream with `fetch` and `X-Agentlink-Token`, parse SSE records, and
+refresh only the slices named by each event. Initial connection/reconnection
+refreshes every slice. Reconnect with bounded exponential backoff; preserve the
+last good slice on failure. Convert HTTP 403 into a single localized reload
+action; other failures update one connection banner without stacking errors.
+There must be no `setInterval` or timer-driven data refresh in `common.js`,
+`inbox.js`, or `settings.js`.
 
-- [ ] **Step 4: Render the overview and count-based top bar**
+- [ ] **Step 5: Render the overview and count-based top bar**
 
 Render cards for online/total participants, messages, active requests, handler, and recent conversations. The top bar must use `online` count, never `Status.Peer`. Route clicks through `navigate` without a document reload.
 
-- [ ] **Step 5: Verify refresh behavior in the local browser**
+- [ ] **Step 6: Verify push behavior in the local browser**
 
 Run the app with a temporary config on an unused loopback port, open `/ui/dashboard`, and use browser developer observation to confirm:
 
 - changing the route updates `location.pathname` and the main view without a navigation load;
 - status text says the numeric online count;
-- stopping the peer leaves the last cards visible and updates status on the next poll;
+- stopping the peer leaves the last cards visible and updates status from a pushed event;
 - only one connection warning is present.
+- browser network activity shows one long-lived events request and no periodic API requests.
 
 Record the observed route and status in the task notes; do not submit forms or alter the user's real config.
 
-- [ ] **Step 6: Run focused tests and commit**
+- [ ] **Step 7: Run focused tests and commit**
 
 Run: `go test ./internal/app`
 
@@ -510,8 +542,8 @@ Clicking a toast must call `navigate("inbox", {peer, message})` in the same tab,
 
 Using temporary local nodes:
 
-- type a multiline draft, place the caret in the middle, wait for two polls, and confirm value/focus/caret remain;
-- scroll upward, wait for a status update, and confirm scroll does not jump;
+- type a multiline draft, place the caret in the middle, trigger two remote events, and confirm value/focus/caret remain;
+- scroll upward, trigger a status update, and confirm scroll does not jump;
 - send a message from the other node and confirm one bottom-right toast contains sender plus a truncated preview;
 - click it and confirm the same tab shows the correct participant and message;
 - navigate with `?peer=%D0%BA%D0%B0%D1%80%D0%BB+%26+sons&message=<id>` and confirm exact selection.

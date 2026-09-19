@@ -164,11 +164,22 @@ one message in their actual directions. Area messages contribute to each stored
 local message once; the UI does not invent per-recipient deliveries it cannot
 prove from local storage.
 
-## Incoming Message Notifications
+## Reactive Updates and Incoming Message Notifications
 
-The application store polls a lightweight message view while the dashboard is open.
-It compares incoming non-status message IDs against a watermark stored in
-`localStorage` for this local dashboard origin.
+The open dashboard maintains one authenticated server-sent event stream to the
+loopback Go server. Node membership, connection, message, worker, settings, and
+update mutations publish a revision with the affected state topics. The browser
+then refreshes only those API slices. No UI state is refreshed on a schedule;
+SSE keepalives only keep the connection alive and never trigger data reads.
+
+Because the control token stays in the `X-Agentlink-Token` header, the client
+uses a streaming `fetch` rather than putting the token in a query string or
+using native `EventSource`. Reconnect uses bounded exponential backoff and an
+initial event refreshes all slices, so missed events are recovered without an
+event log. The last good state stays visible while the stream reconnects.
+
+For message events, the application store compares incoming non-status message
+IDs against a watermark stored in `localStorage` for this local dashboard origin.
 
 On first use, existing history initializes the watermark without producing a
 storm of old notifications. A genuinely new incoming request or reply creates a
@@ -228,8 +239,8 @@ double-click emitted two events; the existing debounce remains.
 - User content is inserted with `textContent`, never HTML.
 - Missing/stopped node state returns empty dashboard collections plus the
   existing actionable configuration state rather than a page crash.
-- A failed polling request leaves the current page usable and shows one compact
-  connection warning instead of repeated alerts.
+- A failed event stream or event-driven refresh leaves the current page usable
+  and shows one compact connection warning instead of repeated alerts.
 - Removing a participant retains the existing confirmation and tombstone flow.
 - No secret, pairing code, config contents, or agent output is added to logs or
   browser persistence.
