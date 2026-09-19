@@ -34,9 +34,11 @@ func procStart(pid int) (int64, error) {
 	if err := syscall.Kill(pid, 0); err != nil {
 		return 0, err
 	}
-	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return 0, nil
+	// Without /proc (not Linux) the process is alive but its start time is
+	// unknown: 0, as documented, not an error.
+	data, readErr := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if readErr != nil {
+		return 0, nil //nolint:nilerr // a missing /proc means "start time unknown", not "process gone"
 	}
 	s := string(data)
 	if i := strings.LastIndexByte(s, ')'); i >= 0 {

@@ -1,1 +1,1 @@
-{"stopHook": false}
+{"stopHook": false, "go": {"lintGoos": ["linux"]}}
