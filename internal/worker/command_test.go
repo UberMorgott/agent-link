@@ -25,6 +25,8 @@ func TestBuiltInAgentsCarryReplyStyle(t *testing.T) {
 			"disclose this limitation",
 			"never claim to be a remote agent",
 			"never include secrets",
+			"answer briefly in that person's language",
+			"exact paths, names, values, file:line",
 		} {
 			if !strings.Contains(preamble, phrase) {
 				t.Errorf("%s preamble lacks %q", h, phrase)
