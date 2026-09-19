@@ -3,6 +3,9 @@
 const participantList = document.getElementById("participants");
 const participantResult = document.getElementById("participants_result");
 const participantAddr = document.getElementById("participant_addr");
+const participantAddForm = document.getElementById("participant_add");
+const participantAddButton = document.getElementById("add_participant");
+participantAddr.placeholder = t("participants.add.placeholder");
 
 function participantDetail(person) {
   const details = [];
@@ -54,7 +57,8 @@ function renderParticipants(items) {
     remove.type = "button";
     remove.className = "danger participant-remove";
     remove.textContent = t("participants.remove");
-    remove.addEventListener("click", () => removeParticipant(person.name, row));
+    remove.setAttribute("aria-label", fmt("participants.remove_named", { name: person.name }));
+    remove.addEventListener("click", () => removeParticipant(person.name, row, remove));
     row.append(open, remove);
     return row;
   }));
@@ -66,11 +70,15 @@ async function refreshParticipantViews() {
 }
 
 async function addParticipant(addr) {
+  if (participantAddButton.disabled) return;
   const value = String(addr || "").trim();
   if (!value) {
     participantResult.textContent = t("participants.add.empty");
     return;
   }
+  participantAddButton.disabled = true;
+  participantAddr.disabled = true;
+  participantAddForm.setAttribute("aria-busy", "true");
   try {
     const status = await api("POST", "members/add", { addr: value });
     store.patch("status", status);
@@ -79,13 +87,20 @@ async function addParticipant(addr) {
     await refreshParticipantViews();
   } catch (e) {
     participantResult.textContent = e.message;
+  } finally {
+    participantAddButton.disabled = false;
+    participantAddr.disabled = false;
+    participantAddForm.removeAttribute("aria-busy");
   }
 }
 
-async function removeParticipant(name, row) {
+async function removeParticipant(name, row, remove) {
+  if (remove.disabled) return;
   if (!confirm(fmt("participants.confirm", { name }))) return;
   const rows = Array.from(participantList.children);
   const index = Math.max(0, rows.indexOf(row));
+  remove.disabled = true;
+  row.setAttribute("aria-busy", "true");
   try {
     const status = await api("POST", "members/remove", { name });
     store.patch("status", status);
@@ -96,10 +111,13 @@ async function removeParticipant(name, row) {
     else participantAddr.focus();
   } catch (e) {
     participantResult.textContent = e.message;
+  } finally {
+    remove.disabled = false;
+    row.removeAttribute("aria-busy");
   }
 }
 
-document.getElementById("participant_add").addEventListener("submit", (event) => {
+participantAddForm.addEventListener("submit", (event) => {
   event.preventDefault();
   addParticipant(participantAddr.value);
 });

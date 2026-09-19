@@ -255,6 +255,29 @@ func TestSettingsHasNoParticipantsAndParticipantsOwnControls(t *testing.T) {
 	}
 }
 
+func TestParticipantControlsAreLocalizedAndGuardMutations(t *testing.T) {
+	files := webFiles(t)
+	htmlBody := files["web/app.html"]
+	script := files["web/static/participants.js"]
+	if strings.Contains(htmlBody, `placeholder="10.147.20.9"`) {
+		t.Error("participant address placeholder is hard-coded in the template")
+	}
+	for _, contract := range []string{
+		`participantAddr.placeholder = t("participants.add.placeholder")`,
+		`fmt("participants.remove_named", { name: person.name })`,
+		`participantAddButton.disabled = true`,
+		`participantAddButton.disabled = false`,
+		`remove.disabled = true`,
+		`remove.disabled = false`,
+		`setAttribute("aria-busy", "true")`,
+		`removeAttribute("aria-busy")`,
+	} {
+		if !strings.Contains(script, contract) {
+			t.Errorf("participants script is missing mutation/accessibility contract %q", contract)
+		}
+	}
+}
+
 // TestDashboardRefreshReflectsNodeChanges verifies that a stable dashboard
 // route and token receive fresh node counts on the next API request.
 func TestDashboardRefreshReflectsNodeChanges(t *testing.T) {
