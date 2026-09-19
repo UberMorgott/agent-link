@@ -1,7 +1,7 @@
 "use strict";
 
 const TOKEN = document.querySelector('meta[name="agentlink-token"]').content;
-const CORE_SLICES = new Set(["status", "dashboard", "participants", "update"]);
+const CORE_SLICES = new Set(["status", "dashboard", "participants", "update", "settings", "threads"]);
 const inFlight = new Map();
 
 function createStore(initial) {
@@ -22,7 +22,7 @@ function createStore(initial) {
   };
 }
 
-const store = createStore({ status: null, dashboard: null, participants: null, update: null });
+const store = createStore({ status: null, dashboard: null, participants: null, update: null, settings: null, threads: null });
 
 // STRINGS is the application-shell dictionary served by the app; see internal/app/strings.go.
 const STRINGS = JSON.parse(document.querySelector('meta[name="agentlink-strings"]').content);
@@ -136,12 +136,84 @@ function refreshSlice(name) {
   }).catch((error) => showConnectionProblem(name, error));
 }
 
-function refreshCore() {
-  return Promise.all([...CORE_SLICES].map(refreshSlice));
+function slicesForTopics(topics) {
+  if (topics.includes("all")) return [...CORE_SLICES];
+  const slices = new Set();
+  for (const topic of topics) {
+    if (CORE_SLICES.has(topic)) slices.add(topic);
+    if (topic === "peer" || topic === "members") {
+      slices.add("status"); slices.add("dashboard"); slices.add("participants");
+    }
+    if (topic === "messages" || topic === "worker") {
+      slices.add("dashboard"); slices.add("participants"); slices.add("threads");
+    }
+  }
+  return [...slices];
+}
+
+function applyChange(event) {
+  const topics = Array.isArray(event.topics) ? event.topics : [];
+  return Promise.all(slicesForTopics(topics).map(refreshSlice));
+}
+
+function parseSSERecord(record) {
+  const lines = record.split(/\r?\n/);
+  if (!lines.some((line) => line === "event: change")) return null;
+  const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+  if (!data) return null;
+  try { return JSON.parse(data); } catch (_) { return null; }
+}
+
+let reconnectDelay = 500;
+let reconnectTimer = null;
+
+function scheduleReconnect() {
+  if (reloadRequired || reconnectTimer !== null) return;
+  const delay = reconnectDelay;
+  reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connectEvents();
+  }, delay);
+}
+
+async function connectEvents() {
+  let response;
+  try {
+    response = await fetch("/ui/api/events", { headers: { "X-Agentlink-Token": TOKEN } });
+    if (response.status === 403) {
+      const error = new Error(t("error.forbidden"));
+      error.status = 403;
+      showConnectionProblem("events", error);
+      return;
+    }
+    if (!response.ok || !response.body) throw new Error(t("error.no_app"));
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error(t("error.no_app"));
+      buffer += decoder.decode(value, { stream: true });
+      let split;
+      while ((split = buffer.search(/\r?\n\r?\n/)) >= 0) {
+        const record = buffer.slice(0, split);
+        const separator = buffer.slice(split).match(/^\r?\n\r?\n/)[0];
+        buffer = buffer.slice(split + separator.length);
+        const event = parseSSERecord(record);
+        if (event) {
+          reconnectDelay = 500;
+          clearConnectionProblem("events");
+          await applyChange(event);
+        }
+      }
+    }
+  } catch (error) {
+    showConnectionProblem("events", error);
+    scheduleReconnect();
+  }
 }
 
 applyStrings();
 store.subscribe("status", renderStatus);
-function refreshStatus() { return refreshCore(); }
-refreshCore();
-setInterval(refreshCore, 3000);
+connectEvents();

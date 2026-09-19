@@ -94,11 +94,7 @@ function render(items) {
 }
 
 async function refresh() {
-  try {
-    render(await api("GET", "threads"));
-  } catch (e) {
-    sendResult.textContent = e.message;
-  }
+  return refreshSlice("threads");
 }
 
 document.getElementById("cancel_reply").addEventListener("click", () => setReply(""));
@@ -121,10 +117,12 @@ sendForm.addEventListener("submit", async (ev) => {
   }
 });
 
-api("GET", "status").then((s) => {
+function chooseRecipient(s) {
   const to = document.getElementById("to");
   if (!to.value) to.value = s.peer || "";
-}).catch(() => {});
+}
 
-refresh();
-setInterval(refresh, 3000);
+store.subscribe("threads", render);
+store.subscribe("status", chooseRecipient);
+if (store.get().threads) render(store.get().threads);
+if (store.get().status) chooseRecipient(store.get().status);

@@ -148,6 +148,7 @@ func (n *Node) register(pc *peerConn) bool {
 	}
 	n.log.Info("peer connected", "peer", pc.peer, "dialer", pc.dialer, "areas", pc.areas,
 		"proto", pc.proto, "caps", pc.caps, "app", pc.app, "pake", pc.pake)
+	n.changed("peer")
 	return true
 }
 
@@ -175,6 +176,7 @@ func (n *Node) unregister(pc *peerConn) {
 	n.mu.Unlock()
 	if gone {
 		n.touchSeen(pc.peer)
+		n.changed("peer")
 	}
 }
 
@@ -226,6 +228,8 @@ func (n *Node) readLoop(pc *peerConn) {
 		case f.Type == "ack":
 			if err := n.store.ack(pc.peer, f.ID); err != nil {
 				n.log.Warn("ack", "peer", pc.peer, "id", f.ID, "err", err)
+			} else {
+				n.changed("messages")
 			}
 		case f.Type == frameHeartbeat:
 			beats = true
@@ -255,6 +259,7 @@ func (n *Node) receive(pc *peerConn, m *Message) bool {
 	}
 	if isNew {
 		n.log.Info("message received", "from", m.From, "id", m.ID, "kind", m.Kind, "job_status", m.JobStatus)
+		n.changed("messages")
 	}
 	if n.onInbound != nil {
 		if err := n.onInbound(*m); err != nil {

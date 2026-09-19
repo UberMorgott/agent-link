@@ -48,6 +48,7 @@ func (a *App) URL(page string) string {
 //	GET  /ui/api/threads           []Thread (inbox entries paired by reply_to)
 //	GET  /ui/api/dashboard         DashboardSummary
 //	GET  /ui/api/participants      []ParticipantView
+//	GET  /ui/api/events            server-sent state-change events
 //	POST /ui/api/send              node.SendRequest -> node.Message
 //	POST /ui/api/members/add       {"addr"} -> keep and dial that address -> Status
 //	POST /ui/api/members/remove    {"name"} -> remove the member everywhere -> Status
@@ -80,6 +81,7 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("GET /ui/api/threads", a.threads)
 	api.HandleFunc("GET /ui/api/dashboard", a.dashboard)
 	api.HandleFunc("GET /ui/api/participants", a.participants)
+	api.HandleFunc("GET /ui/api/events", a.eventsStream)
 	api.HandleFunc("POST /ui/api/send", a.send)
 	api.HandleFunc("POST /ui/api/members/add", a.memberAction(func(r node.MemberRequest) error { return a.AddMember(r.Addr) }))
 	api.HandleFunc("POST /ui/api/members/remove", a.memberAction(func(r node.MemberRequest) error { return a.RemoveMember(r.Name) }))

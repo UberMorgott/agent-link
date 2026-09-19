@@ -113,6 +113,7 @@ type Node struct {
 	beaconIfaces func() []net.Interface
 
 	onInbound func(Message) error
+	onChange  func(topic string)
 }
 
 // New opens the node's data directory. log may be nil.
@@ -219,6 +220,16 @@ func (n *Node) ID() string { return n.id }
 // When fn fails the message is not ACKed and the sender resends it. It must be
 // set before Serve or Run, and fn must not block for long.
 func (n *Node) SetInboundHook(fn func(Message) error) { n.onInbound = fn }
+
+// SetChangeHook registers a nonblocking observer for local state changes. The
+// hook is invoked after persistence and outside Node locks.
+func (n *Node) SetChangeHook(fn func(topic string)) { n.onChange = fn }
+
+func (n *Node) changed(topic string) {
+	if n.onChange != nil {
+		n.onChange(topic)
+	}
+}
 
 // Serve runs the peer listener, the peer dialers and the control API until ctx
 // is cancelled. apiLn must be bound to a loopback address.
@@ -418,6 +429,7 @@ func (n *Node) setProblem(err error) {
 	n.mu.Lock()
 	n.problem = err
 	n.mu.Unlock()
+	n.changed("peer")
 }
 
 // Send queues a message to a node name or to "area:NAME". Area messages fan
@@ -498,6 +510,7 @@ func (n *Node) enqueue(peer string, m Message) error {
 	if pc != nil {
 		pc.notify()
 	}
+	n.changed("messages")
 	return nil
 }
 

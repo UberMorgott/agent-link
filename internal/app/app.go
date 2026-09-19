@@ -67,6 +67,7 @@ type App struct {
 	Latest                   func(ctx context.Context, current string) (Release, bool, error)
 	UpdateFirst, UpdateEvery time.Duration
 	upd                      updater
+	events                   *eventBroadcaster
 
 	picking atomic.Bool    // a Windows dialog is open
 	saves   sync.WaitGroup // background saves of a rediscovered agent path
@@ -125,6 +126,7 @@ func New(path string, log *slog.Logger) (*App, error) {
 		Ifaces: settings.SystemIfaces, PickFolder: pickFolder, PickFile: pickFile,
 		Agents: settings.SystemFinder, zeroTier: true, Discovery: true,
 		Version: selfupdate.Version, Latest: latestRelease,
+		events: newEventBroadcaster(),
 	}, nil
 }
 
@@ -165,11 +167,14 @@ func (a *App) Configured() bool {
 // The node keeps running after ctx is cancelled, until Stop or the next Apply.
 func (a *App) Start(ctx context.Context) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if !a.configured {
+		a.mu.Unlock()
 		return nil
 	}
-	return a.startLocked(ctx)
+	err := a.startLocked(ctx)
+	a.mu.Unlock()
+	a.events.publish("status", "dashboard", "participants")
+	return err
 }
 
 // Stop stops the node and the worker and waits for them.
@@ -178,6 +183,7 @@ func (a *App) Stop() {
 	a.stopLocked()
 	a.mu.Unlock()
 	a.saves.Wait()
+	a.events.publish("status", "dashboard", "participants")
 }
 
 // Status returns the current state.
@@ -252,6 +258,16 @@ var ErrNotStarted = errors.New("settings saved, but the node did not start")
 // moved its versioned folder), the agent is looked for again (Finder.Discover);
 // a hit off PATH is saved as AgentPath and returned.
 func (a *App) Apply(ctx context.Context, s settings.Settings) (found settings.Found, err error) {
+	found, err = a.apply(ctx, s)
+	// The settings are durable even when the restarted node reports a start
+	// error, so every browser must refresh its saved values and status.
+	if err == nil || errors.Is(err, ErrNotStarted) {
+		a.events.publish("settings", "status", "dashboard", "participants", "update")
+	}
+	return found, err
+}
+
+func (a *App) apply(ctx context.Context, s settings.Settings) (found settings.Found, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if s.Peers == nil {
@@ -340,17 +356,20 @@ func (a *App) agentCommand(cmd worker.Command, handler string, fromSetting bool)
 // changed meanwhile. The running node keeps going: its runner already uses p.
 func (a *App) saveAgentPath(handler, old, p string) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if !a.configured || a.s.Handler != handler || a.s.AgentPath != old || len(a.s.HandlerCommand) > 0 {
+		a.mu.Unlock()
 		return
 	}
 	s := a.s
 	s.AgentPath = p
 	if err := settings.Save(a.path, s); err != nil {
 		a.log.Warn("save rediscovered agent path", "err", err)
+		a.mu.Unlock()
 		return
 	}
 	a.s = s
+	a.mu.Unlock()
+	a.events.publish("settings")
 }
 
 func (a *App) startLocked(ctx context.Context) error {
@@ -382,10 +401,12 @@ func (a *App) startNode(ctx context.Context) error {
 		return err
 	}
 	n.SetAppVersion(a.Version)
+	n.SetChangeHook(func(topic string) { a.events.publish(topic) })
 	// The job store always opens: with no handler, jobs left from an earlier
 	// handler fail with a reply, and new requests stay manual (no hook).
 	opt := a.Worker
 	opt.MaxJobs = a.s.MaxJobs
+	opt.OnChange = func() { a.events.publish("worker") }
 	cmd, hasHandler := a.s.Command()
 	if hasHandler {
 		opt.Agent = a.agentCommand(cmd, a.s.Handler, a.s.AgentPath != "" && len(a.s.HandlerCommand) == 0)

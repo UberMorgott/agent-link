@@ -35,6 +35,14 @@ func (a *App) autostartLocked() bool {
 // SetAutostartNow switches starting at sign-in on or off right away (the tray
 // checkbox) and saves the choice, without restarting the node.
 func (a *App) SetAutostartNow(on bool) error {
+	err := a.setAutostartNow(on)
+	if err == nil {
+		a.events.publish("settings")
+	}
+	return err
+}
+
+func (a *App) setAutostartNow(on bool) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.SetAutostart == nil {

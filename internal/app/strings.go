@@ -166,7 +166,6 @@ var uiStrings = map[string]string{
 	"update.none":            "На GitHub пока нет выпуска для этой системы.",
 	"update.applying":        "Скачиваю и проверяю версию {version}…",
 	"update.restarting":      "Версия {version} установлена — agentlink перезапускается, агент продолжает работу.",
-	"update.reload":          "agentlink перезапускается — обновите страницу (F5) через несколько секунд.",
 	"update.disabled":        "Эта сборка без номера версии — обновление отключено.",
 	"update.error.check":     "Не удалось проверить обновления — проверьте интернет; подробности в файле agentlink.log.",
 	"update.error.apply":     "Не удалось установить обновление, осталась текущая версия — подробности в файле agentlink.log.",

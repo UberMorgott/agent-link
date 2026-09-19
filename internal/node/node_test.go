@@ -320,6 +320,31 @@ func TestDedupeOnResend(t *testing.T) {
 	}
 }
 
+func TestChangeHookRunsAfterDurableMessageOutsideLock(t *testing.T) {
+	lnA, lnB := listen(t), listen(t)
+	n := newTestNode(t, "a", testSecret, nil, t.TempDir(), lnA, map[string]net.Listener{"b": lnB})
+	changed := make(chan string, 1)
+	n.SetChangeHook(func(topic string) {
+		_ = n.Peers() // deadlocks if the callback runs under Node.mu
+		changed <- topic
+	})
+	if _, err := n.Send("b", "stored", ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case topic := <-changed:
+		if topic != "messages" {
+			t.Fatalf("topic = %q", topic)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("message mutation did not publish")
+	}
+	entries, err := n.Recent(0)
+	if err != nil || len(entries) != 1 || entries[0].Body != "stored" {
+		t.Fatalf("callback ran without durable message: entries=%+v err=%v", entries, err)
+	}
+}
+
 func TestAPIRejectsForeignOrigin(t *testing.T) {
 	a, _ := pair(t, testSecret, testSecret)
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+a.apiLn.Addr().String()+"/send",

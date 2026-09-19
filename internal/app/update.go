@@ -77,6 +77,7 @@ func (a *App) SetExecutable(path string) {
 	a.upd.mu.Lock()
 	a.upd.exeStat = st
 	a.upd.mu.Unlock()
+	a.events.publish("update")
 }
 
 func (a *App) updatesEnabled() bool {
@@ -109,11 +110,13 @@ func (a *App) updateStatusLocked(auto bool) UpdateStatus {
 // begin marks an update step as running; false when another one runs.
 func (a *App) begin(state, text string) bool {
 	a.upd.mu.Lock()
-	defer a.upd.mu.Unlock()
 	if a.upd.state != "" {
+		a.upd.mu.Unlock()
 		return false
 	}
 	a.upd.state, a.upd.text, a.upd.failed, a.upd.retryAt = state, text, false, time.Time{}
+	a.upd.mu.Unlock()
+	a.events.publish("update")
 	return true
 }
 
@@ -151,6 +154,7 @@ func (a *App) CheckUpdate(ctx context.Context) UpdateStatus {
 		a.upd.text = msg("update.latest", nil)
 	}
 	a.upd.mu.Unlock()
+	a.events.publish("update")
 	return a.UpdateStatus()
 }
 
@@ -191,10 +195,12 @@ func (a *App) InstallUpdate(ctx context.Context) UpdateStatus {
 		a.log.Error("update install", "err", err)
 		a.failLocked("update.error.apply", err)
 		a.upd.mu.Unlock()
+		a.events.publish("update")
 		return a.UpdateStatus()
 	}
 	a.upd.state, a.upd.text = "restart", msg("update.restarting", vars)
 	a.upd.mu.Unlock()
+	a.events.publish("update")
 	go a.restart()
 	return a.UpdateStatus()
 }
@@ -208,6 +214,7 @@ func (a *App) restart() {
 		a.upd.rel = nil
 		a.upd.state, a.upd.text, a.upd.failed = "", msg("update.error.restart", nil), true
 		a.upd.mu.Unlock()
+		a.events.publish("update")
 		return
 	}
 	a.log.Info("update: relaunched, quitting")
@@ -230,6 +237,14 @@ func (a *App) exeReplaced() bool {
 // SetAutoUpdate turns automatic updates on or off and saves it right away,
 // without restarting the node.
 func (a *App) SetAutoUpdate(on bool) error {
+	err := a.persistAutoUpdate(on)
+	if err == nil {
+		a.events.publish("settings", "update")
+	}
+	return err
+}
+
+func (a *App) persistAutoUpdate(on bool) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s := a.s

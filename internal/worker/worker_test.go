@@ -558,6 +558,28 @@ func TestDuplicateRequestRunsOnce(t *testing.T) {
 	}
 }
 
+func TestChangeHookRunsAfterDurableJobOutsideLock(t *testing.T) {
+	rec := newRecorder()
+	var w *Worker
+	changed := make(chan struct{}, 1)
+	options := Options{OnChange: func() {
+		if job, ok := w.Job(id1); ok && job.Status == node.JobQueued {
+			changed <- struct{}{}
+		}
+	}}
+	var err error
+	w, err = New(nil, rec.send, t.TempDir(), t.TempDir(), options, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accept(t, w, msg(id1, "persist me"))
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("durable queued job did not publish outside the worker lock")
+	}
+}
+
 // Accepted but never started (a crash right after the ACK): the next start
 // runs the jobs in acceptance order.
 func TestCrashBeforeRunResumes(t *testing.T) {

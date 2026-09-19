@@ -12,8 +12,7 @@ const findAgent = document.getElementById("find_agent");
 // Letters and digits without 0/O and 1/I: 32 symbols, so a byte & 31 is uniform.
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-async function load() {
-  const s = await api("GET", "settings");
+function showSettings(s) {
   for (const key of ["node", "code", "work_dir", "listen", "api"]) {
     form.elements[key].value = s[key] || "";
   }
@@ -119,16 +118,13 @@ pickAgent.addEventListener("click", async () => {
 
 // showMyAddr tells this side's address, the one the others type in, and
 // lists the members of the network.
-async function showMyAddr() {
+function showMyAddr(st) {
   const el = document.getElementById("my_addr");
-  try {
-    const st = await api("GET", "status");
-    showMembers(st);
-    if (!st.configured) { el.textContent = ""; return; }
-    const addr = (st.listen || "").replace(/:7420$/, "");
-    el.textContent = addr ? fmt("settings.my_addr", { addr }) : "";
-    if (!st.zerotier) el.textContent += " " + t("settings.my_addr.none");
-  } catch (_) { el.textContent = ""; }
+  showMembers(st);
+  if (!st.configured) { el.textContent = ""; return; }
+  const addr = (st.listen || "").replace(/:7420$/, "");
+  el.textContent = addr ? fmt("settings.my_addr", { addr }) : "";
+  if (!st.zerotier) el.textContent += " " + t("settings.my_addr.none");
 }
 
 // showMembers renders the member table: this node first, then the others.
@@ -240,9 +236,7 @@ form.addEventListener("submit", async (ev) => {
     const r = await api("POST", "settings", body);
     const text = r.error ? r.error : t("settings.saved");
     result.textContent = r.found ? text + " " + r.found : text;
-    await load();
-    refreshStatus();
-    showMyAddr();
+    await Promise.all([refreshSlice("settings"), refreshSlice("status")]);
   } catch (e) {
     result.textContent = e.message;
   }
@@ -254,7 +248,6 @@ const updText = document.getElementById("update_text");
 const updCheck = document.getElementById("update_check");
 const updApply = document.getElementById("update_apply");
 const updAuto = document.getElementById("update_auto");
-let restarting = false;
 let latest = "";
 
 function showUpdate(u) {
@@ -268,12 +261,6 @@ function showUpdate(u) {
   if (u.available) updApply.textContent = fmt("update.apply", { version: u.latest });
   updAuto.checked = !!u.auto;
   updAuto.disabled = !u.enabled;
-  if (u.restarting) waitRestart();
-}
-
-async function refreshUpdate() {
-  if (restarting) return;
-  try { showUpdate(await api("GET", "update")); } catch (_) { /* the status line tells */ }
 }
 
 async function updateAction(path, body, busyText) {
@@ -287,29 +274,13 @@ async function updateAction(path, body, busyText) {
   }
 }
 
-// waitRestart waits for the updated app: it answers with a new token, so the
-// old page gets «forbidden»; then the page reloads.
-async function waitRestart() {
-  if (restarting) return;
-  restarting = true;
-  const deadline = Date.now() + 60000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 1000));
-    try {
-      await api("GET", "update");
-    } catch (e) {
-      if (e.message === t("error.forbidden")) { location.reload(); return; }
-    }
-  }
-  updText.textContent = t("update.reload");
-}
-
 updCheck.addEventListener("click", () => updateAction("update/check", undefined, t("update.checking")));
 updApply.addEventListener("click", () => updateAction("update/apply", undefined, fmt("update.applying", { version: latest })));
 updAuto.addEventListener("change", () => updateAction("update/auto", { auto: updAuto.checked }));
 
-load().catch((e) => { result.textContent = e.message; });
-showMyAddr();
-refreshUpdate();
-setInterval(showMyAddr, 3000);
-setInterval(refreshUpdate, 5000);
+store.subscribe("settings", showSettings);
+store.subscribe("status", showMyAddr);
+store.subscribe("update", showUpdate);
+if (store.get().settings) showSettings(store.get().settings);
+if (store.get().status) showMyAddr(store.get().status);
+if (store.get().update) showUpdate(store.get().update);

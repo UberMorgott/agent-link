@@ -234,9 +234,13 @@ func TestReactiveStoreKeepsWarningUntilEveryCoreEndpointRecovers(t *testing.T) {
 const fs = require("fs");
 const vm = require("vm");
 const deferred = new Map();
+let streamResolve;
+const encoder = new TextEncoder();
+const reader = { read: () => new Promise((resolve) => { streamResolve = resolve; }) };
 const toast = { textContent: "", replaceChildren(...nodes) { this.textContent = nodes.map((node) => node.textContent || node).join(""); } };
 const status = { textContent: "", className: "" };
 function deferredFetch(url) {
+  if (url === "/ui/api/events") return Promise.resolve({ ok: true, status: 200, body: { getReader: () => reader } });
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
   deferred.set(url, { promise, resolve });
@@ -255,10 +259,13 @@ const document = {
   createTextNode(text) { return { textContent: text }; },
 };
 const source = fs.readFileSync(process.argv[1], "utf8");
-vm.runInNewContext(source, { document, fetch: deferredFetch, setInterval() {}, location: { reload() {} }, Map, Set, Object, Promise, Error, JSON }, { filename: process.argv[1] });
+vm.runInNewContext(source, { document, fetch: deferredFetch, setTimeout() {}, TextDecoder, TextEncoder, location: { reload() {} }, Map, Set, Object, Promise, Error, JSON }, { filename: process.argv[1] });
 const response = (ok, status, body) => ({ ok, status, text: async () => body });
 const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
 (async () => {
+  await flush();
+  streamResolve({ value: encoder.encode('event: change\ndata: {"revision":0,"topics":["all"]}\n\n'), done: false });
+  await flush();
   deferred.get("/ui/api/dashboard").resolve(response(false, 500, '{"error":"dashboard down"}'));
   await flush();
   if (toast.textContent !== "dashboard down") throw new Error("failure did not show in the shared banner: " + toast.textContent);
@@ -270,6 +277,109 @@ const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve();
 	//nolint:gosec // G204: the fixed Node executable runs this test's embedded harness against the repository script.
 	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path).CombinedOutput(); err != nil {
 		t.Fatalf("reactive store regression: %v\n%s", err, output)
+	}
+}
+
+// TestReactivePushRefreshesOnlyEventTopics executes the browser state layer.
+// It catches timer-driven API reads and broad refreshes after a narrow event.
+func TestReactivePushRefreshesOnlyEventTopics(t *testing.T) {
+	path, err := filepath.Abs("web/static/common.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const program = `
+const fs = require("fs");
+const vm = require("vm");
+const calls = [];
+let streamResolve;
+const encoder = new TextEncoder();
+const reader = { read: () => new Promise((resolve) => { streamResolve = resolve; }) };
+const document = {
+  title: "",
+  querySelector(selector) {
+    if (selector === 'meta[name="agentlink-token"]') return { content: "test-token" };
+    if (selector === 'meta[name="agentlink-strings"]') return { content: "{}" };
+    return null;
+  },
+  querySelectorAll() { return []; },
+  getElementById() { return { textContent: "", className: "", replaceChildren() {} }; },
+  createElement() { return { textContent: "", addEventListener() {} }; },
+  createTextNode(text) { return { textContent: text }; },
+};
+async function fetch(url, options) {
+  calls.push({ url, options });
+  if (url === "/ui/api/events") return { ok: true, status: 200, body: { getReader: () => reader } };
+  return { ok: true, status: 200, text: async () => "{}" };
+}
+
+const source = fs.readFileSync(process.argv[1], "utf8");
+vm.runInNewContext(source, {
+  document, fetch, TextDecoder, TextEncoder, AbortController, Map, Set, Object, Promise, Error, JSON,
+  location: { reload() {} }, setTimeout() { throw new Error("scheduled data read"); }, clearTimeout() {},
+}, { filename: process.argv[1] });
+const flush = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
+(async () => {
+  await flush();
+  if (calls[0].url !== "/ui/api/events") throw new Error("event stream was not opened first");
+  if (calls[0].options.headers["X-Agentlink-Token"] !== "test-token") throw new Error("event stream token missing from header");
+  streamResolve({ value: encoder.encode('event: change\ndata: {"revision":0,"topics":["all"]}\n\n'), done: false });
+  await flush();
+  const initial = calls.slice(1).map((call) => call.url).sort();
+  const wanted = ["dashboard", "participants", "settings", "status", "threads", "update"].map((name) => "/ui/api/" + name).sort();
+  if (JSON.stringify(initial) !== JSON.stringify(wanted)) throw new Error("initial slices: " + JSON.stringify(initial));
+  calls.length = 0;
+  streamResolve({ value: encoder.encode('event: change\ndata: {"revision":1,"topics":["threads"]}\n\n'), done: false });
+  await flush();
+  if (calls.length !== 1 || calls[0].url !== "/ui/api/threads") throw new Error("narrow event refreshed " + JSON.stringify(calls));
+})().catch((error) => { console.error(error.stack); process.exitCode = 1; });
+`
+	//nolint:gosec // G204: fixed Node executable runs a repository script in a deterministic harness.
+	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path).CombinedOutput(); err != nil {
+		t.Fatalf("push reactivity regression: %v\n%s", err, output)
+	}
+}
+
+func TestReactivePushReconnectsWithBoundedBackoff(t *testing.T) {
+	path, err := filepath.Abs("web/static/common.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const program = `
+const fs = require("fs");
+const vm = require("vm");
+const calls = [];
+const timers = [];
+const document = {
+  title: "",
+  querySelector(selector) {
+    if (selector === 'meta[name="agentlink-token"]') return { content: "header-secret" };
+    if (selector === 'meta[name="agentlink-strings"]') return { content: "{}" };
+    return null;
+  },
+  querySelectorAll() { return []; },
+  getElementById() { return { textContent: "", className: "", replaceChildren() {} }; },
+  createElement() { return { textContent: "", addEventListener() {} }; },
+  createTextNode(text) { return { textContent: text }; },
+};
+async function fetch(url, options) { calls.push({ url, options }); throw new Error("offline"); }
+function setTimeout(fn, delay) { timers.push({ fn, delay }); return timers.length; }
+const source = fs.readFileSync(process.argv[1], "utf8");
+vm.runInNewContext(source, { document, fetch, setTimeout, TextDecoder, Map, Set, Object, Promise, Error, JSON, location: { reload() {} } }, { filename: process.argv[1] });
+const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+(async () => {
+  await flush();
+  if (timers.length !== 1 || timers[0].delay !== 500) throw new Error("first reconnect: " + JSON.stringify(timers));
+  timers.shift().fn();
+  await flush();
+  if (timers.length !== 1 || timers[0].delay !== 1000) throw new Error("second reconnect: " + JSON.stringify(timers));
+  if (calls.length !== 2 || calls.some((call) => call.url !== "/ui/api/events" || call.options.headers["X-Agentlink-Token"] !== "header-secret")) {
+    throw new Error("reconnect requests: " + JSON.stringify(calls));
+  }
+})().catch((error) => { console.error(error.stack); process.exitCode = 1; });
+`
+	//nolint:gosec // G204: fixed Node executable runs a repository script in a deterministic harness.
+	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path).CombinedOutput(); err != nil {
+		t.Fatalf("push reconnect regression: %v\n%s", err, output)
 	}
 }
 

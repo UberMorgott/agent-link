@@ -86,6 +86,8 @@ type Options struct {
 	MaxJobs         int
 	ActivityEvery   time.Duration
 	ActivityRefresh time.Duration
+	// OnChange observes durable job state changes. It must return promptly.
+	OnChange func()
 }
 
 func (o Options) withDefaults() Options {
@@ -203,6 +205,7 @@ func (w *Worker) Accept(m node.Message) error {
 	w.seq = j.Seq
 	w.jobs[m.ID] = j
 	w.mu.Unlock()
+	w.changed()
 	w.log.Info("job queued", "id", m.ID, "from", m.From)
 	w.status(m, node.JobQueued, "queued", "")
 	w.wake()
@@ -215,6 +218,12 @@ func (w *Worker) wake() {
 	select {
 	case w.kick <- struct{}{}:
 	default:
+	}
+}
+
+func (w *Worker) changed() {
+	if w.opt.OnChange != nil {
+		w.opt.OnChange()
 	}
 }
 
@@ -287,7 +296,6 @@ func (w *Worker) hasHandler() bool { return w.run != nil || w.opt.Agent != nil }
 // moves the oldest queued job to running and returns it; nil when neither.
 func (w *Worker) claim() (j *Job, reattach bool, err error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	for id := range w.reattach {
 		if c := w.jobs[id]; j == nil || c.Seq < j.Seq {
 			j = c
@@ -295,17 +303,22 @@ func (w *Worker) claim() (j *Job, reattach bool, err error) {
 	}
 	if j != nil {
 		delete(w.reattach, j.Request.ID)
+		w.mu.Unlock()
 		return j, true, nil
 	}
 	j = w.nextLocked()
 	if j == nil {
+		w.mu.Unlock()
 		return nil, false, nil
 	}
 	j.Status, j.Attempts, j.StartedAt, j.Proc = node.JobRunning, j.Attempts+1, time.Now().UTC(), nil
 	if err := w.save(j); err != nil {
 		j.Status, j.Attempts = node.JobQueued, j.Attempts-1
+		w.mu.Unlock()
 		return nil, false, err
 	}
+	w.mu.Unlock()
+	w.changed()
 	return j, false, nil
 }
 
@@ -338,10 +351,15 @@ func (w *Worker) recover(ctx context.Context) {
 			w.log.Info("job interrupted, requeued", "id", j.Request.ID, "attempts", j.Attempts)
 			w.mu.Lock()
 			j.Status = node.JobQueued
-			if err := w.save(j); err != nil {
+			err := w.save(j)
+			stored := err == nil
+			if err != nil {
 				w.log.Error("save job", "id", j.Request.ID, "err", err)
 			}
 			w.mu.Unlock()
+			if stored {
+				w.changed()
+			}
 		case j.terminal() && !j.Replied:
 			w.reply(j)
 		}
@@ -495,6 +513,9 @@ func (w *Worker) finish(j *Job, status, result, errText string) {
 	j.Status, j.Result, j.Error, j.FinishedAt = status, result, errText, time.Now().UTC()
 	err := w.save(j)
 	w.mu.Unlock()
+	if err == nil {
+		w.changed()
+	}
 	w.log.Info("handler finished", "id", j.Request.ID, "status", status, "error", errText)
 	if err != nil {
 		w.log.Error("save job", "id", j.Request.ID, "err", err)
@@ -525,8 +546,11 @@ func (w *Worker) reply(j *Job) {
 	j.Replied = true
 	if err := w.save(j); err != nil {
 		w.log.Error("save job", "id", m.ID, "err", err)
+		w.mu.Unlock()
+		return
 	}
 	w.mu.Unlock()
+	w.changed()
 }
 
 func (w *Worker) status(m node.Message, status, label, activity string) {

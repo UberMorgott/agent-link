@@ -489,7 +489,7 @@ func (n *Node) snapshotLocked() []Member {
 
 // membersChanged stores the table and sends it to every peer that exchanges it.
 func (n *Node) membersChanged() {
-	n.persistMembers()
+	stored := n.persistMembers()
 	n.mu.Lock()
 	snap := n.snapshotLocked()
 	var to []*peerConn
@@ -506,6 +506,9 @@ func (n *Node) membersChanged() {
 			}
 		})
 	}
+	if stored {
+		n.changed("members")
+	}
 }
 
 // sendMembers sends the table to one peer, if it exchanges it.
@@ -518,12 +521,14 @@ func (n *Node) sendMembers(pc *peerConn) {
 	}
 }
 
-func (n *Node) persistMembers() {
+func (n *Node) persistMembers() bool {
 	n.saveMu.Lock()
 	defer n.saveMu.Unlock()
 	if err := n.store.saveMembers(n.snapshot()); err != nil {
 		n.log.Warn("save members", "err", err)
+		return false
 	}
+	return true
 }
 
 // meshLoop starts a dial loop for every live member with an address and for

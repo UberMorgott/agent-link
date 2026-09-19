@@ -24,6 +24,14 @@ var (
 // it now: the member at that address joins the table and every other member
 // learns and dials it. It also brings back a member someone removed.
 func (a *App) AddMember(addr string) error {
+	err := a.addMember(addr)
+	if err == nil {
+		a.events.publish("settings", "members")
+	}
+	return err
+}
+
+func (a *App) addMember(addr string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if !a.configured {
@@ -47,6 +55,14 @@ func (a *App) AddMember(addr string) error {
 // RemoveMember removes name from the whole network (a tombstone every member
 // applies) and drops its addresses from the settings.
 func (a *App) RemoveMember(name string) error {
+	err := a.removeMember(name)
+	if err == nil {
+		a.events.publish("settings", "members")
+	}
+	return err
+}
+
+func (a *App) removeMember(name string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.n == nil {

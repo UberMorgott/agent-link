@@ -150,6 +150,8 @@ func (w *Worker) launch(ctx context.Context, j *Job, c Command, session string, 
 	w.mu.Unlock()
 	if err != nil {
 		w.log.Error("save job", "id", id, "err", err)
+	} else {
+		w.changed()
 	}
 	w.log.Info("agent launched", "id", id, "pid", rec.PID, "attempt", attempt, "resume", resume)
 	return p, nil
@@ -201,6 +203,7 @@ func (w *Worker) handleDetached(ctx context.Context, j *Job, reattach bool) {
 		w.log.Error("save job", "id", id, "err", err)
 		return
 	}
+	w.changed()
 	p, err := w.launch(ctx, j, c, s.session, resume)
 	if err != nil {
 		w.finish(j, node.JobFailed, "", fmt.Sprintf("handler failed: %v", err))
