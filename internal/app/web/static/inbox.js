@@ -282,21 +282,41 @@ function persistNotificationIDs(node, ids) {
   notificationIDs = bounded;
 }
 
+// A toast only announces news: it leaves on its own after
+// MESSAGE_TOAST_TIMEOUT, and the close button drops it right away. Failures
+// keep their own place — the connection banner in common.js stays until the
+// problem is gone.
+const MESSAGE_TOAST_TIMEOUT = 6000;
+
 function showMessageToast(thread) {
   const region = document.getElementById("message-toast-region");
   if (!region) return;
   while (region.childElementCount >= 3 && region.firstElementChild) region.firstElementChild.remove();
-  const toast = document.createElement("button");
-  toast.type = "button";
+  const toast = document.createElement("div");
   toast.className = "message-toast";
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "message-toast-main";
   const sender = document.createElement("strong");
   sender.textContent = thread.from;
   const preview = document.createElement("span");
   preview.className = "message-toast-preview";
   const chars = Array.from(String(thread.body || "").replace(/\s+/g, " ").trim());
   preview.textContent = chars.slice(0, 120).join("") + (chars.length > 120 ? "…" : "");
-  toast.append(sender, preview);
-  toast.addEventListener("click", () => navigate("inbox", { peer: thread.peer || thread.from, message: thread.focusID || thread.id }));
+  open.append(sender, preview);
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "message-toast-close";
+  close.textContent = "×";
+  close.setAttribute("aria-label", t("inbox.toast.close"));
+  const timer = setTimeout(() => toast.remove(), MESSAGE_TOAST_TIMEOUT);
+  const dismiss = () => { clearTimeout(timer); toast.remove(); };
+  close.addEventListener("click", dismiss);
+  open.addEventListener("click", () => {
+    dismiss();
+    navigate("inbox", { peer: thread.peer || thread.from, message: thread.focusID || thread.id });
+  });
+  toast.append(open, close);
   region.append(toast);
 }
 

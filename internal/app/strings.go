@@ -233,6 +233,7 @@ var uiStrings = map[string]string{
 	"inbox.peer_online":        "на связи · сообщений: {total}",
 	"inbox.peer_offline":       "не в сети · сообщений: {total}",
 	"inbox.unread":             "Новое",
+	"inbox.toast.close":        "Закрыть уведомление",
 
 	// Inbox page: one request with its answer.
 	"inbox.dir.out":   "Исходящее",

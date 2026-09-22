@@ -948,7 +948,7 @@ function navigate(route, query) { navigation = { route, query }; }
 const localStorage = { values: new Map(), getItem(k) { return this.values.get(k) || null; }, setItem(k, v) { this.values.set(k, v); } };
 const source = fs.readFileSync(process.argv[1], "utf8");
 const test = fs.readFileSync(process.argv[2], "utf8");
-require("vm").runInNewContext(source + test, { document, store, api, t, fmt, navigate, localStorage, calls, sentBodies, control, full, elements, console, process, URLSearchParams, Date, Map, Set, Object, Array, Promise, JSON, String }, { filename: process.argv[1] });
+require("vm").runInNewContext(source + test, { document, store, api, t, fmt, navigate, localStorage, calls, sentBodies, control, full, elements, setTimeout, clearTimeout, console, process, URLSearchParams, Date, Map, Set, Object, Array, Promise, JSON, String }, { filename: process.argv[1] });
 `
 	const testSource = `
 (async () => {
@@ -1007,21 +1007,25 @@ func TestInboxNotificationWatermark(t *testing.T) {
 	}
 	const program = `
 const fs = require("fs");
-class Element { constructor(id="") { this.id=id; this.value=""; this.hidden=false; this.disabled=false; this.textContent=""; this.children=[]; this.listeners={}; this.dataset={}; } append(...x){for(const node of x){node.parentElement=this;this.children.push(node)}this.textContent=this.children.map((n)=>n.textContent||"").join("")} replaceChildren(...x){this.children=[];this.append(...x)} addEventListener(n,f){this.listeners[n]=f} setAttribute(){} focus(){} get childElementCount(){return this.children.length} get firstElementChild(){return this.children[0]||null} remove(){this.removed=true;if(this.parentElement){this.parentElement.children=this.parentElement.children.filter((node)=>node!==this);this.parentElement.textContent=this.parentElement.children.map((n)=>n.textContent||"").join("")}} }
+class Element { constructor(id="",tagName="DIV") { this.id=id; this.tagName=tagName.toUpperCase(); this.value=""; this.hidden=false; this.disabled=false; this.textContent=""; this.children=[]; this.listeners={}; this.dataset={}; } append(...x){for(const node of x){node.parentElement=this;this.children.push(node)}this.textContent=this.children.map((n)=>n.textContent||"").join("")} replaceChildren(...x){this.children=[];this.append(...x)} addEventListener(n,f){this.listeners[n]=f} setAttribute(n,v){this[n]=v} focus(){} get childElementCount(){return this.children.length} get firstElementChild(){return this.children[0]||null} remove(){this.removed=true;if(this.parentElement){this.parentElement.children=this.parentElement.children.filter((node)=>node!==this);this.parentElement.textContent=this.parentElement.children.map((n)=>n.textContent||"").join("")}} }
 const ids=["messages","conversation_list","send","inbox_result","reply_to","replying","replying_text","to","body","cancel_reply","send_button","message-toast-region"];
 const elements=Object.fromEntries(ids.map((id)=>[id,new Element(id)]));
-const document={activeElement:null,getElementById:(id)=>elements[id],createElement:()=>new Element(),createTextNode:(text)=>({textContent:text})};
+const document={activeElement:null,getElementById:(id)=>elements[id],createElement:(tagName)=>new Element("",tagName),createTextNode:(text)=>({textContent:text})};
 const state={selectedPeer:"",selectedMessage:"",drafts:{},threads:null,threadFeed:null,status:{node:"local"},participants:[]};
 const subscriptions=new Map(); const store={get:()=>state,patch(n,v){state[n]=v;for(const f of subscriptions.get(n)||[])f(v,state)},subscribe(n,f){if(!subscriptions.has(n))subscriptions.set(n,new Set());subscriptions.get(n).add(f)}};
 const t=(key)=>key, fmt=(key,vars)=>key+JSON.stringify(vars); async function api(){return []}
 const navState={}; function navigate(route,query){navState.value={route,query}}
 const localStorage={values:new Map(),getItem(k){return this.values.get(k)||null},setItem(k,v){this.values.set(k,v)}};
+const timers=new Map(); let timerSeq=0;
+function setTimeout(fn,ms){timerSeq++;timers.set(timerSeq,{fn,ms});return timerSeq}
+function clearTimeout(id){timers.delete(id)}
+function runTimers(){for(const[id,timer]of[...timers]){timers.delete(id);timer.fn()}}
 const initial=[{id:"old",direction:"in",from:"bob",to:"local",body:"old",created_at:"2026-01-01T00:00:00Z",status:"pending"}];
 const long="😀".repeat(121);
 const next=[...initial,{id:"new",direction:"in",from:"карл & sons",to:"local",body:long,created_at:"2026-01-02T00:00:00Z",status:"pending"},{id:"out",direction:"out",from:"local",to:"bob",body:"ignore",created_at:"2026-01-03T00:00:00Z",status:"sent"}];
 const source=fs.readFileSync(process.argv[1],"utf8");
 const test=fs.readFileSync(process.argv[2],"utf8");
-require("vm").runInNewContext(source+test,{document,store,api,t,fmt,navigate,localStorage,initial,next,elements,navState,console,process,URLSearchParams,Date,Map,Set,Object,Array,Promise,JSON,String},{filename:process.argv[1]});
+require("vm").runInNewContext(source+test,{document,store,api,t,fmt,navigate,localStorage,initial,next,elements,navState,setTimeout,clearTimeout,timers,runTimers,console,process,URLSearchParams,Date,Map,Set,Object,Array,Promise,JSON,String},{filename:process.argv[1]});
 `
 	const testSource = `
 processIncomingThreads(initial);
@@ -1030,22 +1034,32 @@ processIncomingThreads(next);
 if(elements["message-toast-region"].children.length!==1) throw new Error("new inbound toast count");
 const toast=elements["message-toast-region"].children[0];
 if(!toast.textContent.includes("карл & sons")) throw new Error("sender missing: "+toast.textContent);
-const preview=toast.children.find((child)=>child.className==="message-toast-preview").textContent;
+const main=toast.children.find((child)=>child.className==="message-toast-main");
+const preview=main.children.find((child)=>child.className==="message-toast-preview").textContent;
 if(Array.from(preview.replace(/…$/,"" )).length!==120 || !preview.endsWith("…")) throw new Error("preview not code-point bounded: "+Array.from(preview).length);
-toast.listeners.click();
+const close=toast.children.find((child)=>child.className==="message-toast-close");
+if(!close || close.tagName!=="BUTTON" || close["aria-label"]!=="inbox.toast.close") throw new Error("toast has no labelled close button");
+if(timers.size!==1) throw new Error("toast did not arm an auto-dismiss timer: "+timers.size);
+main.listeners.click();
 if(navState.value.route!=="inbox" || navState.value.query.peer!=="карл & sons" || navState.value.query.message!=="new") throw new Error("toast navigation: "+JSON.stringify(navState.value));
+if(elements["message-toast-region"].children.length!==0 || timers.size!==0) throw new Error("opened toast stayed on screen");
 const saved=JSON.parse(localStorage.values.get("agentlink.notifications.v1:local"));
 if(!saved.includes("old") || !saved.includes("new") || saved.includes("out")) throw new Error("watermark: "+JSON.stringify(saved));
 const answered=next.map((item)=>item.id==="out"?{...item,answered:true,answer:"reply from bob",answer_at:"2026-01-04T00:00:00Z"}:item);
 processIncomingThreads(answered);
-if(elements["message-toast-region"].children.length!==2) throw new Error("new reply did not produce a toast");
-const replyToast=elements["message-toast-region"].children[1];
+if(elements["message-toast-region"].children.length!==1) throw new Error("new reply did not produce a toast");
+const replyToast=elements["message-toast-region"].children[0];
 if(!replyToast.textContent.includes("bob") || !replyToast.textContent.includes("reply from bob")) throw new Error("reply toast content: "+replyToast.textContent);
-replyToast.listeners.click();
+replyToast.children.find((child)=>child.className==="message-toast-main").listeners.click();
 if(navState.value.query.peer!=="bob" || navState.value.query.message!=="out") throw new Error("reply toast target: "+JSON.stringify(navState.value));
 const many=[...answered,...Array.from({length:4},(_,i)=>({id:"bulk"+i,direction:"in",from:"peer"+i,to:"local",body:"bulk "+i,created_at:new Date(1760000000000+i*1000).toISOString(),status:"pending"}))];
 processIncomingThreads(many);
-if(elements["message-toast-region"].childElementCount!==3) throw new Error("visible toast limit: "+elements["message-toast-region"].childElementCount);`
+if(elements["message-toast-region"].childElementCount!==3) throw new Error("visible toast limit: "+elements["message-toast-region"].childElementCount);
+if([...timers.values()].some((timer)=>timer.ms!==6000)) throw new Error("auto-dismiss timeout: "+JSON.stringify([...timers.values()].map((timer)=>timer.ms)));
+elements["message-toast-region"].children[0].children.find((child)=>child.className==="message-toast-close").listeners.click();
+if(elements["message-toast-region"].childElementCount!==2 || timers.size!==2) throw new Error("close button did not dismiss the toast");
+runTimers();
+if(elements["message-toast-region"].childElementCount!==0) throw new Error("toasts did not auto-dismiss: "+elements["message-toast-region"].childElementCount);`
 	testPath := filepath.Join(t.TempDir(), "notification-test.js")
 	if err := os.WriteFile(testPath, []byte(testSource), 0o600); err != nil {
 		t.Fatal(err)
