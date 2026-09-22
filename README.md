@@ -186,7 +186,7 @@ or the set one is gone), on **Найти заново**, and when a job finds th
 app update moved its versioned folder): the job then runs the new one and the new path is saved.
 **Указать…** picks any other `codex.cmd` / `codex.exe` / `claude.exe` in the Windows file
 dialog. The path is saved as `agent_path` in the config; it replaces only the program, the
-read-only arguments below stay the same.
+arguments below stay the same.
 
 When a request arrives (a message that is not a reply) and the handler is not "None", the app
 runs the agent in the working folder with the message as the prompt, up to `max_jobs` requests
@@ -213,7 +213,7 @@ already relayed. Quitting, restarting, saving settings or updating the app leave
 running; the next start reattaches to it, keeps relaying its activity and sends its answer as
 usual, so it runs once. An agent that finished while the app was down is answered from its
 output file. One that died mid-run (a reboot, a crash) is resumed in its own session
-(`claude --resume <id>`, `codex exec resume <id>`, same read-only limits) with a short "continue"
+(`claude --resume <id>`, `codex exec resume <id>`, same permissions) with a short "continue"
 prompt; without a session to resume it starts over once. Died a second time, the job fails with
 a reply. A completed job's run files are removed; a failed one keeps them for diagnosis. An
 agent error, the 10-minute timeout (counted from the attempt's start, across restarts), or 3
@@ -223,18 +223,20 @@ agent's process tree and fails the job at once, without a retry; so does `Worker
 Switching the handler to "None" fails jobs that were still waiting, with the reply "no handler
 configured".
 
-- Claude Code: `claude -p --output-format stream-json --verbose --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --permission-mode dontAsk --strict-mcp-config --session-id <new uuid>` (resume: the same flags with `--resume <uuid>` instead of `--session-id`) — `assistant` events' `tool_use` / `thinking` / `text` blocks become activity, the `result` event is the answer.
-- Codex: `codex exec --json --sandbox read-only --skip-git-repo-check --color never --output-last-message <file> -` (resume: `codex exec resume -c sandbox_mode=read-only --json --skip-git-repo-check --output-last-message <file> <thread_id> -`; `resume` has no `--sandbox` flag, the `-c` override keeps it read-only; the thread id comes from `thread.started`) — `item.started|updated|completed` events (`command_execution`, `reasoning`, `agent_message`, …) become activity, the last-message file is the answer, `turn.failed` / `error` is the failure reason.
+- Claude Code: `claude -p --output-format stream-json --verbose --permission-mode bypassPermissions --session-id <new uuid>` (resume: the same flags with `--resume <uuid>` instead of `--session-id`) — `assistant` events' `tool_use` / `thinking` / `text` blocks become activity, the `result` event is the answer.
+- Codex: `codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --color never --output-last-message <file> -` (resume: `codex exec resume --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --output-last-message <file> <thread_id> -`; the thread id comes from `thread.started`) — `item.started|updated|completed` events (`command_execution`, `reasoning`, `agent_message`, …) become activity, the last-message file is the answer, `turn.failed` / `error` is the failure reason.
 
 On the sending side an unanswered request is marked «нет вестей от собеседника N мин» when the
 peer has sent nothing about it for 5 minutes while connected (a request `queued` behind other
 jobs is exempt), or the peer has been disconnected for 5 minutes. It is only a display: the
 message is still resent by the normal outbox until the peer ACKs it.
 
-The prompt goes through stdin, never through a shell. **Read-only:** the agent can read and
-search but cannot edit files or run commands. It can still read files it can reach (Codex's
-read-only sandbox is not limited to the working folder), and its answer goes to the other
-person, so only pair with someone you trust with that folder.
+The prompt goes through stdin, never through a shell. **Full capability:** a paired peer's
+request is the agent's task: it edits files and runs commands (build, tests, git, gh, network)
+without prompts or sandbox, in the working folder or the project mapped to the request's area,
+and answers with what it did and the evidence. It refuses only hard-to-reverse actions (force
+push, history rewrite, mass delete). Only pair with someone you trust to run commands on this
+machine.
 
 `docs/agent-usage.md` is the short version for a coding agent that wants to use the link itself:
 how to find the config path, ask the other machine a question and read the answer.
@@ -326,7 +328,7 @@ With a non-default `-config` the app never touches the autostart entry, and `POS
 
 `scripts/demo-local.ps1` is the same two-people setup but as a live demo, not a test: it starts
 `morgott` and `nikita` with their settings under `$env:TEMP\agentlink-demo`, API ports 7530/7531,
-peers on loopback, area `demo`, both answering with real Claude Code read-only over `-WorkDir`
+peers on loopback, area `demo`, both answering with real Claude Code over `-WorkDir`
 (default `E:\DEV\CodeDungeon`). It proves the round trip with one real question, prints both
 `/ui/inbox` URLs and leaves the apps running with their tray icons. Stop them from a tray icon's
 Quit or with `scripts/demo-local.ps1 -Stop`.

@@ -15,7 +15,7 @@ import (
 // detachedWorker runs agent detached (Options.Agent) on state.
 func detachedWorker(t *testing.T, agent Command, rec *recorder, state string, opt Options) *Worker {
 	t.Helper()
-	opt.Agent = func(bool) Command { return agent }
+	opt.Agent = func() Command { return agent }
 	w, err := New(nil, rec.send, state, t.TempDir(), opt, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -58,13 +58,13 @@ func alive(rec Proc) bool {
 }
 
 // A request addressed to an area with a project runs in that project's
-// directory, with the write-capable command when the project allows writing;
-// any other area keeps the work directory and the read-only command.
-func TestProjectAreaPicksDirAndVariant(t *testing.T) {
+// directory; any other area keeps the work directory. Every request runs the
+// same (full-capability) command.
+func TestProjectAreaPicksDir(t *testing.T) {
 	project := t.TempDir()
 	for _, c := range []struct {
 		name, area string
-		write      bool
+		mapped     bool
 	}{
 		{"mapped area", "dev", true},
 		{"unmapped area", "other", false},
@@ -75,19 +75,19 @@ func TestProjectAreaPicksDirAndVariant(t *testing.T) {
 			agent := fakeAgent(t, "echo")
 			workDir := t.TempDir()
 			var mu sync.Mutex
-			asked := []bool{}
+			asked := 0
 			opt := Options{
-				Agent: func(write bool) Command {
+				Agent: func() Command {
 					mu.Lock()
-					asked = append(asked, write)
+					asked++
 					mu.Unlock()
 					return agent
 				},
-				Project: func(area string) (string, bool) {
+				Project: func(area string) string {
 					if area == "dev" {
-						return project, true
+						return project
 					}
-					return "", false
+					return ""
 				},
 			}
 			w, err := New(nil, rec.send, t.TempDir(), workDir, opt, nil)
@@ -103,21 +103,20 @@ func TestProjectAreaPicksDirAndVariant(t *testing.T) {
 			}
 			j, _ := w.Job(id1)
 			wantDir := workDir
-			if c.write {
+			if c.mapped {
 				wantDir = project
 			}
-			if j.Proc == nil || j.Proc.Dir != filepath.Clean(wantDir) || j.Proc.Write != c.write {
-				t.Fatalf("proc = %+v, want dir %q write %v", j.Proc, wantDir, c.write)
+			if j.Proc == nil || j.Proc.Dir != filepath.Clean(wantDir) {
+				t.Fatalf("proc = %+v, want dir %q", j.Proc, wantDir)
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if len(asked) != 1 || asked[0] != c.write {
-				t.Fatalf("Agent asked for write %v, want [%v]", asked, c.write)
+			if asked != 1 {
+				t.Fatalf("Agent asked %d times, want 1", asked)
 			}
 		})
 	}
 }
-
 func TestDetachedRunReplies(t *testing.T) {
 	for _, c := range []struct {
 		name string

@@ -48,7 +48,7 @@ type Settings struct {
 	API    string   `json:"api,omitempty"`    // empty: DefaultAPI; applies on the next start
 	Areas  []string `json:"areas,omitempty"`
 	// Projects maps an area name to the project a request addressed to that
-	// area is handled in. Without an entry a request runs read-only in
+	// area is handled in. Without an entry a request runs in
 	// WorkDir. Edited in «Проекты» on the settings page; Normalize declares
 	// every project area in Areas.
 	Projects map[string]Project `json:"projects,omitempty"`
@@ -66,16 +66,16 @@ type Settings struct {
 	Secret string `json:"secret,omitempty"`
 	// AgentPath is the absolute path of the agent program (.exe, .cmd, .bat)
 	// when it is not on PATH. It replaces only the command name: the handler's
-	// read-only arguments stay.
+	// arguments stay.
 	AgentPath string `json:"agent_path,omitempty"`
 	// HandlerCommand replaces the built-in agent command (argv, used by tests)
 	// and wins over AgentPath.
 	HandlerCommand []string `json:"handler_command,omitempty"`
 }
 
-// Project is one project directory requests of an area are handled in. With
-// Write the agent runs write-capable there (it may edit files and run
-// commands); without it the run stays read-only.
+// Project is one project directory requests of an area are handled in.
+// Write is no longer used to pick the agent's permissions: every request runs
+// with full capability. It stays until the settings page stops showing it.
 type Project struct {
 	Dir   string `json:"dir"`
 	Write bool   `json:"write,omitempty"`
@@ -308,33 +308,18 @@ func (s Settings) NodeConfig(path, listen string) config.Config {
 	return c
 }
 
-// Project returns the project directory requests of an area are handled in
-// and whether the agent may write there. An empty dir means no project: the
-// request runs read-only in WorkDir.
-func (s Settings) Project(area string) (dir string, write bool) {
-	p, ok := s.Projects[area]
-	if !ok {
-		return "", false
-	}
-	return p.Dir, p.Write
+// Project returns the project directory requests of an area are handled in.
+// An empty dir means no project: the request runs in WorkDir.
+func (s Settings) Project(area string) string {
+	return s.Projects[area].Dir
 }
 
-// Command returns the read-only agent command for the handler, or ok=false
-// for none.
-func (s Settings) Command() (worker.Command, bool) { return s.command(false) }
-
-// WriteCommand returns the write-capable agent command for the handler, used
-// for areas mapped to a project with write.
-func (s Settings) WriteCommand() (worker.Command, bool) { return s.command(true) }
-
-func (s Settings) command(write bool) (worker.Command, bool) {
+// Command returns the agent command for the handler, or ok=false for none.
+func (s Settings) Command() (worker.Command, bool) {
 	if s.Handler == worker.HandlerNone || s.Handler == "" {
 		return worker.Command{}, false
 	}
 	c, ok := worker.ForHandler(s.Handler)
-	if write {
-		c, ok = worker.ForHandlerWrite(s.Handler)
-	}
 	if len(s.HandlerCommand) > 0 {
 		// A stand-in for the handler's CLI: same output format, no preamble.
 		return worker.Command{Name: s.HandlerCommand[0], Args: s.HandlerCommand[1:], Format: c.Format}, true

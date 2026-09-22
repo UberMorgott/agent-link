@@ -33,7 +33,7 @@ A network of N machines, one node each, all holding the same code. Every node ke
 session to every other member (over ZeroTier, the LAN or an external address), gossips the
 member table so all members see each other, finds members on local networks by UDP beacon,
 and carries messages between the developers' agent sessions (README "Members and discovery"). `agentlink.exe` without a command is the same node plus a
-tray icon, a browser settings page, an inbox page and an optional read-only handler agent.
+tray icon, a browser settings page, an inbox page and an optional handler agent.
 
 ## Prerequisites
 
@@ -118,15 +118,18 @@ harness announces the completion and the session reads them from that output, re
 `send --reply-to <id>`, and starts `wait` again. Exit codes and what `wait` does and does not
 return are in README ("Usage").
 
-## Handler policy — read-only, and it answers a stranger
+## Handler policy — full capability, for trusted peers only
 
-The handler agent runs with read-only tool permissions (`claude` limited to Read/Grep/Glob,
-`codex` with `--sandbox read-only`), the prompt over stdin, never through a shell. It cannot edit
-files or run commands. It can still read files outside the working folder, and its answer is sent
-to the other person. Consequences, which are rules:
+A paired peer's request is the handler's task (user decision): the agent runs with full
+permissions (`claude --permission-mode bypassPermissions`, `codex exec
+--dangerously-bypass-approvals-and-sandbox`: edits, shell, git, gh, network) in the working folder
+or the project mapped to the request's area, the prompt over stdin, never through a shell. Its
+answer is sent to the other person. Consequences, which are rules:
 
-- Only pair with someone you trust with read access to this machine's files.
-- Never widen the handler's tool set, add a write mode, or route the prompt through a shell.
+- Only pair with someone you trust to run commands on this machine.
+- The preamble (`worker.ReplyStyle`) has it verify before claiming done, report evidence, and
+  refuse only hard-to-reverse actions (force push, history rewrite, mass delete, discarding
+  others' uncommitted work). Never route the prompt through a shell.
   Streaming output (`--output-format stream-json --verbose`, `codex exec --json`) is only parsed
   for activity lines and the answer; it does not change what the agent may do.
 - Every run is bounded: `max_jobs` (1–4, default 2) agents at once, a 10-minute hard timeout and
@@ -134,7 +137,7 @@ to the other person. Consequences, which are rules:
 - Agents run detached and outlive the app (quit, restart, update, settings save); the next start
   reattaches, or resumes the agent's session if it died mid-run. Sessions are therefore
   persisted by the agent CLI (no `--no-session-persistence` / `--ephemeral`). A resume must keep
-  exactly the launch's read-only limits (`Command.ResumeArgs`).
+  exactly the launch's permissions (`Command.ResumeArgs`).
 - Never make the handler echo secrets, tokens or config contents into a reply.
 
 ## Validation

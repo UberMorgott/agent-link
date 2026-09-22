@@ -333,19 +333,13 @@ func (a *App) agentPresent(p string) bool {
 // survives a restart of the app. When cmd is the saved AgentPath and that file
 // is gone by the time a job runs, the agent is looked for again, the job runs
 // the new program and the new path is saved in the background.
-func (a *App) agentCommand(cmd, writeCmd worker.Command, handler string, fromSetting bool) func(write bool) worker.Command {
-	pick := func(write bool) worker.Command {
-		if write {
-			return writeCmd
-		}
-		return cmd
-	}
+func (a *App) agentCommand(cmd worker.Command, handler string, fromSetting bool) func() worker.Command {
 	if !fromSetting || a.Agents.Stat == nil {
-		return pick
+		return func() worker.Command { return cmd }
 	}
 	var mu sync.Mutex
 	name := cmd.Name
-	return func(write bool) worker.Command {
+	return func() worker.Command {
 		mu.Lock()
 		defer mu.Unlock()
 		if !a.agentPresent(name) {
@@ -359,7 +353,7 @@ func (a *App) agentCommand(cmd, writeCmd worker.Command, handler string, fromSet
 				a.saves.Go(func() { a.saveAgentPath(handler, old, saved) })
 			}
 		}
-		c := pick(write)
+		c := cmd
 		c.Name = name
 		return c
 	}
@@ -422,8 +416,7 @@ func (a *App) startNode(ctx context.Context) error {
 	opt.OnChange = func() { a.events.publish("worker") }
 	cmd, hasHandler := a.s.Command()
 	if hasHandler {
-		writeCmd, _ := a.s.WriteCommand()
-		opt.Agent = a.agentCommand(cmd, writeCmd, a.s.Handler, a.s.AgentPath != "" && len(a.s.HandlerCommand) == 0)
+		opt.Agent = a.agentCommand(cmd, a.s.Handler, a.s.AgentPath != "" && len(a.s.HandlerCommand) == 0)
 		// Requests addressed to an area with a project run there (see Settings.Projects).
 		opt.Project = a.s.Project
 	}

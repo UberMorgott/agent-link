@@ -44,11 +44,11 @@ func TestValidateProjects(t *testing.T) {
 	if err := s.Validate(); err != nil {
 		t.Fatalf("valid project rejected: %v", err)
 	}
-	if got, write := s.Project("dev"); got != dir || !write {
-		t.Fatalf("Project(dev) = %q, %v", got, write)
+	if got := s.Project("dev"); got != dir {
+		t.Fatalf("Project(dev) = %q", got)
 	}
-	if got, write := s.Project("other"); got != "" || write {
-		t.Fatalf("Project(other) = %q, %v, want no project", got, write)
+	if got := s.Project("other"); got != "" {
+		t.Fatalf("Project(other) = %q, want no project", got)
 	}
 	for name, bad := range map[string]map[string]Project{
 		"relative dir": {"dev": {Dir: "relative/path"}},

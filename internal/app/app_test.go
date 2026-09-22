@@ -320,8 +320,8 @@ func TestSettingsProjectsRoundTrip(t *testing.T) {
 	if strings.Join(got.Areas, ",") != "dev,site" {
 		t.Fatalf("project area not declared: areas %v", got.Areas)
 	}
-	if d, w := h.app.Settings().Project("site"); d != dir || !w {
-		t.Fatalf("running settings Project(site) = %q, %v", d, w)
+	if d := h.app.Settings().Project("site"); d != dir {
+		t.Fatalf("running settings Project(site) = %q", d)
 	}
 	if code, raw := h.do(t, http.MethodPost, "/ui/api/settings", `{"node":"alice","handler":"none"}`, h.tokenHdr()); code != http.StatusOK {
 		t.Fatalf("save without projects: %d %s", code, raw)

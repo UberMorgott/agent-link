@@ -1,6 +1,6 @@
 #Requires -Version 7
 # Live demo on one machine: two agentlink tray apps as two people, "morgott" and
-# "nikita", both answering with real Claude Code (read-only) over a read-only
+# "nikita", both answering with real Claude Code (full capability: it may edit) over a
 # working folder. Unlike scripts/e2e-*.ps1 this is not a test: it leaves both
 # apps running with their tray icons and prints the two inbox URLs to open in a
 # browser, after proving the round trip with one real question.

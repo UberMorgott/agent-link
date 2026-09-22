@@ -87,10 +87,12 @@ agentlink wait  --config <path> --timeout 0                       # blocks until
 
 ## What the answering side does
 
-If the other machine has a handler agent configured, the request runs there **read-only**:
-`claude` limited to Read/Grep/Glob, or `codex` with `--sandbox read-only`, with the prompt on
-stdin and never through a shell. It can read and search that machine's files but cannot edit
-them or run commands, and its answer is sent back automatically. With the handler set to
+If the other machine has a handler agent configured, your request is its **task**: `claude`
+(`--permission-mode bypassPermissions`) or `codex` (`--dangerously-bypass-approvals-and-sandbox`)
+runs it with the prompt on stdin, never through a shell, and may edit files and run commands
+(build, tests, git, gh) in its working folder or the project mapped to the area. It refuses
+only hard-to-reverse actions, verifies before claiming done, and its answer (what it did plus
+evidence) is sent back automatically. With the handler set to
 "none" a human answers from the inbox page, so the reply may take a while.
 
 Never put secrets, tokens or config contents in a message: it is stored in clear text in the
