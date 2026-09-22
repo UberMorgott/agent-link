@@ -121,7 +121,7 @@ func TestAnswerSurvivesDaemonRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		w, err := New(nil, n.SendMessage, bState, t.TempDir(), Options{Agent: func() Command { return agent }}, nil)
+		w, err := New(nil, n.SendMessage, bState, t.TempDir(), Options{Agent: func(bool) Command { return agent }}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

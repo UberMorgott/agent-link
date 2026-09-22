@@ -36,6 +36,33 @@ func TestValidateRejectsHandlerNotOnPath(t *testing.T) {
 	}
 }
 
+func TestValidateProjects(t *testing.T) {
+	fakeClaudeOnPath(t)
+	dir := t.TempDir()
+	s := valid(t)
+	s.Projects = map[string]Project{"dev": {Dir: dir, Write: true}}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("valid project rejected: %v", err)
+	}
+	if got, write := s.Project("dev"); got != dir || !write {
+		t.Fatalf("Project(dev) = %q, %v", got, write)
+	}
+	if got, write := s.Project("other"); got != "" || write {
+		t.Fatalf("Project(other) = %q, %v, want no project", got, write)
+	}
+	for name, bad := range map[string]map[string]Project{
+		"relative dir": {"dev": {Dir: "relative/path"}},
+		"empty dir":    {"dev": {}},
+		"bad area":     {"bad area!": {Dir: dir}},
+	} {
+		s.Projects = bad
+		var p *Problem
+		if err := s.Validate(); !errors.As(err, &p) || p.Key != "projects" {
+			t.Errorf("%s: Validate() = %v, want projects", name, err)
+		}
+	}
+}
+
 // fakeClaudeOnPath makes Validate find a claude executable without the real
 // CLI installed (CI runners have none).
 func fakeClaudeOnPath(t *testing.T) {

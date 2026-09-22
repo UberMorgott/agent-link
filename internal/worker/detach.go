@@ -42,6 +42,9 @@ type Proc struct {
 	// announced on stdout; a resume continues it.
 	Session string `json:"session,omitempty"`
 	Resumed bool   `json:"resumed,omitempty"`
+	// Write records that the run started with the write-capable command, so a
+	// resume continues with the same variant in the same directory.
+	Write bool `json:"write,omitempty"`
 	// Offset is how many stdout bytes were already relayed as activity.
 	Offset int64 `json:"offset"`
 	// Watches counts watches (1: the one after launch), so activity ids stay unique.
@@ -66,9 +69,10 @@ func (w *Worker) runBase(id string, attempt int) string {
 	return filepath.Join(w.jobsDir, id, strconv.Itoa(attempt))
 }
 
-// launch starts c detached for j's current attempt. resume continues session
-// instead of sending the request again.
-func (w *Worker) launch(ctx context.Context, j *Job, c Command, session string, resume bool) (*proc, error) {
+// launch starts c detached in dir for j's current attempt; write records which
+// command variant it is. resume continues session instead of sending the
+// request again.
+func (w *Worker) launch(ctx context.Context, j *Job, c Command, dir string, write bool, session string, resume bool) (*proc, error) {
 	w.mu.Lock()
 	id, attempt, prompt := j.Request.ID, j.Attempts, j.Request.Body
 	w.mu.Unlock()
@@ -86,7 +90,7 @@ func (w *Worker) launch(ctx context.Context, j *Job, c Command, session string, 
 	default:
 		session = ""
 	}
-	rec := Proc{Name: c.Name, Attempt: attempt, Format: c.Format, Dir: filepath.Clean(w.dir), Session: session, Resumed: resume}
+	rec := Proc{Name: c.Name, Attempt: attempt, Format: c.Format, Dir: filepath.Clean(dir), Session: session, Resumed: resume, Write: write}
 	args = append([]string(nil), args...)
 	for i, a := range args {
 		switch a {
@@ -161,7 +165,8 @@ func (w *Worker) launch(ctx context.Context, j *Job, c Command, session string, 
 // picks up the run a previous app left behind.
 func (w *Worker) handleDetached(ctx context.Context, j *Job, reattach bool) {
 	if !reattach {
-		p, err := w.launch(ctx, j, w.opt.Agent(), "", false)
+		dir, write := w.where(j.Request.Area)
+		p, err := w.launch(ctx, j, w.opt.Agent(write), dir, write, "", false)
 		if err != nil {
 			w.finish(j, node.JobFailed, "", fmt.Sprintf("handler failed: %v", err))
 			return
@@ -192,7 +197,8 @@ func (w *Worker) handleDetached(ctx context.Context, j *Job, reattach bool) {
 		w.finish(j, node.JobFailed, "", ErrInterrupted)
 		return
 	}
-	c := w.opt.Agent()
+	// Resume the interrupted run with the variant and directory it started with.
+	c := w.opt.Agent(rec.Write)
 	resume := s.session != "" && len(c.ResumeArgs) > 0
 	w.log.Info("agent died mid-run", "id", id, "pid", rec.PID, "resume", resume, "session", s.session)
 	w.mu.Lock()
@@ -204,7 +210,7 @@ func (w *Worker) handleDetached(ctx context.Context, j *Job, reattach bool) {
 		return
 	}
 	w.changed()
-	p, err := w.launch(ctx, j, c, s.session, resume)
+	p, err := w.launch(ctx, j, c, rec.Dir, rec.Write, s.session, resume)
 	if err != nil {
 		w.finish(j, node.JobFailed, "", fmt.Sprintf("handler failed: %v", err))
 		return

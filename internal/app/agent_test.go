@@ -124,7 +124,8 @@ func TestJobRediscoversMovedAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd, _ := s.Command()
-	if got := h.app.agentCommand(cmd, "codex", true)(); got.Name != moved {
+	writeCmd, _ := s.WriteCommand()
+	if got := h.app.agentCommand(cmd, writeCmd, "codex", true)(false); got.Name != moved {
 		t.Fatalf("job runs %q, want the rediscovered %s", got.Name, moved)
 	}
 	h.app.saves.Wait()

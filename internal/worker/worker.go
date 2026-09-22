@@ -80,7 +80,12 @@ type SendFunc func(m node.Message) (node.Message, error)
 type Options struct {
 	// Agent, when set, returns the agent command, which then runs detached
 	// (see Proc) and survives a restart of this app; the Runner is not used.
-	Agent           func() Command
+	// write asks for the write-capable variant of the command.
+	Agent func(write bool) Command
+	// Project resolves a request's Area to the project directory it runs in
+	// and whether the agent may write there. An empty dir (no project for
+	// that area) keeps the default: the work directory, read-only.
+	Project         func(area string) (dir string, write bool)
 	Timeout         time.Duration
 	IdleTimeout     time.Duration
 	MaxJobs         int
@@ -292,6 +297,18 @@ func (w *Worker) slot(ctx context.Context) {
 
 func (w *Worker) hasHandler() bool { return w.run != nil || w.opt.Agent != nil }
 
+// where resolves the directory a request runs in and whether the agent may
+// write there: the project mapped to its area, else the work directory
+// read-only.
+func (w *Worker) where(area string) (dir string, write bool) {
+	if w.opt.Project != nil && area != "" {
+		if dir, write := w.opt.Project(area); dir != "" {
+			return dir, write
+		}
+	}
+	return w.dir, false
+}
+
 // claim returns a running job left by a previous app (reattach), else durably
 // moves the oldest queued job to running and returns it; nil when neither.
 func (w *Worker) claim() (j *Job, reattach bool, err error) {
@@ -397,7 +414,8 @@ func (w *Worker) handle(ctx context.Context, j *Job) {
 	jobCtx, cancel := context.WithTimeoutCause(idleCtx, w.opt.Timeout, errHardTimeout)
 	idle := time.AfterFunc(w.opt.IdleTimeout, func() { cancelIdle(errIdleTimeout) })
 	relay := w.relay(m, "activity-"+strconv.Itoa(attempt))
-	out, err := w.run(jobCtx, w.dir, m.Body, func(activity string) {
+	dir, _ := w.where(m.Area)
+	out, err := w.run(jobCtx, dir, m.Body, func(activity string) {
 		idle.Reset(w.opt.IdleTimeout)
 		relay.set(activity)
 	})

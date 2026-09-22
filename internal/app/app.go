@@ -328,27 +328,35 @@ func (a *App) agentPresent(p string) bool {
 // survives a restart of the app. When cmd is the saved AgentPath and that file
 // is gone by the time a job runs, the agent is looked for again, the job runs
 // the new program and the new path is saved in the background.
-func (a *App) agentCommand(cmd worker.Command, handler string, fromSetting bool) func() worker.Command {
+func (a *App) agentCommand(cmd, writeCmd worker.Command, handler string, fromSetting bool) func(write bool) worker.Command {
+	pick := func(write bool) worker.Command {
+		if write {
+			return writeCmd
+		}
+		return cmd
+	}
 	if !fromSetting || a.Agents.Stat == nil {
-		return func() worker.Command { return cmd }
+		return pick
 	}
 	var mu sync.Mutex
-	cur := cmd
-	return func() worker.Command {
+	name := cmd.Name
+	return func(write bool) worker.Command {
 		mu.Lock()
 		defer mu.Unlock()
-		if !a.agentPresent(cur.Name) {
+		if !a.agentPresent(name) {
 			if f, ok := a.Agents.Discover(handler); ok {
-				old, saved := cur.Name, f.Path
+				old, saved := name, f.Path
 				if f.Kind == settings.KindPath {
 					saved = ""
 				}
 				a.log.Info("agent program moved", "old", old, "new", f.Path, "kind", f.Kind)
-				cur.Name = f.Path
+				name = f.Path
 				a.saves.Go(func() { a.saveAgentPath(handler, old, saved) })
 			}
 		}
-		return cur
+		c := pick(write)
+		c.Name = name
+		return c
 	}
 }
 
@@ -409,7 +417,10 @@ func (a *App) startNode(ctx context.Context) error {
 	opt.OnChange = func() { a.events.publish("worker") }
 	cmd, hasHandler := a.s.Command()
 	if hasHandler {
-		opt.Agent = a.agentCommand(cmd, a.s.Handler, a.s.AgentPath != "" && len(a.s.HandlerCommand) == 0)
+		writeCmd, _ := a.s.WriteCommand()
+		opt.Agent = a.agentCommand(cmd, writeCmd, a.s.Handler, a.s.AgentPath != "" && len(a.s.HandlerCommand) == 0)
+		// Requests addressed to an area with a project run there (see Settings.Projects).
+		opt.Project = a.s.Project
 	}
 	w, err := worker.New(nil, n.SendMessage, cfg.DataDir, a.s.WorkDir, opt, a.log)
 	if err != nil {

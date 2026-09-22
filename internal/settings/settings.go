@@ -46,6 +46,10 @@ type Settings struct {
 	Listen string   `json:"listen,omitempty"` // empty: every interface, port 7420
 	API    string   `json:"api,omitempty"`    // empty: DefaultAPI; applies on the next start
 	Areas  []string `json:"areas,omitempty"`
+	// Projects maps an area name to the project a request addressed to that
+	// area is handled in. Without an entry a request runs read-only in
+	// WorkDir. Edited in the config file only.
+	Projects map[string]Project `json:"projects,omitempty"`
 	// Discovery looks for members on the local networks (UDP beacons); nil means on.
 	Discovery *bool `json:"discovery,omitempty"`
 	// MaxJobs is how many requests the agent answers at once, 1..worker.MaxMaxJobs;
@@ -65,6 +69,14 @@ type Settings struct {
 	// HandlerCommand replaces the built-in agent command (argv, used by tests)
 	// and wins over AgentPath.
 	HandlerCommand []string `json:"handler_command,omitempty"`
+}
+
+// Project is one project directory requests of an area are handled in. With
+// Write the agent runs write-capable there (it may edit files and run
+// commands); without it the run stays read-only.
+type Project struct {
+	Dir   string `json:"dir"`
+	Write bool   `json:"write,omitempty"`
 }
 
 // Problem is a validation failure. Key names the field or rule; the web UI
@@ -270,12 +282,33 @@ func (s Settings) NodeConfig(path, listen string) config.Config {
 	return c
 }
 
-// Command returns the agent command for the handler, or ok=false for none.
-func (s Settings) Command() (worker.Command, bool) {
+// Project returns the project directory requests of an area are handled in
+// and whether the agent may write there. An empty dir means no project: the
+// request runs read-only in WorkDir.
+func (s Settings) Project(area string) (dir string, write bool) {
+	p, ok := s.Projects[area]
+	if !ok {
+		return "", false
+	}
+	return p.Dir, p.Write
+}
+
+// Command returns the read-only agent command for the handler, or ok=false
+// for none.
+func (s Settings) Command() (worker.Command, bool) { return s.command(false) }
+
+// WriteCommand returns the write-capable agent command for the handler, used
+// for areas mapped to a project with write.
+func (s Settings) WriteCommand() (worker.Command, bool) { return s.command(true) }
+
+func (s Settings) command(write bool) (worker.Command, bool) {
 	if s.Handler == worker.HandlerNone || s.Handler == "" {
 		return worker.Command{}, false
 	}
 	c, ok := worker.ForHandler(s.Handler)
+	if write {
+		c, ok = worker.ForHandlerWrite(s.Handler)
+	}
 	if len(s.HandlerCommand) > 0 {
 		// A stand-in for the handler's CLI: same output format, no preamble.
 		return worker.Command{Name: s.HandlerCommand[0], Args: s.HandlerCommand[1:], Format: c.Format}, true
@@ -346,6 +379,11 @@ func (s Settings) Validate() error {
 	for _, a := range s.Areas {
 		if !config.ValidName(a) {
 			return problem("areas")
+		}
+	}
+	for area, p := range s.Projects {
+		if !config.ValidName(area) || p.Dir == "" || !filepath.IsAbs(p.Dir) {
+			return problem("projects")
 		}
 	}
 	seen := map[string]bool{}
