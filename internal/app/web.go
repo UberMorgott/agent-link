@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"html"
 	"io/fs"
 	"net"
 	"net/http"
@@ -24,6 +25,11 @@ var webFS embed.FS
 
 // TokenHeader carries the per-run token on every web UI API call.
 const TokenHeader = "X-Agentlink-Token" //nolint:gosec // G101: an HTTP header name; the token itself is random per run (newToken)
+
+// VersionHeader carries the running build's version on every web UI API
+// response, a refused one too: a tab left open across a self-update sees the
+// new version even though its per-run token no longer works, and reloads.
+const VersionHeader = "X-Agentlink-Version"
 
 const maxBody = 1 << 20
 
@@ -145,6 +151,7 @@ func loopbackHost(next http.Handler) http.Handler {
 // preflight that this server never approves.
 func (a *App) requireToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(VersionHeader, a.Version)
 		got := r.Header.Get(TokenHeader)
 		sameOrigin := true
 		if o := r.Header.Get("Origin"); o != "" && o != "http://"+r.Host {
@@ -172,6 +179,7 @@ func (a *App) page(name string) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-store")
 		page := strings.ReplaceAll(string(data), "{{TOKEN}}", a.token)
 		page = strings.ReplaceAll(page, "{{STRINGS}}", stringsAttr())
+		page = strings.ReplaceAll(page, "{{VERSION}}", html.EscapeString(a.Version))
 		_, _ = w.Write([]byte(page))
 	}
 }

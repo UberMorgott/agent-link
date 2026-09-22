@@ -705,6 +705,89 @@ const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve()
 	}
 }
 
+// TestVersionReachesPageAndEveryAPIResponse: the shell names the build it was
+// served by, and API responses name the running build even when they refuse an
+// old tab's token, so a tab open across a self-update can tell.
+func TestVersionReachesPageAndEveryAPIResponse(t *testing.T) {
+	h := newHarness(t, func(a *App) { a.Version = "0.7.1" })
+	if _, body := h.do(t, http.MethodGet, "/ui/settings", "", nil); !strings.Contains(body, `<meta name="agentlink-version" content="0.7.1">`) {
+		t.Fatal("shell does not carry the build version")
+	}
+	for name, hdr := range map[string]map[string]string{"token": h.tokenHdr(), "old token": {TokenHeader: "old"}} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, h.srv.URL+"/ui/api/status", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if got := resp.Header.Get(VersionHeader); got != "0.7.1" {
+			t.Errorf("%s: %s = %q, want 0.7.1", name, VersionHeader, got)
+		}
+	}
+}
+
+// TestPageReloadsOnlyForAnotherBuild runs common.js: an event stream answered
+// by another build reloads the page, a reconnect to the same build does not.
+func TestPageReloadsOnlyForAnotherBuild(t *testing.T) {
+	path, err := filepath.Abs("web/static/common.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const program = `
+const fs = require("fs");
+const vm = require("vm");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+function run(serverVersion, status) {
+  const state = { reloads: 0, timers: [] };
+  const document = {
+    title: "",
+    querySelector(selector) {
+      if (selector === 'meta[name="agentlink-token"]') return { content: "t" };
+      if (selector === 'meta[name="agentlink-strings"]') return { content: "{}" };
+      if (selector === 'meta[name="agentlink-version"]') return { content: "0.7.0" };
+      return null;
+    },
+    querySelectorAll() { return []; },
+    getElementById() { return { textContent: "", className: "", replaceChildren() {} }; },
+    createElement() { return { textContent: "", addEventListener() {} }; },
+    createTextNode(text) { return { textContent: text }; },
+  };
+  const headers = { get: (name) => (name === "X-Agentlink-Version" ? serverVersion : null) };
+  const reader = { read: async () => ({ done: true }) };
+  async function fetch() { return { ok: status === 200, status, headers, body: { getReader: () => reader } }; }
+  vm.runInNewContext(source, {
+    document, fetch, TextDecoder, Map, Set, Object, Promise, Error, JSON,
+    setTimeout(fn, delay) { state.timers.push(delay); return state.timers.length; },
+    location: { reload() { state.reloads++; } },
+  }, { filename: process.argv[1] });
+  return state;
+}
+(async () => {
+  const restarted = run("0.7.1", 403);
+  const updated = run("0.7.1", 200);
+  const same = run("0.7.0", 200);
+  const sameRestarted = run("0.7.0", 403);
+  await flush();
+  if (restarted.reloads !== 1 || updated.reloads !== 1) throw new Error("new build did not reload: " + restarted.reloads + " " + updated.reloads);
+  if (same.reloads !== 0 || sameRestarted.reloads !== 0) throw new Error("same build reloaded the page");
+  if (same.timers.length !== 1) throw new Error("same build did not reconnect: " + JSON.stringify(same.timers));
+})().catch((error) => { console.error(error.stack); process.exitCode = 1; });
+`
+	//nolint:gosec // G204: fixed Node executable runs a repository script in a deterministic harness.
+	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path).CombinedOutput(); err != nil {
+		t.Fatalf("version reload regression: %v\n%s", err, output)
+	}
+}
+
 // TestPagesServeRussianText renders the application shell and its scripts and
 // checks that they carry the dictionary and no English user-visible text.
 func TestPagesServeRussianText(t *testing.T) {

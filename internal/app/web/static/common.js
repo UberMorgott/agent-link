@@ -1,6 +1,8 @@
 "use strict";
 
 const TOKEN = document.querySelector('meta[name="agentlink-token"]').content;
+// PAGE_VERSION is the app build this page was served by.
+const PAGE_VERSION = document.querySelector('meta[name="agentlink-version"]')?.content || "";
 const CORE_SLICES = new Set(["status", "dashboard", "participants", "update", "settings", "threads"]);
 const inFlight = new Map();
 
@@ -59,6 +61,16 @@ function api(method, path, body) {
   return request;
 }
 
+// reloadOnNewVersion reloads the page when the app answering is another build,
+// as after a self-update: the old page cannot use the new app's token. A
+// reconnect to the same build keeps the page.
+function reloadOnNewVersion(resp) {
+  const version = resp?.headers?.get?.("X-Agentlink-Version") || "";
+  if (!PAGE_VERSION || !version || version === PAGE_VERSION) return false;
+  location.reload();
+  return true;
+}
+
 async function apiRequest(method, path, body) {
   const opts = { method, headers: { "X-Agentlink-Token": TOKEN } };
   if (body !== undefined) {
@@ -71,6 +83,7 @@ async function apiRequest(method, path, body) {
   } catch (_) {
     throw new Error(t("error.no_app"));
   }
+  if (reloadOnNewVersion(resp)) throw new Error(t("error.no_app"));
   const text = await resp.text();
   let data = text;
   try { data = JSON.parse(text); } catch (_) { /* plain-text error */ }
@@ -198,6 +211,7 @@ async function connectEvents() {
   let response;
   try {
     response = await fetch("/ui/api/events", { headers: { "X-Agentlink-Token": TOKEN } });
+    if (reloadOnNewVersion(response)) return;
     if (response.status === 403) {
       const error = new Error(t("error.forbidden"));
       error.status = 403;
