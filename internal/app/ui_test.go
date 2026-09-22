@@ -327,10 +327,68 @@ func TestUISemanticContracts(t *testing.T) {
 	if fieldsets != 0 {
 		t.Errorf("found %d visual fieldsets; cards must use sections", fieldsets)
 	}
-	for _, card := range []string{"identity", "handler", "application", "updates", "advanced"} {
+	for _, card := range []string{"identity", "handler", "application", "projects", "updates", "advanced"} {
 		if !settingsCards[card] {
 			t.Errorf("settings card %q is missing", card)
 		}
+	}
+}
+
+// settingsHarnessJS is the fake DOM settings.js runs against in Node.
+const settingsHarnessJS = `
+class Element { constructor(id=""){this.id=id;this.value="";this.checked=false;this.hidden=false;this.disabled=false;this.textContent="";this.className="";this.listeners={};this.open=false;this.children=[]} addEventListener(n,f){this.listeners[n]=f} setAttribute(n,v){this[n]=v} removeAttribute(n){delete this[n]} select(){} focus(){} append(...c){this.children.push(...c)} replaceChildren(...c){this.children=[...c]} }
+const names=["form","settings_result","settings_save","code","work_dir","pick","agent_path","pick_agent","find_agent","agent_row","agent_shown","work_dir_shown","advanced","my_addr","generate","copy","projects","projects_empty","add_project","updates","update_text","update_check","update_apply","update_auto","update_version"];
+const elements=Object.fromEntries(names.map((id)=>[id,new Element(id)]));
+const controls=Object.fromEntries(["node","code","handler","agent_path","work_dir","listen","api","areas","discovery","max_jobs","autostart"].map((name)=>[name,new Element(name)]));
+controls.handler.value="none"; controls.discovery.checked=true; elements.form.elements=controls;`
+
+// TestSettingsProjectRowsRenderAndSave runs settings.js: saved projects become
+// cards, «Добавить проект» adds one, «Удалить» drops one, «Сохранить» sends
+// them as "projects", and a repeated area stops the save with a sentence.
+func TestSettingsProjectRowsRenderAndSave(t *testing.T) {
+	path, err := filepath.Abs("web/static/settings.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const program = `
+const fs = require("fs"), vm = require("vm");
+` + settingsHarnessJS + `
+const document={getElementById:(id)=>elements[id],createElement:()=>new Element()};
+const state={settings:{node:"n",areas:["site"],projects:{site:{dir:"E:\\site",write:true}}},status:null,dashboard:null,update:null};
+const store={get:()=>state,subscribe(){},patch(name,value){state[name]=value}};
+const sent=[]; let picked="E:\\docs";
+async function api(method,path,body){if(path==="settings"){sent.push(body);return {saved:true}}if(path==="pick-folder")return {path:picked};if(path==="agent")return {text:""};return {current:"dev",enabled:false}}
+const t=(key)=>key,fmt=(key)=>key;
+vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),{document,store,api,t,fmt,crypto:{},navigator:{},location:{reload(){}},Array,Number,Object,Promise,RegExp,String,Uint8Array,console});
+const list=elements.projects;
+const parts=(li)=>({area:li.children[0].children[1],dir:li.children[1].children[1].children[0],pick:li.children[1].children[1].children[1],remove:li.children[2],write:li.children[3].children[1],warning:li.children[4]});
+const submit=async()=>{await elements.form.listeners.submit({preventDefault(){}});for(let i=0;i<8;i++)await Promise.resolve()};
+(async()=>{
+if(list.children.length!==1||!elements.projects_empty.hidden)throw new Error("saved project not rendered");
+let first=parts(list.children[0]);
+if(first.area.value!=="site"||first.dir.value!=="E:\\site"||!first.write.checked)throw new Error("row values: "+JSON.stringify([first.area.value,first.dir.value,first.write.checked]));
+if(first.warning.textContent!=="settings.projects.write_hint"||!first.warning.className.includes("warn"))throw new Error("write warning missing");
+elements.add_project.listeners.click();
+if(list.children.length!==2)throw new Error("add did not add a row");
+const second=parts(list.children[1]);
+second.area.value=" docs ";
+await second.pick.listeners.click();
+if(second.dir.value!=="E:\\docs")throw new Error("folder picker did not fill the row");
+await submit();
+const want={site:{dir:"E:\\site",write:true},docs:{dir:"E:\\docs",write:false}};
+if(JSON.stringify(sent[0].projects)!==JSON.stringify(want))throw new Error("projects sent: "+JSON.stringify(sent[0].projects));
+first.remove.listeners.click();
+if(list.children.length!==1)throw new Error("remove did not drop the row");
+elements.add_project.listeners.click();
+await submit();
+if(JSON.stringify(sent[1].projects)!==JSON.stringify({docs:{dir:"E:\\docs",write:false}}))throw new Error("after remove: "+JSON.stringify(sent[1].projects));
+parts(list.children[1]).area.value="docs";
+await submit();
+if(sent.length!==2||elements.settings_result.textContent!=="error.projects_twice")throw new Error("duplicate area was sent");
+})().catch((error)=>{console.error(error.stack);process.exitCode=1});`
+	//nolint:gosec // G204: fixed Node executable runs a checked-in browser module in a deterministic harness.
+	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path).CombinedOutput(); err != nil {
+		t.Fatalf("settings projects: %v\n%s", err, output)
 	}
 }
 
@@ -344,12 +402,8 @@ func TestSettingsSavePatchesReactiveSlices(t *testing.T) {
 	}
 	const program = `
 const fs = require("fs"), vm = require("vm");
-class Element { constructor(id=""){this.id=id;this.value="";this.checked=false;this.hidden=false;this.disabled=false;this.textContent="";this.className="";this.listeners={};this.open=false} addEventListener(n,f){this.listeners[n]=f} setAttribute(n,v){this[n]=v} removeAttribute(n){delete this[n]} select(){} }
-const names=["form","settings_result","settings_save","code","work_dir","pick","agent_path","pick_agent","find_agent","agent_row","agent_shown","work_dir_shown","advanced","my_addr","generate","copy","updates","update_text","update_check","update_apply","update_auto","update_version"];
-const elements=Object.fromEntries(names.map((id)=>[id,new Element(id)]));
-const controls=Object.fromEntries(["node","code","handler","agent_path","work_dir","listen","api","areas","discovery","max_jobs","autostart"].map((name)=>[name,new Element(name)]));
-controls.handler.value="none"; controls.discovery.checked=true; elements.form.elements=controls;
-const document={getElementById:(id)=>elements[id]};
+` + settingsHarnessJS + `
+const document={getElementById:(id)=>elements[id],createElement:()=>new Element()};
 const state={settings:{node:"old",api:"127.0.0.1:7520",areas:[]},status:null,dashboard:null,update:null};
 const patches=[]; const store={get:()=>state,subscribe(){},patch(name,value){state[name]=value;patches.push(name)}};
 let reloads=0, refreshes=0;

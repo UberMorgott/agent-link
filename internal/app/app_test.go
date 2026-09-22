@@ -298,6 +298,51 @@ func TestSaveRejectsInvalid(t *testing.T) {
 	}
 }
 
+// «Проекты» round-trip through the settings API: saved, announced as areas,
+// served back, kept by a request without the field, cleared by {}, and a bad
+// row is reported as one sentence.
+func TestSettingsProjectsRoundTrip(t *testing.T) {
+	h := newHarness(t)
+	dir := t.TempDir()
+	dirJSON, _ := json.Marshal(dir)
+	body := `{"node":"alice","code":"","handler":"none","areas":["dev"],"projects":{" site ":{"dir":` + string(dirJSON) + `,"write":true}}}`
+	if code, raw := h.do(t, http.MethodPost, "/ui/api/settings", body, h.tokenHdr()); code != http.StatusOK || strings.Contains(raw, `"error"`) {
+		t.Fatalf("save: %d %s", code, raw)
+	}
+	_, raw := h.do(t, http.MethodGet, "/ui/api/settings", "", h.tokenHdr())
+	var got settings.Settings
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatal(err)
+	}
+	if p := got.Projects["site"]; p.Dir != dir || !p.Write || len(got.Projects) != 1 {
+		t.Fatalf("projects served back %+v", got.Projects)
+	}
+	if strings.Join(got.Areas, ",") != "dev,site" {
+		t.Fatalf("project area not declared: areas %v", got.Areas)
+	}
+	if d, w := h.app.Settings().Project("site"); d != dir || !w {
+		t.Fatalf("running settings Project(site) = %q, %v", d, w)
+	}
+	if code, raw := h.do(t, http.MethodPost, "/ui/api/settings", `{"node":"alice","handler":"none"}`, h.tokenHdr()); code != http.StatusOK {
+		t.Fatalf("save without projects: %d %s", code, raw)
+	}
+	if s, _, _ := settings.Load(h.path); len(s.Projects) != 1 {
+		t.Fatalf("a request without projects dropped them: %+v", s.Projects)
+	}
+	if code, raw := h.do(t, http.MethodPost, "/ui/api/settings", `{"node":"alice","handler":"none","projects":{}}`, h.tokenHdr()); code != http.StatusOK {
+		t.Fatalf("clear projects: %d %s", code, raw)
+	}
+	if s, _, _ := settings.Load(h.path); len(s.Projects) != 0 {
+		t.Fatalf("projects not cleared: %+v", s.Projects)
+	}
+	for _, bad := range []string{`{"":{"dir":` + string(dirJSON) + `}}`, `{"site":{"dir":""}}`, `{"site":{"dir":"relative"}}`} {
+		code, raw := h.do(t, http.MethodPost, "/ui/api/settings", `{"node":"alice","handler":"none","projects":`+bad+`}`, h.tokenHdr())
+		if code != http.StatusBadRequest || !strings.Contains(raw, uiStrings["error.projects"]) {
+			t.Errorf("projects %s: %d %s", bad, code, raw)
+		}
+	}
+}
+
 // The page's first save carries only a name: it must succeed. Without a code
 // the node waits for one; with a code and no peer it runs and waits to be dialed.
 func TestPartialSave(t *testing.T) {

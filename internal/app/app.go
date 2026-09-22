@@ -278,6 +278,11 @@ func (a *App) apply(ctx context.Context, s settings.Settings) (found settings.Fo
 	if s.Discovery == nil {
 		s.Discovery = a.s.Discovery
 	}
+	if s.Projects == nil {
+		// The page always sends its «Проекты» ({} when empty); a request
+		// without the field keeps them.
+		s.Projects = a.s.Projects
+	}
 	s = s.Normalize()
 	s.HandlerCommand, s.Secret = a.s.HandlerCommand, ""
 	if s.API == "" {

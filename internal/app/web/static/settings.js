@@ -31,6 +31,9 @@ function showSettings(s) {
   form.elements.max_jobs.value = s.max_jobs ? String(s.max_jobs) : "";
   if (s.listen || s.api || s.discovery === false || s.max_jobs || (s.areas || []).length) document.getElementById("advanced").open = true;
   showWorkDir("settings.work_dir.current");
+  const projects = s.projects || {};
+  projectRows = Object.keys(projects).sort().map((area) => projectRow(area, projects[area]));
+  showProjects();
 }
 
 // showWorkDir repeats the chosen folder in full under the field.
@@ -43,25 +46,110 @@ function showWorkDir(key) {
 workDir.addEventListener("input", () => showWorkDir("settings.work_dir.current"));
 
 // The tray process opens the native Windows folder dialog: a page cannot see
-// absolute paths on disk.
-pick.addEventListener("click", async () => {
-  pick.disabled = true;
+// absolute paths on disk. pickFolder puts the chosen folder into input and
+// returns true.
+async function pickFolder(button, input) {
+  button.disabled = true;
   result.textContent = t("settings.work_dir.picking");
   try {
-    const r = await api("POST", "pick-folder", { start: workDir.value.trim() });
+    const r = await api("POST", "pick-folder", { start: input.value.trim() });
     if (r.path) {
-      workDir.value = r.path;
-      showWorkDir("settings.work_dir.chosen");
+      input.value = r.path;
       result.textContent = "";
-    } else {
-      result.textContent = r.message || "";
+      return true;
     }
+    result.textContent = r.message || "";
   } catch (e) {
     result.textContent = e.message;
   } finally {
-    pick.disabled = false;
+    button.disabled = false;
   }
+  return false;
+}
+
+pick.addEventListener("click", async () => {
+  if (await pickFolder(pick, workDir)) showWorkDir("settings.work_dir.chosen");
 });
+
+// --- «Проекты»: an area mapped to a project folder, saved with «Сохранить» ---
+
+const projectList = document.getElementById("projects");
+let projectRows = [];
+
+function labelled(text, control) {
+  const label = document.createElement("label");
+  const span = document.createElement("span");
+  span.textContent = text;
+  label.append(span, control);
+  return label;
+}
+
+// projectRow builds one editable project card: area, folder, write switch.
+function projectRow(area, project) {
+  const li = document.createElement("li");
+  li.className = "project-card";
+  const areaInput = document.createElement("input");
+  areaInput.value = area;
+  areaInput.autocomplete = "off";
+  areaInput.spellcheck = false;
+  const dirInput = document.createElement("input");
+  dirInput.value = project.dir || "";
+  dirInput.autocomplete = "off";
+  dirInput.spellcheck = false;
+  const pickDir = document.createElement("button");
+  pickDir.type = "button";
+  pickDir.textContent = t("settings.work_dir.pick");
+  pickDir.addEventListener("click", () => pickFolder(pickDir, dirInput));
+  const dirRow = document.createElement("span");
+  dirRow.className = "row";
+  dirRow.append(dirInput, pickDir);
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "project-remove";
+  remove.textContent = t("settings.projects.remove");
+  const write = document.createElement("input");
+  write.type = "checkbox";
+  write.checked = !!project.write;
+  const writeLabel = labelled(t("settings.projects.write"), write);
+  writeLabel.className = "check project-write";
+  const warning = document.createElement("p");
+  warning.textContent = t("settings.projects.write_hint");
+  const showWarning = () => { warning.className = write.checked ? "hint warn" : "hint"; };
+  write.addEventListener("change", showWarning);
+  showWarning();
+  li.append(labelled(t("settings.projects.area"), areaInput), labelled(t("settings.projects.dir"), dirRow), remove, writeLabel, warning);
+  const row = { li, area: areaInput, dir: dirInput, write };
+  remove.addEventListener("click", () => {
+    projectRows = projectRows.filter((r) => r !== row);
+    showProjects();
+  });
+  return row;
+}
+
+function showProjects() {
+  projectList.replaceChildren(...projectRows.map((r) => r.li));
+  document.getElementById("projects_empty").hidden = projectRows.length > 0;
+}
+
+document.getElementById("add_project").addEventListener("click", () => {
+  const row = projectRow("", {});
+  projectRows.push(row);
+  showProjects();
+  row.area.focus();
+});
+
+// projectsBody is the «projects» object for the save request; a blank row is
+// skipped and null means one area is used twice.
+function projectsBody() {
+  const out = {};
+  for (const r of projectRows) {
+    const area = r.area.value.trim(), dir = r.dir.value.trim();
+    if (!area && !dir) continue;
+    if (Object.hasOwn(out, area)) return null;
+    out[area] = { dir, write: r.write.checked };
+  }
+  return out;
+}
 
 // showAgent tells which agent program the chosen handler would run.
 async function showAgent() {
@@ -153,6 +241,11 @@ document.getElementById("copy").addEventListener("click", async () => {
 form.addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const f = form.elements;
+  const projects = projectsBody();
+  if (!projects) {
+    result.textContent = t("error.projects_twice");
+    return;
+  }
   const body = {
     node: f.node.value.trim(),
     code: f.code.value.trim(),
@@ -162,6 +255,7 @@ form.addEventListener("submit", async (ev) => {
     listen: f.listen.value.trim(),
     api: f.api.value.trim(),
     areas: f.areas.value.split(",").map((a) => a.trim()).filter(Boolean),
+    projects,
     discovery: f.discovery.checked,
     // Empty is the default; anything that is not a whole number is sent as -1
     // so the server names the field instead of silently using the default.

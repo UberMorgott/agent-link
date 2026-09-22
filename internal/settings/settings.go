@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -48,7 +49,8 @@ type Settings struct {
 	Areas  []string `json:"areas,omitempty"`
 	// Projects maps an area name to the project a request addressed to that
 	// area is handled in. Without an entry a request runs read-only in
-	// WorkDir. Edited in the config file only.
+	// WorkDir. Edited in «Проекты» on the settings page; Normalize declares
+	// every project area in Areas.
 	Projects map[string]Project `json:"projects,omitempty"`
 	// Discovery looks for members on the local networks (UDP beacons); nil means on.
 	Discovery *bool `json:"discovery,omitempty"`
@@ -198,10 +200,34 @@ func (s Settings) Normalize() Settings {
 	if len(peers) > 0 {
 		s.Peers = peers
 	}
+	s.Projects, s.Areas = normalizeProjects(s.Projects, s.Areas)
 	if s.Handler == "" {
 		s.Handler = worker.HandlerNone
 	}
 	return s.migrated()
+}
+
+// normalizeProjects trims the project areas and folders and declares every
+// project area in areas: peers send an area message only to members that
+// announced the area, so a project whose area is not announced gets nothing.
+func normalizeProjects(projects map[string]Project, areas []string) (map[string]Project, []string) {
+	if len(projects) == 0 {
+		return nil, areas
+	}
+	out := make(map[string]Project, len(projects))
+	for area, p := range projects {
+		p.Dir = strings.TrimSpace(p.Dir)
+		out[strings.TrimSpace(area)] = p
+	}
+	keys := slices.Sorted(maps.Keys(out))
+	areas = slices.Clone(areas)
+	for _, area := range keys {
+		// An invalid area is left for Validate to report as a project problem.
+		if config.ValidName(area) && !slices.Contains(areas, area) {
+			areas = append(areas, area)
+		}
+	}
+	return out, areas
 }
 
 // Save validates and writes settings atomically with owner-only permissions.

@@ -113,6 +113,13 @@
             <p class="hint" data-t="settings.work_dir.hint"></p>
             <label class="check"><input type="checkbox" name="autostart"> <span data-t="settings.autostart.label"></span></label>
           </section>
+          <section class="card settings-card settings-projects" data-settings-card="projects" aria-labelledby="settings_projects_title">
+            <h2 id="settings_projects_title" data-t="settings.projects.title"></h2>
+            <p class="hint" data-t="settings.projects.hint"></p>
+            <p id="projects_empty" class="hint" data-t="settings.projects.empty"></p>
+            <ul id="projects" class="project-list"></ul>
+            <button type="button" id="add_project" data-t="settings.projects.add"></button>
+          </section>
           <section id="updates" class="card settings-card" data-settings-card="updates" aria-labelledby="settings_updates_title">
             <h2 id="settings_updates_title" data-t="update.legend"></h2>
             <p class="row update-actions"><span id="update_version"></span>
