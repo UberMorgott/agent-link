@@ -73,12 +73,11 @@ type Settings struct {
 	HandlerCommand []string `json:"handler_command,omitempty"`
 }
 
-// Project is one project directory requests of an area are handled in.
-// Write is no longer used to pick the agent's permissions: every request runs
-// with full capability. It stays until the settings page stops showing it.
+// Project is one project directory requests of an area are handled in. Every
+// request runs with full capability; an old "write" key in a saved file is
+// ignored.
 type Project struct {
-	Dir   string `json:"dir"`
-	Write bool   `json:"write,omitempty"`
+	Dir string `json:"dir"`
 }
 
 // Problem is a validation failure. Key names the field or rule; the web UI

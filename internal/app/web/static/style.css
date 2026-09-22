@@ -157,8 +157,6 @@ pre { margin: 6px 0; white-space: pre-wrap; word-break: break-word; font: inheri
 .project-list { display: grid; margin: 0 0 12px; padding: 0; gap: 10px; list-style: none; }
 .project-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto; align-items: start; gap: 4px 12px; border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--surface); }
 .project-card label { margin-top: 0; }
-.project-card .project-write, .project-card .hint { grid-column: 1 / -1; }
-.project-card .hint { margin: 0 0 4px; }
 .project-remove { align-self: end; }
 .settings-advanced { grid-column: 1 / -1; padding: 0; }
 details { padding: 0; }

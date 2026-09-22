@@ -314,7 +314,7 @@ func TestSettingsProjectsRoundTrip(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &got); err != nil {
 		t.Fatal(err)
 	}
-	if p := got.Projects["site"]; p.Dir != dir || !p.Write || len(got.Projects) != 1 {
+	if p := got.Projects["site"]; p.Dir != dir || len(got.Projects) != 1 {
 		t.Fatalf("projects served back %+v", got.Projects)
 	}
 	if strings.Join(got.Areas, ",") != "dev,site" {

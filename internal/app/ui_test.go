@@ -355,21 +355,21 @@ func TestSettingsProjectRowsRenderAndSave(t *testing.T) {
 const fs = require("fs"), vm = require("vm");
 ` + settingsHarnessJS + `
 const document={getElementById:(id)=>elements[id],createElement:()=>new Element()};
-const state={settings:{node:"n",areas:["site"],projects:{site:{dir:"E:\\site",write:true}}},status:null,dashboard:null,update:null};
+const state={settings:{node:"n",areas:["site"],projects:{site:{dir:"E:\\site"}}},status:null,dashboard:null,update:null};
 const store={get:()=>state,subscribe(){},patch(name,value){state[name]=value}};
 const sent=[]; let picked="E:\\docs";
 async function api(method,path,body){if(path==="settings"){sent.push(body);return {saved:true,settings:body}}if(path==="pick-folder")return {path:picked};if(path==="agent")return {text:""};return {current:"dev",enabled:false}}
 const t=(key)=>key,fmt=(key)=>key;
 vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),{document,store,api,t,fmt,crypto:{},navigator:{},location:{reload(){}},Array,Number,Object,Promise,RegExp,String,Uint8Array,console});
 const list=elements.projects;
-const parts=(li)=>({area:li.children[0].children[1],dir:li.children[1].children[1].children[0],pick:li.children[1].children[1].children[1],remove:li.children[2],write:li.children[3].children[1],warning:li.children[4]});
+const parts=(li)=>({area:li.children[0].children[1],dir:li.children[1].children[1].children[0],pick:li.children[1].children[1].children[1],remove:li.children[2],count:li.children.length});
 const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve()};
 const edit=async(input,value)=>{input.value=value;elements.form.listeners.input({target:input});elements.form.listeners.change({target:input});await flush()};
 (async()=>{
 if(list.children.length!==1||!elements.projects_empty.hidden)throw new Error("saved project not rendered");
 let first=parts(list.children[0]);
-if(first.area.value!=="site"||first.dir.value!=="E:\\site"||!first.write.checked)throw new Error("row values: "+JSON.stringify([first.area.value,first.dir.value,first.write.checked]));
-if(first.warning.textContent!=="settings.projects.write_hint"||!first.warning.className.includes("warn"))throw new Error("write warning missing");
+if(first.area.value!=="site"||first.dir.value!=="E:\\site")throw new Error("row values: "+JSON.stringify([first.area.value,first.dir.value]));
+if(first.count!==3)throw new Error("a project row must hold only area, folder and remove: "+first.count);
 await edit(first.dir,"");
 if(sent.length!==0)throw new Error("a row without a folder was sent: "+JSON.stringify(sent));
 await edit(first.dir,"E:\\site");
@@ -381,11 +381,11 @@ await edit(second.area," docs ");
 if(sent.length!==0)throw new Error("a row without a folder was sent");
 await second.pick.listeners.click(); await flush();
 if(second.dir.value!=="E:\\docs")throw new Error("folder picker did not fill the row");
-const want={site:{dir:"E:\\site",write:true},docs:{dir:"E:\\docs",write:false}};
+const want={site:{dir:"E:\\site"},docs:{dir:"E:\\docs"}};
 if(sent.length!==1||JSON.stringify(sent[0].projects)!==JSON.stringify(want))throw new Error("picked folder did not save: "+JSON.stringify(sent));
 await first.remove.listeners.click(); await flush();
 if(list.children.length!==1)throw new Error("remove did not drop the row");
-if(sent.length!==2||JSON.stringify(sent[1].projects)!==JSON.stringify({docs:{dir:"E:\\docs",write:false}}))throw new Error("remove did not save: "+JSON.stringify(sent[1]));
+if(sent.length!==2||JSON.stringify(sent[1].projects)!==JSON.stringify({docs:{dir:"E:\\docs"}}))throw new Error("remove did not save: "+JSON.stringify(sent[1]));
 elements.add_project.listeners.click();
 const third=parts(list.children[1]);
 third.dir.value="E:\\other";

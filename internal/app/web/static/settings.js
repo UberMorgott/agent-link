@@ -40,7 +40,7 @@ function labelled(text, control) {
   return label;
 }
 
-// projectRow builds one editable project card: area, folder, write switch.
+// projectRow builds one editable project card: area and folder.
 function projectRow(area, project) {
   const li = document.createElement("li");
   li.className = "project-card";
@@ -65,18 +65,8 @@ function projectRow(area, project) {
   remove.type = "button";
   remove.className = "project-remove";
   remove.textContent = t("settings.projects.remove");
-  const write = document.createElement("input");
-  write.type = "checkbox";
-  write.checked = !!project.write;
-  const writeLabel = labelled(t("settings.projects.write"), write);
-  writeLabel.className = "check project-write";
-  const warning = document.createElement("p");
-  warning.textContent = t("settings.projects.write_hint");
-  const showWarning = () => { warning.className = write.checked ? "hint warn" : "hint"; };
-  write.addEventListener("change", showWarning);
-  showWarning();
-  li.append(labelled(t("settings.projects.area"), areaInput), labelled(t("settings.projects.dir"), dirRow), remove, writeLabel, warning);
-  const row = { li, area: areaInput, dir: dirInput, write };
+  li.append(labelled(t("settings.projects.area"), areaInput), labelled(t("settings.projects.dir"), dirRow), remove);
+  const row = { li, area: areaInput, dir: dirInput };
   remove.addEventListener("click", () => {
     projectRows = projectRows.filter((r) => r !== row);
     showProjects();
@@ -107,14 +97,14 @@ function projectsBody() {
     if (!area && !dir) continue;
     if (!area || !dir) { complete = false; continue; }
     if (Object.hasOwn(out, area)) { duplicate = true; continue; }
-    out[area] = { dir, write: r.write.checked };
+    out[area] = { dir };
   }
   return { projects: out, valid: complete && !duplicate, duplicate };
 }
 
 // projectsKey compares project sets regardless of row order.
 function projectsKey(projects) {
-  return JSON.stringify(Object.keys(projects || {}).sort().map((area) => [area, projects[area].dir || "", !!projects[area].write]));
+  return JSON.stringify(Object.keys(projects || {}).sort().map((area) => [area, projects[area].dir || ""]));
 }
 
 // settingsBody is the save request. Rows that are not valid yet are not sent:

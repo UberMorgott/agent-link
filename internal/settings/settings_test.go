@@ -40,7 +40,7 @@ func TestValidateProjects(t *testing.T) {
 	fakeClaudeOnPath(t)
 	dir := t.TempDir()
 	s := valid(t)
-	s.Projects = map[string]Project{"dev": {Dir: dir, Write: true}}
+	s.Projects = map[string]Project{"dev": {Dir: dir}}
 	if err := s.Validate(); err != nil {
 		t.Fatalf("valid project rejected: %v", err)
 	}
