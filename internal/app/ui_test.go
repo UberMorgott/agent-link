@@ -337,14 +337,15 @@ func TestUISemanticContracts(t *testing.T) {
 // settingsHarnessJS is the fake DOM settings.js runs against in Node.
 const settingsHarnessJS = `
 class Element { constructor(id=""){this.id=id;this.value="";this.checked=false;this.hidden=false;this.disabled=false;this.textContent="";this.className="";this.listeners={};this.open=false;this.children=[]} addEventListener(n,f){this.listeners[n]=f} setAttribute(n,v){this[n]=v} removeAttribute(n){delete this[n]} select(){} focus(){} append(...c){this.children.push(...c)} replaceChildren(...c){this.children=[...c]} }
-const names=["form","settings_result","settings_save","code","work_dir","pick","agent_path","pick_agent","find_agent","agent_row","agent_shown","work_dir_shown","advanced","my_addr","generate","copy","projects","projects_empty","add_project","updates","update_text","update_check","update_apply","update_auto","update_version"];
+const names=["form","settings_result","code","work_dir","pick","agent_path","pick_agent","find_agent","agent_row","agent_shown","work_dir_shown","advanced","my_addr","generate","copy","projects","projects_empty","add_project","updates","update_text","update_check","update_apply","update_auto","update_version"];
 const elements=Object.fromEntries(names.map((id)=>[id,new Element(id)]));
 const controls=Object.fromEntries(["node","code","handler","agent_path","work_dir","listen","api","areas","discovery","max_jobs","autostart"].map((name)=>[name,new Element(name)]));
 controls.handler.value="none"; controls.discovery.checked=true; elements.form.elements=controls;`
 
 // TestSettingsProjectRowsRenderAndSave runs settings.js: saved projects become
-// cards, «Добавить проект» adds one, «Удалить» drops one, «Сохранить» sends
-// them as "projects", and a repeated area stops the save with a sentence.
+// cards, «Добавить проект» adds one, a picked folder and «Удалить» save at once
+// as "projects", a half-typed row is never sent, and a repeated area is not
+// sent but named in a sentence.
 func TestSettingsProjectRowsRenderAndSave(t *testing.T) {
 	path, err := filepath.Abs("web/static/settings.js")
 	if err != nil {
@@ -357,34 +358,39 @@ const document={getElementById:(id)=>elements[id],createElement:()=>new Element(
 const state={settings:{node:"n",areas:["site"],projects:{site:{dir:"E:\\site",write:true}}},status:null,dashboard:null,update:null};
 const store={get:()=>state,subscribe(){},patch(name,value){state[name]=value}};
 const sent=[]; let picked="E:\\docs";
-async function api(method,path,body){if(path==="settings"){sent.push(body);return {saved:true}}if(path==="pick-folder")return {path:picked};if(path==="agent")return {text:""};return {current:"dev",enabled:false}}
+async function api(method,path,body){if(path==="settings"){sent.push(body);return {saved:true,settings:body}}if(path==="pick-folder")return {path:picked};if(path==="agent")return {text:""};return {current:"dev",enabled:false}}
 const t=(key)=>key,fmt=(key)=>key;
 vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),{document,store,api,t,fmt,crypto:{},navigator:{},location:{reload(){}},Array,Number,Object,Promise,RegExp,String,Uint8Array,console});
 const list=elements.projects;
 const parts=(li)=>({area:li.children[0].children[1],dir:li.children[1].children[1].children[0],pick:li.children[1].children[1].children[1],remove:li.children[2],write:li.children[3].children[1],warning:li.children[4]});
-const submit=async()=>{await elements.form.listeners.submit({preventDefault(){}});for(let i=0;i<8;i++)await Promise.resolve()};
+const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve()};
+const edit=async(input,value)=>{input.value=value;elements.form.listeners.input({target:input});elements.form.listeners.change({target:input});await flush()};
 (async()=>{
 if(list.children.length!==1||!elements.projects_empty.hidden)throw new Error("saved project not rendered");
 let first=parts(list.children[0]);
 if(first.area.value!=="site"||first.dir.value!=="E:\\site"||!first.write.checked)throw new Error("row values: "+JSON.stringify([first.area.value,first.dir.value,first.write.checked]));
 if(first.warning.textContent!=="settings.projects.write_hint"||!first.warning.className.includes("warn"))throw new Error("write warning missing");
+await edit(first.dir,"");
+if(sent.length!==0)throw new Error("a row without a folder was sent: "+JSON.stringify(sent));
+await edit(first.dir,"E:\\site");
+if(sent.length!==0)throw new Error("an unchanged form was sent again");
 elements.add_project.listeners.click();
-if(list.children.length!==2)throw new Error("add did not add a row");
+if(list.children.length!==2||sent.length!==0)throw new Error("add did not add a row, or saved an empty one");
 const second=parts(list.children[1]);
-second.area.value=" docs ";
-await second.pick.listeners.click();
+await edit(second.area," docs ");
+if(sent.length!==0)throw new Error("a row without a folder was sent");
+await second.pick.listeners.click(); await flush();
 if(second.dir.value!=="E:\\docs")throw new Error("folder picker did not fill the row");
-await submit();
 const want={site:{dir:"E:\\site",write:true},docs:{dir:"E:\\docs",write:false}};
-if(JSON.stringify(sent[0].projects)!==JSON.stringify(want))throw new Error("projects sent: "+JSON.stringify(sent[0].projects));
-first.remove.listeners.click();
+if(sent.length!==1||JSON.stringify(sent[0].projects)!==JSON.stringify(want))throw new Error("picked folder did not save: "+JSON.stringify(sent));
+await first.remove.listeners.click(); await flush();
 if(list.children.length!==1)throw new Error("remove did not drop the row");
+if(sent.length!==2||JSON.stringify(sent[1].projects)!==JSON.stringify({docs:{dir:"E:\\docs",write:false}}))throw new Error("remove did not save: "+JSON.stringify(sent[1]));
 elements.add_project.listeners.click();
-await submit();
-if(JSON.stringify(sent[1].projects)!==JSON.stringify({docs:{dir:"E:\\docs",write:false}}))throw new Error("after remove: "+JSON.stringify(sent[1].projects));
-parts(list.children[1]).area.value="docs";
-await submit();
-if(sent.length!==2||elements.settings_result.textContent!=="error.projects_twice")throw new Error("duplicate area was sent");
+const third=parts(list.children[1]);
+third.dir.value="E:\\other";
+await edit(third.area,"docs");
+if(sent.length!==2||elements.settings_result.textContent!=="error.projects_twice")throw new Error("duplicate area was sent: "+JSON.stringify(sent));
 })().catch((error)=>{console.error(error.stack);process.exitCode=1});`
 	//nolint:gosec // G204: fixed Node executable runs a checked-in browser module in a deterministic harness.
 	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path).CombinedOutput(); err != nil {
@@ -392,8 +398,9 @@ if(sent.length!==2||elements.settings_result.textContent!=="error.projects_twice
 	}
 }
 
-// TestSettingsSavePatchesReactiveSlices executes the real browser module and
-// catches timer-style/broad rereads after a mutation, lost response slices,
+// TestSettingsSavePatchesReactiveSlices executes the real browser module: a
+// changed field saves by itself, with no save button. It catches
+// timer-style/broad rereads after a mutation, lost response slices,
 // and reloads that are not caused by an API-address change.
 func TestSettingsSavePatchesReactiveSlices(t *testing.T) {
 	path, err := filepath.Abs("web/static/settings.js")
@@ -413,16 +420,17 @@ function refreshSlice(){refreshes++;throw new Error("save performed a broad refr
 const t=(key)=>key,fmt=(key)=>key; const crypto={getRandomValues:(x)=>x}; const navigator={clipboard:{writeText:async()=>{}}};
 const location={reload(){reloads++}};
 vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),{document,store,api,refreshSlice,t,fmt,crypto,navigator,location,Array,Number,Object,Promise,RegExp,String,Uint8Array,console});
-(async()=>{controls.node.value="saved";controls.api.value="127.0.0.1:7520";controls.areas.value="dev";await elements.form.listeners.submit({preventDefault(){}});for(let i=0;i<8;i++)await Promise.resolve();
+const change=async(input)=>{elements.form.listeners.input({target:input});elements.form.listeners.change({target:input});for(let i=0;i<8;i++)await Promise.resolve()};
+(async()=>{if(elements.settings_save)throw new Error("settings still have a save button");controls.node.value="saved";controls.api.value="127.0.0.1:7520";controls.areas.value="dev";await change(controls.areas);
 if(refreshes!==0)throw new Error("refreshSlice called "+refreshes+" times");
 if(JSON.stringify(patches)!==JSON.stringify(["settings","status","dashboard"]))throw new Error("patches: "+JSON.stringify(patches));
 if(state.settings.node!=="saved"||state.status.node!=="saved"||state.dashboard.total_messages!==7)throw new Error("response slices were not applied");
 if(reloads!==0)throw new Error("same API address reloaded the page");
-patches.length=0; controls.node.value="request-only"; saveResponse={saved:true}; await elements.form.listeners.submit({preventDefault(){}}); for(let i=0;i<8;i++)await Promise.resolve();
+patches.length=0; controls.node.value="request-only"; saveResponse={saved:true}; await change(controls.node);
 if(patches.length||state.settings.node!=="saved")throw new Error("request body was patched without response fields");
-controls.api.value=""; saveResponse={saved:true,settings:{node:"saved",api:"127.0.0.1:7520",areas:[]}}; await elements.form.listeners.submit({preventDefault(){}}); for(let i=0;i<8;i++)await Promise.resolve();
+controls.api.value=""; saveResponse={saved:true,settings:{node:"saved",api:"127.0.0.1:7520",areas:[]}}; await change(controls.api);
 if(reloads!==0)throw new Error("clearing API reloaded despite normalized server value");
-controls.api.value="127.0.0.1:7599"; saveResponse={saved:true,settings:{node:"saved",api:"127.0.0.1:7599",areas:[]}}; await elements.form.listeners.submit({preventDefault(){}}); for(let i=0;i<8;i++)await Promise.resolve();
+controls.api.value="127.0.0.1:7599"; saveResponse={saved:true,settings:{node:"saved",api:"127.0.0.1:7599",areas:[]}}; await change(controls.api);
 if(reloads!==1)throw new Error("changed effective API did not reload exactly once: "+reloads);
 })().catch((error)=>{console.error(error.stack);process.exitCode=1});`
 	//nolint:gosec // G204: fixed Node executable runs a checked-in browser module in a deterministic harness.

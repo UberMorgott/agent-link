@@ -449,7 +449,7 @@ func foundText(f settings.Found) string {
 }
 
 // findAgent looks for the handler's agent again («Найти заново») and returns
-// what it would save; the page keeps it until «Сохранить». A program on PATH
+// what it would save; the page then saves it at once. A program on PATH
 // needs no agent_path, so Path is then empty.
 func (a *App) findAgent(w http.ResponseWriter, r *http.Request) {
 	var req struct {

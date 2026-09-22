@@ -8,19 +8,143 @@ const pick = document.getElementById("pick");
 const agentPath = document.getElementById("agent_path");
 const pickAgent = document.getElementById("pick_agent");
 const findAgent = document.getElementById("find_agent");
-const saveButton = document.getElementById("settings_save");
 
 // Letters and digits without 0/O and 1/I: 32 symbols, so a byte & 31 is uniform.
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const DEFAULT_API = "127.0.0.1:7520";
 
+// Every change saves itself: toggles, pickers and row removal at once, text
+// fields on "change" (blur or Enter), so a half-typed value never restarts the
+// node. settingsEdits counts edits in the form; the form is repainted from the
+// server only when every edit has been saved.
+let settingsEdits = 0;
+let settingsSettled = 0;
+let settingsSaving = false;
+let settingsSaveAgain = false;
+let settingsLastSent = "";
+
+// --- «Проекты»: an area mapped to a project folder ---
+
+const projectList = document.getElementById("projects");
+let projectRows = [];
+
 function effectiveAPI(settings) {
   return String(settings?.api || DEFAULT_API).trim();
 }
 
+function labelled(text, control) {
+  const label = document.createElement("label");
+  const span = document.createElement("span");
+  span.textContent = text;
+  label.append(span, control);
+  return label;
+}
+
+// projectRow builds one editable project card: area, folder, write switch.
+function projectRow(area, project) {
+  const li = document.createElement("li");
+  li.className = "project-card";
+  const areaInput = document.createElement("input");
+  areaInput.value = area;
+  areaInput.autocomplete = "off";
+  areaInput.spellcheck = false;
+  const dirInput = document.createElement("input");
+  dirInput.value = project.dir || "";
+  dirInput.autocomplete = "off";
+  dirInput.spellcheck = false;
+  const pickDir = document.createElement("button");
+  pickDir.type = "button";
+  pickDir.textContent = t("settings.work_dir.pick");
+  pickDir.addEventListener("click", async () => {
+    if (await pickFolder(pickDir, dirInput)) editedAndSave();
+  });
+  const dirRow = document.createElement("span");
+  dirRow.className = "row";
+  dirRow.append(dirInput, pickDir);
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "project-remove";
+  remove.textContent = t("settings.projects.remove");
+  const write = document.createElement("input");
+  write.type = "checkbox";
+  write.checked = !!project.write;
+  const writeLabel = labelled(t("settings.projects.write"), write);
+  writeLabel.className = "check project-write";
+  const warning = document.createElement("p");
+  warning.textContent = t("settings.projects.write_hint");
+  const showWarning = () => { warning.className = write.checked ? "hint warn" : "hint"; };
+  write.addEventListener("change", showWarning);
+  showWarning();
+  li.append(labelled(t("settings.projects.area"), areaInput), labelled(t("settings.projects.dir"), dirRow), remove, writeLabel, warning);
+  const row = { li, area: areaInput, dir: dirInput, write };
+  remove.addEventListener("click", () => {
+    projectRows = projectRows.filter((r) => r !== row);
+    showProjects();
+    editedAndSave();
+  });
+  return row;
+}
+
+function showProjects() {
+  projectList.replaceChildren(...projectRows.map((r) => r.li));
+  document.getElementById("projects_empty").hidden = projectRows.length > 0;
+}
+
+document.getElementById("add_project").addEventListener("click", () => {
+  const row = projectRow("", {});
+  projectRows.push(row);
+  showProjects();
+  row.area.focus();
+});
+
+// projectsBody reads the rows: a blank row is skipped, a row with only an area
+// or only a folder makes the rows incomplete, and one area twice is a duplicate.
+function projectsBody() {
+  const out = {};
+  let complete = true, duplicate = false;
+  for (const r of projectRows) {
+    const area = r.area.value.trim(), dir = r.dir.value.trim();
+    if (!area && !dir) continue;
+    if (!area || !dir) { complete = false; continue; }
+    if (Object.hasOwn(out, area)) { duplicate = true; continue; }
+    out[area] = { dir, write: r.write.checked };
+  }
+  return { projects: out, valid: complete && !duplicate, duplicate };
+}
+
+// projectsKey compares project sets regardless of row order.
+function projectsKey(projects) {
+  return JSON.stringify(Object.keys(projects || {}).sort().map((area) => [area, projects[area].dir || "", !!projects[area].write]));
+}
+
+// settingsBody is the save request. Rows that are not valid yet are not sent:
+// the saved projects go instead, so a half-typed row never replaces them.
+function settingsBody(rows) {
+  const f = form.elements;
+  return {
+    node: f.node.value.trim(),
+    code: f.code.value.trim(),
+    handler: f.handler.value,
+    agent_path: agentPath.value,
+    work_dir: f.work_dir.value.trim(),
+    listen: f.listen.value.trim(),
+    api: f.api.value.trim(),
+    areas: f.areas.value.split(",").map((a) => a.trim()).filter(Boolean),
+    projects: rows.valid ? rows.projects : (store.get().settings?.projects || {}),
+    discovery: f.discovery.checked,
+    // Empty is the default; anything that is not a whole number is sent as -1
+    // so the server names the field instead of silently using the default.
+    max_jobs: f.max_jobs.value.trim() === "" ? 0 : (/^\d+$/.test(f.max_jobs.value.trim()) ? Number(f.max_jobs.value.trim()) : -1),
+    autostart: f.autostart.checked,
+  };
+}
+
 function showSettings(s) {
+  // Unsaved edits win over a repaint; the next save brings them together.
+  if (settingsSaving || settingsEdits !== settingsSettled) return;
   for (const key of ["node", "code", "work_dir", "listen", "api"]) {
-    form.elements[key].value = s[key] || "";
+    const value = s[key] || "";
+    if (form.elements[key].value !== value) form.elements[key].value = value;
   }
   form.elements.areas.value = (s.areas || []).join(", ");
   form.elements.handler.value = s.handler || "none";
@@ -32,9 +156,70 @@ function showSettings(s) {
   if (s.listen || s.api || s.discovery === false || s.max_jobs || (s.areas || []).length) document.getElementById("advanced").open = true;
   showWorkDir("settings.work_dir.current");
   const projects = s.projects || {};
-  projectRows = Object.keys(projects).sort().map((area) => projectRow(area, projects[area]));
-  showProjects();
+  // Rebuilding equal rows would only take the focus away from them.
+  const rows = projectsBody();
+  if (!rows.valid || projectsKey(rows.projects) !== projectsKey(projects)) {
+    projectRows = Object.keys(projects).sort().map((area) => projectRow(area, projects[area]));
+    showProjects();
+  }
+  settingsLastSent = JSON.stringify(settingsBody(projectsBody()));
 }
+
+// saveSettings sends the form when it differs from what was last sent. One
+// request runs at a time; a change during it saves again afterwards. note
+// replaces «Сохранено.» on success.
+async function saveSettings(note) {
+  if (settingsSaving) { settingsSaveAgain = true; return; }
+  const rows = projectsBody();
+  const body = settingsBody(rows);
+  const sent = JSON.stringify(body), edits = settingsEdits;
+  if (rows.duplicate) result.textContent = t("error.projects_twice");
+  if (sent === settingsLastSent) {
+    if (rows.valid) settingsSettled = edits;
+    return;
+  }
+  const previousAPI = effectiveAPI(store.get().settings);
+  if (!rows.duplicate) result.textContent = t("settings.saving");
+  settingsSaving = true;
+  form.setAttribute("aria-busy", "true");
+  try {
+    const r = await api("POST", "settings", body);
+    settingsLastSent = sent;
+    const text = r.error ? r.error : (note || t("settings.saved"));
+    if (!rows.duplicate) result.textContent = r.found ? text + " " + r.found : text;
+    settingsSaving = false;
+    if (rows.valid && settingsEdits === edits) settingsSettled = edits;
+    if (r.settings) store.patch("settings", r.settings);
+    if (r.status) store.patch("status", r.status);
+    if (r.dashboard) store.patch("dashboard", r.dashboard);
+    if (r.settings && effectiveAPI(r.settings) !== previousAPI) location.reload();
+  } catch (e) {
+    result.textContent = e.message;
+  } finally {
+    settingsSaving = false;
+    form.removeAttribute("aria-busy");
+  }
+  if (settingsSaveAgain) {
+    settingsSaveAgain = false;
+    await saveSettings();
+  }
+}
+
+// editedAndSave saves a value that a script put into the form: such a value
+// fires neither "input" nor "change".
+function editedAndSave(note) {
+  settingsEdits++;
+  return saveSettings(note);
+}
+
+// The auto-update switch sits in the form but saves through its own request.
+const ownRequest = (ev) => ev.target?.id === "update_auto";
+form.addEventListener("input", (ev) => { if (!ownRequest(ev)) settingsEdits++; });
+form.addEventListener("change", (ev) => { if (!ownRequest(ev)) saveSettings(); });
+form.addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  saveSettings();
+});
 
 // showWorkDir repeats the chosen folder in full under the field.
 function showWorkDir(key) {
@@ -68,88 +253,10 @@ async function pickFolder(button, input) {
 }
 
 pick.addEventListener("click", async () => {
-  if (await pickFolder(pick, workDir)) showWorkDir("settings.work_dir.chosen");
+  if (!await pickFolder(pick, workDir)) return;
+  showWorkDir("settings.work_dir.chosen");
+  await editedAndSave();
 });
-
-// --- «Проекты»: an area mapped to a project folder, saved with «Сохранить» ---
-
-const projectList = document.getElementById("projects");
-let projectRows = [];
-
-function labelled(text, control) {
-  const label = document.createElement("label");
-  const span = document.createElement("span");
-  span.textContent = text;
-  label.append(span, control);
-  return label;
-}
-
-// projectRow builds one editable project card: area, folder, write switch.
-function projectRow(area, project) {
-  const li = document.createElement("li");
-  li.className = "project-card";
-  const areaInput = document.createElement("input");
-  areaInput.value = area;
-  areaInput.autocomplete = "off";
-  areaInput.spellcheck = false;
-  const dirInput = document.createElement("input");
-  dirInput.value = project.dir || "";
-  dirInput.autocomplete = "off";
-  dirInput.spellcheck = false;
-  const pickDir = document.createElement("button");
-  pickDir.type = "button";
-  pickDir.textContent = t("settings.work_dir.pick");
-  pickDir.addEventListener("click", () => pickFolder(pickDir, dirInput));
-  const dirRow = document.createElement("span");
-  dirRow.className = "row";
-  dirRow.append(dirInput, pickDir);
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.className = "project-remove";
-  remove.textContent = t("settings.projects.remove");
-  const write = document.createElement("input");
-  write.type = "checkbox";
-  write.checked = !!project.write;
-  const writeLabel = labelled(t("settings.projects.write"), write);
-  writeLabel.className = "check project-write";
-  const warning = document.createElement("p");
-  warning.textContent = t("settings.projects.write_hint");
-  const showWarning = () => { warning.className = write.checked ? "hint warn" : "hint"; };
-  write.addEventListener("change", showWarning);
-  showWarning();
-  li.append(labelled(t("settings.projects.area"), areaInput), labelled(t("settings.projects.dir"), dirRow), remove, writeLabel, warning);
-  const row = { li, area: areaInput, dir: dirInput, write };
-  remove.addEventListener("click", () => {
-    projectRows = projectRows.filter((r) => r !== row);
-    showProjects();
-  });
-  return row;
-}
-
-function showProjects() {
-  projectList.replaceChildren(...projectRows.map((r) => r.li));
-  document.getElementById("projects_empty").hidden = projectRows.length > 0;
-}
-
-document.getElementById("add_project").addEventListener("click", () => {
-  const row = projectRow("", {});
-  projectRows.push(row);
-  showProjects();
-  row.area.focus();
-});
-
-// projectsBody is the «projects» object for the save request; a blank row is
-// skipped and null means one area is used twice.
-function projectsBody() {
-  const out = {};
-  for (const r of projectRows) {
-    const area = r.area.value.trim(), dir = r.dir.value.trim();
-    if (!area && !dir) continue;
-    if (Object.hasOwn(out, area)) return null;
-    out[area] = { dir, write: r.write.checked };
-  }
-  return out;
-}
 
 // showAgent tells which agent program the chosen handler would run.
 async function showAgent() {
@@ -164,14 +271,15 @@ async function showAgent() {
   } catch (e) { el.textContent = e.message; }
 }
 
-// A program chosen for one agent is not the other agent's program.
+// A program chosen for one agent is not the other agent's program. The form's
+// own "change" listener then saves the new handler.
 form.elements.handler.addEventListener("change", () => {
   agentPath.value = "";
   showAgent();
 });
 
-// «Найти заново» looks through every known install location; the result is
-// kept until «Сохранить», like a picked program.
+// «Найти заново» looks through every known install location and saves the
+// program it finds, like a picked program.
 findAgent.addEventListener("click", async () => {
   findAgent.disabled = true;
   result.textContent = t("settings.agent.finding");
@@ -179,9 +287,12 @@ findAgent.addEventListener("click", async () => {
   try {
     const r = await api("POST", "find-agent", { handler });
     if (form.elements.handler.value !== handler) return;
-    if (r.source !== "missing") agentPath.value = r.path || "";
     document.getElementById("agent_shown").textContent = r.text || "";
-    result.textContent = r.source === "missing" ? "" : t("settings.agent.save_hint");
+    result.textContent = "";
+    if (r.source !== "missing") {
+      agentPath.value = r.path || "";
+      await editedAndSave();
+    }
   } catch (e) {
     result.textContent = e.message;
   } finally {
@@ -198,7 +309,7 @@ pickAgent.addEventListener("click", async () => {
     if (r.path) {
       agentPath.value = r.path;
       await showAgent();
-      result.textContent = fmt("settings.agent.chosen", { path: r.path });
+      await editedAndSave(fmt("settings.agent.chosen", { path: r.path }));
     } else {
       result.textContent = r.message || "";
     }
@@ -225,7 +336,7 @@ document.getElementById("generate").addEventListener("click", () => {
   crypto.getRandomValues(bytes);
   const s = Array.from(bytes, (b) => CODE_ALPHABET[b & 31]).join("");
   code.value = s.slice(0, 4) + "-" + s.slice(4, 8) + "-" + s.slice(8);
-  result.textContent = t("settings.code.generated");
+  return editedAndSave(t("settings.code.generated"));
 });
 
 document.getElementById("copy").addEventListener("click", async () => {
@@ -238,51 +349,7 @@ document.getElementById("copy").addEventListener("click", async () => {
   }
 });
 
-form.addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  const f = form.elements;
-  const projects = projectsBody();
-  if (!projects) {
-    result.textContent = t("error.projects_twice");
-    return;
-  }
-  const body = {
-    node: f.node.value.trim(),
-    code: f.code.value.trim(),
-    handler: f.handler.value,
-    agent_path: agentPath.value,
-    work_dir: f.work_dir.value.trim(),
-    listen: f.listen.value.trim(),
-    api: f.api.value.trim(),
-    areas: f.areas.value.split(",").map((a) => a.trim()).filter(Boolean),
-    projects,
-    discovery: f.discovery.checked,
-    // Empty is the default; anything that is not a whole number is sent as -1
-    // so the server names the field instead of silently using the default.
-    max_jobs: f.max_jobs.value.trim() === "" ? 0 : (/^\d+$/.test(f.max_jobs.value.trim()) ? Number(f.max_jobs.value.trim()) : -1),
-    autostart: f.autostart.checked,
-  };
-  const previousAPI = effectiveAPI(store.get().settings);
-  result.textContent = t("settings.saving");
-  saveButton.disabled = true;
-  form.setAttribute("aria-busy", "true");
-  try {
-    const r = await api("POST", "settings", body);
-    const text = r.error ? r.error : t("settings.saved");
-    result.textContent = r.found ? text + " " + r.found : text;
-    if (r.settings) store.patch("settings", r.settings);
-    if (r.status) store.patch("status", r.status);
-    if (r.dashboard) store.patch("dashboard", r.dashboard);
-    if (r.settings && effectiveAPI(r.settings) !== previousAPI) location.reload();
-  } catch (e) {
-    result.textContent = e.message;
-  } finally {
-    saveButton.disabled = false;
-    form.removeAttribute("aria-busy");
-  }
-});
-
-// --- updates: own buttons and switch, not part of «Сохранить» ---
+// --- updates: own buttons and switch, saved by their own requests ---
 
 const updText = document.getElementById("update_text");
 const updCheck = document.getElementById("update_check");
