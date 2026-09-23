@@ -80,6 +80,7 @@ type fakeChats struct {
 	msgs   []node.ChatMessage
 	deny   bool
 	claims int
+	live   map[string]bool // areas with a live session
 }
 
 func newFakeChats() *fakeChats {
@@ -99,6 +100,12 @@ func (f *fakeChats) ClaimRun(m node.Message) (bool, string, error) {
 		return false, node.HoldAutoLimit, nil
 	}
 	return true, "", nil
+}
+
+func (f *fakeChats) LiveSession(area string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.live[area]
 }
 
 func (f *fakeChats) ChatOf(id string) (node.Chat, bool) {
@@ -407,7 +414,6 @@ func TestChatHeldReasons(t *testing.T) {
 		run        Runner
 		setup      func(*fakeChats)
 	}{
-		{name: "no handler", want: node.HoldNoHandler},
 		{name: "agent program missing", want: node.HoldNoAgent,
 			opt: Options{Agent: func() Command { return Command{Name: filepath.Join(t.TempDir(), "gone-agent.exe")} }}},
 		{name: "chain limit", want: node.HoldAutoLimit, run: echoRunner, setup: func(f *fakeChats) { f.deny = true }},
@@ -426,9 +432,6 @@ func TestChatHeldReasons(t *testing.T) {
 				t.Fatal(err)
 			}
 			hook := w.Accept
-			if c.run == nil && c.opt.Agent == nil {
-				hook = w.ChatsOnly // what the app installs without a handler
-			}
 			q := ask(chats, id1, "peer", "q")
 			for range 2 { // a resent duplicate repeats the same status id
 				if err := hook(q); err != nil {
@@ -449,9 +452,6 @@ func TestChatHeldReasons(t *testing.T) {
 			if h.Kind != node.KindStatus || h.ReplyTo != id1 || h.ChatID != chatID || h.ID != node.DerivedID(id1, "me/held") ||
 				h.HoldReason != c.want || h.Activity != node.HoldText(c.want) {
 				t.Fatalf("held status %+v", h)
-			}
-			if all := rec.filter(func(node.Message) bool { return true }); c.run == nil && c.opt.Agent == nil && len(all) != 2 {
-				t.Fatalf("no handler: a direct request was queued or answered: %+v", all)
 			}
 			if _, ok := w.Job(id1); ok {
 				t.Fatal("a held request got a job")
@@ -478,4 +478,57 @@ func TestChatAnsweredStatusSaysWhy(t *testing.T) {
 	if len(got) != 1 || got[0].Kind != node.KindStatus || got[0].HoldReason != node.HoldAnswered || got[0].ChatID != chatID {
 		t.Fatalf("answered status %+v", got)
 	}
+}
+
+// Without a handler (auto-answer off) a chat request waits unread for a
+// session: no job, no status; only a request past the chain limit is held.
+// With a handler, a live session for the area takes the request instead.
+func TestChatLeftToSessions(t *testing.T) {
+	t.Run("auto-answer off", func(t *testing.T) {
+		chats := newFakeChats()
+		rec, send := chatRecorder(chats)
+		w, err := New(nil, send, t.TempDir(), t.TempDir(), Options{Chats: chats, Self: "me"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.ChatsOnly(ask(chats, id1, "peer", "q")); err != nil {
+			t.Fatal(err)
+		}
+		if all := rec.filter(func(node.Message) bool { return true }); len(all) != 0 || chats.claims != 0 {
+			t.Fatalf("auto-answer off answered: %+v (claims %d)", all, chats.claims)
+		}
+		deep := ask(chats, id2, "peer", "again")
+		deep.AutoDepth = node.MaxAutoDepth + 1
+		if err := w.ChatsOnly(deep); err != nil {
+			t.Fatal(err)
+		}
+		held := rec.filter(func(m node.Message) bool { return m.JobStatus == node.JobHeld })
+		if len(held) != 1 || held[0].ReplyTo != id2 || held[0].HoldReason != node.HoldAutoLimit || held[0].Activity != "пауза — нужен человек" {
+			t.Fatalf("held %+v", held)
+		}
+	})
+	t.Run("live session", func(t *testing.T) {
+		chats := newFakeChats()
+		chats.live = map[string]bool{"": true}
+		rec, send := chatRecorder(chats)
+		w, err := New(echoRunner, send, t.TempDir(), t.TempDir(), Options{Chats: chats, Self: "me"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Accept(ask(chats, id1, "peer", "q")); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Accept(msg(id3, "direct")); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := w.Job(id1); ok || chats.claims != 0 {
+			t.Fatal("the worker took a request a live session has")
+		}
+		if _, ok := w.Job(id3); ok {
+			t.Fatal("the worker took a plain request a live session has")
+		}
+		if all := rec.filter(func(node.Message) bool { return true }); len(all) != 0 {
+			t.Fatalf("sent %+v", all)
+		}
+	})
 }

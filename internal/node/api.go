@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,16 +18,35 @@ import (
 // chat (To stays empty): Ask names the participants asked to answer (none:
 // the message only informs) and Parent the request whose job sends it
 // (AGENTLINK_JOB_ID), which continues that request's automatic chain.
+//
+// Area picks the project of the conversation for To (default: the area of
+// Folder, the sender's working folder, when it is a project folder here).
+// AuthorKind is who writes (Author*); the control API always sends
+// AuthorAgent, the app's composer AuthorHuman.
 type SendRequest struct {
-	To      string   `json:"to"`
-	Body    string   `json:"body"`
-	ReplyTo string   `json:"reply_to,omitempty"`
-	ChatID  string   `json:"chat_id,omitempty"`
-	Ask     []string `json:"ask,omitempty"`
-	Parent  string   `json:"parent,omitempty"`
+	To         string   `json:"to"`
+	Body       string   `json:"body"`
+	ReplyTo    string   `json:"reply_to,omitempty"`
+	ChatID     string   `json:"chat_id,omitempty"`
+	Ask        []string `json:"ask,omitempty"`
+	Parent     string   `json:"parent,omitempty"`
+	Area       string   `json:"area,omitempty"`
+	Folder     string   `json:"folder,omitempty"`
+	AuthorKind string   `json:"author_kind,omitempty"`
 }
 
-// SendRequest sends req like POST /send: to a chat with ChatID, else like Send.
+// SendRequest sends req like POST /send: every path goes to the one open chat
+// of its conversation (EnsureOpenChat), a plain message only for a member
+// connected without chat support or a reply to a plain message:
+//
+//   - ChatID: that chat's conversation (a closed or v0.5 chat continues in its
+//     open generation);
+//   - ReplyTo a chat message: the conversation of that message;
+//   - To a member (empty: the only one): the chat of this node and it in Area,
+//     asking it unless Ask says otherwise;
+//   - To "area:NAME": the chat of this node and every member of the area, in
+//     that area, asking them all unless Ask says otherwise.
+//
 // A reply (ReplyTo) that is not from the job answering that very request
 // (Parent) is reported to the local reply hook: the request is answered here.
 func (n *Node) SendRequest(req SendRequest) (Message, error) {
@@ -38,32 +58,70 @@ func (n *Node) SendRequest(req SendRequest) (Message, error) {
 }
 
 func (n *Node) sendRequest(req SendRequest) (Message, error) {
+	cs := ChatSend{ChatID: req.ChatID, Body: req.Body, ReplyTo: req.ReplyTo, Ask: req.Ask, Parent: req.Parent, AuthorKind: req.AuthorKind}
 	if req.ChatID != "" {
 		if req.To != "" {
 			return Message{}, errors.New("give either to or chat_id")
 		}
-		return n.SendChat(ChatSend{ChatID: req.ChatID, Body: req.Body, ReplyTo: req.ReplyTo, Ask: req.Ask, Parent: req.Parent})
+		return n.SendChat(cs)
 	}
-	if len(req.Ask) > 0 {
-		return Message{}, errors.New("ask needs chat_id")
+	if req.ReplyTo != "" {
+		if r, ok := n.chats.message(req.ReplyTo); ok && r.Message.Kind == "" {
+			cs.ChatID = r.Message.ChatID
+			return n.SendChat(cs)
+		}
 	}
-	return n.Send(req.To, req.Body, req.ReplyTo)
-}
-
-// SendToChat is SendRequest for the control API's POST /send (the CLI): a new
-// question to one member that takes part in chats continues the conversation
-// with it, in the newest open chat of just the two (a new one when there is
-// none), so its agent keeps the context. Replies and area messages stay plain.
-func (n *Node) SendToChat(req SendRequest) (Message, error) {
-	if req.ChatID != "" || req.ReplyTo != "" || len(req.Ask) > 0 || req.To == "" ||
-		strings.HasPrefix(req.To, AreaPrefix) || !n.PeerHas(req.To, CapChat) {
-		return n.SendRequest(req)
+	area := strings.TrimSpace(req.Area)
+	if area == "" && req.Folder != "" {
+		area, _ = n.FolderArea(req.Folder)
+		area = n.localArea(area)
 	}
-	c, err := n.openChatWith(req.To, "")
+	to := req.To
+	if to == "" {
+		switch peers := n.Peers(); {
+		case len(peers) == 1:
+			to = peers[0]
+		case len(peers) > 1:
+			slices.Sort(peers)
+			return Message{}, fmt.Errorf("%w: %s", ErrAmbiguousPeer, strings.Join(peers, ", "))
+		}
+	}
+	var recipients []string
+	if a, ok := strings.CutPrefix(to, AreaPrefix); ok {
+		area = a
+		n.mu.Lock()
+		for peer, areas := range n.areas {
+			if slices.Contains(areas, a) && n.known[peer] && !n.removedLocked(peer) {
+				recipients = append(recipients, peer)
+			}
+		}
+		n.mu.Unlock()
+	} else if to != "" {
+		recipients = []string{to}
+	}
+	plain := len(recipients) == 0 || req.ReplyTo != "" // unknown ones fail in Send
+	for _, p := range recipients {
+		plain = plain || (n.Connected(p) && !n.PeerHas(p, CapChat))
+	}
+	if plain {
+		if len(req.Ask) > 0 {
+			return Message{}, errors.New("ask needs a chat")
+		}
+		return n.Send(to, req.Body, req.ReplyTo)
+	}
+	parts, err := n.normalizeParticipants(recipients)
 	if err != nil {
 		return Message{}, err
 	}
-	return n.SendRequest(SendRequest{ChatID: c.ID, Body: req.Body, Ask: []string{req.To}, Parent: req.Parent})
+	c, err := n.EnsureOpenChat(parts, area)
+	if err != nil {
+		return Message{}, err
+	}
+	cs.ChatID = c.ID
+	if len(cs.Ask) == 0 {
+		cs.Ask = recipients
+	}
+	return n.SendChat(cs)
 }
 
 // CreateChatRequest is the body of POST /chats.
@@ -72,17 +130,24 @@ type CreateChatRequest struct {
 	Area         string   `json:"area,omitempty"`
 }
 
-// APIHandler serves the loopback control API:
+// APIHandler serves the loopback control API (agents and the CLI; see
+// docs/agent-usage.md). It has no close: only people close chats, in the app.
 //
-//	POST /send               SendRequest -> Message (SendToChat: --to a member with chats goes to your chat with it)
+//	POST /send               SendRequest -> Message, written by an agent (AuthorAgent)
 //	GET  /wait?timeout=30s   200 []Message (marked delivered) or 204 on timeout; 0 waits forever.
 //	                         Requests and replies only: status updates never wake it.
 //	     &chat=ID            only that chat's messages; the others stay for a later wait
-//	POST /chats              CreateChatRequest -> ChatInfo
+//	POST /chats              CreateChatRequest -> ChatInfo (EnsureOpenChat)
 //	GET  /chats?archive=1    200 []ChatInfo: the archive (default the main list); &legacy=1 adds pre-chat history
 //	GET  /chats/{id}         200 ChatInfo
 //	GET  /chats/{id}/messages?before=SEQ&after=SEQ&limit=50   200 []ChatMessage in Seq order
-//	POST /chats/{id}/close   -> ChatInfo: closed for everyone, which archives it
+//	POST /chats/{id}/ack     AckRequest -> []AckResult (read; a read receipt to the author)
+//	POST /chats/{id}/activity ActivityRequest -> Message (a live session's status update)
+//	POST /ack                AckRequest -> []AckResult, chat and plain messages
+//	GET  /unread?folder=PATH&after=CURSOR&limit=50   200 UnreadPage
+//	POST /sessions           SessionRequest -> Session (register or heartbeat)
+//	GET  /sessions           200 []Session (live ones)
+//	DELETE /sessions/{id}    204
 //	GET  /inbox?limit=50     200 []Entry, chat messages included (with chat_id)
 //	GET  /members            200 []MemberInfo (this node first)
 //	POST /members            {"addr"} -> dial that address too (AddPeer)
@@ -92,7 +157,8 @@ func (n *Node) APIHandler() http.Handler {
 	mux.HandleFunc("POST /send", n.handleSend)
 	mux.HandleFunc("GET /wait", n.handleWait)
 	mux.HandleFunc("GET /inbox", n.handleInbox)
-	n.ChatRoutes(mux, "", func(w http.ResponseWriter, code int, err error) { http.Error(w, err.Error(), code) })
+	n.ChatRoutes(mux, "", false, func(w http.ResponseWriter, code int, err error) { http.Error(w, err.Error(), code) })
+	n.sessionRoutes(mux)
 	mux.HandleFunc("GET /members", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Members()) })
 	mux.HandleFunc("POST /members", n.handleAddMember)
 	mux.HandleFunc("POST /members/remove", n.handleRemoveMember)
@@ -152,7 +218,8 @@ func (n *Node) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	m, err := n.SendToChat(req)
+	req.AuthorKind = AuthorAgent // people write in the app
+	m, err := n.SendRequest(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -221,19 +288,12 @@ func (n *Node) handleInbox(w http.ResponseWriter, r *http.Request) {
 var ErrBadRequest = errors.New("bad request")
 
 // ChatRoutes mounts the chat endpoints under prefix (e.g. "/ui/api") on mux,
-// for the control API and the web UI alike. fail answers an error; its code
-// is 404 for an unknown chat, 409 for a closed one or closing a legacy one, else 400.
-func (n *Node) ChatRoutes(mux *http.ServeMux, prefix string, fail func(w http.ResponseWriter, code int, err error)) {
-	failed := func(w http.ResponseWriter, err error) {
-		code := http.StatusBadRequest
-		switch {
-		case errors.Is(err, ErrUnknownChat):
-			code = http.StatusNotFound
-		case errors.Is(err, ErrChatClosed), errors.Is(err, ErrLegacyChat):
-			code = http.StatusConflict
-		}
-		fail(w, code, err)
-	}
+// for the control API and the web UI alike; withClose adds POST
+// /chats/{id}/close, which only the app's people use. fail answers an error;
+// its code is 404 for an unknown chat, 409 for a closed one or closing a
+// legacy one, else 400.
+func (n *Node) ChatRoutes(mux *http.ServeMux, prefix string, withClose bool, fail func(w http.ResponseWriter, code int, err error)) {
+	failed := func(w http.ResponseWriter, err error) { fail(w, errorCode(err), err) }
 	reply := func(w http.ResponseWriter, v any, err error) {
 		if err != nil {
 			failed(w, err)
@@ -274,9 +334,86 @@ func (n *Node) ChatRoutes(mux *http.ServeMux, prefix string, fail func(w http.Re
 		msgs, err := n.ChatMessages(r.PathValue("id"), nums[0], nums[1], int(min(nums[2], 1000)))
 		reply(w, msgs, err)
 	})
-	mux.HandleFunc("POST "+prefix+"/chats/{id}/close", func(w http.ResponseWriter, r *http.Request) {
-		info, err := n.CloseChat(r.PathValue("id"))
-		reply(w, info, err)
+	if withClose {
+		mux.HandleFunc("POST "+prefix+"/chats/{id}/close", func(w http.ResponseWriter, r *http.Request) {
+			info, err := n.CloseChat(r.PathValue("id"))
+			reply(w, info, err)
+		})
+	}
+}
+
+// errorCode is the HTTP status of a control API error.
+func errorCode(err error) int {
+	switch {
+	case errors.Is(err, ErrUnknownChat), errors.Is(err, ErrUnknownSession):
+		return http.StatusNotFound
+	case errors.Is(err, ErrChatClosed), errors.Is(err, ErrLegacyChat):
+		return http.StatusConflict
+	}
+	return http.StatusBadRequest
+}
+
+// sessionRoutes mounts the endpoints of live sessions on the control API:
+// read state (ack, unread), the session registry and session activity.
+func (n *Node) sessionRoutes(mux *http.ServeMux) {
+	reply := func(w http.ResponseWriter, v any, err error) {
+		if err != nil {
+			http.Error(w, err.Error(), errorCode(err))
+			return
+		}
+		writeJSONResponse(w, v)
+	}
+	decode := func(w http.ResponseWriter, r *http.Request, v any) bool {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxFrame)).Decode(v); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return false
+		}
+		return true
+	}
+	ack := func(w http.ResponseWriter, r *http.Request, chat string) {
+		var req AckRequest
+		if decode(w, r, &req) {
+			res, err := n.Ack(chat, req)
+			reply(w, res, err)
+		}
+	}
+	mux.HandleFunc("POST /chats/{id}/ack", func(w http.ResponseWriter, r *http.Request) { ack(w, r, r.PathValue("id")) })
+	mux.HandleFunc("POST /ack", func(w http.ResponseWriter, r *http.Request) { ack(w, r, "") })
+	mux.HandleFunc("POST /chats/{id}/activity", func(w http.ResponseWriter, r *http.Request) {
+		var req ActivityRequest
+		if decode(w, r, &req) {
+			m, err := n.SessionActivity(r.PathValue("id"), req)
+			reply(w, m, err)
+		}
+	})
+	mux.HandleFunc("GET /unread", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		limit := 50
+		if s := q.Get("limit"); s != "" {
+			v, err := strconv.Atoi(s)
+			if err != nil || v < 1 || v > 1000 {
+				http.Error(w, "invalid limit", http.StatusBadRequest)
+				return
+			}
+			limit = v
+		}
+		page, err := n.Unread(q.Get("folder"), q.Get("after"), limit)
+		reply(w, page, err)
+	})
+	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
+		var req SessionRequest
+		if decode(w, r, &req) {
+			s, err := n.RegisterSession(req)
+			reply(w, s, err)
+		}
+	})
+	mux.HandleFunc("GET /sessions", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Sessions()) })
+	mux.HandleFunc("DELETE /sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if err := n.EndSession(r.PathValue("id")); err != nil {
+			http.Error(w, err.Error(), errorCode(err))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 }
 

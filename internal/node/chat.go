@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -44,10 +45,28 @@ type Chat struct {
 	CloseID      string    `json:"close_id,omitempty"`
 	ClosedBy     string    `json:"closed_by,omitempty"`
 	ClosedAt     time.Time `json:"closed_at,omitzero"`
+	// Gen is the generation of a keyed chat (0 for the first one and for the
+	// random-id chats of v0.5).
+	Gen uint32 `json:"gen,omitempty"`
 }
 
 // Closed reports whether a participant closed the chat.
 func (c Chat) Closed() bool { return c.CloseID != "" }
+
+// Keyed reports whether c is the chat of its conversation key and generation
+// (KeyedChatID), not a random-id chat of an older version.
+func (c Chat) Keyed() bool { return c.ID == KeyedChatID(c.Area, c.Participants, c.Gen) }
+
+// chatKey is the conversation key K of an area and a sorted participant list.
+func chatKey(area string, parts []string) string { return area + "\x00" + strings.Join(parts, ",") }
+
+// KeyedChatID is the id of generation gen of the one chat of area and the
+// sorted participants (this node included): every node computes the same id,
+// so two nodes that start the conversation at once get one chat. A person's
+// close starts the next generation.
+func KeyedChatID(area string, parts []string, gen uint32) string {
+	return DerivedID("agentlink-chat-v2\x00"+chatKey(area, parts), strconv.FormatUint(uint64(gen), 10))
+}
 
 // ChatView is this node's view of a legacy chat (local history): archived when
 // a side closed it (By), up to At; a later message brings it back. A real chat
@@ -58,11 +77,15 @@ type ChatView struct {
 	By       string    `json:"by,omitempty"`
 }
 
-// Delivery is where one copy of an outbound chat message is: "queued" until
-// the peer ACKs it, then "sent".
+// Delivery is where one copy of an outbound chat message is. Status is the
+// transport: "queued" until the peer ACKs it, then "sent". State is the
+// recipient's progress: queued, delivered, read, answered (State* constants),
+// At when it reached the read or answered state.
 type Delivery struct {
-	Peer   string `json:"peer"`
-	Status string `json:"status"`
+	Peer   string    `json:"peer"`
+	Status string    `json:"status"`
+	State  string    `json:"state"`
+	At     time.Time `json:"at,omitzero"`
 }
 
 // ChatMessage is one message of a chat as listed by the chat API: one entry
@@ -72,6 +95,14 @@ type ChatMessage struct {
 	Direction string     `json:"direction"` // "in" or "out"
 	Held      bool       `json:"held,omitempty"`
 	Delivery  []Delivery `json:"delivery,omitempty"` // out only
+	// Unread: this node's sessions have not acknowledged it (see Ack). A
+	// browser showing it does not change that.
+	Unread bool `json:"unread,omitempty"`
+	// OwnHuman: a person on this node wrote it (to the others); it is unread
+	// for this node's sessions as information only, never a request.
+	OwnHuman bool `json:"own_human,omitempty"`
+	// Assigned: who on this node answers it ("worker", "session:<id>").
+	Assigned string `json:"assigned,omitempty"`
 	Message
 }
 
@@ -116,6 +147,11 @@ type ChatInfo struct {
 	Legacy bool   `json:"legacy,omitempty"`
 	Peer   string `json:"peer,omitempty"` // legacy only: the other side
 	Title  string `json:"title"`          // the first message, shortened
+	// Keyed: the one chat of its conversation key (KeyedChatID); a random-id
+	// chat of v0.5 is kept as archived history.
+	Keyed bool `json:"keyed,omitempty"`
+	// Unread counts the messages this node's sessions have not acknowledged.
+	Unread int `json:"unread,omitempty"`
 	// Count and LastMessage cover messages (kind ""), not control messages.
 	Count       int          `json:"count"`
 	LastSeq     uint64       `json:"last_seq"`
@@ -157,52 +193,98 @@ func (n *Node) normalizeParticipants(names []string) ([]string, error) {
 	return out, nil
 }
 
-// CreateChat starts a chat of this node and the members in with (names, also
-// comma-separated). Every other participant must be connected and announce
-// chat support now; the chat is then announced to all of them.
+// CreateChat is EnsureOpenChat for the members in with (names, also
+// comma-separated): the open chat of this node, them and area.
 func (n *Node) CreateChat(with []string, area string) (ChatInfo, error) {
 	parts, err := n.normalizeParticipants(with)
 	if err != nil {
 		return ChatInfo{}, err
 	}
-	if area != "" && !config.ValidName(area) {
-		return ChatInfo{}, fmt.Errorf("invalid area %q", area)
+	c, err := n.EnsureOpenChat(parts, area)
+	if err != nil {
+		return ChatInfo{}, err
 	}
-	var missing []string
-	for _, p := range parts {
-		if p == n.cfg.Node {
+	return n.Chat(c.ID)
+}
+
+// EnsureOpenChat returns the open chat of conversation key (area, parts):
+// parts are all participants, sorted, this node included. It is the keyed
+// chat of the key's open generation, created (and announced) when this node
+// does not have it yet. Every node computes the same id, so a conversation
+// started on two nodes at once is one chat. Every participant must be a known
+// member; one connected now without chat support cannot take part
+// (ErrNoChatSupport). A disconnected one gets the chat when it connects.
+func (n *Node) EnsureOpenChat(parts []string, area string) (Chat, error) {
+	if len(parts) < 2 || !slices.IsSorted(parts) || !slices.Contains(parts, n.cfg.Node) ||
+		len(slices.Compact(slices.Clone(parts))) != len(parts) {
+		return Chat{}, fmt.Errorf("%w: name at least one other member", ErrBadParticipants)
+	}
+	if area != "" && !config.ValidName(area) {
+		return Chat{}, fmt.Errorf("invalid area %q", area)
+	}
+	n.ensureMu.Lock()
+	defer n.ensureMu.Unlock()
+	key := chatKey(area, parts)
+	for {
+		gen := n.chats.gen(key)
+		id := KeyedChatID(area, parts, gen)
+		c, ok := n.chats.get(id)
+		if ok && !c.Closed() {
+			return c, nil
+		}
+		if ok { // closed: the generation has moved on (noteGenLocked)
+			if n.chats.gen(key) == gen {
+				return Chat{}, fmt.Errorf("%w %s", ErrChatClosed, id)
+			}
 			continue
 		}
-		n.mu.Lock()
-		ok := n.known[p] && !n.removedLocked(p)
-		n.mu.Unlock()
-		if !ok {
-			return ChatInfo{}, fmt.Errorf("%w %q", ErrUnknownPeer, p)
+		var missing []string
+		for _, p := range parts {
+			if p == n.cfg.Node {
+				continue
+			}
+			n.mu.Lock()
+			known := n.known[p] && !n.removedLocked(p)
+			n.mu.Unlock()
+			if !known {
+				return Chat{}, fmt.Errorf("%w %q", ErrUnknownPeer, p)
+			}
+			if n.Connected(p) && !n.PeerHas(p, CapChat) {
+				missing = append(missing, p)
+			}
 		}
-		if !n.PeerHas(p, CapChat) {
-			missing = append(missing, p)
+		if len(missing) > 0 {
+			return Chat{}, fmt.Errorf("%w: %s", ErrNoChatSupport, strings.Join(missing, ", "))
 		}
+		c = Chat{ID: id, Participants: parts, Area: area, Gen: gen, CreatedAt: time.Now().UTC()}
+		if _, err := n.chats.ensure(c); err != nil {
+			return Chat{}, err
+		}
+		open := Message{ID: DerivedID(c.ID, "open"), Kind: KindChatOpen, CreatedAt: c.CreatedAt}
+		if err := n.postChat(c, open); err != nil {
+			return Chat{}, err
+		}
+		n.changed("chats")
+		return c, nil
 	}
-	if len(missing) > 0 {
-		return ChatInfo{}, fmt.Errorf("%w: %s", ErrNoChatSupport, strings.Join(missing, ", "))
+}
+
+// openChatOf returns the open chat of c's conversation: c itself when it is
+// an open keyed chat, else the open generation of its key (a closed chat, a
+// random-id chat of v0.5).
+func (n *Node) openChatOf(c Chat) (Chat, error) {
+	if c.Keyed() && !c.Closed() {
+		return c, nil
 	}
-	c := Chat{ID: newID(), Participants: parts, Area: area, CreatedAt: time.Now().UTC()}
-	if _, err := n.chats.ensure(c); err != nil {
-		return ChatInfo{}, err
-	}
-	open := Message{ID: DerivedID(c.ID, "open"), Kind: KindChatOpen, CreatedAt: c.CreatedAt}
-	if err := n.postChat(c, open); err != nil {
-		return ChatInfo{}, err
-	}
-	n.changed("chats")
-	return n.Chat(c.ID)
+	return n.EnsureOpenChat(c.Participants, c.Area)
 }
 
 // CloseChat closes a chat for every participant, which moves it to the
 // archive on every node: a chat is archived exactly when it is closed, and
-// only people close chats. Closing a closed chat is a no-op. Jobs already
-// running finish; their replies are still kept. A legacy chat is closed with
-// closeLegacy.
+// only people close chats (the app; the control API has no close). Closing a
+// closed chat is a no-op. The next message of the conversation opens its next
+// generation. Jobs already running finish; their replies are still kept. A
+// legacy chat is closed with closeLegacy.
 func (n *Node) CloseChat(id string) (ChatInfo, error) {
 	if _, peer, ok := parseLegacyChatID(id); ok {
 		return n.closeLegacy(id, peer)
@@ -212,7 +294,7 @@ func (n *Node) CloseChat(id string) (ChatInfo, error) {
 		return ChatInfo{}, fmt.Errorf("%w %s", ErrUnknownChat, id)
 	}
 	if !c.Closed() {
-		m := Message{ID: DerivedID(c.ID, "close/"+n.cfg.Node), Kind: KindChatClose, CreatedAt: time.Now().UTC()}
+		m := Message{ID: DerivedID(c.ID, "close/"+n.cfg.Node), Kind: KindChatClose, AuthorKind: AuthorHuman, CreatedAt: time.Now().UTC()}
 		if err := n.postChat(c, m); err != nil {
 			return ChatInfo{}, err
 		}
@@ -285,15 +367,32 @@ type ChatSend struct {
 	// Parent is the request whose job sends this (AGENTLINK_JOB_ID): the new
 	// message continues its automatic chain (RootID, AutoDepth + 1).
 	Parent string
+	// AuthorKind is who writes it (Author*); empty means an agent.
+	AuthorKind string
 }
 
-// SendChat posts a message to a chat. Without Ask it only informs. A legacy
-// chat is continued (continueLegacy).
+// SendChat posts a message to a chat. Without Ask it only informs. A closed
+// chat or a random-id chat of v0.5 is continued in the open chat of its
+// conversation (openChatOf), a legacy chat by continueLegacy.
 func (n *Node) SendChat(s ChatSend) (Message, error) {
 	if _, peer, ok := parseLegacyChatID(s.ChatID); ok {
 		return n.continueLegacy(peer, s)
 	}
-	m := Message{ChatID: s.ChatID, Body: s.Body, ReplyTo: s.ReplyTo}
+	switch s.AuthorKind {
+	case "":
+		s.AuthorKind = AuthorAgent
+	case AuthorHuman, AuthorAgent, AuthorWorker:
+	default:
+		return Message{}, fmt.Errorf("invalid author_kind %q", s.AuthorKind)
+	}
+	if c, ok := n.chats.get(s.ChatID); ok {
+		open, err := n.openChatOf(c)
+		if err != nil {
+			return Message{}, err
+		}
+		s.ChatID = open.ID
+	}
+	m := Message{ChatID: s.ChatID, Body: s.Body, ReplyTo: s.ReplyTo, AuthorKind: s.AuthorKind}
 	for _, a := range s.Ask {
 		for p := range strings.SplitSeq(a, ",") {
 			if p = strings.TrimSpace(p); p != "" {
@@ -327,7 +426,9 @@ func (n *Node) continueLegacy(peer string, s ChatSend) (Message, error) {
 	if n.Connected(peer) && !n.PeerHas(peer, CapChat) {
 		return n.Send(peer, s.Body, s.ReplyTo)
 	}
-	open, err := n.openChatWith(peer, legacy.Area)
+	parts := []string{n.cfg.Node, peer}
+	slices.Sort(parts)
+	open, err := n.EnsureOpenChat(parts, legacy.Area)
 	if err != nil {
 		return Message{}, err
 	}
@@ -335,24 +436,42 @@ func (n *Node) continueLegacy(peer string, s ChatSend) (Message, error) {
 	return n.SendChat(s)
 }
 
-// openChatWith returns the newest open chat of just this node and peer with
-// area, creating one when there is none.
-func (n *Node) openChatWith(peer, area string) (Chat, error) {
-	parts := []string{n.cfg.Node, peer}
-	slices.Sort(parts)
-	var open *Chat
-	for _, cs := range n.chats.all() {
-		c := cs.chat
-		if !c.Closed() && c.Area == area && slices.Equal(c.Participants, parts) &&
-			(open == nil || c.CreatedAt.After(open.CreatedAt)) {
-			open = &c
+// inheritChain sets m's automatic chain (RootID, AutoDepth) when it has none
+// yet. A person's message starts a new chain at itself. Any other message
+// continues the chain of its base, one hop further: the message it replies to,
+// else the newest message of chat c from another node or by a person here. So the depth counts
+// the agent hops since a person last wrote, whichever nodes and sessions the
+// agents run in, and MaxAutoDepth bounds a conversation of agents alone.
+func (n *Node) inheritChain(c Chat, m *Message) {
+	if m.RootID != "" {
+		return
+	}
+	m.RootID, m.AutoDepth = m.ID, 0
+	if m.AuthorKind == AuthorHuman {
+		return
+	}
+	var base *Message
+	if m.ReplyTo != "" {
+		if r, ok := n.chats.message(m.ReplyTo); ok && r.Message.Kind == "" {
+			base = &r.Message
 		}
 	}
-	if open != nil {
-		return *open, nil
+	if base == nil {
+		if s, ok := n.chats.snapshot(c.ID); ok {
+			for _, rec := range slices.Backward(s.msgs) {
+				if r := rec.Message; r.Kind == "" && r.ID != m.ID && (r.From != n.cfg.Node || r.AuthorKind == AuthorHuman) {
+					base = &r
+					break
+				}
+			}
+		}
 	}
-	info, err := n.CreateChat([]string{peer}, area)
-	return info.Chat, err
+	if base != nil {
+		m.RootID, m.AutoDepth = cmp.Or(base.RootID, base.ID), base.AutoDepth
+		if m.AutoDepth < 255 {
+			m.AutoDepth++
+		}
+	}
 }
 
 // sendChat is SendMessage for a chat message or status update.
@@ -383,26 +502,32 @@ func (n *Node) sendChat(m Message) (Message, error) {
 		} else {
 			m.CreatedAt = time.Now().UTC()
 		}
-		if m.RootID == "" {
-			m.RootID, m.AutoDepth = m.ID, 0
-		}
+		n.inheritChain(c, &m)
 	} else {
 		m.CreatedAt = time.Now().UTC()
 	}
 	if err := n.postChat(c, m); err != nil {
 		return Message{}, err
 	}
+	m.From, m.Participants, m.Area, m.ChatGen = n.cfg.Node, c.Participants, c.Area, c.Gen
 	return m, nil
 }
 
 // postChat stores m in chat c, then queues a copy for every other participant.
 // A status update is only kept as its job's latest status.
+// A person's message is also unread here: this node's own sessions learn what
+// their person told the others (ChatMessage.OwnHuman).
 func (n *Node) postChat(c Chat, m Message) error {
-	m.From, m.To, m.ChatID, m.Participants, m.Area = n.cfg.Node, "", c.ID, c.Participants, c.Area
+	m.From, m.To, m.ChatID, m.Participants, m.Area, m.ChatGen = n.cfg.Node, "", c.ID, c.Participants, c.Area, c.Gen
 	if m.Kind == KindStatus {
 		n.chats.noteStatus(m)
-	} else if _, _, _, err := n.chats.add(m); err != nil {
+	} else if _, isNew, _, err := n.chats.put(m, m.AuthorKind == AuthorHuman); err != nil {
 		return err
+	} else if isNew && m.Kind == "" && m.ReplyTo != "" {
+		// Replying reads what it answers: the reply tells its author.
+		if _, _, err := n.chats.markRead(m.ReplyTo, "", n.cfg.Node); err != nil {
+			n.log.Warn("mark replied message read", "id", m.ReplyTo, "err", err)
+		}
 	}
 	return n.fanout(c, m, false)
 }
@@ -450,9 +575,14 @@ func (n *Node) repairChats() error {
 // participant list with the author and this node, and responders among them.
 func (n *Node) validChatEnvelope(peer string, m *Message) bool {
 	switch m.Kind {
-	case "", KindStatus, KindChatOpen, KindChatClose:
+	case "", KindStatus, KindChatOpen, KindChatClose, KindReceipt:
 	default:
 		return false
+	}
+	switch m.AuthorKind {
+	case "", AuthorHuman, AuthorAgent, AuthorWorker:
+	default:
+		m.AuthorKind = "" // a newer kind: shown as unknown
 	}
 	p := m.Participants
 	if !validID(m.ChatID) || len(p) < 2 || !slices.IsSorted(p) || len(slices.Compact(slices.Clone(p))) != len(p) ||
@@ -478,18 +608,21 @@ func (n *Node) receiveChat(peer string, m Message) bool {
 	if !n.validChatEnvelope(peer, &m) {
 		return false
 	}
-	created, err := n.chats.ensure(Chat{ID: m.ChatID, Participants: m.Participants, Area: m.Area, CreatedAt: m.CreatedAt})
+	created, err := n.chats.ensure(Chat{ID: m.ChatID, Participants: m.Participants, Area: m.Area, Gen: m.ChatGen, CreatedAt: m.CreatedAt})
 	if err != nil {
 		n.log.Warn("chat message rejected", "peer", peer, "chat", m.ChatID, "err", err)
 		return false
 	}
 	closed := false
-	if m.Kind == KindStatus {
+	switch m.Kind {
+	case KindReceipt:
+		n.receiveReceipts(peer, m)
+	case KindStatus:
 		if n.chats.noteStatus(m) {
 			n.changed("messages")
 		}
-	} else {
-		_, isNew, c, err := n.chats.add(m)
+	default:
+		_, isNew, c, err := n.chats.put(m, true)
 		if err != nil {
 			n.log.Error("persist chat message", "chat", m.ChatID, "id", m.ID, "err", err)
 			return false
@@ -505,11 +638,18 @@ func (n *Node) receiveChat(peer string, m Message) bool {
 	return true
 }
 
-// ClaimRun reports whether this node's handler should answer m and records
-// the run: m must ask this node, the chat be open, m within MaxAutoDepth, and
-// no other request of m's automatic chain (RootID) have run here. When m asks
-// this node but must not run, hold is the reason (a Hold* constant). Asking
-// the same m again gives the same answer, so a resent duplicate is safe.
+// WorkerOwner is the Assigned value of a request the worker answers.
+const WorkerOwner = "worker"
+
+// ClaimRun reports whether this node's worker should answer m and, if so,
+// assigns m to it and marks it read (a read receipt goes to its author): m
+// must ask this node, the chat be open, m within MaxAutoDepth, no live
+// session be registered for m's area (LiveSession) and nobody else be
+// assigned or have read it. The assignment is atomic with Ack, so a request
+// is handled by the worker or by a session, never both. When m asks this node
+// but must not run, hold is the reason (a Hold* constant) or "" when a session
+// takes it. Asking the same m again gives the same answer, so a resent
+// duplicate is safe.
 func (n *Node) ClaimRun(m Message) (run bool, hold string, err error) {
 	if !m.Asks(n.cfg.Node) {
 		return false, "", nil
@@ -521,11 +661,25 @@ func (n *Node) ClaimRun(m Message) (run bool, hold string, err error) {
 	if !ok || c.Closed() {
 		return false, HoldChatClosed, nil
 	}
-	run, err = n.chats.claimRun(c.ID, cmp.Or(m.RootID, m.ID), m.ID)
-	if err != nil || run {
-		return run, "", err
+	r, ok := n.chats.message(m.ID)
+	if !ok {
+		return false, "", nil // not stored here (yet)
 	}
-	return false, HoldAutoLimit, nil // another request of the chain ran here
+	if r.Assigned == WorkerOwner {
+		return true, "", nil
+	}
+	if n.LiveSession(c.Area) {
+		return false, "", nil
+	}
+	ok, wasUnread, err := n.chats.claim(m.ID, WorkerOwner)
+	if err != nil || !ok {
+		return false, "", err
+	}
+	if wasUnread {
+		n.sendReceipts(map[string][]string{r.Message.From: {m.ID}}, StateRead)
+		n.changed("messages")
+	}
+	return true, "", nil
 }
 
 // ChatOf returns a chat's description; ok is false for an unknown chat.
@@ -642,18 +796,33 @@ func (n *Node) ChatMessages(id string, before, after uint64, limit int) ([]ChatM
 }
 
 func (n *Node) chatMessage(c Chat, r chatRecord) ChatMessage {
-	cm := ChatMessage{Seq: r.Seq, Direction: "in", Held: r.Message.Held(), Message: r.Message}
+	cm := ChatMessage{Seq: r.Seq, Direction: "in", Held: r.Message.Held(), Message: r.Message,
+		Unread: r.Unread && r.ReadAt.IsZero(), Assigned: r.Assigned}
 	if r.Message.From == n.cfg.Node {
 		cm.Direction = "out"
+		cm.OwnHuman = r.Message.AuthorKind == AuthorHuman
+		if r.Message.Kind != "" {
+			return cm
+		}
+		replied := n.chats.repliedBy(r.Message.ID)
 		for _, p := range c.Participants {
 			if p == n.cfg.Node {
 				continue
 			}
-			status := n.store.delivery(p, r.Message.ID)
-			if status == "" {
-				status = "queued"
+			d := Delivery{Peer: p, Status: n.store.delivery(p, r.Message.ID), State: StateQueued}
+			if d.Status == "" {
+				d.Status = "queued"
 			}
-			cm.Delivery = append(cm.Delivery, Delivery{Peer: p, Status: status})
+			if d.Status == "sent" {
+				d.State = StateDelivered
+			}
+			if rc, ok := r.Receipts[p]; ok && stateRank(rc.State) > stateRank(d.State) {
+				d.State, d.At = rc.State, rc.At
+			}
+			if at, ok := replied[p]; ok {
+				d.State, d.At = StateAnswered, at
+			}
+			cm.Delivery = append(cm.Delivery, d)
 		}
 	}
 	return cm
@@ -669,7 +838,7 @@ func (n *Node) queuedByChat() map[string]map[string]int {
 			continue
 		}
 		for _, m := range msgs {
-			if m.ChatID == "" || m.Kind == KindStatus {
+			if m.ChatID == "" || m.Kind == KindStatus || m.Kind == KindReceipt {
 				continue
 			}
 			if out[p] == nil {
@@ -683,11 +852,15 @@ func (n *Node) queuedByChat() map[string]map[string]int {
 
 func (n *Node) chatInfo(s chatSnapshot, queued map[string]map[string]int) ChatInfo {
 	info := ChatInfo{Chat: s.chat, Closed: s.chat.Closed(), LastAt: s.chat.CreatedAt}
+	info.Keyed = s.chat.Keyed()
 	var last *chatRecord
 	for i, r := range s.msgs {
 		info.LastSeq = r.Seq
 		if r.Message.Kind != "" {
 			continue
+		}
+		if r.Unread && r.ReadAt.IsZero() {
+			info.Unread++
 		}
 		if info.Count == 0 {
 			info.Title = title(r.Message.Body)
@@ -699,7 +872,9 @@ func (n *Node) chatInfo(s chatSnapshot, queued map[string]map[string]int) ChatIn
 		cm := n.chatMessage(s.chat, *last)
 		info.LastMessage, info.LastAt = &cm, last.Message.CreatedAt
 	}
-	info.Archived = info.Closed
+	// A random-id chat of v0.5 is history: its conversation goes on in the
+	// keyed chat (openChatOf).
+	info.Archived = info.Closed || !info.Keyed
 	jobs, held := map[string][]JobActivity{}, map[string][]JobActivity{}
 	for _, m := range s.jobs {
 		a := JobActivity{ReplyTo: m.ReplyTo, JobStatus: m.JobStatus, Activity: m.Activity, ActivityInfo: m.ActivityInfo, UpdatedAt: m.CreatedAt}

@@ -339,7 +339,7 @@ const settingsHarnessJS = `
 class Element { constructor(id=""){this.id=id;this.value="";this.checked=false;this.hidden=false;this.disabled=false;this.textContent="";this.className="";this.listeners={};this.open=false;this.children=[]} addEventListener(n,f){this.listeners[n]=f} setAttribute(n,v){this[n]=v} removeAttribute(n){delete this[n]} select(){} focus(){} append(...c){this.children.push(...c)} replaceChildren(...c){this.children=[...c]} }
 const names=["form","settings_result","code","work_dir","pick","agent_path","pick_agent","find_agent","agent_row","agent_shown","work_dir_shown","work_dir_hooks","hooks_codex","advanced","my_addr","generate","copy","projects","projects_empty","add_project","updates","update_text","update_check","update_apply","update_auto","update_version"];
 const elements=Object.fromEntries(names.map((id)=>[id,new Element(id)]));
-const controls=Object.fromEntries(["node","code","handler","agent_path","work_dir","listen","api","areas","discovery","max_jobs","autostart"].map((name)=>[name,new Element(name)]));
+const controls=Object.fromEntries(["node","code","handler","agent_path","work_dir","listen","api","areas","discovery","max_jobs","autostart","auto_answer"].map((name)=>[name,new Element(name)]));
 controls.handler.value="none"; controls.discovery.checked=true; elements.form.elements=controls;`
 
 // TestSettingsProjectRowsRenderAndSave runs settings.js: saved projects become
@@ -551,8 +551,9 @@ func TestDashboardRefreshReflectsNodeChanges(t *testing.T) {
 	if code, body := h.do(t, http.MethodPost, "/ui/api/settings", validJSON(t), h.tokenHdr()); code != http.StatusOK {
 		t.Fatalf("save: %d %s", code, body)
 	}
-	if code, body := h.do(t, http.MethodPost, "/ui/api/send", `{"to":"bob","body":"проверь обновление"}`, h.tokenHdr()); code != http.StatusOK {
-		t.Fatalf("send: %d %s", code, body)
+	// Plain history (the dashboard counts it): the composer writes into chats.
+	if _, err := h.app.node().Send("bob", "проверь обновление", ""); err != nil {
+		t.Fatalf("send: %v", err)
 	}
 	after := read()
 	if before.Status.Total == after.Status.Total || before.TotalMessages == after.TotalMessages {
@@ -996,8 +997,9 @@ func TestThreadsEndpointServesPairs(t *testing.T) {
 	if code, body := h.do(t, http.MethodPost, "/ui/api/settings", validJSON(t), h.tokenHdr()); code != http.StatusOK {
 		t.Fatalf("save: %d %s", code, body)
 	}
-	if code, body := h.do(t, http.MethodPost, "/ui/api/send", `{"to":"bob","body":"вопрос"}`, h.tokenHdr()); code != http.StatusOK {
-		t.Fatalf("send: %d %s", code, body)
+	// Plain history (threads pair it): the composer writes into chats.
+	if _, err := h.app.node().Send("bob", "вопрос", ""); err != nil {
+		t.Fatalf("send: %v", err)
 	}
 	code, body := h.do(t, http.MethodGet, "/ui/api/threads", "", h.tokenHdr())
 	var got []Thread
@@ -1016,9 +1018,8 @@ func TestThreadsEndpointFiltersDecodedPeerAndUsesCompleteHistory(t *testing.T) {
 		t.Fatalf("save: %d %s", code, body)
 	}
 	for i := range 205 {
-		body := fmt.Sprintf(`{"to":"bob","body":"вопрос %d"}`, i)
-		if code, got := h.do(t, http.MethodPost, "/ui/api/send", body, h.tokenHdr()); code != http.StatusOK {
-			t.Fatalf("send %d: %d %s", i, code, got)
+		if _, err := h.app.node().Send("bob", fmt.Sprintf("вопрос %d", i), ""); err != nil {
+			t.Fatalf("send %d: %v", i, err)
 		}
 	}
 	// Network peer names intentionally cannot contain spaces or '&'. Move the

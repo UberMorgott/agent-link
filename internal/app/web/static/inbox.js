@@ -576,8 +576,8 @@ async function submitMessage() {
     if (store.get().selectedChat === id) { composer.value = ""; setReply(null); }
     sendResult.textContent = t("inbox.sent");
     // A legacy chat continues elsewhere: in a real chat, or in the plain
-    // message's own legacy chat.
-    const next = info.legacy ? sent.chat_id || "legacy-" + sent.id + "-" + info.peer : id;
+    // message's own legacy chat; a closed chat in its conversation's next one.
+    const next = info.legacy ? sent.chat_id || "legacy-" + sent.id + "-" + info.peer : sent.chat_id || id;
     if (next !== id) {
       refreshSlice("chats");
       if (store.get().selectedChat === id) navigate("inbox", { chat: next });

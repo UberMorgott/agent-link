@@ -81,6 +81,10 @@ type Node struct {
 	tried   map[string]time.Time // discovered addresses by when they were last dialed
 	saveMu  sync.Mutex           // orders members.json writes
 
+	ensureMu sync.Mutex // serializes EnsureOpenChat
+	sess     *sessionRegistry
+	folders  folderMap
+
 	selfAddrs []string // this node's own peer addresses, set by Run
 
 	id         string // random node id, kept in the data directory
@@ -209,6 +213,9 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		default:
 			n.known[m.Name] = true
 		}
+	}
+	if n.sess, err = openSessions(cfg.DataDir); err != nil {
+		return nil, err
 	}
 	if err := n.repairChats(); err != nil {
 		return nil, err

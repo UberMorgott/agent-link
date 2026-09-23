@@ -211,11 +211,13 @@ func New(run Runner, send SendFunc, stateDir, dir string, opt Options, log *slog
 }
 
 // Accept durably queues m if it is a request and its id is new; replies,
-// status updates and duplicates are ignored. A chat message is a request
-// only when the node lets this worker answer it (Chats.ClaimRun). A chat
-// message that asks this node but will not run (no handler, no agent program,
-// the chain limit, a closed chat) gets a JobHeld status to the chat instead,
-// so its sender never waits in silence. It is the node's inbound hook (only
+// status updates and duplicates are ignored. A request for an area with a live
+// session (Chats.LiveSession) is left to that session, unread. A chat message
+// is a request only when the node assigns it to this worker (Chats.ClaimRun,
+// atomic with a session's ack). A chat message that asks this node but will
+// not run (no agent program, the chain limit, a closed chat) gets a JobHeld
+// status to the chat instead, so its sender never waits in silence; without a
+// handler (auto-answer off) only the chain limit does, the rest waits unread. It is the node's inbound hook (only
 // for chat messages when no handler is configured: see ChatsOnly); an error
 // withholds the ACK so the sender resends.
 func (w *Worker) Accept(m node.Message) error {
@@ -232,7 +234,21 @@ func (w *Worker) Accept(m node.Message) error {
 	if known {
 		return nil
 	}
+	if !chat && w.opt.Chats != nil && w.opt.Chats.LiveSession(m.Area) {
+		return nil // a live session there reads it (unread)
+	}
 	if chat {
+		if !w.hasHandler() {
+			// Auto-answer is off: the message waits unread for a session there.
+			// Only a request past the chain limit tells its sender it waits for a person.
+			if m.Held() {
+				w.hold(m, node.HoldAutoLimit)
+			}
+			return nil
+		}
+		if !m.Held() && w.opt.Chats.LiveSession(m.Area) {
+			return nil // the live session answers it
+		}
 		if hold := w.unavailable(); hold != "" {
 			w.hold(m, hold)
 			return nil
@@ -711,7 +727,7 @@ func (w *Worker) reply(j *Job) {
 	}
 	answered := j.Answered
 	w.mu.Unlock()
-	out := node.Message{Body: body, ReplyTo: m.ID, JobStatus: status}
+	out := node.Message{Body: body, ReplyTo: m.ID, JobStatus: status, AuthorKind: node.AuthorWorker}
 	w.address(&out, m, "reply")
 	if answered {
 		out = node.Message{ReplyTo: m.ID, Kind: node.KindStatus, JobStatus: node.JobCompleted}

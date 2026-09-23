@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -38,13 +39,15 @@ import (
 const usage = `usage:
   agentlink [-config <settings.json>] [-no-tray] [-api <addr>]   (no command: the desktop app with its tray icon)
   agentlink serve --config <path>
-  agentlink send  --config <path> [--to <node|area:NAME>] --body <text> [--reply-to <id>]   (no --to: the only peer; with several it fails and lists them)
+  agentlink send  --config <path> [--to <node|area:NAME>] [--area <name>] --body <text> [--reply-to <id>] [--ask <node,...>]   (into the one open chat with them; no --to: the only peer; the area defaults to this folder's project)
   agentlink send  --config <path> --chat <id> --body <text> [--ask <node,...>] [--reply-to <id>]   (to every chat participant; --ask: who must answer)
   agentlink wait  --config <path> [--timeout 0] [--chat <id>]   (seconds or duration; 0 = forever; exit 2 on timeout; --chat: only that chat)
   agentlink chat new     --config <path> --with <node,...> [--area <name>]   (prints the chat id; you are added)
   agentlink chat list    --config <path> [--archive] [--legacy]   (one JSON line per chat)
   agentlink chat history --config <path> --chat <id> [--limit 50] [--before <seq>] [--after <seq>]   (one JSON line per message, oldest first)
-  agentlink close --config <path> --chat <id>      (close the chat for every participant and move it to the archive; not from a worker job)
+  agentlink chat unread  --config <path> [--folder <path>] [--limit 50] [--after <cursor>]   (unread messages for this node, oldest first, one JSON line each; a last line {"next":...} when more follow)
+  agentlink chat ack     --config <path> [--chat <id>] --ids <id,...> [--session <id>]   (mark read: the authors get read receipts)
+  agentlink close   (no longer here: only people close chats, in the app)
   agentlink inbox --config <path> [--limit 50]
   agentlink members --config <path>                (one JSON line per member, this node first)
   agentlink add    --config <path> --addr <ip[:port]>   (dial a member's address; it spreads to all members)
@@ -120,22 +123,30 @@ func run(args []string, stdout, stderr io.Writer) int {
 		replyTo := fs.String("reply-to", "", "id of the message being answered (in a chat only a reference)")
 		chat := fs.String("chat", "", "chat id; default $"+envChatID+" when --to is empty")
 		ask := fs.String("ask", "", "chat participants who must answer, comma-separated; none: the message only informs")
+		area := fs.String("area", "", "project (area) of the conversation; default: this folder's project")
 		cmd = func(c config.Config) (int, error) {
-			return 0, send(c, sendArgs{to: *to, body: *body, replyTo: *replyTo, chat: *chat, ask: *ask}, stdout)
+			return 0, send(c, sendArgs{to: *to, body: *body, replyTo: *replyTo, chat: *chat, ask: *ask, area: *area}, stdout)
 		}
 	case "wait":
 		timeout := fs.String("timeout", "0", "seconds or Go duration; 0 waits forever")
 		chat := fs.String("chat", "", "only messages of this chat; others stay for a later wait")
 		cmd = func(c config.Config) (int, error) { return wait(c, *timeout, *chat, stdout) }
 	case "close":
-		chat := fs.String("chat", "", "chat id")
-		cmd = func(c config.Config) (int, error) {
-			// Only people close chats: an agent a worker runs must not end the conversation.
-			if os.Getenv(envJobID) != "" {
-				return 0, errors.New("close: a worker job cannot close chats; a person closes them in the app")
-			}
-			return 0, chatPost(c, *chat, "/close", nil, stdout)
+		_ = fs.String("chat", "", "chat id")
+		cmd = func(config.Config) (int, error) {
+			// Only people close chats: agents keep writing in the one open chat.
+			return 0, errors.New("close: agents do not close chats; a person closes a chat in the agentlink app (the next message then opens a new one)")
 		}
+	case "chat unread":
+		folder := fs.String("folder", "", "only messages for a session in this folder (default: all)")
+		limit := fs.Int("limit", 50, "maximum messages")
+		after := fs.String("after", "", "cursor of the last message of the previous page")
+		cmd = func(c config.Config) (int, error) { return 0, chatUnread(c, *folder, *after, *limit, stdout) }
+	case "chat ack":
+		chat := fs.String("chat", "", "chat id (default: any chat, and plain messages)")
+		ids := fs.String("ids", "", "message ids, comma-separated")
+		session := fs.String("session", "", "the reading session's id")
+		cmd = func(c config.Config) (int, error) { return 0, chatAck(c, *chat, *ids, *session, stdout) }
 	case "chat new":
 		with := fs.String("with", "", "the other participants, comma-separated")
 		area := fs.String("area", "", "area (project) the participants' agents work in")
@@ -249,7 +260,7 @@ const (
 	envJobID  = "AGENTLINK_JOB_ID"
 )
 
-type sendArgs struct{ to, body, replyTo, chat, ask string }
+type sendArgs struct{ to, body, replyTo, chat, ask, area string }
 
 func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 	if a.body == "" {
@@ -258,7 +269,10 @@ func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 	if a.chat == "" && a.to == "" {
 		a.chat = os.Getenv(envChatID)
 	}
-	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat}
+	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat, Area: a.area}
+	if wd, err := os.Getwd(); err == nil {
+		r.Folder = wd // the node picks the project of this folder
+	}
 	if a.ask != "" {
 		r.Ask = []string{a.ask}
 	}
@@ -372,16 +386,53 @@ func chatHistory(cfg config.Config, chat string, limit int, before, after uint64
 	return encodeLines(stdout, msgs)
 }
 
-// chatPost posts body (nil: none) to /chats/{chat}<action> and prints the chat as one JSON line.
-func chatPost(cfg config.Config, chat, action string, body any, stdout io.Writer) error {
-	if chat == "" {
-		return errors.New("--chat is required")
+// chatUnread prints this node's unread messages, one JSON line each, and a
+// last line {"next": cursor, "total": n} when more pages follow.
+func chatUnread(cfg config.Config, folder, after string, limit int, stdout io.Writer) error {
+	q := url.Values{"limit": {strconv.Itoa(limit)}}
+	if folder != "" {
+		abs, err := filepath.Abs(folder)
+		if err != nil {
+			return err
+		}
+		q.Set("folder", abs)
 	}
-	var info node.ChatInfo
-	if err := apiJSON(http.MethodPost, apiURL(cfg, "/chats/"+url.PathEscape(chat)+action, nil), body, &info); err != nil {
+	if after != "" {
+		q.Set("after", after)
+	}
+	var page node.UnreadPage
+	if err := apiJSON(http.MethodGet, apiURL(cfg, "/unread", q), nil, &page); err != nil {
 		return err
 	}
-	return encodeLines(stdout, []node.ChatInfo{info})
+	if err := encodeLines(stdout, page.Messages); err != nil {
+		return err
+	}
+	if page.Next == "" {
+		return nil
+	}
+	return encodeLines(stdout, []map[string]any{{"next": page.Next, "total": page.Total}})
+}
+
+// chatAck marks messages read and prints one JSON line per id (node.AckResult).
+func chatAck(cfg config.Config, chat, ids, session string, stdout io.Writer) error {
+	req := node.AckRequest{SessionID: session}
+	for id := range strings.SplitSeq(ids, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			req.IDs = append(req.IDs, id)
+		}
+	}
+	if len(req.IDs) == 0 {
+		return errors.New("--ids is required")
+	}
+	path := "/ack"
+	if chat != "" {
+		path = "/chats/" + url.PathEscape(chat) + "/ack"
+	}
+	var res []node.AckResult
+	if err := apiJSON(http.MethodPost, apiURL(cfg, path, nil), req, &res); err != nil {
+		return err
+	}
+	return encodeLines(stdout, res)
 }
 
 // apiJSON calls the local API with req as the JSON body (nil: none) and

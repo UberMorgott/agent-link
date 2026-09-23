@@ -33,6 +33,10 @@ type inboxRecord struct {
 	Message    Message   `json:"message"`
 	Delivered  bool      `json:"delivered"`
 	ReceivedAt time.Time `json:"received_at"`
+	// Unread and ReadAt track a plain message (no chat) for this node's
+	// sessions like chatRecord does; chat messages are tracked there.
+	Unread bool      `json:"unread,omitempty"`
+	ReadAt time.Time `json:"read_at,omitzero"`
 }
 
 func openStore(dir string) (*store, error) {
@@ -105,7 +109,7 @@ func (s *store) saveInbound(m Message) (bool, error) {
 		return false, nil
 	}
 	// Status updates are never handed to wait: they only refine the inbox view.
-	r := &inboxRecord{Message: m, Delivered: m.Kind == KindStatus, ReceivedAt: time.Now().UTC()}
+	r := &inboxRecord{Message: m, Delivered: m.Kind == KindStatus, ReceivedAt: time.Now().UTC(), Unread: m.Kind == "" && m.ChatID == ""}
 	if err := writeJSON(s.inboxPath(m.ID), r); err != nil {
 		return false, err
 	}
@@ -113,6 +117,40 @@ func (s *store) saveInbound(m Message) (bool, error) {
 	close(s.changed)
 	s.changed = make(chan struct{})
 	return true, nil
+}
+
+// markRead acknowledges plain message id; found is false for an unknown id
+// or a chat message (tracked by chatStore).
+func (s *store) markRead(id string) (found, wasUnread bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.inbox[id]
+	if r == nil || r.Message.ChatID != "" {
+		return false, false, nil
+	}
+	if !r.Unread || !r.ReadAt.IsZero() {
+		return true, false, nil
+	}
+	next := *r
+	next.ReadAt = time.Now().UTC()
+	if err := writeJSON(s.inboxPath(id), &next); err != nil {
+		return true, false, err
+	}
+	*r = next
+	return true, true, nil
+}
+
+// unreadPlain returns the plain messages this node's sessions have not acknowledged.
+func (s *store) unreadPlain() []inboxRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []inboxRecord
+	for _, r := range s.inbox {
+		if r.Unread && r.ReadAt.IsZero() {
+			out = append(out, *r)
+		}
+	}
+	return out
 }
 
 // updates returns a channel that is closed when the next inbound message arrives.
@@ -214,7 +252,7 @@ func (s *store) recent(limit int, chats bool) ([]Entry, error) {
 				return nil, err
 			}
 			for _, m := range msgs {
-				if m.ChatID != "" && (!chats || m.Kind == KindChatOpen || m.Kind == KindChatClose) {
+				if m.ChatID != "" && (!chats || m.Kind == KindChatOpen || m.Kind == KindChatClose || m.Kind == KindReceipt) {
 					continue
 				}
 				if m.ReplyTo != "" {

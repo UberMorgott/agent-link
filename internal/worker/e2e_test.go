@@ -315,15 +315,23 @@ func TestChatQuestionReachesTheOtherSide(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !handler {
-				eventually(t, "a sees b's held status", func() bool {
-					info, _ := a.n.Chat(chat.ID)
-					for _, m := range info.Members {
-						if m.Name == "b" && len(m.Held) == 1 && m.Held[0].ReplyTo == q.ID && m.Held[0].HoldReason == node.HoldNoHandler {
-							return !info.Active
+				// Nobody answers automatically: the question waits unread on b,
+				// delivered as a sees it, with no held status.
+				eventually(t, "a sees it delivered, unread", func() bool {
+					msgs, _ := a.n.ChatMessages(chat.ID, 0, 0, 10)
+					for _, m := range msgs {
+						if m.ID == q.ID {
+							return len(m.Delivery) == 1 && m.Delivery[0].State == node.StateDelivered
 						}
 					}
 					return false
 				})
+				if page, err := b.n.Unread("", "", 10); err != nil || page.Total != 1 || page.Messages[0].ID != q.ID || !page.Messages[0].AsksYou {
+					t.Fatalf("b's unread: %+v, %v", page, err)
+				}
+				if info, _ := a.n.Chat(chat.ID); info.Active || len(info.Members[1].Held) != 0 {
+					t.Fatalf("a's view of b: %+v", info.Members)
+				}
 				if msgs, _ := b.n.ChatMessages(chat.ID, 0, 0, 10); len(msgs) != 2 || msgs[1].Body != body {
 					t.Fatalf("b's copy of the chat: %+v", msgs)
 				}

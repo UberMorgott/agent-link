@@ -57,6 +57,11 @@ type Settings struct {
 	// MaxJobs is how many requests the agent answers at once, 1..worker.MaxMaxJobs;
 	// 0 means worker.DefaultMaxJobs.
 	MaxJobs int `json:"max_jobs,omitempty"`
+	// AutoAnswer («Автоответ агентом, если сессия не открыта») lets the handler's
+	// agent answer a request headless when no live agent session is registered
+	// for its area; nil means off (the default, also for configs from before it).
+	// A save without the field keeps it.
+	AutoAnswer *bool `json:"auto_answer,omitempty"`
 	// AutoUpdate installs a newer GitHub release by itself; nil means on.
 	// It has its own switch and is kept when the form is saved.
 	AutoUpdate *bool `json:"auto_update,omitempty"`
@@ -258,6 +263,9 @@ func Save(path string, s Settings) error {
 	}
 	return err
 }
+
+// AutoAnswerOn reports whether the handler answers requests no live session takes.
+func (s Settings) AutoAnswerOn() bool { return s.AutoAnswer != nil && *s.AutoAnswer }
 
 // AutoUpdateOn reports whether a newer release is installed by itself.
 func (s Settings) AutoUpdateOn() bool { return s.AutoUpdate == nil || *s.AutoUpdate }

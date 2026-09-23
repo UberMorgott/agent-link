@@ -301,6 +301,9 @@ func (a *App) apply(ctx context.Context, s settings.Settings) (found settings.Fo
 	if s.AutoUpdate == nil {
 		s.AutoUpdate = a.s.AutoUpdate
 	}
+	if s.AutoAnswer == nil {
+		s.AutoAnswer = a.s.AutoAnswer
+	}
 	if len(s.HandlerCommand) == 0 && a.Agents.LookPath != nil && !a.agentPresent(s.AgentPath) {
 		if f, ok := a.Agents.Discover(s.Handler); ok {
 			s.AgentPath, found = "", f
@@ -417,6 +420,13 @@ func (a *App) startNode(ctx context.Context) error {
 	}
 	n.SetAppVersion(a.Version)
 	n.SetChangeHook(func(topic string) { a.events.publish(topic) })
+	// Sessions bind to areas by folder: a project folder is its area's, the
+	// working folder the one of direct messages.
+	projects := map[string]string{}
+	for area, p := range a.s.Projects {
+		projects[area] = p.Dir
+	}
+	n.SetFolders(a.s.WorkDir, projects)
 	// The job store always opens: with no handler, jobs left from an earlier
 	// handler fail with a reply, and new requests stay manual.
 	opt := a.Worker
@@ -426,7 +436,10 @@ func (a *App) startNode(ctx context.Context) error {
 	opt.Chats, opt.Self = n, cfg.Node
 	// Agents reach this node's API through $AGENTLINK_API.
 	opt.API = cfg.API
+	// The handler answers only with auto-answer on, and then only requests no
+	// live session takes (node.LiveSession); otherwise messages wait unread.
 	cmd, hasHandler := a.s.Command()
+	hasHandler = hasHandler && a.s.AutoAnswerOn()
 	if hasHandler {
 		opt.Agent = a.agentCommand(cmd, a.s.Handler, a.s.AgentPath != "" && len(a.s.HandlerCommand) == 0)
 		// Requests addressed to an area with a project run there (see Settings.Projects).
@@ -436,8 +449,8 @@ func (a *App) startNode(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Without a handler the hook only answers chat requests with a held status
-	// (nobody answers automatically); other requests stay for a person.
+	// Without a handler (or with auto-answer off) the hook only holds chat
+	// requests past the chain limit; the rest waits unread for a session.
 	if hasHandler {
 		n.SetInboundHook(w.Accept)
 	} else {

@@ -35,6 +35,10 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 			_ = json.NewEncoder(w).Encode(node.Message{ID: "m1"})
 		case r.URL.Path == "/chats" && r.Method == http.MethodPost, strings.HasSuffix(r.URL.Path, "/close"), strings.HasSuffix(r.URL.Path, "/archive"):
 			_ = json.NewEncoder(w).Encode(node.ChatInfo{ID: "c1"})
+		case strings.HasSuffix(r.URL.Path, "/ack"):
+			_ = json.NewEncoder(w).Encode([]node.AckResult{{ID: "m1", Found: true}, {ID: "m2", Found: true}})
+		case r.URL.Path == "/unread":
+			_ = json.NewEncoder(w).Encode(node.UnreadPage{Messages: []node.UnreadMessage{{Cursor: "1-m1"}}, Total: 3, Next: "1-m1"})
 		case strings.HasSuffix(r.URL.Path, "/messages"):
 			_ = json.NewEncoder(w).Encode([]node.ChatMessage{{Seq: 1}, {Seq: 2}})
 		default:
@@ -70,13 +74,21 @@ func TestChatCommands(t *testing.T) {
 	if out := f.run("chat", "history", "--chat", "c1", "--limit", "5", "--after", "3"); strings.Count(out, "\n") != 2 {
 		t.Fatalf("chat history printed %q", out)
 	}
-	f.run("close", "--chat", "c1")
+	if out := f.run("chat", "ack", "--chat", "c1", "--ids", "m1, m2", "--session", "s1"); strings.Count(out, "\n") != 2 {
+		t.Fatalf("chat ack printed %q", out)
+	}
+	f.run("chat", "ack", "--ids", "m3")
+	if out := f.run("chat", "unread", "--limit", "1", "--after", "0-x"); strings.Count(out, "\n") != 2 || !strings.Contains(out, `{"next":"1-m1","total":3}`) {
+		t.Fatalf("chat unread printed %q", out)
+	}
 	f.run("wait", "--chat", "c1", "--timeout", "1")
 	want := []string{
 		"POST /chats",
 		"GET /chats?archive=1",
 		"GET /chats/c1/messages?after=3&limit=5",
-		"POST /chats/c1/close",
+		"POST /chats/c1/ack",
+		"POST /ack",
+		"GET /unread?after=0-x&limit=1",
 		"GET /wait?chat=c1&timeout=1s",
 	}
 	if strings.Join(f.reqs, "\n") != strings.Join(want, "\n") {
@@ -84,12 +96,11 @@ func TestChatCommands(t *testing.T) {
 	}
 }
 
-// An agent a worker runs cannot close a chat: only people close chats.
-func TestCloseRefusedInsideJob(t *testing.T) {
+// Agents never close chats: only people do, in the app.
+func TestCloseRefused(t *testing.T) {
 	f := newFakeAPI(t)
-	t.Setenv(envJobID, "j1")
 	var out, errw bytes.Buffer
-	if code := run([]string{"close", "--chat", "c1", "--config", f.cfg}, &out, &errw); code == 0 || !strings.Contains(errw.String(), "cannot close") {
+	if code := run([]string{"close", "--chat", "c1", "--config", f.cfg}, &out, &errw); code == 0 || !strings.Contains(errw.String(), "a person closes") {
 		t.Fatalf("close in a job: code %d, stderr %q", code, errw.String())
 	}
 	if len(f.reqs) != 0 {

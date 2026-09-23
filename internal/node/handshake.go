@@ -107,10 +107,12 @@ const (
 	// after it (wire.go). There is no separate cap for the records, so no
 	// peer that runs the PAKE can be talked into a plain session.
 	CapPAKE = "pake"
+	// CapReceipts: reads KindReceipt messages (read receipts of chat messages).
+	CapReceipts = "receipts-v1"
 )
 
 // Capabilities is the list sent in hello.
-var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE, CapChat}
+var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE, CapChat, CapReceipts}
 
 // handshakeFrames are the frame types readFrame knows; any other type is skipped.
 var handshakeFrames = map[string]bool{"hello": true, "auth": true, "ok": true}

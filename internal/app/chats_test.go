@@ -90,7 +90,9 @@ func TestUIChatEndpoints(t *testing.T) {
 		t.Fatalf("close: %d %s", code, body)
 	}
 	code, body = alice.do(t, http.MethodPost, "/ui/api/send", `{"chat_id":"`+chat.ID+`","body":"more"}`, hdr)
-	if code != http.StatusBadRequest || errorText(t, body) != uiStrings["error.chat_closed"] {
+	// Writing into a closed chat continues the conversation in its next chat,
+	// the same one on both sides; a person wrote it.
+	if next := decodeAs[node.Message](t, body); code != http.StatusOK || next.ChatID != node.KeyedChatID("", chat.Participants, 1) || next.AuthorKind != node.AuthorHuman {
 		t.Fatalf("send to a closed chat: %d %s", code, body)
 	}
 	// Closing is archiving: the closed chat is in the archive, on bob's side too.
@@ -118,8 +120,8 @@ func TestUIChatEndpoints(t *testing.T) {
 		t.Fatalf("unknown member: %d %s", code, body)
 	}
 	// Legacy history is listed as a virtual chat.
-	if code, body = alice.do(t, http.MethodPost, "/ui/api/send", `{"to":"bob","body":"old style"}`, hdr); code != http.StatusOK {
-		t.Fatalf("legacy send: %d %s", code, body)
+	if _, err := alice.app.node().Send("bob", "old style", ""); err != nil {
+		t.Fatalf("legacy send: %v", err)
 	}
 	_, body = alice.do(t, http.MethodGet, "/ui/api/chats", "", hdr)
 	chats := decodeAs[[]node.ChatInfo](t, body)
@@ -140,7 +142,7 @@ func TestUIChatEndpoints(t *testing.T) {
 		}
 	}
 	code, body = alice.do(t, http.MethodPost, "/ui/api/send", `{"chat_id":"`+legacyID+`","body":"go on","ask":["bob"]}`, hdr)
-	if next := decodeAs[node.Message](t, body); code != http.StatusOK || next.ChatID == "" || next.ChatID == chat.ID {
+	if next := decodeAs[node.Message](t, body); code != http.StatusOK || next.ChatID != node.KeyedChatID("", chat.Participants, 1) {
 		t.Fatalf("send to a legacy chat: %d %s", code, body)
 	}
 }

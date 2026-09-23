@@ -33,6 +33,9 @@ type Chats interface {
 	// node.Node.ClaimRun); it is asked once per new request. When m must not
 	// run, hold is the reason (node.Hold*), "" when m does not ask this node.
 	ClaimRun(m node.Message) (run bool, hold string, err error)
+	// LiveSession reports whether a live agent session is registered on this
+	// node for messages of area: the worker then leaves them to it.
+	LiveSession(area string) bool
 	ChatOf(id string) (node.Chat, bool)
 	ChatMessages(id string, before, after uint64, limit int) ([]node.ChatMessage, error)
 }

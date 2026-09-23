@@ -21,7 +21,47 @@ const KindStatus = "status"
 const (
 	KindChatOpen  = "chat_open"
 	KindChatClose = "chat_close"
+	// KindReceipt carries read receipts (Receipts) of one reader node back to
+	// the author of the messages, to peers with CapReceipts only. It is never
+	// stored as a chat message and never wakes anything.
+	KindReceipt = "receipt"
 )
+
+// Author kinds carried in Message.AuthorKind: who wrote a message. A person
+// writes in the app (the chat composer), an agent through the CLI or a hook,
+// the worker its automatic answers. Older peers send none.
+const (
+	AuthorHuman  = "human"
+	AuthorAgent  = "agent"
+	AuthorWorker = "worker"
+)
+
+// Per-recipient delivery states of a chat message (Delivery.State), in order.
+const (
+	StateQueued    = "queued"    // in this node's outbox
+	StateDelivered = "delivered" // the recipient node stored it (ACK)
+	StateRead      = "read"      // a session or the worker there acknowledged it
+	StateAnswered  = "answered"  // the recipient replied to it (reply_to)
+)
+
+// Receipt is one message's state at the reader node, on KindReceipt messages.
+type Receipt struct {
+	ID    string    `json:"id"`
+	State string    `json:"state"` // StateRead or StateAnswered
+	At    time.Time `json:"at"`
+}
+
+func stateRank(s string) int {
+	switch s {
+	case StateDelivered:
+		return 1
+	case StateRead:
+		return 2
+	case StateAnswered:
+		return 3
+	}
+	return 0
+}
 
 // Activity phases carried in ActivityState.Phase.
 const (
@@ -70,7 +110,7 @@ func HoldText(reason string) string {
 	case HoldNoAgent:
 		return "программа агента не найдена — ждёт человека"
 	case HoldAutoLimit:
-		return "лимит автоответов — нужен человек"
+		return "пауза — нужен человек"
 	case HoldChatClosed:
 		return "чат закрыт"
 	case HoldAnswered:
@@ -112,6 +152,13 @@ type Message struct {
 	// JobHeld status (and on the completed status of an answered job); Activity
 	// then carries HoldText. Older peers neither send nor read it.
 	HoldReason string `json:"hold_reason,omitempty"`
+	// ChatGen is the generation of a keyed chat (see KeyedChatID), on every
+	// envelope of it; 0 is omitted. Older peers ignore it.
+	ChatGen uint32 `json:"chat_gen,omitempty"`
+	// AuthorKind says who wrote the message (Author*); empty from older peers.
+	AuthorKind string `json:"author_kind,omitempty"`
+	// Receipts are the read receipts of a KindReceipt message.
+	Receipts []Receipt `json:"receipts,omitempty"`
 }
 
 // IsRequest reports whether m is a request outside chats: neither a reply, a
@@ -127,9 +174,10 @@ func (m Message) Asks(name string) bool {
 // from its external request: it is kept, and no handler runs for it.
 func (m Message) Held() bool { return len(m.Responders) > 0 && m.AutoDepth > MaxAutoDepth }
 
-// MaxAutoDepth is how many automatic hops (a handler asking the next
-// participant) a chain of requests may take from its external request.
-const MaxAutoDepth = 4
+// MaxAutoDepth is how many agent hops (an agent or the worker writing after
+// another node's message, see inheritChain) a chain may take from the last
+// message a person wrote; past it a request is held: «пауза — нужен человек».
+const MaxAutoDepth = 8
 
 // Entry is a message as listed by the inbox API. Status updates are not
 // listed; an outbound request instead carries the latest job status reported

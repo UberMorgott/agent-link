@@ -135,6 +135,8 @@ var uiStrings = map[string]string{
 	"settings.max_jobs.label":      "Сколько вопросов агент решает сразу",
 	"settings.max_jobs.hint":       "От 1 до 4; пусто — 2. Остальные вопросы ждут в очереди и начинаются по порядку прихода.",
 	"settings.autostart.label":     "Запускать agentlink при входе в Windows",
+	"settings.auto_answer.label":   "Автоответ агентом, если сессия не открыта",
+	"settings.auto_answer.hint":    "Выключено: сообщения ждут непрочитанными, пока в папке проекта не откроется сессия агента. Включено: если сессии нет, выбранный агент отвечает сам.",
 	"settings.saving":              "Сохраняю…",
 	"settings.saved":               "Сохранено.",
 

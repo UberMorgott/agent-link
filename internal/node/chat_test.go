@@ -231,8 +231,12 @@ func TestChatCloseRace(t *testing.T) {
 			t.Fatalf("%s sees %+v", n.cfg.Node, got)
 		}
 	}
-	if _, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "more", Ask: []string{"b"}}); !errors.Is(err, ErrChatClosed) {
-		t.Fatalf("send to a closed chat: %v", err)
+	if _, err := a.SendMessage(Message{ChatID: info.ID, Body: "more", Responders: []string{"b"}}); !errors.Is(err, ErrChatClosed) {
+		t.Fatalf("message into a closed chat: %v", err)
+	}
+	// Writing to the conversation goes on in its next generation.
+	if m, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "more", Ask: []string{"b"}}); err != nil || m.ChatID != KeyedChatID("", info.Participants, 1) {
+		t.Fatalf("send to a closed chat = %+v, %v", m, err)
 	}
 	if ok, hold, _ := c.ClaimRun(Message{ID: q.ID, ChatID: info.ID, Responders: []string{"c"}, RootID: q.ID}); ok || hold != HoldChatClosed {
 		t.Fatal("a closed chat still starts a job")
@@ -314,14 +318,14 @@ func TestClaimRunLimitsAutomaticChains(t *testing.T) {
 	if ok, _, _ := c.ClaimRun(next); !ok {
 		t.Fatal("c refuses its first run of the chain")
 	}
-	// c's job asks b back: b already ran for this root.
+	// c's job asks b back: b runs again for the same root, one hop deeper.
 	back, err := c.SendChat(ChatSend{ChatID: info.ID, Body: "b, again", Ask: []string{"b"}, Parent: next.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "b has it", func() bool { return slices.Contains(chatIDs(b, info.ID), back.ID) })
-	if ok, hold, _ := b.ClaimRun(back); ok || hold != HoldAutoLimit || back.AutoDepth != 2 {
-		t.Fatalf("b ran twice for one root (depth %d)", back.AutoDepth)
+	if ok, hold, _ := b.ClaimRun(back); !ok || hold != "" || back.AutoDepth != 2 {
+		t.Fatalf("b refused the next round (depth %d): %q", back.AutoDepth, hold)
 	}
 	// Past MaxAutoDepth a request is held.
 	deep := Message{ID: newID(), ChatID: info.ID, From: "a", Responders: []string{"b"}, RootID: newID(), AutoDepth: MaxAutoDepth + 1}
@@ -587,11 +591,11 @@ func TestLocalReplyHook(t *testing.T) {
 func TestSendToContinuesChat(t *testing.T) {
 	a, b := pair(t, testSecret, testSecret)
 	eventually(t, "chat support", func() bool { return a.PeerHas("b", CapChat) && b.PeerHas("a", CapChat) })
-	q1, err := a.SendToChat(SendRequest{To: "b", Body: "first"})
+	q1, err := a.SendRequest(SendRequest{To: "b", Body: "first"})
 	if err != nil || q1.ChatID == "" || !q1.Asks("b") {
 		t.Fatalf("first = %+v, %v", q1, err)
 	}
-	q2, err := a.SendToChat(SendRequest{To: "b", Body: "second"})
+	q2, err := a.SendRequest(SendRequest{To: "b", Body: "second"})
 	if err != nil || q2.ChatID != q1.ChatID {
 		t.Fatalf("second = %+v, %v", q2, err)
 	}
@@ -600,7 +604,7 @@ func TestSendToContinuesChat(t *testing.T) {
 	}
 	plain, _ := b.Send("a", "plain question", "")
 	eventually(t, "a got it", func() bool { e, _ := a.Recent(0); return len(e) == 1 })
-	if r, err := a.SendToChat(SendRequest{To: "b", Body: "plain answer", ReplyTo: plain.ID}); err != nil || r.ChatID != "" {
+	if r, err := a.SendRequest(SendRequest{To: "b", Body: "plain answer", ReplyTo: plain.ID}); err != nil || r.ChatID != "" {
 		t.Fatalf("reply = %+v, %v", r, err)
 	}
 	// The control API's inbox lists chat messages too, with the chat reply.

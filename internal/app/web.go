@@ -337,6 +337,7 @@ func (a *App) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.To, req.ChatID = strings.TrimSpace(req.To), strings.TrimSpace(req.ChatID)
+	req.AuthorKind, req.Parent = node.AuthorHuman, "" // the composer: a person writes
 	m, err := n.SendRequest(req)
 	if errors.Is(err, node.ErrAmbiguousPeer) {
 		writeError(w, http.StatusBadRequest, msg("error.ambiguous_peer", map[string]string{"peers": strings.Join(n.Peers(), ", ")}))
@@ -367,7 +368,7 @@ func (a *App) chats(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawQuery = q.Encode()
 	}
 	mux := http.NewServeMux()
-	n.ChatRoutes(mux, "/ui/api", func(w http.ResponseWriter, code int, err error) {
+	n.ChatRoutes(mux, "/ui/api", true, func(w http.ResponseWriter, code int, err error) {
 		switch text := sendError(err); {
 		case errors.Is(err, node.ErrBadRequest):
 			writeError(w, code, msg("error.bad_request", nil))

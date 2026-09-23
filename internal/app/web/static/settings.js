@@ -128,6 +128,7 @@ function settingsBody(rows) {
     // so the server names the field instead of silently using the default.
     max_jobs: f.max_jobs.value.trim() === "" ? 0 : (/^\d+$/.test(f.max_jobs.value.trim()) ? Number(f.max_jobs.value.trim()) : -1),
     autostart: f.autostart.checked,
+    auto_answer: f.auto_answer.checked,
   };
 }
 
@@ -143,6 +144,7 @@ function showSettings(s) {
   agentPath.value = s.agent_path || "";
   showAgent();
   form.elements.autostart.checked = !!s.autostart;
+  form.elements.auto_answer.checked = !!s.auto_answer;
   form.elements.discovery.checked = s.discovery !== false;
   form.elements.max_jobs.value = s.max_jobs ? String(s.max_jobs) : "";
   if (s.listen || s.api || s.discovery === false || s.max_jobs || (s.areas || []).length) document.getElementById("advanced").open = true;
