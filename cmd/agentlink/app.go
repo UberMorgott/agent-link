@@ -85,6 +85,10 @@ func runApp(args []string) error {
 	} else if moved {
 		log.Info("autostart now starts this executable", "exe", exe)
 	}
+	// Folder hooks too: `agentlink hook` reads the default settings file.
+	if filepath.Clean(*cfgPath) == filepath.Clean(defPath) {
+		a.HookExe = exe
+	}
 	quitCtx, quit := context.WithCancel(context.Background())
 	defer quit()
 	a.QuitFunc = systray.Quit

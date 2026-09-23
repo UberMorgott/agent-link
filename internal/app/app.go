@@ -66,8 +66,12 @@ type App struct {
 	Relaunch                 func() error
 	Latest                   func(ctx context.Context, current string) (Release, bool, error)
 	UpdateFirst, UpdateEvery time.Duration
-	upd                      updater
-	events                   *eventBroadcaster
+	// HookExe is the executable the folder hooks run (`HookExe hook claude`);
+	// an update replaces that file in place, so the path stays valid. Empty:
+	// the app installs no hooks (tests, a settings file other than the default).
+	HookExe string
+	upd     updater
+	events  *eventBroadcaster
 
 	picking atomic.Bool    // a Windows dialog is open
 	saves   sync.WaitGroup // background saves of a rediscovered agent path
@@ -81,6 +85,8 @@ type App struct {
 	startErr   error
 	listen     string // this side's address to give the others, of the last start
 	zeroTier   bool
+	hookClient string            // agent of the last hook sync, "" for none
+	hookStates map[string]string // clean folder -> Hook* state of the last sync
 }
 
 // Status is a snapshot for the tray and the web UI.
@@ -172,6 +178,7 @@ func (a *App) Start(ctx context.Context) error {
 		return nil
 	}
 	err := a.startLocked(ctx)
+	a.syncHooksLocked()
 	a.mu.Unlock()
 	a.events.publish("status", "dashboard", "participants")
 	return err
@@ -314,6 +321,7 @@ func (a *App) apply(ctx context.Context, s settings.Settings) (found settings.Fo
 	}
 	a.stopLocked()
 	a.s, a.configured = s, true
+	a.syncHooksLocked()
 	if err := a.startLocked(ctx); err != nil {
 		return found, fmt.Errorf("%w: %w", ErrNotStarted, err)
 	}

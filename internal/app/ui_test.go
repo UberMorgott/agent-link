@@ -337,7 +337,7 @@ func TestUISemanticContracts(t *testing.T) {
 // settingsHarnessJS is the fake DOM settings.js runs against in Node.
 const settingsHarnessJS = `
 class Element { constructor(id=""){this.id=id;this.value="";this.checked=false;this.hidden=false;this.disabled=false;this.textContent="";this.className="";this.listeners={};this.open=false;this.children=[]} addEventListener(n,f){this.listeners[n]=f} setAttribute(n,v){this[n]=v} removeAttribute(n){delete this[n]} select(){} focus(){} append(...c){this.children.push(...c)} replaceChildren(...c){this.children=[...c]} }
-const names=["form","settings_result","code","work_dir","pick","agent_path","pick_agent","find_agent","agent_row","agent_shown","work_dir_shown","advanced","my_addr","generate","copy","projects","projects_empty","add_project","updates","update_text","update_check","update_apply","update_auto","update_version"];
+const names=["form","settings_result","code","work_dir","pick","agent_path","pick_agent","find_agent","agent_row","agent_shown","work_dir_shown","work_dir_hooks","hooks_codex","advanced","my_addr","generate","copy","projects","projects_empty","add_project","updates","update_text","update_check","update_apply","update_auto","update_version"];
 const elements=Object.fromEntries(names.map((id)=>[id,new Element(id)]));
 const controls=Object.fromEntries(["node","code","handler","agent_path","work_dir","listen","api","areas","discovery","max_jobs","autostart"].map((name)=>[name,new Element(name)]));
 controls.handler.value="none"; controls.discovery.checked=true; elements.form.elements=controls;`
@@ -362,14 +362,14 @@ async function api(method,path,body){if(path==="settings"){sent.push(body);retur
 const t=(key)=>key,fmt=(key)=>key;
 vm.runInNewContext(fs.readFileSync(process.argv[1],"utf8"),{document,store,api,t,fmt,crypto:{},navigator:{},location:{reload(){}},Array,Number,Object,Promise,RegExp,String,Uint8Array,console});
 const list=elements.projects;
-const parts=(li)=>({area:li.children[0].children[1],dir:li.children[1].children[1].children[0],pick:li.children[1].children[1].children[1],remove:li.children[2],count:li.children.length});
+const parts=(li)=>({area:li.children[0].children[1],dir:li.children[1].children[1].children[0],pick:li.children[1].children[1].children[1],hooks:li.children[2],remove:li.children[3],count:li.children.length});
 const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve()};
 const edit=async(input,value)=>{input.value=value;elements.form.listeners.input({target:input});elements.form.listeners.change({target:input});await flush()};
 (async()=>{
 if(list.children.length!==1||!elements.projects_empty.hidden)throw new Error("saved project not rendered");
 let first=parts(list.children[0]);
 if(first.area.value!=="site"||first.dir.value!=="E:\\site")throw new Error("row values: "+JSON.stringify([first.area.value,first.dir.value]));
-if(first.count!==3)throw new Error("a project row must hold only area, folder and remove: "+first.count);
+if(first.count!==4)throw new Error("a project row must hold only area, folder, hook status and remove: "+first.count);
 await edit(first.dir,"");
 if(sent.length!==0)throw new Error("a row without a folder was sent: "+JSON.stringify(sent));
 await edit(first.dir,"E:\\site");

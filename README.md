@@ -378,6 +378,14 @@ during the turn. It never marks messages delivered, stays silent when there is n
 the node is not running, and does nothing inside a handler job. Details:
 [docs/agent-usage.md](docs/agent-usage.md#hearing-about-messages-in-a-live-session-hooks).
 
+The desktop app does this by itself for the folders it knows: the agent chosen in «Кто отвечает»
+gets the hook in the «Рабочая папка» and in every «Проекты» folder (Claude Code:
+`.claude/settings.local.json`, Codex: `.codex/hooks.json`), on start and on every save. A changed
+folder or agent takes agentlink's entries out of the old place; other hooks stay. A session in
+an area's project folder hears only of that area's messages; any other session hears of the rest
+(direct messages, chats without an area, areas without a folder). Codex runs a new hook only
+after you trust it once with `/hooks` in that folder.
+
 ## Delivery
 
 - Sent messages are written to `outbox/<peer>/` first and removed only when the peer ACKs, so an

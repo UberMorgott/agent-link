@@ -173,6 +173,33 @@ agentlink hook install codex             # ~/.codex/hooks.json, then trust it wi
   `*.agentlink.bak`. Claude Code gets an exec-form entry (`command` = this program, `args` =
   `["hook","claude"]`, no shell); Codex a shell command. Re-run it after moving `agentlink.exe`.
 
+### Folder hooks of the desktop app
+
+The desktop app (with the default settings file) installs the hook itself, for the agent chosen
+in «Кто отвечает» only, into the «Рабочая папка» and every «Проекты» folder, on start and on
+every settings save:
+
+- Claude Code: `<folder>/.claude/settings.local.json`, the personal project settings that Claude
+  Code reads hooks from ([settings](https://code.claude.com/docs/en/settings),
+  [hooks](https://code.claude.com/docs/en/hooks)); the shared `.claude/settings.json` is not
+  touched. Codex: `<folder>/.codex/hooks.json` (Codex has no local variant; project hooks load
+  only in a trusted project and a new hook runs after you trust it once with `/hooks`,
+  [hooks](https://learn.chatgpt.com/docs/hooks)). In a git repository the file is also listed in
+  `.git/info/exclude`, so it is not committed by accident.
+- The entry runs the app's own `agentlink.exe`; an update replaces that file in place, so the
+  path stays valid. Installing is idempotent and keeps a `*.agentlink.bak` like `hook install`.
+- A folder removed from the settings, a new working folder or another agent: agentlink's entries
+  are taken out of the old file (only those; `%APPDATA%\agentlink\folder-hooks.json` remembers
+  where they went). «Никто» removes them all. A folder that does not exist is skipped.
+- The settings page shows the state next to the working folder and each project: «Хуки: Claude
+  ✓», «Хуки: папка не найдена», or a write error (details in `agentlink.log`).
+
+Which messages a session hears depends on its `cwd` (from the hook input): a session inside the
+project folder of an area (the deepest one when folders nest) hears only of that area: chats
+whose area it is and legacy `area:NAME` requests. Every other session (the working folder, or a
+user-scope hook anywhere else) hears of the rest: direct messages, chats without an area and
+areas that have no project folder. That is also where the answering agent works on them.
+
 ## What the answering side does
 
 If the other machine has a handler agent configured, your request is its **task**: `claude`

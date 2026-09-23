@@ -65,8 +65,10 @@ function projectRow(area, project) {
   remove.type = "button";
   remove.className = "project-remove";
   remove.textContent = t("settings.projects.remove");
-  li.append(labelled(t("settings.projects.area"), areaInput), labelled(t("settings.projects.dir"), dirRow), remove);
-  const row = { li, area: areaInput, dir: dirInput };
+  const hooks = document.createElement("p");
+  hooks.className = "hint";
+  li.append(labelled(t("settings.projects.area"), areaInput), labelled(t("settings.projects.dir"), dirRow), hooks, remove);
+  const row = { li, area: areaInput, dir: dirInput, hooks };
   remove.addEventListener("click", () => {
     projectRows = projectRows.filter((r) => r !== row);
     showProjects();
@@ -339,6 +341,24 @@ document.getElementById("copy").addEventListener("click", async () => {
   }
 });
 
+// --- hooks: the chosen agent's hook in the working and project folders ---
+
+function hookText(client, state) {
+  if (!client || !state) return "";
+  if (state === "ok") return fmt("settings.hooks.ok", { agent: client === "codex" ? "Codex" : "Claude" });
+  return t("settings.hooks." + state);
+}
+
+// showHooks reads what the app installed at the last save or start.
+async function showHooks() {
+  let h;
+  try { h = await api("GET", "hooks"); } catch (_) { return; }
+  const projects = h.projects || {};
+  document.getElementById("work_dir_hooks").textContent = hookText(h.client, h.work_dir);
+  for (const r of projectRows) r.hooks.textContent = hookText(h.client, projects[r.area.value.trim()]);
+  document.getElementById("hooks_codex").hidden = !(h.client === "codex" && [h.work_dir, ...Object.values(projects)].includes("ok"));
+}
+
 // --- updates: own buttons and switch, saved by their own requests ---
 
 const updText = document.getElementById("update_text");
@@ -379,6 +399,7 @@ updAuto.addEventListener("change", () => updateAction("update/auto", { auto: upd
 store.subscribe("settings", showSettings);
 store.subscribe("status", showLocalAddress);
 store.subscribe("update", showUpdate);
-if (store.get().settings) showSettings(store.get().settings);
+store.subscribe("settings", showHooks);
+if (store.get().settings) { showSettings(store.get().settings); showHooks(); }
 if (store.get().status) showLocalAddress(store.get().status);
 if (store.get().update) showUpdate(store.get().update);

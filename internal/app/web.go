@@ -88,6 +88,7 @@ func (a *App) Handler() http.Handler {
 		writeJSON(w, a.webSettings())
 	})
 	api.HandleFunc("POST /ui/api/settings", a.saveSettings)
+	api.HandleFunc("GET /ui/api/hooks", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.HookStatus()) })
 	api.HandleFunc("GET /ui/api/inbox", a.inbox)
 	api.HandleFunc("GET /ui/api/threads", a.threads)
 	api.HandleFunc("GET /ui/api/dashboard", a.dashboard)
