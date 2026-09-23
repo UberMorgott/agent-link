@@ -30,6 +30,10 @@ import (
 //
 //	{"t":"agentlink","v":2,"net":"<16 hex>","node":"<name>","id":"<node id>","port":7420}
 //
+// A project context sends v3 beacons whose net is config.ProjectTag of the
+// project key (128 random bits behind it, so no slow function is needed);
+// older nodes ignore the unknown tag.
+//
 // Before v0.6 beacons were v1 with a PBKDF2 tag (legacyNetworkTag). A node
 // still recognises those, so it dials older members it hears, but never
 // sends one.
@@ -42,7 +46,9 @@ const (
 	beaconMax     = 512
 	beaconRedial  = 15 * time.Second // per address, whatever the beacons say
 	beaconVersion = 2
-	netTagByteLen = 8
+	// projectBeaconVersion: a project context's beacon, net = config.ProjectTag.
+	projectBeaconVersion = 3
+	netTagByteLen        = 8
 	// NetworkTag: Argon2id, RFC 9106's second recommended setting (64 MiB,
 	// 3 passes, 4 lanes), salted with a fixed domain string.
 	netTagSalt    = "agentlink/network-tag/v2"
@@ -160,7 +166,7 @@ func (n *Node) discoveryLoop(ctx context.Context) {
 	tick := time.NewTicker(n.beaconEvery)
 	defer tick.Stop()
 	for {
-		msg, err := json.Marshal(beacon{T: beaconType, V: beaconVersion, Net: n.netTag, Node: n.cfg.Node, ID: n.id, Port: n.port()})
+		msg, err := json.Marshal(n.beacon())
 		if err != nil {
 			return
 		}
@@ -192,6 +198,16 @@ func (n *Node) discoveryLoop(ctx context.Context) {
 		case <-tick.C:
 		}
 	}
+}
+
+// beacon is this node's beacon: v2 with the Argon2id tag for the legacy
+// network, v3 with the project tag (config.ProjectTag) for a project.
+func (n *Node) beacon() beacon {
+	v := beaconVersion
+	if n.cfg.Project != "" {
+		v = projectBeaconVersion
+	}
+	return beacon{T: beaconType, V: v, Net: n.netTag, Node: n.cfg.Node, ID: n.id, Port: n.port()}
 }
 
 func (n *Node) readBeacons(ctx context.Context, p *ipv4.PacketConn) {

@@ -60,7 +60,7 @@ func rawPAKE(t *testing.T, tn *testNode, name, key string) (frame, *cpace, *wire
 	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 	nonce := randomHex(32)
 	sid, _ := hex.DecodeString(nonce)
-	cp, err := newCPace([]byte(key), sid)
+	cp, err := newCPace([]byte(key), []byte(cpaceCI), sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestWrongCodeGivesNothingReusable(t *testing.T) {
 	}
 	tag, _ := hex.DecodeString(f.MAC)
 	for _, guess := range []string{wrong, testSecret} {
-		g, err := newCPaceScalar([]byte(guess), cp.sid, cp.y)
+		g, err := newCPaceScalar([]byte(guess), []byte(cpaceCI), cp.sid, cp.y)
 		if err != nil {
 			t.Fatal(err)
 		}

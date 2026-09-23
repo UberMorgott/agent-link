@@ -44,6 +44,11 @@ var (
 	// leaks an offline-checkable MAC, from a public address (or after a PAKE
 	// session under its name).
 	ErrLegacyRefused = errors.New("legacy handshake refused")
+	// ErrWrongProject: the peer's hello names another project (or none) than
+	// this node's context.
+	ErrWrongProject = errors.New("peer is in another project")
+	// ErrUnknownProject: the peer's app has no context for this node's project.
+	ErrUnknownProject = errors.New("peer does not know the project")
 )
 
 // target is one peer address to dial; name is fixed by config or learned
@@ -178,7 +183,11 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	if n.beaconPort == 0 {
 		n.beaconPort = BeaconPort
 	}
-	if cfg.Discovery {
+	switch {
+	case !cfg.Discovery:
+	case cfg.Project != "":
+		n.netTag = config.ProjectTag(secret)
+	default:
 		n.netTag, n.oldNetTag = NetworkTag(secret), legacyNetworkTag(secret)
 	}
 	for _, p := range cfg.Peers {
@@ -660,7 +669,8 @@ func (n *Node) dialOnce(ctx context.Context, t *target) bool {
 	if err != nil {
 		n.log.Warn("outbound handshake failed", "addr", t.addr, "err", err)
 		// Learned and discovered addresses go stale; only the user's own ones are reported.
-		if !t.auto && (errors.Is(err, ErrAuth) || errors.Is(err, ErrSameName) || errors.Is(err, ErrWrongPeer) || errors.Is(err, ErrLegacyRefused)) || errors.Is(err, ErrNameTaken) {
+		if !t.auto && (errors.Is(err, ErrAuth) || errors.Is(err, ErrSameName) || errors.Is(err, ErrWrongPeer) || errors.Is(err, ErrLegacyRefused) ||
+			errors.Is(err, ErrWrongProject) || errors.Is(err, ErrUnknownProject)) || errors.Is(err, ErrNameTaken) {
 			n.setProblem(err)
 		}
 		_ = c.Close()

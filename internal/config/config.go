@@ -141,6 +141,10 @@ type Config struct {
 	Discovery bool `json:"discovery,omitempty"`
 	// DiscoveryPort replaces node.BeaconPort; 0 keeps it.
 	DiscoveryPort int `json:"discovery_port,omitempty"`
+	// Project makes the node one project's context (ValidProjectID): its
+	// secret is the ProjectKey, and it only talks to members of that project.
+	// "" is the legacy network.
+	Project string `json:"project,omitempty"`
 }
 
 var namePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_-]{0,63}$`)
@@ -209,6 +213,9 @@ func (c Config) Validate() error {
 	}
 	if c.DiscoveryPort < 0 || c.DiscoveryPort > 65535 {
 		errs = append(errs, fmt.Errorf("invalid discovery_port %d", c.DiscoveryPort))
+	}
+	if c.Project != "" && !ValidProjectID(c.Project) {
+		errs = append(errs, fmt.Errorf("invalid project id %q", c.Project))
 	}
 	for _, a := range c.Areas {
 		if !ValidName(a) {

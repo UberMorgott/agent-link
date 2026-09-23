@@ -67,7 +67,7 @@ func TestCPaceDraftVectors(t *testing.T) {
 }
 
 func TestCPaceRejectsBadShares(t *testing.T) {
-	c, err := newCPace([]byte(testSecret), make([]byte, 32))
+	c, err := newCPace([]byte(testSecret), []byte(cpaceCI), make([]byte, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,8 +84,8 @@ func TestCPaceAgreement(t *testing.T) {
 	sid := make([]byte, 32)
 	ad1, ad2 := cpaceAD("a", "id-a"), cpaceAD("b", "id-b")
 	run := func(k1, k2 string) (sessionKeys, sessionKeys) {
-		d, _ := newCPace([]byte(k1), sid)
-		a, _ := newCPace([]byte(k2), sid)
+		d, _ := newCPace([]byte(k1), []byte(cpaceCI), sid)
+		a, _ := newCPace([]byte(k2), []byte(cpaceCI), sid)
 		dk, err := d.keys(a.share, true, ad1, ad2)
 		if err != nil {
 			t.Fatal(err)

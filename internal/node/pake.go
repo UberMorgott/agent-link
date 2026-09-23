@@ -74,8 +74,13 @@ type cpace struct {
 	share []byte // Y = y*g, encoded
 }
 
-// newCPace starts a run with a random scalar.
-func newCPace(prs, sid []byte) (*cpace, error) {
+// projectCI is the channel identifier of a project's sessions: it binds the
+// project id into the generator, so the same secret under another project id
+// never yields a matching share.
+func projectCI(pid string) []byte { return []byte("agentlink/cpace/project/v1\x00" + pid) }
+
+// newCPace starts a run with a random scalar under channel identifier ci.
+func newCPace(prs, ci, sid []byte) (*cpace, error) {
 	var b [64]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return nil, err
@@ -84,11 +89,11 @@ func newCPace(prs, sid []byte) (*cpace, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newCPaceScalar(prs, sid, y)
+	return newCPaceScalar(prs, ci, sid, y)
 }
 
-func newCPaceScalar(prs, sid []byte, y *ristretto255.Scalar) (*cpace, error) {
-	g, err := cpaceGenerator(prs, []byte(cpaceCI), sid)
+func newCPaceScalar(prs, ci, sid []byte, y *ristretto255.Scalar) (*cpace, error) {
+	g, err := cpaceGenerator(prs, ci, sid)
 	if err != nil {
 		return nil, err
 	}

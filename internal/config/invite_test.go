@@ -106,6 +106,17 @@ func TestParseInviteRejects(t *testing.T) {
 	}
 }
 
+func TestConfigProject(t *testing.T) {
+	c := Config{Node: "a", Listen: "127.0.0.1:0", API: "127.0.0.1:0", DataDir: "d", SecretEnv: "S", Project: "legacy"}
+	if err := c.Validate(); err == nil {
+		t.Fatal("invalid project id accepted")
+	}
+	c.Project = loadVectors(t)[0].PID
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNewProjectIDs(t *testing.T) {
 	a, err := NewProjectID()
 	if err != nil || !ValidProjectID(a) {

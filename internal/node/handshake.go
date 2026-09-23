@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 
 	"github.com/UberMorgott/agent-link/internal/config"
@@ -81,6 +82,10 @@ type frame struct {
 	ID      string   `json:"id,omitempty"`
 	Members []Member `json:"members,omitempty"`
 	PAKE    string   `json:"pake,omitempty"` // hex CPace share (since v0.6)
+	// Project selects the context on the other side: a project id in both
+	// hellos of a project session, absent for the legacy network. The hellos
+	// are in the transcript, and the project id is in the CPace channel id.
+	Project string `json:"project,omitempty"`
 	// Presence: this node's sessions per shared area (presence frames, CapPresence).
 	Presence []AreaPresence `json:"presence,omitempty"`
 }
@@ -91,6 +96,10 @@ const ProtocolVersion = 6
 
 // helloNameTaken is hello.error when the dialer's name belongs to another live member.
 const helloNameTaken = "name-taken"
+
+// helloUnknownProject is hello.error when the acceptor has no context for the
+// dialer's project (sent by the Hub, without a MAC).
+const helloUnknownProject = "unknown-project"
 
 // Capabilities this node announces. Older peers announce none.
 const (
@@ -111,10 +120,29 @@ const (
 	CapPAKE = "pake"
 	// CapReceipts: reads KindReceipt messages (read receipts of chat messages).
 	CapReceipts = "receipts-v1"
+	// CapProjects: a project context (docs/plans/projects-v1.md); announced by
+	// project nodes only, so every member of a project has it.
+	CapProjects = "projects-v1"
 )
 
-// Capabilities is the list sent in hello.
+// Capabilities is the list sent in hello by a legacy node; a project node adds CapProjects.
 var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE, CapChat, CapReceipts, CapPresence}
+
+// caps is the capability list this node announces.
+func (n *Node) caps() []string {
+	if n.cfg.Project == "" {
+		return Capabilities
+	}
+	return append(slices.Clone(Capabilities), CapProjects)
+}
+
+// cpaceCI is the CPace channel identifier of this node's sessions.
+func (n *Node) cpaceCI() []byte {
+	if n.cfg.Project == "" {
+		return []byte(cpaceCI)
+	}
+	return projectCI(n.cfg.Project)
+}
 
 // handshakeFrames are the frame types readFrame knows; any other type is skipped.
 var handshakeFrames = map[string]bool{"hello": true, "auth": true, "ok": true}
@@ -139,7 +167,7 @@ func helloOf(f frame) peerHello {
 // hello is this node's hello frame.
 func (n *Node) hello(nonce, mac string) frame {
 	return frame{Type: "hello", Node: n.cfg.Node, Areas: n.cfg.Areas, Nonce: nonce, MAC: mac,
-		Proto: ProtocolVersion, Caps: Capabilities, NodeID: n.id, App: n.appVersion, Port: n.port()}
+		Proto: ProtocolVersion, Caps: n.caps(), NodeID: n.id, App: n.appVersion, Port: n.port(), Project: n.cfg.Project}
 }
 
 // decodeFrame parses one frame leniently: unknown fields are ignored, and a
@@ -183,7 +211,7 @@ func (n *Node) dialHandshake(w *wire, want string) (peerHello, error) {
 	remote := w.c.RemoteAddr()
 	dialNonce := randomHex(32)
 	sid, _ := hex.DecodeString(dialNonce)
-	cp, err := newCPace(n.secret, sid)
+	cp, err := newCPace(n.secret, n.cpaceCI(), sid)
 	if err != nil {
 		return peerHello{}, err
 	}
@@ -202,8 +230,12 @@ func (n *Node) dialHandshake(w *wire, want string) (peerHello, error) {
 	}
 	peer := f.Node
 	switch {
+	case f.Error == helloUnknownProject:
+		return peerHello{}, ErrUnknownProject
 	case f.Error == helloNameTaken:
 		return peerHello{}, ErrNameTaken
+	case f.Project != n.cfg.Project:
+		return peerHello{}, fmt.Errorf("%w: %q", ErrWrongProject, f.Project)
 	case peer == self:
 		return peerHello{}, ErrSameName
 	case !config.ValidName(peer):
@@ -215,6 +247,9 @@ func (n *Node) dialHandshake(w *wire, want string) (peerHello, error) {
 	}
 	h := helloOf(f)
 	if f.PAKE == "" {
+		if n.cfg.Project != "" {
+			return peerHello{}, fmt.Errorf("%w: a project session needs the PAKE", ErrLegacyRefused)
+		}
 		if err := n.legacyAllowed(remote, peer); err != nil {
 			return peerHello{}, err
 		}
@@ -270,9 +305,18 @@ func (n *Node) acceptHandshake(w *wire) (peerHello, error) {
 		return peerHello{}, err
 	}
 	dialerLine := w.lastLine
+	// The Hub routes by project; a node checks again: a project node never
+	// takes a legacy or a foreign project's hello, the legacy node never a
+	// project's, and a project session is always the PAKE.
+	switch {
+	case f.Project != n.cfg.Project:
+		return peerHello{}, fmt.Errorf("%w: %q", ErrWrongProject, f.Project)
+	case n.cfg.Project != "" && f.PAKE == "":
+		return peerHello{}, fmt.Errorf("%w: a project session needs the PAKE", ErrLegacyRefused)
+	}
 	if f.Node == self {
 		// Answer with our name so the dialer can tell it reached itself (or a twin name).
-		_ = w.write(frame{Type: "hello", Node: self})
+		_ = w.write(frame{Type: "hello", Node: self, Project: n.cfg.Project})
 		return peerHello{}, ErrSameName
 	}
 	n.mu.Lock()
@@ -315,7 +359,7 @@ func (n *Node) acceptHandshake(w *wire) (peerHello, error) {
 		return peerHello{}, ErrAuth
 	}
 	sid, _ := hex.DecodeString(dialNonce)
-	cp, err := newCPace(n.secret, sid)
+	cp, err := newCPace(n.secret, n.cpaceCI(), sid)
 	if err != nil {
 		return peerHello{}, err
 	}
