@@ -110,7 +110,7 @@ const (
 )
 
 // Capabilities is the list sent in hello.
-var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE}
+var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE, CapChat}
 
 // handshakeFrames are the frame types readFrame knows; any other type is skipped.
 var handshakeFrames = map[string]bool{"hello": true, "auth": true, "ok": true}

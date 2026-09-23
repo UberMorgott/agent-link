@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
 	"time"
 )
 
@@ -14,6 +15,31 @@ const AreaPrefix = "area:"
 // the request and whose JobStatus is queued or running. Status updates never
 // wake wait and never start a handler.
 const KindStatus = "status"
+
+// Chat control kinds: KindChatOpen announces a chat to its participants,
+// KindChatClose closes it. Neither starts a handler nor wakes wait.
+const (
+	KindChatOpen  = "chat_open"
+	KindChatClose = "chat_close"
+)
+
+// Activity phases carried in ActivityState.Phase.
+const (
+	PhaseRunning = "running"
+	PhaseDone    = "done"
+)
+
+// ActivityState is one operation a running handler reports (a tool call, a
+// command, thinking), on status updates of chat jobs. ID ties the start and
+// the end of one operation; Seq orders the updates of one job.
+type ActivityState struct {
+	ID        string    `json:"id,omitempty"`
+	Type      string    `json:"type,omitempty"` // e.g. "thinking", "edit", "command", "read", "search", "tool"
+	Text      string    `json:"text,omitempty"`
+	Phase     string    `json:"phase,omitempty"` // PhaseRunning or PhaseDone
+	StartedAt time.Time `json:"started_at,omitzero"`
+	Seq       uint64    `json:"seq,omitempty"`
+}
 
 // Job statuses carried in Message.JobStatus.
 const (
@@ -37,10 +63,39 @@ type Message struct {
 	// on running status updates only. Older peers neither send nor read it.
 	Activity  string    `json:"activity,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+
+	// Chat fields, only on messages of a chat (peers with CapChat). Every
+	// envelope carries the chat's full, fixed Participants (sorted, author
+	// included) and its Area, so a receiver can rebuild the chat from any of them.
+	ChatID       string   `json:"chat_id,omitempty"`
+	Participants []string `json:"participants,omitempty"`
+	// Responders are the participants asked to answer; empty means the
+	// message only informs. In a chat ReplyTo is only a reference.
+	Responders []string `json:"responders,omitempty"`
+	// RootID is the external request an automatic chain of requests started
+	// from, AutoDepth how many automatic hops away from it m is.
+	RootID    string `json:"root_id,omitempty"`
+	AutoDepth uint8  `json:"auto_depth,omitempty"`
+	// ActivityInfo details Activity on status updates of chat jobs.
+	ActivityInfo *ActivityState `json:"activity_info,omitempty"`
 }
 
-// IsRequest reports whether m asks for an answer: it is neither a reply nor a status update.
-func (m Message) IsRequest() bool { return m.ReplyTo == "" && m.Kind == "" }
+// IsRequest reports whether m is a request outside chats: neither a reply, a
+// status update nor a chat message (those ask by Responders, see Asks).
+func (m Message) IsRequest() bool { return m.ReplyTo == "" && m.Kind == "" && m.ChatID == "" }
+
+// Asks reports whether m is a chat message that asks name to answer.
+func (m Message) Asks(name string) bool {
+	return m.ChatID != "" && m.Kind == "" && slices.Contains(m.Responders, name)
+}
+
+// Held reports whether m asks for answers but is too many automatic hops
+// from its external request: it is kept, and no handler runs for it.
+func (m Message) Held() bool { return len(m.Responders) > 0 && m.AutoDepth > MaxAutoDepth }
+
+// MaxAutoDepth is how many automatic hops (a handler asking the next
+// participant) a chain of requests may take from its external request.
+const MaxAutoDepth = 4
 
 // Entry is a message as listed by the inbox API. Status updates are not
 // listed; an outbound request instead carries the latest job status reported

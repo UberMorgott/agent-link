@@ -225,7 +225,7 @@ func TestAreaFanout(t *testing.T) {
 	}
 	var gotC []string
 	eventually(t, "c received dev and ops", func() bool {
-		msgs, _ := c.store.claimUndelivered()
+		msgs, _ := c.store.claimUndelivered("")
 		for _, m := range msgs {
 			gotC = append(gotC, m.ID)
 		}

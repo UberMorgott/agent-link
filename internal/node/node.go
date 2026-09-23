@@ -62,6 +62,7 @@ type Node struct {
 	cfg     config.Config
 	secret  []byte
 	store   *store
+	chats   *chatStore
 	log     *slog.Logger
 	targets []*target
 	// open accepts any authenticated peer name: some peer has no configured
@@ -135,12 +136,16 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	chats, err := openChatStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
 	members, err := st.loadMembers()
 	if err != nil {
 		return nil, err
 	}
 	n := &Node{
-		cfg: cfg, secret: secret, store: st, log: log.With("node", cfg.Node),
+		cfg: cfg, secret: secret, store: st, chats: chats, log: log.With("node", cfg.Node),
 		known: map[string]bool{}, conns: map[string]*peerConn{}, areas: map[string][]string{},
 		offline: map[string]time.Time{}, started: time.Now(),
 		members: map[string]*Member{}, dialing: map[string]bool{}, tried: map[string]time.Time{},
@@ -203,6 +208,9 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		default:
 			n.known[m.Name] = true
 		}
+	}
+	if err := n.repairChats(); err != nil {
+		return nil, err
 	}
 	return n, nil
 }
@@ -442,8 +450,16 @@ func (n *Node) Send(to, body, replyTo string) (Message, error) {
 // SendMessage queues m like Send. An empty ID gets a random one; From and
 // CreatedAt are always set here. A status update needs a ReplyTo and may have
 // no body. Re-sending the same ID is safe: the receiver deduplicates by id.
+//
+// A message with ChatID goes to every other participant of that chat instead
+// of To (which must be empty); Responders, RootID, AutoDepth and ActivityInfo
+// are kept, and an empty RootID starts a new chain at the message itself.
 func (n *Node) SendMessage(m Message) (Message, error) {
 	switch {
+	case m.ChatID != "" && m.To != "":
+		return Message{}, errors.New("a chat message has no to")
+	case m.ChatID == "" && (len(m.Responders) > 0 || m.RootID != "" || m.ActivityInfo != nil):
+		return Message{}, errors.New("chat fields without chat_id")
 	case m.Kind != "" && m.Kind != KindStatus:
 		return Message{}, fmt.Errorf("invalid kind %q", m.Kind)
 	case m.Kind == KindStatus && m.ReplyTo == "":
@@ -458,6 +474,10 @@ func (n *Node) SendMessage(m Message) (Message, error) {
 	if m.ID == "" {
 		m.ID = newID()
 	}
+	if m.ChatID != "" {
+		return n.sendChat(m)
+	}
+	m.Participants, m.AutoDepth = nil, 0
 	m.From, m.Area, m.CreatedAt = n.cfg.Node, "", time.Now().UTC()
 	if m.To == "" {
 		switch peers := n.Peers(); {

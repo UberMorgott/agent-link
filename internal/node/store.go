@@ -85,6 +85,17 @@ func (s *store) ack(peer, id string) error {
 	return err
 }
 
+// delivery tells where the copy of message id for peer is: "queued" in the
+// outbox, "sent" once ACKed, or "" when there is none.
+func (s *store) delivery(peer, id string) string {
+	for _, box := range []struct{ dir, status string }{{"sent", "sent"}, {"outbox", "queued"}} {
+		if _, err := os.Stat(filepath.Join(s.dir, box.dir, peer, id+".json")); err == nil {
+			return box.status
+		}
+	}
+	return ""
+}
+
 // saveInbound persists m unless its id was already received. It reports
 // whether the message is new.
 func (s *store) saveInbound(m Message) (bool, error) {
@@ -111,13 +122,14 @@ func (s *store) updates() <-chan struct{} {
 	return s.changed
 }
 
-// claimUndelivered marks all undelivered inbound messages delivered and returns them.
-func (s *store) claimUndelivered() ([]Message, error) {
+// claimUndelivered marks all undelivered inbound messages delivered and returns
+// them. A non-empty chat claims only that chat's messages and leaves the rest.
+func (s *store) claimUndelivered(chat string) ([]Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var recs []*inboxRecord
 	for _, r := range s.inbox {
-		if !r.Delivered {
+		if !r.Delivered && (chat == "" || r.Message.ChatID == chat) {
 			recs = append(recs, r)
 		}
 	}
@@ -148,6 +160,9 @@ func (s *store) recent(limit int) ([]Entry, error) {
 	s.mu.Lock()
 	for _, r := range s.inbox {
 		m := r.Message
+		if m.ChatID != "" { // chats have their own history (chatStore)
+			continue
+		}
 		if m.ReplyTo != "" {
 			key := m.From + "/" + m.ReplyTo
 			p := byRequest[key]
@@ -190,6 +205,9 @@ func (s *store) recent(limit int) ([]Entry, error) {
 				return nil, err
 			}
 			for _, m := range msgs {
+				if m.ChatID != "" {
+					continue
+				}
 				e := Entry{Direction: "out", Status: box.status, Peer: p.Name(), Message: m}
 				if m.IsRequest() {
 					e.LastHeard = m.CreatedAt
