@@ -338,10 +338,51 @@ func (n *Node) EnsureOpenChat(parts []string, area string) (Chat, error) {
 	}
 }
 
+// NewProjectChat starts a standalone chat of this project node with the
+// members in with (names, also comma-separated): a new chat every time, even
+// for the same participants (Mode ChatModeProject), pinned to their node ids.
+// Once finished (closed) it never reopens; talking on takes a new one.
+func (n *Node) NewProjectChat(with []string) (ChatInfo, error) {
+	if n.cfg.Project == "" {
+		return ChatInfo{}, ErrNotProject
+	}
+	parts, err := n.normalizeParticipants(with)
+	if err != nil {
+		return ChatInfo{}, err
+	}
+	for _, p := range parts {
+		if p != n.cfg.Node && n.Connected(p) && !n.PeerHas(p, CapChat) {
+			return ChatInfo{}, fmt.Errorf("%w: %s", ErrNoChatSupport, p)
+		}
+	}
+	ids, err := n.pinIDs(parts)
+	if err != nil {
+		return ChatInfo{}, err
+	}
+	c := Chat{ID: DerivedID("agentlink-chat-v3/"+n.cfg.Project, n.id+"/"+newID()), Participants: parts,
+		CreatedAt: time.Now().UTC(), Project: n.cfg.Project, Mode: ChatModeProject, ParticipantIDs: ids}
+	if _, err := n.chats.ensure(c); err != nil {
+		return ChatInfo{}, err
+	}
+	open := Message{ID: DerivedID(c.ID, "open"), Kind: KindChatOpen, CreatedAt: c.CreatedAt}
+	if err := n.postChat(c, open); err != nil {
+		return ChatInfo{}, err
+	}
+	n.changed("chats")
+	return n.Chat(c.ID)
+}
+
 // openChatOf returns the open chat of c's conversation: c itself when it is
 // an open keyed chat, else the open generation of its key (a closed chat, a
-// random-id chat of v0.5).
+// random-id chat of v0.5). A standalone project chat is its own conversation:
+// once closed, ErrChatClosed.
 func (n *Node) openChatOf(c Chat) (Chat, error) {
+	if c.Mode == ChatModeProject {
+		if c.Closed() {
+			return Chat{}, fmt.Errorf("%w %s", ErrChatClosed, c.ID)
+		}
+		return c, nil
+	}
 	if c.Keyed() && !c.Closed() {
 		return c, nil
 	}
@@ -707,7 +748,13 @@ func (n *Node) validProjectEnvelope(peer, peerID string, m *Message) bool {
 			return false
 		}
 	}
-	return m.ChatMode == "" && m.ChatID == ProjectChatID(n.cfg.Project, p, ids, m.ChatGen)
+	switch m.ChatMode {
+	case "":
+		return m.ChatID == ProjectChatID(n.cfg.Project, p, ids, m.ChatGen)
+	case ChatModeProject: // standalone: a random id, no generations
+		return m.ChatGen == 0
+	}
+	return false
 }
 
 // validChatEnvelope checks a chat message from peer: a known kind, the full
@@ -1018,8 +1065,9 @@ func (n *Node) chatInfo(s chatSnapshot, queued map[string]map[string]int) ChatIn
 		info.LastMessage, info.LastAt = &cm, last.Message.CreatedAt
 	}
 	// A random-id chat of v0.5 is history: its conversation goes on in the
-	// keyed chat (openChatOf).
-	info.Archived = info.Closed || !info.Keyed
+	// keyed chat (openChatOf). A standalone project chat is archived only
+	// once finished (closed).
+	info.Archived = info.Closed || (!info.Keyed && s.chat.Mode != ChatModeProject)
 	jobs, held := map[string][]JobActivity{}, map[string][]JobActivity{}
 	for _, m := range s.jobs {
 		a := JobActivity{ReplyTo: m.ReplyTo, JobStatus: m.JobStatus, Activity: m.Activity, ActivityInfo: m.ActivityInfo, UpdatedAt: m.CreatedAt}

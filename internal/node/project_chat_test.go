@@ -75,6 +75,12 @@ func TestProjectEnvelopeValidation(t *testing.T) {
 	if m := valid(); !a.validChatEnvelope("b", bID, &m) {
 		t.Fatal("valid envelope rejected")
 	}
+	if m := valid(); func() bool {
+		m.ChatMode, m.ChatID = ChatModeProject, newID()
+		return !a.validChatEnvelope("b", bID, &m)
+	}() {
+		t.Fatal("standalone envelope rejected")
+	}
 	for name, change := range map[string]func(m *Message){
 		"no ids":     func(m *Message) { m.ParticipantIDs = nil },
 		"misaligned": func(m *Message) { m.ParticipantIDs = []string{bID, a.ID()} },
@@ -88,10 +94,11 @@ func TestProjectEnvelopeValidation(t *testing.T) {
 			m.ParticipantIDs = []string{newID(), bID}
 			m.ChatID = ProjectChatID(p.id, parts, m.ParticipantIDs, 0)
 		},
-		"area":           func(m *Message) { m.Area = "dev" },
-		"legacy chat id": func(m *Message) { m.ChatID = KeyedChatID("", parts, 0) },
-		"unknown mode":   func(m *Message) { m.ChatMode = "other" },
-		"other project":  func(m *Message) { m.ChatID = ProjectChatID(newTestProject(t).id, parts, m.ParticipantIDs, 0) },
+		"area":                         func(m *Message) { m.Area = "dev" },
+		"legacy chat id":               func(m *Message) { m.ChatID = KeyedChatID("", parts, 0) },
+		"unknown mode":                 func(m *Message) { m.ChatMode = "other" },
+		"standalone with a generation": func(m *Message) { m.ChatMode, m.ChatGen = ChatModeProject, 1 },
+		"other project":                func(m *Message) { m.ChatID = ProjectChatID(newTestProject(t).id, parts, m.ParticipantIDs, 0) },
 	} {
 		m := valid()
 		change(&m)
@@ -158,5 +165,52 @@ func TestProjectFanoutStopsAfterRejoin(t *testing.T) {
 	}
 	if _, err := a.EnsureOpenChat([]string{"a", "zed"}, ""); !errors.Is(err, ErrUnknownPeer) {
 		t.Fatalf("unknown member: %v", err)
+	}
+}
+
+// Standalone chats: two open at once with equal participants; a finished one
+// is archived on both sides and never continues in a next generation.
+func TestProjectStandaloneChats(t *testing.T) {
+	p := newTestProject(t)
+	a, b := projectPair(t, p)
+	one, err := a.NewProjectChat([]string{"b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := a.NewProjectChat([]string{"b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.ID == two.ID || one.Mode != ChatModeProject || one.Keyed || one.Archived || one.Gen != 0 ||
+		!slices.Equal(one.ParticipantIDs, []string{a.ID(), b.ID()}) {
+		t.Fatalf("standalone chats %+v / %+v", one.Chat, two.Chat)
+	}
+	eventually(t, "b has both open", func() bool { return len(openChats(b)) == 2 })
+	m, err := b.SendChat(ChatSend{ChatID: one.ID, Body: "in one", Ask: []string{"a"}})
+	if err != nil || m.ChatMode != ChatModeProject {
+		t.Fatalf("send: %+v, %v", m, err)
+	}
+	eventually(t, "a stores it", func() bool { return slices.Contains(chatIDs(a, one.ID), m.ID) })
+
+	if _, err := a.CloseChat(one.ID); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "finished on b", func() bool {
+		info, err := b.Chat(one.ID)
+		return err == nil && info.Closed && info.Archived
+	})
+	for _, n := range []*testNode{a, b} {
+		if _, err := n.SendChat(ChatSend{ChatID: one.ID, Body: "more"}); !errors.Is(err, ErrChatClosed) {
+			t.Fatalf("%s: send to a finished chat: %v", n.cfg.Node, err)
+		}
+		if open := openChats(n); len(open) != 1 || open[0].ID != two.ID {
+			t.Fatalf("%s: open chats %v", n.cfg.Node, open)
+		}
+	}
+	if _, err := a.NewProjectChat([]string{"zed"}); !errors.Is(err, ErrUnknownPeer) {
+		t.Fatalf("unknown member: %v", err)
+	}
+	if _, err := newTestNode(t, "x", testSecret, nil, t.TempDir(), listen(t), nil).NewProjectChat([]string{"b"}); !errors.Is(err, ErrNotProject) {
+		t.Fatalf("legacy: %v", err)
 	}
 }

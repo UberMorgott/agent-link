@@ -194,7 +194,7 @@ func (cs *chatStore) ensure(c Chat) (bool, error) {
 		return false, nil
 	}
 	if c.Gen != 0 && !c.Keyed() {
-		return false, errChatMismatch // a generation belongs to a keyed chat only
+		return false, errChatMismatch // a generation belongs to a keyed chat only (never a standalone one)
 	}
 	c.CloseID, c.ClosedBy, c.ClosedAt = "", "", time.Time{}
 	if err := os.MkdirAll(filepath.Join(cs.chatDir(c.ID), "messages"), 0o700); err != nil {
