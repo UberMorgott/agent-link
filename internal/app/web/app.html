@@ -37,20 +37,49 @@
       </section>
       <section data-view="inbox" hidden>
         <header class="view-header"><h1 data-t="inbox.h1"></h1></header>
-        <div class="conversation-layout">
-          <aside class="conversation-sidebar" aria-label="Список разговоров">
+        <div id="conversation_layout" class="conversation-layout">
+          <aside class="conversation-sidebar" aria-labelledby="chat_list_title">
+            <div class="chat-list-head">
+              <h2 id="chat_list_title" data-t="inbox.list.label"></h2>
+              <button type="button" id="archive_toggle" aria-pressed="false" data-t="inbox.archive.show"></button>
+              <button type="button" id="new_chat" class="primary" data-t="inbox.new"></button>
+            </div>
             <ul id="conversation_list" class="conversation-list"></ul>
           </aside>
-          <section class="conversation-panel">
-            <h2 id="conversation_title" data-t="inbox.select"></h2>
+          <section id="conversation_panel" class="conversation-panel" aria-labelledby="conversation_title">
+            <header class="chat-head">
+              <button type="button" id="chat_back" class="chat-back" data-t="inbox.back"></button>
+              <div class="chat-head-main">
+                <h2 id="conversation_title" data-t="inbox.select"></h2>
+                <p id="chat_subtitle" class="chat-subtitle"></p>
+                <ul id="chat_members" class="chat-members"></ul>
+              </div>
+              <div class="chat-head-actions">
+                <button type="button" id="chat_archive" hidden data-t="inbox.archive"></button>
+                <button type="button" id="chat_close" hidden data-t="inbox.close"></button>
+              </div>
+            </header>
             <ul id="messages" class="conversation-timeline"></ul>
+            <ul id="chat_activity" class="chat-activity" hidden></ul>
             <form id="send" class="composer">
-              <label class="composer-recipient"><span data-t="inbox.to.label"></span><input name="to" id="to" autocomplete="off" list="member_names"></label>
-              <datalist id="member_names"></datalist>
-              <label><span class="sr-only" data-t="inbox.body.label"></span><textarea name="body" id="body" rows="4" data-t-placeholder="inbox.body.placeholder"></textarea></label>
+              <div id="ask_row" class="ask-row" role="group" aria-labelledby="ask_label"><span id="ask_label" class="field-label" data-t="inbox.ask.label"></span><span id="ask_choices" class="ask-choices"></span><span id="ask_hint" class="ask-hint" data-t="inbox.ask.none"></span></div>
+              <p id="replying" class="replying" hidden><span id="replying_text"></span> <button type="button" id="cancel_reply" data-t="inbox.cancel_reply"></button></p>
               <input type="hidden" name="reply_to" id="reply_to">
-              <p id="replying" hidden><span id="replying_text"></span> <button type="button" id="cancel_reply" data-t="inbox.cancel_reply"></button></p>
-              <div class="composer-actions"><p id="inbox_result" role="status"></p><button type="submit" id="send_button" data-t="inbox.send"></button></div>
+              <div class="composer-row">
+                <label class="composer-body"><span class="sr-only" data-t="inbox.body.label"></span><textarea name="body" id="body" rows="2"></textarea></label>
+                <button type="submit" id="send_button" data-t="inbox.send"></button>
+              </div>
+              <p id="inbox_result" class="composer-result" role="status"></p>
+            </form>
+            <p id="chat_note" class="chat-note" hidden><span id="chat_note_text"></span> <button type="button" id="chat_note_action" hidden></button></p>
+            <form id="new_chat_form" class="new-chat" hidden>
+              <p class="hint" data-t="inbox.new.hint"></p>
+              <div class="new-chat-group" role="group" aria-labelledby="new_chat_people"><span id="new_chat_people" class="field-label" data-t="inbox.new.participants"></span><span id="new_chat_members" class="ask-choices"></span></div>
+              <p id="new_chat_empty" class="hint" hidden data-t="inbox.new.no_members"></p>
+              <label><span data-t="inbox.new.area"></span><input name="area" id="new_chat_area" autocomplete="off" spellcheck="false" list="new_chat_areas"></label>
+              <datalist id="new_chat_areas"></datalist>
+              <p class="hint" data-t="inbox.new.area.hint"></p>
+              <div class="new-chat-actions"><p id="new_chat_result" role="status"></p><button type="button" id="new_chat_dismiss" data-t="inbox.new.dismiss"></button><button type="submit" id="new_chat_create" data-t="inbox.new.create"></button></div>
             </form>
           </section>
         </div>

@@ -439,18 +439,20 @@ if(reloads!==1)throw new Error("changed effective API did not reload exactly onc
 	}
 }
 
-func TestInboxKeepsAccessibleAreaRecipientChooser(t *testing.T) {
+// TestInboxChatControlsAreLabelled keeps the chat choices usable: the project
+// area of a new chat and the "who must answer" chooser carry visible labels.
+func TestInboxChatControlsAreLabelled(t *testing.T) {
 	doc, err := html.Parse(strings.NewReader(webFiles(t)["web/app.html"]))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var recipient *html.Node
+	byID := map[string]*html.Node{}
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
-		if n.Type == html.ElementNode && n.Data == "input" {
+		if n.Type == html.ElementNode {
 			for _, attr := range n.Attr {
-				if attr.Key == "id" && attr.Val == "to" {
-					recipient = n
+				if attr.Key == "id" {
+					byID[attr.Val] = n
 				}
 			}
 		}
@@ -459,12 +461,25 @@ func TestInboxKeepsAccessibleAreaRecipientChooser(t *testing.T) {
 		}
 	}
 	walk(doc)
-	if recipient == nil || recipient.Parent == nil || recipient.Parent.Data != "label" {
-		t.Fatal("#to must have a visible label")
+	attr := func(n *html.Node, key string) string {
+		for _, a := range n.Attr {
+			if a.Key == key {
+				return a.Val
+			}
+		}
+		return ""
 	}
-	for _, attr := range recipient.Parent.Attr {
-		if attr.Key == "class" && strings.Contains(attr.Val, "sr-only") {
-			t.Fatal("#to is hidden; area fan-out is not usable")
+	area := byID["new_chat_area"]
+	if area == nil || area.Parent == nil || area.Parent.Data != "label" || strings.Contains(attr(area.Parent, "class"), "sr-only") {
+		t.Fatal("#new_chat_area must have a visible label")
+	}
+	for _, group := range []string{"ask_row", "new_chat_members"} {
+		n := byID[group]
+		for n != nil && attr(n, "role") != "group" {
+			n = n.Parent
+		}
+		if n == nil || byID[attr(n, "aria-labelledby")] == nil {
+			t.Errorf("#%s is not inside a labelled group", group)
 		}
 	}
 }
@@ -647,12 +662,12 @@ const flush = async () => { for (let i = 0; i < 50; i++) await Promise.resolve()
   streamResolve({ value: encoder.encode('event: change\ndata: {"revision":0,"topics":["all"]}\n\n'), done: false });
   await flush();
   const initial = calls.slice(1).map((call) => call.url).sort();
-  const wanted = ["dashboard", "participants", "settings", "status", "threads", "update"].map((name) => "/ui/api/" + name).sort();
+  const wanted = ["chats", "dashboard", "participants", "settings", "status", "update"].map((name) => "/ui/api/" + name).sort();
   if (JSON.stringify(initial) !== JSON.stringify(wanted)) throw new Error("initial slices: " + JSON.stringify(initial));
   calls.length = 0;
-  streamResolve({ value: encoder.encode('event: change\ndata: {"revision":1,"topics":["threads"]}\n\n'), done: false });
+  streamResolve({ value: encoder.encode('event: change\ndata: {"revision":1,"topics":["chats"]}\n\n'), done: false });
   await flush();
-  if (calls.length !== 1 || calls[0].url !== "/ui/api/threads") throw new Error("narrow event refreshed " + JSON.stringify(calls));
+  if (calls.length !== 1 || calls[0].url !== "/ui/api/chats") throw new Error("narrow event refreshed " + JSON.stringify(calls));
 })().catch((error) => { console.error(error.stack); process.exitCode = 1; });
 `
 	//nolint:gosec // G204: fixed Node executable runs a repository script in a deterministic harness.
@@ -1035,184 +1050,258 @@ func TestThreadsEndpointFiltersDecodedPeerAndUsesCompleteHistory(t *testing.T) {
 	}
 }
 
-// TestInboxConversationState executes the inbox browser module against a tiny
-// DOM. It catches replacing message nodes, losing an in-progress draft/caret,
-// using an unescaped peer query, and sending the same form twice.
-func TestInboxConversationState(t *testing.T) {
-	path, err := filepath.Abs("web/static/inbox.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	const program = `
+// inboxHarnessJS is the fake DOM and app globals inbox.js runs against in
+// Node. Elements are created on first lookup by id.
+const inboxHarnessJS = `
 const fs = require("fs");
+class ClassList {
+  constructor(el) { this.el = el; }
+  toggle(name, on) { const set = new Set(this.el.className.split(/\s+/).filter(Boolean)); if (on === undefined ? !set.has(name) : on) set.add(name); else set.delete(name); this.el.className = [...set].join(" "); return set.has(name); }
+  contains(name) { return this.el.className.split(/\s+/).includes(name); }
+}
 class Element {
-  constructor(id = "", tagName = "DIV") { this.id = id; this.tagName = tagName.toUpperCase(); this.tabIndex = 0; this.value = ""; this.hidden = false; this.disabled = false; this.textContent = ""; this.className = ""; this.dataset = {}; this.children = []; this.listeners = {}; this.scrollTop = 0; this.scrollHeight = 0; this.clientHeight = 100; this.selectionStart = 0; this.selectionEnd = 0; this.replacements = 0; }
-  append(...nodes) { for (const node of nodes) { if (node.parentElement) node.parentElement.children = node.parentElement.children.filter((item) => item !== node); node.parentElement = this; this.children.push(node); } this.scrollHeight = this.children.length * 100; }
-  insertBefore(node, before) { if (node.parentElement) node.parentElement.children = node.parentElement.children.filter((item) => item !== node); node.parentElement = this; const index = before ? this.children.indexOf(before) : -1; if (index < 0) this.children.push(node); else this.children.splice(index, 0, node); this.scrollHeight = this.children.length * 100; }
-  replaceChildren(...nodes) { this.replacements++; this.children = []; this.append(...nodes); }
+  constructor(id = "", tagName = "DIV") { this.id = id; this.tagName = tagName.toUpperCase(); this.tabIndex = 0; this.value = ""; this.hidden = false; this.disabled = false; this.checked = false; this.textContent = ""; this.className = ""; this.dataset = {}; this.style = { props: {}, setProperty(k, v) { this.props[k] = v; } }; this.children = []; this.listeners = {}; this.scrollTop = 0; this.scrollHeight = 0; this.clientHeight = 100; this.selectionStart = 0; this.selectionEnd = 0; this.replacements = 0; this.parentElement = null; this.classList = new ClassList(this); }
+  detach(node) { if (node.parentElement) node.parentElement.children = node.parentElement.children.filter((item) => item !== node); node.parentElement = this; }
+  append(...nodes) { for (const node of nodes) { this.detach(node); this.children.push(node); } this.scrollHeight = this.children.length * 100; }
+  insertBefore(node, before) { this.detach(node); const index = before ? this.children.indexOf(before) : -1; if (index < 0) this.children.push(node); else this.children.splice(index, 0, node); this.scrollHeight = this.children.length * 100; }
+  replaceChildren(...nodes) { this.replacements++; for (const child of this.children) child.parentElement = null; this.children = []; this.append(...nodes); }
   addEventListener(name, fn) { this.listeners[name] = fn; }
   setAttribute(name, value) { this[name] = value; }
   removeAttribute(name) { delete this[name]; }
   focus() { document.activeElement = this; }
   scrollIntoView() { this.scrolled = true; }
-  setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
   get childElementCount() { return this.children.length; }
   get firstElementChild() { return this.children[0] || null; }
   get lastElementChild() { return this.children[this.children.length - 1] || null; }
-  remove() { this.removed = true; if (this.parentElement) this.parentElement.children = this.parentElement.children.filter((node) => node !== this); }
+  remove() { this.removed = true; if (this.parentElement) { this.parentElement.children = this.parentElement.children.filter((node) => node !== this); this.parentElement = null; } }
 }
-const ids = ["messages", "conversation_list", "send", "inbox_result", "reply_to", "replying", "replying_text", "to", "body", "cancel_reply", "send_button", "message-toast-region"];
-const elements = Object.fromEntries(ids.map((id) => [id, new Element(id)]));
+const elements = {};
 const document = {
   activeElement: null,
-  getElementById: (id) => elements[id],
+  getElementById: (id) => elements[id] || (elements[id] = new Element(id)),
   createElement: (tagName) => new Element("", tagName),
-  createTextNode: (text) => ({ textContent: text }),
 };
-const state = { selectedPeer: "", selectedMessage: "", drafts: {}, conversationReads: {}, threads: null, threadFeed: null, status: { node: "local" }, participants: [] };
+const text = (node) => [node.textContent || "", ...(node.children || []).map(text)].join(" ");
+const state = { status: { node: "local", members: [{ name: "local", self: true, online: true }, { name: "bob", online: true }, { name: "карл & sons", online: true }] }, settings: { areas: ["dev"] }, chats: null, chatArchive: null, showArchive: false, chat: null, selectedChat: "", selectedMessage: "", drafts: {} };
 const listeners = new Map();
 const store = {
   get: () => state,
   patch(name, value) { state[name] = value; for (const fn of listeners.get(name) || []) fn(value, state); },
   subscribe(name, fn) { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name).add(fn); },
 };
-const calls = [];
-const sentBodies = [];
-const control = { releaseSend: null };
-const full = Array.from({ length: 205 }, (_, i) => ({ id: "m" + i, direction: i % 2 ? "in" : "out", from: i % 2 ? "карл & sons" : "local", to: i % 2 ? "local" : "карл & sons", body: "line " + i, created_at: new Date(1700000000000 + i * 1000).toISOString(), status: "sent", replyable: i % 2 === 1 }));
-async function api(method, path, body) {
-  calls.push(method + " " + path);
-  if (method === "GET") return full;
-  sentBodies.push(body);
-  return new Promise((resolve) => { control.releaseSend = () => resolve(full[204]); });
-}
-const t = (key) => key;
+const dict = { "inbox.activity.type.edit": "правит" };
+const t = (key) => dict[key] || key;
 const fmt = (key, vars) => key + JSON.stringify(vars);
 let navigation = null;
 function navigate(route, query) { navigation = { route, query }; }
-const localStorage = { values: new Map(), getItem(k) { return this.values.get(k) || null; }, setItem(k, v) { this.values.set(k, v); } };
-const source = fs.readFileSync(process.argv[1], "utf8");
-const test = fs.readFileSync(process.argv[2], "utf8");
-require("vm").runInNewContext(source + test, { document, store, api, t, fmt, navigate, localStorage, calls, sentBodies, control, full, elements, setTimeout, clearTimeout, console, process, URLSearchParams, Date, Map, Set, Object, Array, Promise, JSON, String }, { filename: process.argv[1] });
+const refreshed = [];
+function refreshSlice(name) { refreshed.push(name); }
+function confirm() { return true; }
+const localStorage = { values: new Map(), getItem(k) { return this.values.has(k) ? this.values.get(k) : null; }, setItem(k, v) { this.values.set(k, v); } };
+const timers = new Map(); let timerSeq = 0;
+function setTimeout(fn, ms) { timerSeq++; timers.set(timerSeq, { fn, ms }); return timerSeq; }
+function clearTimeout(id) { timers.delete(id); }
+function runTimers() { for (const [id, timer] of [...timers]) { timers.delete(id); timer.fn(); } }
+const intervals = [];
+function setInterval(fn, ms) { intervals.push({ fn, ms }); return intervals.length; }
+const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 `
-	const testSource = `
-(async () => {
-  await selectConversation("карл & sons", "m204");
-  if (calls[0] !== "GET threads?peer=%D0%BA%D0%B0%D1%80%D0%BB%20%26%20sons") throw new Error("peer query: " + calls[0]);
-  if (store.get().selectedPeer !== "карл & sons" || elements.messages.children.length !== 205) throw new Error("full conversation was not selected");
-  if (!elements.messages.children[204].scrolled) throw new Error("message anchor was not revealed");
-  const kept = elements.messages.children[11];
-  const replyControl = kept.children[kept.children.length - 1];
-  replyControl.focus();
-  const replacements = kept.replacements;
-  const unchanged = full.map((item) => ({ ...item }));
-  renderTimeline(unchanged);
-  if (kept.replacements !== replacements || kept.children[kept.children.length - 1] !== replyControl || document.activeElement !== replyControl) throw new Error("unchanged message controls were rebuilt");
-  elements.body.value = "first\nsecond"; elements.body.selectionStart = 3; elements.body.selectionEnd = 3; elements.body.focus();
-  elements.messages.scrollTop = 45; elements.messages.clientHeight = 100; elements.messages.scrollHeight = 20500;
-  const changed = full.map((item) => ({ ...item })); changed[11].activity = "reading";
-  renderTimeline(changed);
-  if (elements.messages.children[11] !== kept || kept.children[kept.children.length - 1] !== replyControl) throw new Error("message controls were replaced");
-  if (elements.body.value !== "first\nsecond" || document.activeElement !== elements.body || elements.body.selectionStart !== 3) throw new Error("draft focus/caret changed");
-  if (elements.messages.scrollTop !== 45) throw new Error("upward scroll jumped: " + elements.messages.scrollTop);
-  elements.to.value = "area:dev";
-  elements.send.listeners.submit({ preventDefault() {} }); elements.send.listeners.submit({ preventDefault() {} });
-  await Promise.resolve();
-  if (calls.filter((call) => call === "POST send").length !== 1 || !elements.send_button.disabled || sentBodies[0].to !== "area:dev") throw new Error("area send or duplicate guard failed");
-  control.releaseSend(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
-  if (elements.send_button.disabled) throw new Error("send button stayed disabled");
-  store.patch("selectedPeer", "");
-  store.patch("status", { node: "local", peer: "bob" });
-  await Promise.resolve();
-  if (store.get().selectedPeer !== "bob") throw new Error("first connected peer was not selected");
-  store.patch("participants", [{ name: "bob", online: true, total: 4, latest_preview: "hello", latest_at: "2026-01-01T00:00:00Z", latest_direction: "out" }, { name: "alice", online: false, total: 2, latest_preview: "latest from alice", latest_at: "2026-01-02T00:00:00Z", latest_direction: "in" }]);
-  store.patch("dashboard", { recent: [] });
-  const aliceRow = elements.conversation_list.children[1];
-  const rowText = (node) => [node.textContent, ...(node.children || []).flatMap((child) => rowText(child))];
-  const aliceText = rowText(aliceRow).join(" ");
-  if (!aliceText.includes("latest from alice") || !aliceText.includes("inbox.unread") || !aliceText.includes("inbox.peer_offline")) throw new Error("conversation summary missing: " + aliceText);
-  if (aliceRow.children[0].tagName !== "BUTTON" || aliceRow.children[0].tabIndex < 0) throw new Error("conversation row is not keyboard focusable");
-})().catch((error) => { console.error(error.stack); process.exitCode = 1; });`
-	testPath := filepath.Join(t.TempDir(), "conversation-test.js")
-	if err := os.WriteFile(testPath, []byte(testSource), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	//nolint:gosec // G204: fixed Node executable runs the checked-in browser module in a deterministic harness.
-	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path, testPath).CombinedOutput(); err != nil {
-		t.Fatalf("conversation state regression: %v\n%s", err, output)
-	}
-}
 
-// TestInboxNotificationWatermark proves that existing messages are seeded
-// silently and only a later inbound request creates one safe, bounded toast.
-func TestInboxNotificationWatermark(t *testing.T) {
+// inboxRun executes inbox.js followed by testSource in one context.
+func inboxRun(t *testing.T, name, fixtures, testSource string) {
+	t.Helper()
 	path, err := filepath.Abs("web/static/inbox.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	const program = `
-const fs = require("fs");
-class Element { constructor(id="",tagName="DIV") { this.id=id; this.tagName=tagName.toUpperCase(); this.value=""; this.hidden=false; this.disabled=false; this.textContent=""; this.children=[]; this.listeners={}; this.dataset={}; } append(...x){for(const node of x){node.parentElement=this;this.children.push(node)}this.textContent=this.children.map((n)=>n.textContent||"").join("")} replaceChildren(...x){this.children=[];this.append(...x)} addEventListener(n,f){this.listeners[n]=f} setAttribute(n,v){this[n]=v} focus(){} get childElementCount(){return this.children.length} get firstElementChild(){return this.children[0]||null} remove(){this.removed=true;if(this.parentElement){this.parentElement.children=this.parentElement.children.filter((node)=>node!==this);this.parentElement.textContent=this.parentElement.children.map((n)=>n.textContent||"").join("")}} }
-const ids=["messages","conversation_list","send","inbox_result","reply_to","replying","replying_text","to","body","cancel_reply","send_button","message-toast-region"];
-const elements=Object.fromEntries(ids.map((id)=>[id,new Element(id)]));
-const document={activeElement:null,getElementById:(id)=>elements[id],createElement:(tagName)=>new Element("",tagName),createTextNode:(text)=>({textContent:text})};
-const state={selectedPeer:"",selectedMessage:"",drafts:{},threads:null,threadFeed:null,status:{node:"local"},participants:[]};
-const subscriptions=new Map(); const store={get:()=>state,patch(n,v){state[n]=v;for(const f of subscriptions.get(n)||[])f(v,state)},subscribe(n,f){if(!subscriptions.has(n))subscriptions.set(n,new Set());subscriptions.get(n).add(f)}};
-const t=(key)=>key, fmt=(key,vars)=>key+JSON.stringify(vars); async function api(){return []}
-const navState={}; function navigate(route,query){navState.value={route,query}}
-const localStorage={values:new Map(),getItem(k){return this.values.get(k)||null},setItem(k,v){this.values.set(k,v)}};
-const timers=new Map(); let timerSeq=0;
-function setTimeout(fn,ms){timerSeq++;timers.set(timerSeq,{fn,ms});return timerSeq}
-function clearTimeout(id){timers.delete(id)}
-function runTimers(){for(const[id,timer]of[...timers]){timers.delete(id);timer.fn()}}
-const initial=[{id:"old",direction:"in",from:"bob",to:"local",body:"old",created_at:"2026-01-01T00:00:00Z",status:"pending"}];
-const long="😀".repeat(121);
-const next=[...initial,{id:"new",direction:"in",from:"карл & sons",to:"local",body:long,created_at:"2026-01-02T00:00:00Z",status:"pending"},{id:"out",direction:"out",from:"local",to:"bob",body:"ignore",created_at:"2026-01-03T00:00:00Z",status:"sent"}];
-const source=fs.readFileSync(process.argv[1],"utf8");
-const test=fs.readFileSync(process.argv[2],"utf8");
-require("vm").runInNewContext(source+test,{document,store,api,t,fmt,navigate,localStorage,initial,next,elements,navState,setTimeout,clearTimeout,timers,runTimers,console,process,URLSearchParams,Date,Map,Set,Object,Array,Promise,JSON,String},{filename:process.argv[1]});
+	// The fixtures run in the page context: api() and the data it serves are
+	// globals there, like the real one from common.js.
+	program := inboxHarnessJS + `
+const source = fs.readFileSync(process.argv[1], "utf8");
+const test = fs.readFileSync(process.argv[2], "utf8");
+require("vm").runInNewContext(test.split("\n//TEST\n")[0] + "\n" + source + "\n;(async () => {\n" + test.split("\n//TEST\n")[1] + "\n})().catch((error) => { console.error(error.stack); process.exitCode = 1; });", { document, store, t, fmt, navigate, refreshSlice, confirm, localStorage, setTimeout, clearTimeout, setInterval, runTimers, timers, intervals, elements, text, navigation: () => navigation, refreshed, flush, console, process, URLSearchParams, Date, Map, Set, Object, Array, Promise, JSON, String, Number, Math, Error, decodeURIComponent }, { filename: process.argv[1] });
 `
-	const testSource = `
-processIncomingThreads(initial);
-if(elements["message-toast-region"].children.length) throw new Error("initial history produced a toast");
-processIncomingThreads(next);
-if(elements["message-toast-region"].children.length!==1) throw new Error("new inbound toast count");
-const toast=elements["message-toast-region"].children[0];
-if(!toast.textContent.includes("карл & sons")) throw new Error("sender missing: "+toast.textContent);
-const main=toast.children.find((child)=>child.className==="message-toast-main");
-const preview=main.children.find((child)=>child.className==="message-toast-preview").textContent;
-if(Array.from(preview.replace(/…$/,"" )).length!==120 || !preview.endsWith("…")) throw new Error("preview not code-point bounded: "+Array.from(preview).length);
-const close=toast.children.find((child)=>child.className==="message-toast-close");
-if(!close || close.tagName!=="BUTTON" || close["aria-label"]!=="inbox.toast.close") throw new Error("toast has no labelled close button");
-if(timers.size!==1) throw new Error("toast did not arm an auto-dismiss timer: "+timers.size);
-main.listeners.click();
-if(navState.value.route!=="inbox" || navState.value.query.peer!=="карл & sons" || navState.value.query.message!=="new") throw new Error("toast navigation: "+JSON.stringify(navState.value));
-if(elements["message-toast-region"].children.length!==0 || timers.size!==0) throw new Error("opened toast stayed on screen");
-const saved=JSON.parse(localStorage.values.get("agentlink.notifications.v1:local"));
-if(!saved.includes("old") || !saved.includes("new") || saved.includes("out")) throw new Error("watermark: "+JSON.stringify(saved));
-const answered=next.map((item)=>item.id==="out"?{...item,answered:true,answer:"reply from bob",answer_at:"2026-01-04T00:00:00Z"}:item);
-processIncomingThreads(answered);
-if(elements["message-toast-region"].children.length!==1) throw new Error("new reply did not produce a toast");
-const replyToast=elements["message-toast-region"].children[0];
-if(!replyToast.textContent.includes("bob") || !replyToast.textContent.includes("reply from bob")) throw new Error("reply toast content: "+replyToast.textContent);
-replyToast.children.find((child)=>child.className==="message-toast-main").listeners.click();
-if(navState.value.query.peer!=="bob" || navState.value.query.message!=="out") throw new Error("reply toast target: "+JSON.stringify(navState.value));
-const many=[...answered,...Array.from({length:4},(_,i)=>({id:"bulk"+i,direction:"in",from:"peer"+i,to:"local",body:"bulk "+i,created_at:new Date(1760000000000+i*1000).toISOString(),status:"pending"}))];
-processIncomingThreads(many);
-if(elements["message-toast-region"].childElementCount!==3) throw new Error("visible toast limit: "+elements["message-toast-region"].childElementCount);
-if([...timers.values()].some((timer)=>timer.ms!==6000)) throw new Error("auto-dismiss timeout: "+JSON.stringify([...timers.values()].map((timer)=>timer.ms)));
-elements["message-toast-region"].children[0].children.find((child)=>child.className==="message-toast-close").listeners.click();
-if(elements["message-toast-region"].childElementCount!==2 || timers.size!==2) throw new Error("close button did not dismiss the toast");
-runTimers();
-if(elements["message-toast-region"].childElementCount!==0) throw new Error("toasts did not auto-dismiss: "+elements["message-toast-region"].childElementCount);`
-	testPath := filepath.Join(t.TempDir(), "notification-test.js")
-	if err := os.WriteFile(testPath, []byte(testSource), 0o600); err != nil {
+	testPath := filepath.Join(t.TempDir(), name+".js")
+	if err := os.WriteFile(testPath, []byte(fixtures+"\n//TEST\n"+testSource), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	//nolint:gosec // G204: fixed Node executable runs the checked-in browser module in a deterministic harness.
 	if output, err := exec.CommandContext(t.Context(), "node", "-e", program, path, testPath).CombinedOutput(); err != nil {
-		t.Fatalf("notification watermark regression: %v\n%s", err, output)
+		t.Fatalf("%s regression: %v\n%s", name, err, output)
 	}
+}
+
+// TestInboxChatState runs the inbox against fake chat endpoints. It catches
+// rebuilding unchanged bubbles, losing a draft/caret or the scroll position on
+// a refresh, an unescaped chat id, sending twice, timers that ask the app for
+// data, and a chat list without its open/closed, unread and activity marks.
+func TestInboxChatState(t *testing.T) {
+	const fixtures = `
+const calls = [];
+const base = 1700000000000;
+const iso = (ms) => new Date(ms).toISOString();
+const group = "c1 &";
+const history = [{ id: "open", seq: 1, kind: "chat_open", from: "local", body: "", created_at: iso(base), direction: "out" }]
+  .concat(Array.from({ length: 205 }, (_, i) => ({ id: "m" + i, seq: i + 2, from: i % 2 ? "bob" : "local", direction: i % 2 ? "in" : "out", body: "line " + i, created_at: iso(base + i * 1000) })));
+const chats = {
+  [group]: {
+    info: { id: group, participants: ["bob", "local", "карл & sons"], title: "line 0", closed: false, archived: false, last_seq: 206, last_at: iso(base + 204000),
+      members: [
+        { name: "bob", connected: true, compatible: true, queued: 0, jobs: [{ reply_to: "m204", job_status: "running", activity_info: { type: "edit", text: "app.go", phase: "running", started_at: iso(base + 241000) }, updated_at: iso(base + 241000) }] },
+        { name: "local", self: true, connected: true, compatible: true, queued: 0 },
+        { name: "карл & sons", connected: false, compatible: true, queued: 2, jobs: [{ reply_to: "m204", job_status: "queued", updated_at: iso(base + 204000), stale: true }] },
+      ] },
+    items: history,
+  },
+  c2: { info: { id: "c2", participants: ["alice", "local"], closed: true, closed_by: "alice", closed_at: iso(base), archived: true, last_seq: 3, members: [] }, items: [] },
+};
+const control = { releaseSend: null, sent: [] };
+async function api(method, path, body) {
+  calls.push(method + " " + path);
+  if (method === "POST" && path === "send") { control.sent.push(body); return new Promise((resolve) => { control.releaseSend = () => resolve({ id: "s1" }); }); }
+  const m = path.match(/^chats\/([^/?]+)(\/messages)?(?:\?(.*))?$/);
+  const chat = m && chats[decodeURIComponent(m[1])];
+  if (!chat) throw new Error("unexpected call " + method + " " + path);
+  if (!m[2]) return chat.info;
+  const q = new URLSearchParams(m[3] || "");
+  const limit = Number(q.get("limit"));
+  if (q.get("after")) return chat.items.filter((x) => x.seq > Number(q.get("after"))).slice(0, limit);
+  const before = Number(q.get("before") || 0);
+  const older = chat.items.filter((x) => !before || x.seq < before);
+  return older.slice(Math.max(0, older.length - limit));
+}
+`
+	const testSource = `
+const list = elements.messages;
+await selectChat(group, "m204");
+if (!calls.includes("GET chats/c1%20%26") || !calls.includes("GET chats/c1%20%26/messages?limit=200")) throw new Error("chat id query: " + JSON.stringify(calls));
+if (list.children.length !== 201 || list.children[0].className !== "msg-older") throw new Error("timeline: " + list.children.length + " " + list.children[0].className);
+const anchor = list.children.find((node) => node.dataset.messageId === "m204");
+if (!anchor || !anchor.scrolled) throw new Error("message anchor was not revealed");
+if (!text(elements.conversation_title).includes("bob, карл & sons")) throw new Error("title: " + elements.conversation_title.textContent);
+if (elements.chat_members.children.length !== 3 || elements.chat_close.hidden || elements.send.hidden) throw new Error("header or composer of an open chat");
+if (!elements.chat_members.children[2].className.includes("away") || !text(elements.chat_members.children[2]).includes("inbox.member.queued")) throw new Error("away member chip: " + text(elements.chat_members.children[2]));
+if (elements.ask_choices.children.some((label) => label.children[0].checked) || elements.ask_hint.hidden) throw new Error("a group chat must not ask anyone by default");
+
+// Live activity: one row per job, local timers, no app calls.
+const dock = elements.chat_activity;
+if (dock.hidden || dock.children.length !== 2) throw new Error("activity rows: " + dock.children.length);
+const bobRow = dock.children[0], karlRow = dock.children[1];
+if (!text(bobRow).includes("правит app.go") || !karlRow.className.includes("stale") || !text(karlRow).includes("inbox.activity.stale")) throw new Error("activity text: " + text(bobRow) + " | " + text(karlRow));
+const realNow = Date.now;
+Date.now = () => base + 246000;
+const before = calls.length;
+if (intervals.length !== 1 || intervals[0].ms !== 1000) throw new Error("one 1s timer expected: " + JSON.stringify(intervals));
+intervals[0].fn();
+const total = bobRow.children.find((c) => c.className === "act-time"), step = bobRow.children.find((c) => c.className === "act-step");
+if (total.textContent !== "0:42" || !step.textContent.includes("0:05")) throw new Error("timers: " + total.textContent + " / " + step.textContent);
+Date.now = () => base + 306000;
+intervals[0].fn();
+if (total.textContent !== "1:42" || !step.textContent.includes("1:05") || calls.length !== before) throw new Error("timer tick: " + total.textContent + " calls " + (calls.length - before));
+Date.now = realNow;
+
+// A refresh keeps nodes, focus, draft, caret and an upward scroll.
+const kept = list.children[11];
+const replyControl = kept.children.find((c) => c.className === "msg-reply");
+replyControl.focus();
+await loadChat(group, false);
+if (list.children[11] !== kept || kept.children.find((c) => c.className === "msg-reply") !== replyControl || document.activeElement !== replyControl) throw new Error("unchanged bubbles were rebuilt");
+elements.body.value = "first\nsecond"; elements.body.selectionStart = 3; elements.body.selectionEnd = 3; elements.body.focus();
+list.scrollTop = 45; list.clientHeight = 100; list.scrollHeight = 20500;
+chats[group].items[20] = { ...chats[group].items[20], body: "edited" };
+await loadChat(group, false);
+if (list.children[11] !== kept) throw new Error("bubble replaced on refresh");
+if (elements.body.value !== "first\nsecond" || document.activeElement !== elements.body || elements.body.selectionStart !== 3) throw new Error("draft focus/caret changed");
+if (list.scrollTop !== 45) throw new Error("upward scroll jumped: " + list.scrollTop);
+list.scrollTop = 20400; list.scrollHeight = 20500;
+chats[group].items.push({ id: "m205", seq: 207, from: "bob", direction: "in", body: "new", created_at: iso(base + 300000) });
+await loadChat(group, false);
+if (list.scrollTop !== list.scrollHeight) throw new Error("a view at the bottom did not follow a new message");
+
+// Older page, then reply + send with the chosen responder, guarded against a double submit.
+await list.children[0].children[0].listeners.click();
+if (list.children.length !== 207 || list.children[0].className === "msg-older") throw new Error("older page: " + list.children.length);
+const bobBubble = list.children.find((node) => node.dataset.messageId === "m203");
+bobBubble.children.find((c) => c.className === "msg-reply").listeners.click();
+if (elements.replying.hidden || elements.reply_to.value !== "m203") throw new Error("reply target");
+const asked = elements.ask_choices.children.filter((label) => label.children[0].checked).map((label) => label.children[0].value);
+if (JSON.stringify(asked) !== JSON.stringify(["bob"])) throw new Error("reply must ask its author: " + JSON.stringify(asked));
+elements.body.value = "first\nsecond";
+elements.send.listeners.submit({ preventDefault() {} }); elements.send.listeners.submit({ preventDefault() {} });
+await flush();
+if (calls.filter((c) => c === "POST send").length !== 1 || !elements.send_button.disabled) throw new Error("duplicate send guard");
+if (JSON.stringify(control.sent[0]) !== JSON.stringify({ chat_id: group, body: "first\nsecond", ask: ["bob"], reply_to: "m203" })) throw new Error("send body: " + JSON.stringify(control.sent[0]));
+control.releaseSend(); await flush();
+if (elements.send_button.disabled || elements.body.value !== "" || !elements.replying.hidden) throw new Error("composer after send");
+
+// The list: open/closed badges, unread, live activity; rows are buttons.
+const second = { ...chats.c2.info, last_seq: 3, last_message: { id: "a1", from: "alice", direction: "in", body: "old from alice" } };
+store.patch("chats", [chats[group].info, second]);
+store.patch("chats", [chats[group].info, { ...second, last_seq: 4, last_message: { id: "a2", from: "alice", direction: "in", body: "latest from alice" } }]);
+const rows = elements.conversation_list.children;
+const groupText = text(rows[0]), aliceText = text(rows[1]);
+if (!groupText.includes("inbox.badge.open") || !groupText.includes("inbox.working") || groupText.includes("inbox.unread")) throw new Error("group row: " + groupText);
+if (!aliceText.includes("latest from alice") || !aliceText.includes("inbox.unread") || !aliceText.includes("inbox.badge.closed")) throw new Error("alice row: " + aliceText);
+const aliceButton = rows[1].children[0];
+if (aliceButton.tagName !== "BUTTON" || aliceButton.tabIndex < 0) throw new Error("chat row is not keyboard focusable");
+aliceButton.listeners.click();
+if (navigation().route !== "inbox" || navigation().query.chat !== "c2") throw new Error("row navigation: " + JSON.stringify(navigation()));
+
+// A closed chat is readable but has no composer; a peer without an open chat gets the new-chat form.
+await selectChat("c2", "");
+if (!elements.send.hidden || elements.chat_note.hidden || !elements.chat_close.hidden) throw new Error("closed chat controls");
+openInbox({ peer: "alice" });
+if (elements.new_chat_form.hidden || !elements.new_chat_members.children.some((label) => label.children[0].value === "alice" && label.children[0].checked)) throw new Error("peer link did not preselect a new chat");
+store.patch("chats", [{ id: "c3", participants: ["bob", "local"], closed: false, last_seq: 0, members: [] }, ...store.get().chats]);
+openInbox({ peer: "bob" });
+if (navigation().query.chat !== "c3") throw new Error("peer link did not open the existing chat: " + JSON.stringify(navigation()));
+`
+	inboxRun(t, "chat-state", fixtures, testSource)
+}
+
+// TestInboxNotificationWatermark proves that existing messages are seeded
+// silently and only a later incoming message creates one safe, bounded toast.
+func TestInboxNotificationWatermark(t *testing.T) {
+	const fixtures = `
+const calls = [];
+async function api() { return {}; }
+const chat = (id, msg) => ({ id, participants: ["local", msg.from], last_seq: 1, members: [], last_message: msg });
+const initial = [chat("c-old", { id: "old", from: "bob", direction: "in", body: "old" })];
+const long = "😀".repeat(121);
+const next = [chat("c-new", { id: "new", from: "карл & sons", direction: "in", body: long }), ...initial, chat("c-out", { id: "out", from: "local", direction: "out", body: "ignore" })];
+`
+	const testSource = `
+const region = document.getElementById("message-toast-region");
+processIncomingChats(initial);
+if (region.children.length) throw new Error("initial history produced a toast");
+processIncomingChats(next);
+if (region.children.length !== 1) throw new Error("new inbound toast count: " + region.children.length);
+const toast = region.children[0];
+if (!text(toast).includes("карл & sons")) throw new Error("sender missing: " + text(toast));
+const main = toast.children.find((child) => child.className === "message-toast-main");
+const preview = main.children.find((child) => child.className === "message-toast-preview").textContent;
+if (Array.from(preview.replace(/…$/, "")).length !== 120 || !preview.endsWith("…")) throw new Error("preview not code-point bounded: " + Array.from(preview).length);
+const close = toast.children.find((child) => child.className === "message-toast-close");
+if (!close || close.tagName !== "BUTTON" || close["aria-label"] !== "inbox.toast.close") throw new Error("toast has no labelled close button");
+if (timers.size !== 1) throw new Error("toast did not arm an auto-dismiss timer: " + timers.size);
+main.listeners.click();
+if (navigation().route !== "inbox" || navigation().query.chat !== "c-new" || navigation().query.message !== "new") throw new Error("toast navigation: " + JSON.stringify(navigation()));
+if (region.children.length !== 0 || timers.size !== 0) throw new Error("opened toast stayed on screen");
+const saved = JSON.parse(localStorage.values.get("agentlink.notifications.v1:local"));
+if (!saved.includes("old") || !saved.includes("new") || saved.includes("out")) throw new Error("watermark: " + JSON.stringify(saved));
+store.get().selectedChat = "c-old";
+processIncomingChats([chat("c-old", { id: "old2", from: "bob", direction: "in", body: "seen here" }), ...next]);
+if (region.children.length !== 0) throw new Error("the open chat produced a toast");
+const many = [...next, ...Array.from({ length: 4 }, (_, i) => chat("c" + i, { id: "bulk" + i, from: "peer" + i, direction: "in", body: "bulk " + i }))];
+processIncomingChats(many);
+if (region.childElementCount !== 3) throw new Error("visible toast limit: " + region.childElementCount);
+if ([...timers.values()].some((timer) => timer.ms !== 6000)) throw new Error("auto-dismiss timeout: " + JSON.stringify([...timers.values()].map((timer) => timer.ms)));
+region.children[0].children.find((child) => child.className === "message-toast-close").listeners.click();
+if (region.childElementCount !== 2 || timers.size !== 2) throw new Error("close button did not dismiss the toast");
+runTimers();
+if (region.childElementCount !== 0) throw new Error("toasts did not auto-dismiss: " + region.childElementCount);
+`
+	inboxRun(t, "notification-watermark", fixtures, testSource)
 }
 
 func TestDashboardAPIsServeStoppedNodeDefaults(t *testing.T) {

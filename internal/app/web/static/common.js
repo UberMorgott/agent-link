@@ -3,7 +3,7 @@
 const TOKEN = document.querySelector('meta[name="agentlink-token"]').content;
 // PAGE_VERSION is the app build this page was served by.
 const PAGE_VERSION = document.querySelector('meta[name="agentlink-version"]')?.content || "";
-const CORE_SLICES = new Set(["status", "dashboard", "participants", "update", "settings", "threads"]);
+const CORE_SLICES = new Set(["status", "dashboard", "participants", "update", "settings", "chats"]);
 const inFlight = new Map();
 
 function createStore(initial) {
@@ -26,7 +26,7 @@ function createStore(initial) {
 
 const store = createStore({
   status: null, dashboard: null, participants: null, update: null, settings: null,
-  threads: null, threadFeed: null, selectedPeer: "", selectedMessage: "", drafts: {}, conversationReads: {},
+  chats: null, chatArchive: null, showArchive: false, selectedChat: "", selectedMessage: "", drafts: {},
 });
 
 // STRINGS is the application-shell dictionary served by the app; see internal/app/strings.go.
@@ -146,17 +146,13 @@ function clearConnectionProblem(name) {
 }
 
 function refreshSlice(name) {
-  if (name === "threads") {
-    return api("GET", "threads").then(async (feed) => {
-      store.patch("threadFeed", feed);
-      const peer = store.get().selectedPeer;
-      if (!peer) {
-        store.patch("threads", feed);
-        clearConnectionProblem(name);
-        return;
-      }
-      const selected = await api("GET", "threads?peer=" + encodeURIComponent(peer));
-      if (store.get().selectedPeer === peer) store.patch("threads", selected);
+  if (name === "chats") {
+    // The archive is read only while it is on screen; the main list always,
+    // since message notifications come from it.
+    const archive = store.get().showArchive ? api("GET", "chats?archive=1") : null;
+    return Promise.all([api("GET", "chats"), archive]).then(([main, archived]) => {
+      if (archived) store.patch("chatArchive", archived);
+      store.patch("chats", main);
       clearConnectionProblem(name);
     }).catch((error) => showConnectionProblem(name, error));
   }
@@ -175,7 +171,7 @@ function slicesForTopics(topics) {
       slices.add("status"); slices.add("dashboard"); slices.add("participants");
     }
     if (topic === "messages" || topic === "worker") {
-      slices.add("dashboard"); slices.add("participants"); slices.add("threads");
+      slices.add("dashboard"); slices.add("participants"); slices.add("chats");
     }
   }
   return [...slices];
