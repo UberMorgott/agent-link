@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -41,7 +42,10 @@ type Proc struct {
 	// Session is the agent session id: chosen at launch (SessionArgs) or
 	// announced on stdout; a resume continues it.
 	Session string `json:"session,omitempty"`
-	Resumed bool   `json:"resumed,omitempty"`
+	// Resumed: the run continues an interrupted run of this job.
+	Resumed bool `json:"resumed,omitempty"`
+	// Continued: the run is a new turn of its chat's existing session.
+	Continued bool `json:"continued,omitempty"`
 	// Offset is how many stdout bytes were already relayed as activity.
 	Offset int64 `json:"offset"`
 	// Watches counts watches (1: the one after launch), so activity ids stay unique.
@@ -66,27 +70,37 @@ func (w *Worker) runBase(id string, attempt int) string {
 	return filepath.Join(w.jobsDir, id, strconv.Itoa(attempt))
 }
 
-// launch starts c detached in dir for j's current attempt. resume continues
-// session instead of sending the request again.
-func (w *Worker) launch(ctx context.Context, j *Job, c Command, dir, session string, resume bool) (*proc, error) {
+// launchSpec is how a run starts.
+type launchSpec struct {
+	stdin string
+	// session, when set, is resumed (ResumeArgs); otherwise a new session
+	// starts (SessionArgs, when c has them).
+	session   string
+	recovery  bool // continues an interrupted run of the job
+	continued bool // a new turn of the chat's session
+}
+
+// launch starts c detached in dir for j's current attempt.
+func (w *Worker) launch(ctx context.Context, j *Job, c Command, dir string, spec launchSpec) (*proc, error) {
 	w.mu.Lock()
-	id, attempt, prompt := j.Request.ID, j.Attempts, j.Request.Body
+	id, attempt, chatID := j.Request.ID, j.Attempts, j.Request.ChatID
 	w.mu.Unlock()
 	base := w.runBase(id, attempt)
 	if err := os.MkdirAll(filepath.Dir(base), 0o700); err != nil {
 		return nil, err
 	}
-	args, stdin := c.Args, c.Preamble+prompt
+	args, stdin, session := c.Args, spec.stdin, spec.session
 	switch {
-	case resume:
-		args, stdin = c.ResumeArgs, ResumePrompt
+	case session != "":
+		args = c.ResumeArgs
 	case len(c.SessionArgs) > 0:
 		session = newUUID()
 		args = append(append([]string(nil), args...), c.SessionArgs...)
-	default:
-		session = ""
 	}
-	rec := Proc{Name: c.Name, Attempt: attempt, Format: c.Format, Dir: filepath.Clean(dir), Session: session, Resumed: resume}
+	rec := Proc{
+		Name: c.Name, Attempt: attempt, Format: c.Format, Dir: filepath.Clean(dir), Session: session,
+		Resumed: spec.recovery && spec.session != "", Continued: spec.continued,
+	}
 	args = append([]string(nil), args...)
 	for i, a := range args {
 		switch a {
@@ -120,6 +134,10 @@ func (w *Worker) launch(ctx context.Context, j *Job, c Command, dir, session str
 		cmd := exec.CommandContext(context.WithoutCancel(ctx), c.Name, args...) //nolint:gosec // G204: the agent program the user configured, argv without a shell
 		cmd.Dir = rec.Dir
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = files[0], files[1], files[2]
+		if chatID != "" {
+			// The agentlink CLI inside the job finds its chat and request here.
+			cmd.Env = append(os.Environ(), envChatID+"="+chatID, envJobID+"="+id)
+		}
 		detach(cmd, breakaway)
 		return cmd, cmd.Start()
 	}
@@ -153,7 +171,7 @@ func (w *Worker) launch(ctx context.Context, j *Job, c Command, dir, session str
 	} else {
 		w.changed()
 	}
-	w.log.Info("agent launched", "id", id, "pid", rec.PID, "attempt", attempt, "resume", resume)
+	w.log.Info("agent launched", "id", id, "pid", rec.PID, "attempt", attempt, "resume", rec.Resumed, "continued", rec.Continued)
 	return p, nil
 }
 
@@ -161,7 +179,16 @@ func (w *Worker) launch(ctx context.Context, j *Job, c Command, dir, session str
 // picks up the run a previous app left behind.
 func (w *Worker) handleDetached(ctx context.Context, j *Job, reattach bool) {
 	if !reattach {
-		p, err := w.launch(ctx, j, w.opt.Agent(), w.where(j.Request.Area), "", false)
+		c, dir := w.opt.Agent(), w.where(j.Request.Area)
+		spec := launchSpec{stdin: c.Preamble + j.Request.Body}
+		if j.Request.ChatID != "" && w.opt.Chats != nil {
+			var err error
+			if spec, err = w.chatLaunch(j, c, dir); err != nil {
+				w.finish(j, node.JobFailed, "", err.Error())
+				return
+			}
+		}
+		p, err := w.launch(ctx, j, c, dir, spec)
 		if err != nil {
 			w.finish(j, node.JobFailed, "", fmt.Sprintf("handler failed: %v", err))
 			return
@@ -192,10 +219,25 @@ func (w *Worker) handleDetached(ctx context.Context, j *Job, reattach bool) {
 		w.finish(j, node.JobFailed, "", ErrInterrupted)
 		return
 	}
-	// Resume the interrupted run in the directory it started in.
+	// Resume the interrupted run in the directory it started in. A new turn
+	// of a chat's session has that session even before the agent announced it.
 	c := w.opt.Agent()
-	resume := s.session != "" && len(c.ResumeArgs) > 0
-	w.log.Info("agent died mid-run", "id", id, "pid", rec.PID, "resume", resume, "session", s.session)
+	session := s.session
+	if rec.Continued {
+		session = cmp.Or(session, rec.Session)
+	}
+	w.noteSession(j, s.session)
+	resume := session != "" && len(c.ResumeArgs) > 0
+	spec := launchSpec{stdin: ResumePrompt, session: session, recovery: true, continued: rec.Continued}
+	if !resume {
+		// Start over with what the interrupted run was given.
+		in, err := os.ReadFile(w.runBase(id, rec.Attempt) + ".in")
+		if err != nil {
+			in = []byte(c.Preamble + j.Request.Body)
+		}
+		spec = launchSpec{stdin: string(in)}
+	}
+	w.log.Info("agent died mid-run", "id", id, "pid", rec.PID, "resume", resume, "session", session)
 	w.mu.Lock()
 	j.Attempts, j.StartedAt = j.Attempts+1, time.Now().UTC()
 	err := w.save(j)
@@ -205,7 +247,7 @@ func (w *Worker) handleDetached(ctx context.Context, j *Job, reattach bool) {
 		return
 	}
 	w.changed()
-	p, err := w.launch(ctx, j, c, rec.Dir, s.session, resume)
+	p, err := w.launch(ctx, j, c, rec.Dir, spec)
 	if err != nil {
 		w.finish(j, node.JobFailed, "", fmt.Sprintf("handler failed: %v", err))
 		return
@@ -249,7 +291,7 @@ func (w *Worker) watch(ctx context.Context, j *Job, p *proc) {
 		w.mu.Unlock()
 	}()
 	if rec.Watches == 1 {
-		w.status(m, node.JobRunning, "running-"+strconv.Itoa(attempt), "")
+		w.status(m, node.JobRunning, "running-"+strconv.Itoa(attempt), nil)
 	}
 	prefix := "activity-" + strconv.Itoa(attempt)
 	if rec.Watches > 1 {
@@ -259,7 +301,7 @@ func (w *Worker) watch(ctx context.Context, j *Job, p *proc) {
 	defer relay.stop()
 
 	s := &stream{format: rec.Format, dir: rec.Dir}
-	offset := int64(0)
+	offset, noted := int64(0), ""
 	var f *os.File
 	defer func() {
 		if f != nil {
@@ -280,13 +322,17 @@ func (w *Worker) watch(ctx context.Context, j *Job, p *proc) {
 			// What an earlier watch relayed only rebuilds the parser state.
 			n, _ := io.CopyN(s, f, rec.Offset)
 			offset = n
-			s.onLine = func(activity string) {
+			s.onLine = func(a node.ActivityState) {
 				idle.Reset(w.opt.IdleTimeout)
-				relay.set(activity)
+				relay.set(a)
 			}
 		}
 		n, _ := io.Copy(s, f)
 		offset += n
+		if s.session != "" && s.session != noted {
+			w.noteSession(j, s.session)
+			noted = s.session
+		}
 	}
 	saveOffset := func() {
 		w.mu.Lock()
@@ -354,6 +400,13 @@ func (w *Worker) watch(ctx context.Context, j *Job, p *proc) {
 // when unknown.
 func (w *Worker) conclude(j *Job, rec Proc, s *stream, code int) {
 	id := j.Request.ID
+	w.noteSession(j, s.session)
+	if rec.Continued && s.session == "" && code > 0 {
+		// The agent failed before it announced the session it was to resume.
+		errData, _ := os.ReadFile(w.runBase(id, rec.Attempt) + ".err")
+		w.finish(j, node.JobFailed, "", fmt.Sprintf("%s (%s %s: %s)", ErrSessionMissing, rec.Name, rec.Session, cmp.Or(s.failure, reason(string(errData)))))
+		return
+	}
 	if rec.LastMessage {
 		if body := w.lastMessage(id, rec); body != "" {
 			w.finish(j, node.JobCompleted, body, "")

@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/UberMorgott/agent-link/internal/node"
 )
 
 // OutputFileArg in Command.Args is replaced by a temporary file path; the
@@ -143,7 +145,10 @@ func (c Command) Runner() Runner {
 		cmd := exec.CommandContext(ctx, c.Name, args...) //nolint:gosec // G204: the agent program the user configured, argv without a shell
 		cmd.Dir = filepath.Clean(dir)
 		cmd.Stdin = strings.NewReader(c.Preamble + prompt)
-		out := &stream{format: c.Format, dir: cmd.Dir, onLine: progress}
+		out := &stream{format: c.Format, dir: cmd.Dir}
+		if progress != nil {
+			out.onLine = func(a node.ActivityState) { progress(a.Text) }
+		}
 		var stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = out, &stderr
 		cmd.WaitDelay = 5 * time.Second

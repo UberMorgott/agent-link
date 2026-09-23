@@ -1,12 +1,19 @@
 {"type":"system","subtype":"hook_started","hook_id":"h1","hook_name":"SessionStart:startup","hook_event":"SessionStart","uuid":"u1","session_id":"s1"}
-{"type":"system","subtype":"init","cwd":"C:\\work","session_id":"s1","tools":["Read","Grep","Glob"],"model":"claude","permissionMode":"dontAsk","uuid":"u2"}
+{"type":"system","subtype":"init","cwd":"C:\\work","session_id":"s1","tools":["Read","Grep","Glob","Edit","Bash"],"model":"claude","permissionMode":"dontAsk","uuid":"u2"}
 {"type":"assistant","message":{"id":"m1","type":"message","role":"assistant","content":[{"type":"text","text":"Searching internal/ and reading the index."}]},"session_id":"s1","uuid":"u3"}
 {"type":"assistant","message":{"id":"m1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Grep","input":{"pattern":"DefaultTimeout","path":"C:\\work\\internal","output_mode":"content"}}]},"session_id":"s1","uuid":"u4"}
 {"type":"assistant","message":{"id":"m1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"C:\\work\\docs\\index.md","limit":20}}]},"session_id":"s1","uuid":"u5"}
 {"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"internal/worker/worker.go:33:const DefaultTimeout"}]},"session_id":"s1","uuid":"u6"}
 {"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"uuid":"u7","session_id":"s1"}
 {"type":"system","subtype":"task_summary","detail":"Reading index.md","uuid":"u8","session_id":"s1"}
-{"type":"assistant","message":{"id":"m2","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"x"}]},"session_id":"s1","uuid":"u9"}
-{"type":"assistant","message":{"id":"m2","type":"message","role":"assistant","content":[{"type":"text","text":"# Docs index"}]},"session_id":"s1","uuid":"u10"}
-{"type":"system","subtype":"post_turn_summary","status_category":"completed","uuid":"u11","session_id":"s1"}
-{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"# Docs index","stop_reason":"end_turn","session_id":"s1","uuid":"u12"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"# Docs index"}]},"session_id":"s1","uuid":"u9"}
+{"type":"assistant","message":{"id":"m2","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Edit","input":{"file_path":"C:\\work\\internal\\x.go","old_string":"a","new_string":"b"}}]},"session_id":"s1","uuid":"u10"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","content":"The file was updated."}]},"session_id":"s1","uuid":"u11"}
+{"type":"assistant","message":{"id":"m2","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t4","name":"Bash","input":{"command":"go test ./internal/worker/","description":"Run worker tests"}}]},"session_id":"s1","uuid":"u12"}
+{"type":"assistant","message":{"id":"m2","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t5","name":"Bash","input":{"command":"curl -H 'Authorization: Bearer abc123' https://example.test"}}]},"session_id":"s1","uuid":"u13"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t5","content":"ok"}]},"session_id":"s1","uuid":"u14"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t4","content":"ok"}]},"session_id":"s1","uuid":"u15"}
+{"type":"assistant","message":{"id":"m3","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"x"}]},"session_id":"s1","uuid":"u16"}
+{"type":"assistant","message":{"id":"m3","type":"message","role":"assistant","content":[{"type":"text","text":"# Docs index"}]},"session_id":"s1","uuid":"u17"}
+{"type":"system","subtype":"post_turn_summary","status_category":"completed","uuid":"u18","session_id":"s1"}
+{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"# Docs index","stop_reason":"end_turn","session_id":"s1","uuid":"u19"}

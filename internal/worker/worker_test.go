@@ -80,6 +80,8 @@ func TestMain(m *testing.M) {
 				_, _ = os.Stdout.WriteString(`{"type":"result","is_error":false,"result":"resumed ` + os.Args[i+1] + `: ` + strings.TrimSpace(string(in)) + `"}` + "\n")
 			}
 		}
+	case "chat":
+		fakeChatAgent()
 	case "stream-steady":
 		// Claude stream-json: an event every 50ms for 3s, then the result.
 		for i := range 60 {

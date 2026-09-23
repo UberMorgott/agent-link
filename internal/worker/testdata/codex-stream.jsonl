@@ -3,5 +3,9 @@
 {"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"**Reading the index**"}}
 {"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"\"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe\" -Command 'Get-Content docs/index.md -TotalCount 5'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
 {"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"\"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe\" -Command 'Get-Content docs/index.md -TotalCount 5'","aggregated_output":"# Docs index\n","exit_code":0,"status":"completed"}}
-{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"# Docs index"}}
+{"type":"item.started","item":{"id":"item_2","type":"file_change","changes":[{"path":"C:\\work\\a.go","kind":"update"},{"path":"C:\\work\\b.go","kind":"add"}],"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"file_change","changes":[{"path":"C:\\work\\a.go","kind":"update"},{"path":"C:\\work\\b.go","kind":"add"}],"status":"completed"}}
+{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"bash -lc 'curl --api-key sk-123 https://example.test && export GITHUB_TOKEN=ghp_abc'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"bash -lc 'curl --api-key sk-123 https://example.test && export GITHUB_TOKEN=ghp_abc'","aggregated_output":"","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"# Docs index"}}
 {"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10}}

@@ -5,9 +5,15 @@ import (
 	"cmp"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
+
+	"github.com/UberMorgott/agent-link/internal/node"
 )
 
 // Output formats of an agent CLI's stdout (Command.Format).
@@ -34,17 +40,35 @@ const maxActivity = 120
 const (
 	ActivityThinking = "thinking"
 	ActivityWriting  = "writing answer"
+	ActivityPlanning = "planning"
+)
+
+// Activity types (node.ActivityState.Type).
+const (
+	TypeThinking = "thinking"
+	TypeWriting  = "writing"
+	TypeEdit     = "edit"
+	TypeCommand  = "command"
+	TypeRead     = "read"
+	TypeSearch   = "search"
+	TypePlan     = "plan"
+	TypeTool     = "tool"
 )
 
 // stream parses an agent's stdout line by line as it arrives. It is an
 // io.Writer fed by the process's stdout copier; onLine gets the activity of
-// every complete line ("" when the line says nothing new but proves the agent
-// is alive).
+// every complete line (a zero one, Text "", when the line says nothing new but
+// proves the agent is alive). An activity is one operation of the agent: a
+// tool call, a Codex item, a thinking or answer block; it starts running and
+// may end (PhaseDone) when the stream reports its result. Reasoning text and
+// full tool inputs never leave the stream: only a short description.
 type stream struct {
 	format string
 	dir    string // the agent's working folder, to shorten paths
-	onLine func(activity string)
+	onLine func(a node.ActivityState)
 
+	cur       node.ActivityState            // the latest operation
+	open      map[string]node.ActivityState // running operations by id
 	partial   []byte
 	plain     strings.Builder // non-JSON lines: the answer in FormatText
 	result    string          // the final answer the stream reported
@@ -83,22 +107,51 @@ func (s *stream) flush() {
 }
 
 func (s *stream) line(raw []byte) {
-	activity, ok := "", false
+	var a node.ActivityState
+	ok := false
 	if s.format != FormatText {
-		activity, ok = s.event(bytes.TrimSpace(raw))
+		a, ok = s.event(bytes.TrimSpace(raw))
 	}
 	if !ok {
 		s.plain.Write(raw)
 	}
 	if s.onLine != nil {
-		s.onLine(activity)
+		s.onLine(a)
 	}
 }
 
+// begin makes operation id the current one, running; an operation already
+// running keeps its start time.
+func (s *stream) begin(id, typ, text string) node.ActivityState {
+	a := node.ActivityState{ID: id, Type: typ, Text: clip(text), Phase: node.PhaseRunning, StartedAt: time.Now().UTC()}
+	if old, ok := s.open[id]; ok {
+		a.StartedAt = old.StartedAt
+	}
+	if s.open == nil {
+		s.open = map[string]node.ActivityState{}
+	}
+	s.open[id], s.cur = a, a
+	return a
+}
+
+// end marks operation id done. It reports the change only when id is the
+// current operation: a parallel one that ends does not replace it.
+func (s *stream) end(id string) node.ActivityState {
+	a, ok := s.open[id]
+	delete(s.open, id)
+	if !ok || s.cur.ID != id {
+		return node.ActivityState{}
+	}
+	a.Phase = node.PhaseDone
+	s.cur = a
+	return a
+}
+
 // event parses one JSON event and reports whether the line was one.
-func (s *stream) event(line []byte) (string, bool) {
+func (s *stream) event(line []byte) (node.ActivityState, bool) {
+	var none node.ActivityState
 	if len(line) == 0 || line[0] != '{' {
-		return "", false
+		return none, false
 	}
 	var ev struct {
 		Type    string          `json:"type"`
@@ -116,7 +169,7 @@ func (s *stream) event(line []byte) (string, bool) {
 		ThreadID  string `json:"thread_id"`
 	}
 	if json.Unmarshal(line, &ev) != nil || ev.Type == "" {
-		return "", false
+		return none, false
 	}
 	if id := cmp.Or(ev.SessionID, ev.ThreadID); id != "" && s.session == "" {
 		s.session = id
@@ -141,12 +194,13 @@ func (s *stream) event(line []byte) (string, bool) {
 			_ = json.Unmarshal(line, &e)
 			s.failure = e.Message
 		}
-		return "", true
+		return none, true
 	}
-	return "", false
+	return none, false
 }
 
-func (s *stream) claude(typ string, message json.RawMessage, result string, isError bool) string {
+func (s *stream) claude(typ string, message json.RawMessage, result string, isError bool) node.ActivityState {
+	var a node.ActivityState
 	switch typ {
 	case "result":
 		s.hasResult = true
@@ -155,61 +209,103 @@ func (s *stream) claude(typ string, message json.RawMessage, result string, isEr
 		} else {
 			s.result = result
 		}
-		return ""
 	case "assistant":
 		var m struct {
+			ID      string `json:"id"`
 			Content []struct {
 				Type  string         `json:"type"`
+				ID    string         `json:"id"`
 				Name  string         `json:"name"`
 				Input map[string]any `json:"input"`
 				Text  string         `json:"text"`
 			} `json:"content"`
 		}
 		if json.Unmarshal(message, &m) != nil {
-			return ""
+			return a
 		}
-		activity := ""
 		for _, c := range m.Content {
 			switch c.Type {
 			case "tool_use":
-				activity = s.tool(c.Name, c.Input)
+				typ, text := s.tool(c.Name, c.Input)
+				a = s.begin(cmp.Or(c.ID, c.Name), typ, text)
 			case "thinking", "redacted_thinking":
-				activity = ActivityThinking
+				a = s.begin(m.ID+"/thinking", TypeThinking, ActivityThinking)
 			case "text":
 				if strings.TrimSpace(c.Text) != "" {
-					activity = ActivityWriting
+					a = s.begin(m.ID+"/text", TypeWriting, ActivityWriting)
 				}
 			}
 		}
-		return activity
+	case "user":
+		// Tool results: {"content":[{"type":"tool_result","tool_use_id"}]}; a
+		// prompt echo has a string content, which does not parse here.
+		var m struct {
+			Content []struct {
+				Type      string `json:"type"`
+				ToolUseID string `json:"tool_use_id"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(message, &m) != nil {
+			return a
+		}
+		for _, c := range m.Content {
+			if c.Type == "tool_result" && c.ToolUseID != "" {
+				if done := s.end(c.ToolUseID); done.Text != "" {
+					a = done
+				}
+			}
+		}
 	}
-	return ""
+	return a
 }
 
-// tool describes a Claude tool call: "Read docs/index.md", "Grep 'Worker' internal".
-func (s *stream) tool(name string, in map[string]any) string {
+// tool describes a Claude tool call: "Read docs/index.md", "Grep 'Worker'
+// internal", "Edit internal/x.go". A shell command is described by the
+// description Claude gives it, else by its program: its arguments may hold
+// secrets.
+func (s *stream) tool(name string, in map[string]any) (typ, text string) {
 	str := func(k string) string { v, _ := in[k].(string); return v }
+	withPath := func(out string) string {
+		if p := s.rel(str("path")); p != "" {
+			out += " " + p
+		}
+		return out
+	}
 	switch name {
 	case "Read":
-		return clip("Read " + s.rel(str("file_path")))
+		return TypeRead, "Read " + s.rel(str("file_path"))
 	case "Grep":
-		out := "Grep '" + str("pattern") + "'"
-		if p := s.rel(str("path")); p != "" {
-			out += " " + p
-		}
-		return clip(out)
+		return TypeSearch, withPath("Grep '" + str("pattern") + "'")
 	case "Glob":
-		out := "Glob " + str("pattern")
-		if p := s.rel(str("path")); p != "" {
-			out += " " + p
+		return TypeSearch, withPath("Glob " + str("pattern"))
+	case "Edit", "MultiEdit", "Write", "NotebookEdit":
+		return TypeEdit, name + " " + s.rel(cmp.Or(str("file_path"), str("notebook_path")))
+	case "Bash", "PowerShell":
+		if d := strings.TrimSpace(str("description")); d != "" {
+			return TypeCommand, redact(d)
 		}
-		return clip(out)
+		return TypeCommand, "Run " + program(str("command"))
+	case "TodoWrite":
+		return TypePlan, ActivityPlanning
+	case "WebSearch":
+		return TypeSearch, "Search " + redact(str("query"))
+	case "WebFetch":
+		host := str("url")
+		if u, err := url.Parse(host); err == nil && u.Host != "" {
+			host = u.Host
+		}
+		return TypeRead, "Fetch " + host
+	case "Task", "Agent":
+		if d := strings.TrimSpace(str("description")); d != "" {
+			return TypeTool, name + ": " + redact(d)
+		}
 	}
-	return clip(name)
+	return TypeTool, name
 }
 
-func (s *stream) codexItem(evType string, raw json.RawMessage) string {
+func (s *stream) codexItem(evType string, raw json.RawMessage) node.ActivityState {
 	var it struct {
+		ID      string `json:"id"`
 		Type    string `json:"type"`
 		Text    string `json:"text"`
 		Command string `json:"command"`
@@ -222,33 +318,82 @@ func (s *stream) codexItem(evType string, raw json.RawMessage) string {
 		} `json:"changes"`
 	}
 	if json.Unmarshal(raw, &it) != nil {
-		return ""
+		return node.ActivityState{}
 	}
+	typ, text := "", ""
 	switch it.Type {
 	case "command_execution":
-		return clip("Run " + shellBody(it.Command))
+		typ, text = TypeCommand, "Run "+redact(shellBody(it.Command))
 	case "reasoning":
-		return ActivityThinking
+		typ, text = TypeThinking, ActivityThinking // never the reasoning text
 	case "agent_message":
 		if evType == "item.completed" && strings.TrimSpace(it.Text) != "" {
 			s.result, s.hasResult = it.Text, true
 		}
-		return ActivityWriting
+		typ, text = TypeWriting, ActivityWriting
 	case "web_search":
-		return clip("Search " + it.Query)
+		typ, text = TypeSearch, "Search "+redact(it.Query)
 	case "mcp_tool_call":
-		return clip("Tool " + it.Server + "." + it.Tool)
+		typ, text = TypeTool, "Tool "+it.Server+"."+it.Tool
 	case "file_change":
 		if len(it.Changes) > 0 {
-			return clip("Edit " + s.rel(it.Changes[0].Path))
+			typ, text = TypeEdit, "Edit "+s.rel(it.Changes[0].Path)
+			if more := len(it.Changes) - 1; more > 0 {
+				text += " (+" + strconv.Itoa(more) + ")"
+			}
 		}
 	case "todo_list":
-		return "planning"
+		typ, text = TypePlan, ActivityPlanning
 	case "error":
 		s.failure = it.Message
 	}
-	return ""
+	if text == "" {
+		return node.ActivityState{}
+	}
+	id := cmp.Or(it.ID, it.Type)
+	a := s.begin(id, typ, text)
+	if evType == "item.completed" {
+		delete(s.open, id)
+		a.Phase = node.PhaseDone
+		s.cur = a
+	}
+	return a
 }
+
+// secretFlag and secretValue find secrets in a command line: a flag named
+// like one followed by its value, a NAME=value or name: value pair, a bearer
+// token.
+var (
+	secretFlag  = regexp.MustCompile(`(?i)(--?[\w-]*(?:token|secret|passw|pwd|api[_-]?key|auth)[\w-]*)\s+("[^"]*"|'[^']*'|[^\s'"]+)`)
+	secretValue = regexp.MustCompile(`(?i)([\w-]*(?:token|secret|passw|pwd|api[_-]?key|auth)[\w-]*\s*[=:]\s*)(?:bearer\s+)?("[^"]*"|'[^']*'|[^\s'"]+)`)
+	bearer      = regexp.MustCompile(`(?i)(bearer\s+)[^\s'"]+`)
+)
+
+// redact masks the values of what looks like a secret in s.
+func redact(s string) string {
+	s = secretFlag.ReplaceAllString(s, "$1 ***")
+	s = secretValue.ReplaceAllString(s, "$1***")
+	return bearer.ReplaceAllString(s, "$1***")
+}
+
+// program names what a shell command runs, without its arguments: "go test",
+// "git commit", "npm".
+func program(cmd string) string {
+	f := strings.Fields(shellBody(cmd))
+	if len(f) == 0 {
+		return "command"
+	}
+	out := strings.Trim(f[0], `"'`)
+	if i := strings.LastIndexAny(out, `/\`); i >= 0 {
+		out = out[i+1:]
+	}
+	if len(f) > 1 && subcommand.MatchString(f[1]) {
+		out += " " + f[1]
+	}
+	return out
+}
+
+var subcommand = regexp.MustCompile(`^[a-z][a-z-]*$`)
 
 // answer returns the final text: what the stream reported, else the plain
 // output. A failure the stream reported without an answer is an error.

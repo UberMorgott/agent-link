@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -161,6 +162,70 @@ func TestAnswerSurvivesDaemonRestart(t *testing.T) {
 	}
 	if r := runs(); len(r) != 1 {
 		t.Fatalf("agent runs %v, want one", r)
+	}
+}
+
+// Two real nodes and a chat: b's worker answers a's two questions in one
+// agent session, the second turn sees a's informational message, and the chat
+// is idle afterwards.
+func TestChatTurnsBetweenNodes(t *testing.T) {
+	agent, runs := chatAgent(t)
+	lnA, lnB := listenTCP(t), listenTCP(t)
+	a := startNode(t, "a", lnA, "b", lnB)
+	b := startNode(t, "b", lnB, "a", lnA)
+	w, err := New(nil, b.n.SendMessage, t.TempDir(), t.TempDir(),
+		Options{Agent: func() Command { return agent }, Chats: b.n, Self: "b", ActivityEvery: 10 * time.Millisecond}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.n.SetInboundHook(w.Accept)
+	a.serve(t)
+	b.serve(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); w.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	var chat node.ChatInfo
+	eventually(t, "chat created", func() bool {
+		chat, err = a.n.CreateChat([]string{"b"}, "")
+		return err == nil
+	})
+	replies := func() []node.ChatMessage {
+		msgs, _ := a.n.ChatMessages(chat.ID, 0, 0, 100)
+		var out []node.ChatMessage
+		for _, m := range msgs {
+			if m.From == "b" && m.Kind == "" && m.JobStatus == node.JobCompleted {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	q1, err := a.n.SendChat(node.ChatSend{ChatID: chat.ID, Body: "first question", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "first reply", func() bool { return len(replies()) == 1 })
+	if _, err := a.n.SendChat(node.ChatSend{ChatID: chat.ID, Body: "fyi for later"}); err != nil {
+		t.Fatal(err)
+	}
+	q2, err := a.n.SendChat(node.ChatSend{ChatID: chat.ID, Body: "second question", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "second reply", func() bool { return len(replies()) == 2 })
+	got := replies()
+	if got[0].ReplyTo != q1.ID || got[1].ReplyTo != q2.ID || got[0].ID != node.DerivedID(q1.ID, "b/reply") ||
+		!strings.Contains(got[1].Body, "a: fyi for later") || strings.Contains(got[1].Body, "first question") {
+		t.Fatalf("replies %+v", got)
+	}
+	r := runs()
+	if len(r) != 2 || strings.Split(r[0], ":")[1] != strings.Split(r[1], ":")[1] || !strings.HasPrefix(r[1], "resume:") {
+		t.Fatalf("agent runs %v, want two turns of one session", r)
+	}
+	info, err := a.n.Chat(chat.ID)
+	if err != nil || info.Active {
+		t.Fatalf("chat %+v, %v", info, err)
 	}
 }
 

@@ -14,6 +14,8 @@
 // fail at once and kill the agent's process tree. The sender
 // gets status updates (queued, running, then running with the agent's current
 // activity, throttled) and a final reply that carries completed or failed.
+// A chat request (Options.Chats) is answered to the whole chat and runs in the
+// chat's own agent session (see sessions.go).
 package worker
 
 import (
@@ -91,6 +93,10 @@ type Options struct {
 	ActivityRefresh time.Duration
 	// OnChange observes durable job state changes. It must return promptly.
 	OnChange func()
+	// Chats, when set, lets the worker answer chat requests (see sessions.go);
+	// Self is this node's name, which chat reply and status ids include.
+	Chats Chats
+	Self  string
 }
 
 func (o Options) withDefaults() Options {
@@ -126,19 +132,23 @@ type Job struct {
 	FinishedAt time.Time    `json:"finished_at,omitzero"`
 	// Proc is the detached agent run of the current attempt, if any.
 	Proc *Proc `json:"proc,omitempty"`
+	// InputThrough is the last chat message (node's Seq) a chat job's run was
+	// given; the chat's session is advanced to it when the job completes.
+	InputThrough uint64 `json:"input_through,omitempty"`
 }
 
 func (j *Job) terminal() bool { return j.Status == node.JobCompleted || j.Status == node.JobFailed }
 
 // Worker is a durable job queue in front of a Runner with MaxJobs slots.
 type Worker struct {
-	run     Runner // nil: no handler, pending jobs fail
-	send    SendFunc
-	dir     string // agent working folder
-	jobsDir string
-	opt     Options
-	log     *slog.Logger
-	kick    chan struct{}
+	run         Runner // nil: no handler, pending jobs fail
+	send        SendFunc
+	dir         string // agent working folder
+	jobsDir     string
+	sessionsDir string
+	opt         Options
+	log         *slog.Logger
+	kick        chan struct{}
 
 	mu   sync.Mutex
 	jobs map[string]*Job
@@ -156,11 +166,14 @@ func New(run Runner, send SendFunc, stateDir, dir string, opt Options, log *slog
 		log = slog.New(slog.DiscardHandler)
 	}
 	w := &Worker{
-		run: run, send: send, dir: dir, jobsDir: filepath.Join(stateDir, "jobs"), opt: opt.withDefaults(), log: log,
+		run: run, send: send, dir: dir, jobsDir: filepath.Join(stateDir, "jobs"), sessionsDir: filepath.Join(stateDir, "sessions"),
+		opt: opt.withDefaults(), log: log,
 		kick: make(chan struct{}, 1), jobs: map[string]*Job{}, reattach: map[string]bool{}, live: map[string]chan struct{}{},
 	}
-	if err := os.MkdirAll(w.jobsDir, 0o700); err != nil {
-		return nil, err
+	for _, d := range []string{w.jobsDir, w.sessionsDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return nil, err
+		}
 	}
 	entries, err := os.ReadDir(w.jobsDir)
 	if err != nil {
@@ -185,14 +198,28 @@ func New(run Runner, send SendFunc, stateDir, dir string, opt Options, log *slog
 }
 
 // Accept durably queues m if it is a request and its id is new; replies,
-// status updates and duplicates are ignored. It is the node's inbound hook:
-// an error withholds the ACK so the sender resends.
+// status updates and duplicates are ignored. A chat message is a request
+// only when the node lets this worker answer it (Chats.ClaimRun). It is the
+// node's inbound hook: an error withholds the ACK so the sender resends.
 func (w *Worker) Accept(m node.Message) error {
-	if !m.IsRequest() {
+	chat := m.ChatID != "" && m.Kind == ""
+	if chat && w.opt.Chats == nil || !chat && !m.IsRequest() {
 		return nil
 	}
 	if _, err := hex.DecodeString(m.ID); err != nil || len(m.ID) != 32 {
 		return fmt.Errorf("invalid request id %q", m.ID)
+	}
+	w.mu.Lock()
+	_, known := w.jobs[m.ID]
+	w.mu.Unlock()
+	if known {
+		return nil
+	}
+	if chat {
+		ok, err := w.opt.Chats.ClaimRun(m)
+		if err != nil || !ok {
+			return err
+		}
 	}
 	w.mu.Lock()
 	if _, ok := w.jobs[m.ID]; ok {
@@ -209,8 +236,8 @@ func (w *Worker) Accept(m node.Message) error {
 	w.jobs[m.ID] = j
 	w.mu.Unlock()
 	w.changed()
-	w.log.Info("job queued", "id", m.ID, "from", m.From)
-	w.status(m, node.JobQueued, "queued", "")
+	w.log.Info("job queued", "id", m.ID, "from", m.From, "chat", m.ChatID)
+	w.status(m, node.JobQueued, "queued", nil)
 	w.wake()
 	return nil
 }
@@ -283,6 +310,9 @@ func (w *Worker) slot(ctx context.Context) {
 			case <-ctx.Done():
 			case <-w.kick:
 			}
+		case !reattach && w.chatClosed(j.Request):
+			// Queued before the close arrived: no new work in a closed chat.
+			w.finish(j, node.JobFailed, "", ErrChatClosed)
 		case w.opt.Agent != nil:
 			w.wake()
 			w.handleDetached(ctx, j, reattach)
@@ -294,6 +324,15 @@ func (w *Worker) slot(ctx context.Context) {
 }
 
 func (w *Worker) hasHandler() bool { return w.run != nil || w.opt.Agent != nil }
+
+// chatClosed reports whether m belongs to a chat that is closed or gone.
+func (w *Worker) chatClosed(m node.Message) bool {
+	if m.ChatID == "" || w.opt.Chats == nil {
+		return false
+	}
+	c, ok := w.opt.Chats.ChatOf(m.ChatID)
+	return !ok || c.Closed()
+}
 
 // where resolves the directory a request runs in: the project mapped to its
 // area, else the work directory.
@@ -387,10 +426,18 @@ func (w *Worker) next() *Job {
 	return w.nextLocked()
 }
 
+// nextLocked skips the jobs of a chat that already has one running (a
+// reattached one too): a chat's session takes one turn at a time.
 func (w *Worker) nextLocked() *Job {
+	busy := map[string]bool{}
+	for _, j := range w.jobs {
+		if j.Status == node.JobRunning && j.Request.ChatID != "" {
+			busy[j.Request.ChatID] = true
+		}
+	}
 	var best *Job
 	for _, j := range w.jobs {
-		if j.Status == node.JobQueued && (best == nil || j.Seq < best.Seq) {
+		if j.Status == node.JobQueued && !busy[j.Request.ChatID] && (best == nil || j.Seq < best.Seq) {
 			best = j
 		}
 	}
@@ -405,15 +452,20 @@ func (w *Worker) handle(ctx context.Context, j *Job) {
 	attempt := j.Attempts
 	w.mu.Unlock()
 	w.log.Info("handler started", "id", m.ID, "from", m.From, "attempt", attempt)
-	w.status(m, node.JobRunning, "running-"+strconv.Itoa(attempt), "")
+	w.status(m, node.JobRunning, "running-"+strconv.Itoa(attempt), nil)
+	prompt := m.Body
+	if m.ChatID != "" && w.opt.Chats != nil {
+		// A Runner keeps no session: every run gets the latest chat messages.
+		prompt, _ = w.chatInput(m, 0, false)
+	}
 
 	idleCtx, cancelIdle := context.WithCancelCause(ctx)
 	jobCtx, cancel := context.WithTimeoutCause(idleCtx, w.opt.Timeout, errHardTimeout)
 	idle := time.AfterFunc(w.opt.IdleTimeout, func() { cancelIdle(errIdleTimeout) })
 	relay := w.relay(m, "activity-"+strconv.Itoa(attempt))
-	out, err := w.run(jobCtx, w.where(m.Area), m.Body, func(activity string) {
+	out, err := w.run(jobCtx, w.where(m.Area), prompt, func(activity string) {
 		idle.Reset(w.opt.IdleTimeout)
-		relay.set(activity)
+		relay.set(node.ActivityState{Type: TypeTool, Text: activity, Phase: node.PhaseRunning})
 	})
 	idle.Stop()
 	relay.stop()
@@ -451,13 +503,20 @@ func minutes(d time.Duration) string {
 // relay forwards a running job's activity to the sender as status updates:
 // the first one at once, then at most one per ActivityEvery and only when the
 // activity changed, plus the unchanged one again after ActivityRefresh.
+//
+// A refresh re-sends the same activity (same id and start time, a new Seq),
+// so the receiver's elapsed time keeps counting from the operation's start.
 type relay struct {
 	mu      sync.Mutex
-	current string
+	current node.ActivityState
 	changed chan struct{}
 	quit    chan struct{}
 	done    chan struct{}
 	once    sync.Once
+}
+
+func sameActivity(a, b node.ActivityState) bool {
+	return a.ID == b.ID && a.Text == b.Text && a.Phase == b.Phase && a.Type == b.Type
 }
 
 // relay starts one; update ids are prefix-1, prefix-2, ...
@@ -467,7 +526,8 @@ func (w *Worker) relay(m node.Message, prefix string) *relay {
 		defer close(r.done)
 		refresh := time.NewTimer(w.opt.ActivityRefresh)
 		defer refresh.Stop()
-		sent, n := "", 0
+		var sent node.ActivityState
+		n := 0
 		var sentAt time.Time
 		for {
 			select {
@@ -486,11 +546,13 @@ func (w *Worker) relay(m node.Message, prefix string) *relay {
 			r.mu.Lock()
 			cur := r.current
 			r.mu.Unlock()
-			if cur == "" || (cur == sent && time.Since(sentAt) < w.opt.ActivityRefresh) {
+			if cur.Text == "" || (sameActivity(cur, sent) && time.Since(sentAt) < w.opt.ActivityRefresh) {
 				continue
 			}
 			n++
-			w.status(m, node.JobRunning, prefix+"-"+strconv.Itoa(n), cur)
+			// Seq orders updates across restarts of the app too.
+			cur.Seq = uint64(time.Now().UnixNano())
+			w.status(m, node.JobRunning, prefix+"-"+strconv.Itoa(n), &cur)
 			sent, sentAt = cur, time.Now()
 			refresh.Reset(w.opt.ActivityRefresh)
 		}
@@ -498,14 +560,21 @@ func (w *Worker) relay(m node.Message, prefix string) *relay {
 	return r
 }
 
-// set records the latest activity; "" keeps the previous one.
-func (r *relay) set(activity string) {
-	if activity == "" {
+// set records the latest activity; one without Text keeps the previous one.
+// An activity without a start time starts when it first shows up.
+func (r *relay) set(a node.ActivityState) {
+	if a.Text == "" {
 		return
 	}
 	r.mu.Lock()
-	changed := activity != r.current
-	r.current = activity
+	changed := !sameActivity(a, r.current)
+	if a.StartedAt.IsZero() {
+		a.StartedAt = r.current.StartedAt
+		if changed {
+			a.StartedAt = time.Now().UTC()
+		}
+	}
+	r.current = a
 	r.mu.Unlock()
 	if changed {
 		select {
@@ -534,10 +603,14 @@ func (w *Worker) finish(j *Job, status, result, errText string) {
 	if err != nil {
 		w.log.Error("save job", "id", j.Request.ID, "err", err)
 	} else if status == node.JobCompleted {
+		w.advanceSession(j)
 		// A failed run keeps its files (<jobs>/<id>/) for diagnosis.
 		_ = os.RemoveAll(filepath.Join(w.jobsDir, j.Request.ID))
 	}
 	w.reply(j)
+	if j.Request.ChatID != "" {
+		w.wake() // the chat's next request may run now
+	}
 }
 
 // reply sends the final reply under an id derived from the request, so a
@@ -549,9 +622,9 @@ func (w *Worker) reply(j *Job) {
 		body = "agentlink: " + j.Error
 	}
 	w.mu.Unlock()
-	_, err := w.send(node.Message{
-		ID: node.DerivedID(m.ID, "reply"), To: m.From, Body: body, ReplyTo: m.ID, JobStatus: status,
-	})
+	out := node.Message{Body: body, ReplyTo: m.ID, JobStatus: status}
+	w.address(&out, m, "reply")
+	_, err := w.send(out)
 	if err != nil {
 		w.log.Error("send reply", "id", m.ID, "err", err)
 		return
@@ -567,39 +640,32 @@ func (w *Worker) reply(j *Job) {
 	w.changed()
 }
 
-func (w *Worker) status(m node.Message, status, label, activity string) {
-	_, err := w.send(node.Message{
-		ID: node.DerivedID(m.ID, label), To: m.From, ReplyTo: m.ID, Kind: node.KindStatus, JobStatus: status,
-		Activity: activity,
-	})
-	if err != nil {
+// status sends a status update of request m; a carries the agent's activity.
+func (w *Worker) status(m node.Message, status, label string, a *node.ActivityState) {
+	out := node.Message{ReplyTo: m.ID, Kind: node.KindStatus, JobStatus: status}
+	w.address(&out, m, label)
+	if a != nil {
+		out.Activity = a.Text
+		if m.ChatID != "" {
+			info := *a
+			out.ActivityInfo = &info
+		}
+	}
+	if _, err := w.send(out); err != nil {
 		w.log.Warn("send status", "id", m.ID, "status", status, "err", err)
 	}
 }
 
-// save writes j atomically (temp file, fsync, rename). The caller holds w.mu.
-func (w *Worker) save(j *Job) error {
-	data, err := json.Marshal(j)
-	if err != nil {
-		return err
+// address sends out back to where request m came from under an id derived
+// from m and label: to its sender, or to the whole chat. In a chat several
+// participants answer the same request, so the id includes this node.
+func (w *Worker) address(out *node.Message, m node.Message, label string) {
+	if m.ChatID == "" {
+		out.ID, out.To = node.DerivedID(m.ID, label), m.From
+		return
 	}
-	f, err := os.CreateTemp(w.jobsDir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	_, err = f.Write(data)
-	if err == nil {
-		err = f.Sync()
-	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Rename(tmp, filepath.Join(w.jobsDir, j.Request.ID+".json"))
-	}
-	if err != nil {
-		_ = os.Remove(tmp)
-	}
-	return err
+	out.ID, out.ChatID = node.DerivedID(m.ID, w.opt.Self+"/"+label), m.ChatID
 }
+
+// save writes j atomically. The caller holds w.mu.
+func (w *Worker) save(j *Job) error { return writeAtomic(w.jobsDir, j.Request.ID+".json", j) }
