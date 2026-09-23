@@ -7,6 +7,8 @@ const DASHBOARD_ACTIVATION_KEY = "agentlink" + ".dashboard.activate";
 const DASHBOARD_CHANNEL = "agentlink" + ".dashboard";
 
 window.name = DASHBOARD_WINDOW_NAME;
+// The inbox shows the sections as an icon rail: the name is the tooltip.
+for (const link of document.querySelectorAll("#sidebar nav a")) link.title = link.textContent.trim();
 
 function writeDashboardHeartbeat() {
   try { localStorage.setItem(DASHBOARD_HEARTBEAT_KEY, String(Date.now())); } catch (_) { /* storage unavailable */ }

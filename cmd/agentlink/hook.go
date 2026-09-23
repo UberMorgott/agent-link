@@ -1,18 +1,28 @@
 package main
 
-// agentlink hook: tells an interactive Claude Code or Codex session about
-// messages that arrived at this node, through the agent's own hooks. Nobody can
-// type into a live session on another machine, but its SessionStart,
-// UserPromptSubmit, PostToolUse and Stop hooks run this command, and what it
-// prints becomes context for the model (or, on Stop, a reason to keep going).
+// agentlink hook: connects a live interactive Claude Code or Codex session to
+// this node through the agent's own hooks. Nobody can type into a session on
+// another machine, but its hooks run this command:
 //
-// The hook only reads: it lists chats and the inbox and never claims messages,
-// so a background `agentlink wait` still gets every one of them. What a
-// session was already shown is kept in a per-session cursor file.
+//   - SessionStart registers the session (POST /sessions) for its folder, every
+//     event is a heartbeat, SessionEnd ends it (DELETE /sessions/{id}).
+//   - SessionStart, UserPromptSubmit, PostToolUse and Stop hand the model the
+//     node's unread messages for the session's folder (GET /unread) and then
+//     acknowledge them (POST /ack), so each is delivered once. Stop blocks
+//     only when there is something new.
+//   - The person at the session sees a short line (systemMessage).
+//   - While the session works on a batch it accepted, PreToolUse, UserPromptSubmit
+//     and Stop report what it does (POST /chats/{id}/activity).
+//   - Claude Code also runs `agentlink hook claude --wait` in the background
+//     (asyncRewake): it waits for unread messages and wakes an idle session;
+//     see hook_wait.go. Codex has no such hook: it hears of messages at its
+//     next event.
+//
+// A hook never breaks or stalls its session: every failure (node down, bad
+// input) ends quietly with exit 0.
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,14 +31,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -49,59 +58,79 @@ const (
 const (
 	evSessionStart = agenthook.SessionStart
 	evPrompt       = agenthook.Prompt
+	evPreTool      = agenthook.PreTool
 	evPostTool     = agenthook.PostTool
 	evStop         = agenthook.Stop
+	evSessionEnd   = agenthook.SessionEnd
 )
 
-// hookEvents are installed by `agentlink hook install`, in this order.
-var hookEvents = agenthook.Events
-
-// Limits of what one hook prints.
+// Limits and timings of the hook.
 const (
-	hookMaxBody     = 4000 // runes of one message body
-	hookMaxMessages = 10   // messages listed in full; the rest only counted
-	hookHTTPTimeout = 3 * time.Second
-	hookCursorTTL   = 14 * 24 * time.Hour // cursor files older than this are removed
-	hookFirstWindow = 24 * time.Hour      // a new session hears of pending messages this recent
+	hookBudget      = 4500 // runes of message text in one batch (Codex: ~2500 tokens per hook output)
+	hookMaxBody     = 2500 // runes of one message body
+	hookPageSize    = 50   // unread messages fetched per event
+	hookHTTPTimeout = 1500 * time.Millisecond
+	hookStateTTL    = 14 * 24 * time.Hour // state files older than this are removed
+	// hookHeartbeat: a session re-registers at an event at most this often.
+	hookHeartbeat = time.Minute
+	// hookMaxStopBlocks: consecutive Stop continuations (stop_hook_active)
+	// before Stop lets the session end and leaves the rest for later.
+	hookMaxStopBlocks = 3
+	// Session TTLs asked of the node. Claude's background waiter heartbeats
+	// while the session is idle; Codex has only its events.
+	hookTTLClaude = 900
+	hookTTLCodex  = 3600
 )
 
 // hookInput is the part of the hook's stdin JSON this command reads. Claude
 // Code and Codex send the same fields.
 type hookInput struct {
-	SessionID      string `json:"session_id"`
-	HookEventName  string `json:"hook_event_name"`
-	StopHookActive bool   `json:"stop_hook_active"`
-	Cwd            string `json:"cwd"`
+	SessionID      string          `json:"session_id"`
+	HookEventName  string          `json:"hook_event_name"`
+	StopHookActive bool            `json:"stop_hook_active"`
+	Cwd            string          `json:"cwd"`
+	ToolName       string          `json:"tool_name"`
+	ToolInput      json.RawMessage `json:"tool_input"`
 }
 
-// hookCursor is what one session has already been shown: the last chat Seq
-// per chat and the ids of inbox messages outside chats.
-type hookCursor struct {
-	Chats map[string]uint64 `json:"chats"`
-	Inbox []string          `json:"inbox"`
+// hookState is what the hooks of one session keep between events.
+type hookState struct {
+	Folder string `json:"folder,omitempty"`
+	// Registered: the last heartbeat the node answered; Unbound: it refused
+	// the folder (not the working folder or a project folder).
+	Registered time.Time `json:"registered,omitzero"`
+	Unbound    bool      `json:"unbound,omitempty"`
+	Ended      bool      `json:"ended,omitempty"` // SessionEnd ran: the waiter stops
+	// LastEvent is the latest hook event (the waiter wakes only an idle session).
+	LastEvent   string    `json:"last_event,omitempty"`
+	LastEventAt time.Time `json:"last_event_at,omitzero"`
+	// Active: chats whose requests this session accepted and works on, with
+	// the request activity is reported for.
+	Active map[string]string `json:"active,omitempty"`
+	// Activity is the last activity posted, for coalescing.
+	Activity   string    `json:"activity,omitempty"`
+	ActivityAt time.Time `json:"activity_at,omitzero"`
+	Blocks     int       `json:"blocks,omitempty"` // consecutive Stop blocks
+	// Notice: a line for the person, shown at the next event (the waiter
+	// cannot show one itself).
+	Notice string `json:"notice,omitempty"`
+	// Notes for the model at its next event (a request the worker took after
+	// the session was told about it).
+	Notes []string `json:"notes,omitempty"`
 }
 
-// hookMessage is one message the session is told about.
-type hookMessage struct {
-	ID           string
-	From         string
-	ChatID       string
-	Participants []string
-	At           time.Time
-	Body         string
-	AsksMe       bool
-	// Worker: this node's worker (agent handler) already runs or queues it.
-	Worker bool
-	// Held: it asks this node, but no worker answers it; why (node.HoldText).
-	Held string
-}
-
-// hookEnv is where the hook finds the node and keeps its cursors.
+// hookEnv is where the hook finds the node and keeps its state.
 type hookEnv struct {
 	api string // host:port of the node's local API
-	dir string // cursor directory
-	// projects maps an area to its project folder (Settings.Projects).
-	projects map[string]string
+	dir string // state directory
+	now func() time.Time
+}
+
+func (e hookEnv) clock() time.Time {
+	if e.now != nil {
+		return e.now()
+	}
+	return time.Now()
 }
 
 // runHook runs `agentlink hook ...`. A hook never breaks the session it runs
@@ -111,18 +140,18 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return runHookInstall(args[1:], stdout, stderr)
 	}
 	if len(args) == 0 || (args[0] != hookClaude && args[0] != hookCodex) {
-		_, _ = fmt.Fprintln(stderr, "usage: agentlink hook <claude|codex> [--event auto] | agentlink hook install <claude|codex> [--scope user|project]")
+		_, _ = fmt.Fprintln(stderr, "usage: agentlink hook <claude|codex> [--event auto] [--wait] | agentlink hook install <claude|codex> [--scope user|project]")
 		return 1
 	}
 	client := args[0]
 	flags := flag.NewFlagSet("hook", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	event := flags.String("event", "auto", "hook event; auto: hook_event_name of the input")
+	wait := flags.Bool("wait", false, "wait in the background for unread messages and wake the session (Claude Code asyncRewake)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return 1
 	}
-	// An agent the worker started for a job already gets its request; telling it
-	// about the chat's messages again would only loop.
+	// An agent the worker started for a job already gets its request.
 	if os.Getenv(envJobID) != "" {
 		return 0
 	}
@@ -130,17 +159,16 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		return 0
 	}
-	// On failure out is still what the event needs when there is no news.
-	out, _ := hookRun(client, *event, stdin, env)
-	if out == "" {
-		return 0
+	if *wait {
+		return hookWait(client, stdin, stderr, env, defaultWaitOpts())
 	}
-	_, _ = fmt.Fprintln(stdout, out)
+	// The output is written before the batch is acknowledged (see accept).
+	_ = hookRun(client, *event, stdin, stdout, env)
 	return 0
 }
 
 // defaultHookEnv finds the node API like the other client commands and keeps
-// cursors in %APPDATA%\agentlink\hooks.
+// state in %APPDATA%\agentlink\hooks.
 func defaultHookEnv() (hookEnv, error) {
 	cfg, err := loadConfig("hook", "")
 	if err != nil {
@@ -150,296 +178,439 @@ func defaultHookEnv() (hookEnv, error) {
 	if err != nil {
 		return hookEnv{}, err
 	}
-	env := hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks")}
-	if s, _, err := settings.Load(p); err == nil {
-		env.projects = map[string]string{}
-		for area, pr := range s.Projects {
-			env.projects[area] = pr.Dir
-		}
-	}
-	return env, nil
+	return hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks")}, nil
 }
 
-// hookRun reads the hook input, collects the messages this session has not
-// seen and returns what to print (empty: nothing).
-func hookRun(client, event string, stdin io.Reader, env hookEnv) (string, error) {
+// hookRun handles one hook event: it reads the input, keeps the session
+// registered, delivers unread messages, reports activity and writes the
+// event's JSON output to stdout (nothing when there is nothing to say; Codex's
+// Stop always gets a JSON object).
+func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEnv) error {
 	var in hookInput
 	if err := json.NewDecoder(io.LimitReader(stdin, 1<<20)).Decode(&in); err != nil {
-		return "", err
+		return err
 	}
 	if event == "" || event == "auto" {
 		event = in.HookEventName
 	}
-	if !slices.Contains(hookEvents, event) || in.SessionID == "" {
-		return "", nil
+	if !slices.Contains(agenthook.Events, event) || in.SessionID == "" {
+		return nil
 	}
-	quiet := ""
-	if client == hookCodex && event == evStop {
-		quiet = "{}" // Codex wants JSON on stdout from a Stop hook that exits 0
+	quiet := func() {
+		if client == hookCodex && event == evStop {
+			_, _ = io.WriteString(stdout, "{}\n") // Codex wants JSON from a Stop hook that exits 0
+		}
 	}
-	path := filepath.Join(env.dir, client+"-"+sessionFileName(in.SessionID)+".json")
+	folder := hookFolder(in.Cwd)
+	path := hookStatePath(env.dir, client, in.SessionID)
+	if event == evSessionEnd {
+		endSession(env, path, in.SessionID)
+		return nil
+	}
 	unlock, err := lockFile(path + ".lock")
 	if err != nil {
-		return quiet, err
+		quiet()
+		return err
 	}
 	defer unlock()
 	if event == evSessionStart {
-		pruneCursors(env.dir)
+		pruneHookState(env.dir, env.clock())
 	}
-	cur, first, err := loadCursor(path)
+	st := loadHookState(path)
+	now := env.clock()
+	st.LastEvent, st.LastEventAt = event, now
+	defer func() { _ = saveHookState(path, st) }()
+	if !heartbeat(env, &st, client, in.SessionID, folder, event == evSessionStart) {
+		quiet()
+		return nil
+	}
+	h := &hookSession{env: env, st: &st, sid: in.SessionID, folder: folder}
+	if event == evPreTool {
+		typ, text := toolActivity(folder, in.ToolName, in.ToolInput)
+		h.report(typ, text, "")
+		writeHookJSON(stdout, takeNotice(&st), nil)
+		return nil
+	}
+	b, err := h.collect(event == evStop)
 	if err != nil {
-		return quiet, err
+		quiet()
+		return err
 	}
-	cwd := in.Cwd
+	notes := st.Notes
+	if event == evStop {
+		switch {
+		case b.empty():
+			st.Blocks = 0
+			h.idle()
+			if notice := takeNotice(&st); notice != "" {
+				writeHookJSON(stdout, notice, nil)
+			} else {
+				quiet()
+			}
+			return nil
+		case in.StopHookActive && st.Blocks >= hookMaxStopBlocks:
+			quiet() // let it end; the waiter or the next event delivers the rest
+			return nil
+		}
+		st.Blocks++
+		st.Notes = nil
+		writeHookJSON(stdout, joinNotice(takeNotice(&st), b.notice), map[string]any{"decision": "block", "reason": withNotes(notes, b.text)})
+		h.accept(b)
+		return nil
+	}
+	if event == evPrompt {
+		h.report("thinking", "думает", "")
+	}
+	text := withNotes(notes, b.text)
+	notice := joinNotice(takeNotice(&st), b.notice)
+	if text == "" && notice == "" {
+		return nil
+	}
+	st.Notes = nil
+	var extra map[string]any
+	if text != "" {
+		extra = map[string]any{"hookSpecificOutput": map[string]string{"hookEventName": event, "additionalContext": text}}
+	}
+	writeHookJSON(stdout, notice, extra)
+	h.accept(b)
+	return nil
+}
+
+// hookFolder is the session's folder: its cwd, absolute and clean.
+func hookFolder(cwd string) string {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	msgs, err := collectHookMessages(env.api, &cur, first, hookFilter(cwd, env.projects))
-	if err != nil {
-		return quiet, err
+	if abs, err := filepath.Abs(cwd); err == nil {
+		return abs
 	}
-	if err := writeFileAtomic(path, mustJSON(cur)); err != nil {
-		return quiet, err
-	}
-	if len(msgs) == 0 {
-		return quiet, nil
-	}
-	return hookOutput(event, formatHookMessages(event, msgs)), nil
+	return filepath.Clean(cwd)
 }
 
-// hookOutput wraps text in the event's JSON output: extra context for the
-// model, or on Stop a block whose reason makes the agent continue with it.
-// Claude Code and Codex share these shapes.
-func hookOutput(event, text string) string {
-	var v any
-	if event == evStop {
-		v = map[string]string{"decision": "block", "reason": text}
+// heartbeat registers the session (again) when due: at SessionStart, when its
+// folder changed, or hookHeartbeat after the last time. It reports whether the
+// session is registered for a folder of this node; false also when the node is
+// down.
+func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force bool) bool {
+	now := env.clock()
+	if !force && st.Folder == folder && now.Sub(st.Registered) < hookHeartbeat {
+		return !st.Unbound
+	}
+	wake, ttl := node.WakeNextEvent, hookTTLCodex
+	if client == hookClaude {
+		wake, ttl = node.WakeRewake, hookTTLClaude
+	}
+	req := node.SessionRequest{SessionID: sid, Provider: client, Folder: folder, Wake: wake, TTLSec: ttl}
+	err := hookCall(env.api, http.MethodPost, "/sessions", nil, req, nil, hookHTTPTimeout)
+	var se *statusError
+	switch {
+	case err == nil:
+		st.Folder, st.Registered, st.Unbound, st.Ended = folder, now, false, false
+		return true
+	case errors.As(err, &se) && se.code == http.StatusBadRequest:
+		st.Folder, st.Registered, st.Unbound = folder, now, true // not a folder of this node
+		return false
+	default:
+		return false // node down: try again at the next event
+	}
+}
+
+// endSession deregisters the session and marks its state ended, which stops
+// its waiter.
+func endSession(env hookEnv, path, sid string) {
+	unlock, err := lockFile(path + ".lock")
+	if err == nil {
+		defer unlock()
+	}
+	st := loadHookState(path)
+	st.Ended, st.Active = true, nil
+	_ = saveHookState(path, st)
+	_ = hookCall(env.api, http.MethodDelete, "/sessions/"+url.PathEscape(sid), nil, nil, nil, hookHTTPTimeout)
+}
+
+// writeHookJSON writes the event's JSON output: extra's fields plus
+// systemMessage, the line the person at the session sees. Nothing at all when
+// both are empty.
+func writeHookJSON(w io.Writer, notice string, extra map[string]any) {
+	if notice == "" && len(extra) == 0 {
+		return
+	}
+	v := map[string]any{}
+	maps.Copy(v, extra)
+	if notice != "" {
+		v["systemMessage"] = notice
+	}
+	_, _ = w.Write(mustJSON(v))
+}
+
+func takeNotice(st *hookState) string {
+	n := st.Notice
+	st.Notice = ""
+	return n
+}
+
+func joinNotice(a, b string) string {
+	if a == "" || b == "" {
+		return a + b
+	}
+	return a + "\n" + b
+}
+
+func withNotes(notes []string, text string) string {
+	if len(notes) == 0 {
+		return text
+	}
+	return strings.TrimSpace(strings.Join(notes, "\n") + "\n\n" + text)
+}
+
+// hookSession is one hook run of a session, with its state held under lock.
+type hookSession struct {
+	env    hookEnv
+	st     *hookState
+	sid    string
+	folder string
+}
+
+// hookBatch is the unread messages one event delivers.
+type hookBatch struct {
+	text   string   // for the model
+	notice string   // for the person
+	ids    []string // to acknowledge
+	// chats: chat id -> the request of it this session is to answer.
+	chats map[string]string
+}
+
+func (b hookBatch) empty() bool { return len(b.ids) == 0 }
+
+// collect reads the unread messages of the session's folder and formats what
+// fits one hook output. The rest stays unread for the next event.
+func (h *hookSession) collect(stop bool) (hookBatch, error) {
+	var page node.UnreadPage
+	q := url.Values{"folder": {h.folder}, "limit": {fmt.Sprint(hookPageSize)}}
+	if err := hookCall(h.env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout); err != nil {
+		return hookBatch{}, err
+	}
+	return formatBatch(page, h.folder, h.sid, stop), nil
+}
+
+// accept acknowledges a delivered batch (after it was written out), marks its
+// chats as the ones this session works on and tells them it started. A
+// request the worker took meanwhile becomes a note for the next event.
+func (h *hookSession) accept(b hookBatch) {
+	if b.empty() {
+		return
+	}
+	var res []node.AckResult
+	req := node.AckRequest{IDs: b.ids, SessionID: h.sid}
+	if err := hookCall(h.env.api, http.MethodPost, "/ack", nil, req, &res, hookHTTPTimeout); err != nil {
+		return // still unread: delivered again at the next event
+	}
+	for _, r := range res {
+		if r.Assigned != "worker" {
+			continue
+		}
+		for chat, id := range b.chats {
+			if id == r.ID {
+				delete(b.chats, chat)
+				h.st.Notes = append(h.st.Notes, fmt.Sprintf("agent-link: сообщение %s в чате %s уже взял агент-обработчик этого узла — не отвечайте на него.", r.ID, chat))
+			}
+		}
+	}
+	if len(b.chats) == 0 {
+		return
+	}
+	if h.st.Active == nil {
+		h.st.Active = map[string]string{}
+	}
+	maps.Copy(h.st.Active, b.chats)
+	h.st.Activity = "" // a new batch always shows
+	h.report("thinking", "читает сообщения", "")
+}
+
+// formatBatch turns an unread page into the text for the model and the line
+// for the person, within hookBudget runes.
+func formatBatch(page node.UnreadPage, folder, sid string, stop bool) hookBatch {
+	b := hookBatch{chats: map[string]string{}}
+	if len(page.Messages) == 0 {
+		return b
+	}
+	var body strings.Builder
+	used := 0
+	var shown []node.UnreadMessage
+	for _, m := range page.Messages {
+		entry := formatUnread(m)
+		n := utf8.RuneCountInString(entry)
+		if len(shown) > 0 && used+n > hookBudget {
+			break
+		}
+		used += n
+		shown = append(shown, m)
+		body.WriteString("\n")
+		body.WriteString(entry)
+		b.ids = append(b.ids, m.ID)
+		if m.ChatID != "" && m.AsksYou && !m.Paused && m.Assigned != "worker" {
+			b.chats[m.ChatID] = m.ID
+		}
+	}
+	var t strings.Builder
+	if stop {
+		t.WriteString("Пока вы работали, пришли сообщения agent-link. Прочитайте их и, где просят ответа, ответьте; затем завершайте.\n")
 	} else {
-		v = map[string]any{"hookSpecificOutput": map[string]string{"hookEventName": event, "additionalContext": text}}
+		fmt.Fprintf(&t, "agent-link: непрочитанные сообщения для этой папки (%d). Вся переписка остаётся в истории чата.\n", page.Total)
 	}
-	return strings.TrimSpace(string(mustJSON(v)))
+	t.WriteString(body.String())
+	if rest := page.Total - len(shown); rest > 0 {
+		fmt.Fprintf(&t, "\nЕщё %d непрочитанных придут со следующим событием. Прочитать сейчас: agentlink chat unread --folder %q --after %s ; прочитанные подтвердить: agentlink chat ack --ids <id,...> --session %s\n",
+			rest, folder, shown[len(shown)-1].Cursor, sid)
+	}
+	b.text = strings.TrimRight(t.String(), "\n")
+	b.notice = batchNotice(shown)
+	return b
 }
 
-// collectHookMessages lists the messages newer than cur and moves cur past
-// them. On the first call of a session (first) it records where chats are now
-// and reports only what of the last day still waits for this node: inbox
-// messages no `wait` took and this node has not answered, and chat requests
-// asking this node that it has not replied to and its worker does not handle
-// (held ones say why no worker answers). Messages of an area wants refuses
-// are skipped.
-func collectHookMessages(api string, cur *hookCursor, first bool, wants func(area string) bool) ([]hookMessage, error) {
-	var out []hookMessage
-	var chats []node.ChatInfo
-	if err := hookGet(api, "/chats", nil, &chats); err != nil && !errors.Is(err, errNotFound) {
-		return nil, err
-	}
-	seenChats := map[string]uint64{}
-	for _, c := range chats {
-		last, known := cur.Chats[c.ID]
-		seenChats[c.ID] = max(last, c.LastSeq)
-		if !wants(c.Area) || !first && c.LastSeq <= last {
-			continue
-		}
-		self := ""
-		working := map[string]bool{} // requests this node's worker handles
-		held := map[string]string{}  // requests asking this node that no worker answers: why
-		for _, m := range c.Members {
-			if m.Self {
-				self = m.Name
-				for _, j := range m.Jobs {
-					working[j.ReplyTo] = true
-				}
-				for _, j := range m.Held {
-					held[j.ReplyTo] = cmp.Or(j.Activity, node.HoldText(j.HoldReason))
-				}
-			}
-		}
-		// A new session hears of a chat only through its recent requests that
-		// ask this node and nobody here answered or handles yet.
-		if first && (self == "" || time.Since(c.LastAt) > hookFirstWindow) {
-			continue
-		}
-		q := url.Values{"limit": {"200"}}
-		if !first && known && last > 0 {
-			q.Set("after", strconv.FormatUint(last, 10))
-		}
-		var msgs []node.ChatMessage
-		if err := hookGet(api, "/chats/"+url.PathEscape(c.ID)+"/messages", q, &msgs); errors.Is(err, errNotFound) {
-			continue
-		} else if err != nil {
-			return nil, err
-		}
-		answered := map[string]bool{} // requests this node replied to
-		for _, m := range msgs {
-			if m.From == self && m.ReplyTo != "" && m.Kind == "" {
-				answered[m.ReplyTo] = true
-			}
-		}
-		for _, m := range msgs {
-			if first && (!m.Asks(self) || answered[m.ID] || working[m.ID] || time.Since(m.CreatedAt) > hookFirstWindow) ||
-				!first && m.Seq <= last {
-				continue
-			}
-			if m.Direction == "in" && m.Kind == "" && m.Body != "" {
-				out = append(out, hookMessage{
-					ID: m.ID, From: m.From, ChatID: c.ID, Participants: c.Participants,
-					At: m.CreatedAt, Body: m.Body, AsksMe: self != "" && m.Asks(self), Worker: working[m.ID], Held: held[m.ID],
-				})
-			}
-		}
-		if n := len(msgs); n > 0 {
-			seenChats[c.ID] = max(last, msgs[n-1].Seq)
-		}
-	}
-	// Chats no longer in the main list (archived) keep their place.
-	for id, seq := range cur.Chats {
-		if _, ok := seenChats[id]; !ok {
-			seenChats[id] = seq
-		}
-	}
-	cur.Chats = seenChats
-
-	var entries []node.Entry
-	if err := hookGet(api, "/inbox", url.Values{"limit": {"100"}}, &entries); err != nil {
-		return nil, err
-	}
-	answered := map[string]bool{} // requests this node already replied to
-	for _, e := range entries {
-		if e.Direction == "out" && e.ReplyTo != "" {
-			answered[e.ReplyTo] = true
-		}
-	}
-	var inbox []string
-	for _, e := range slices.Backward(entries) { // oldest first
-		if e.Direction != "in" || e.Kind != "" || e.ChatID != "" {
-			continue
-		}
-		inbox = append(inbox, e.ID)
-		if slices.Contains(cur.Inbox, e.ID) || !wants(e.Area) {
-			continue
-		}
-		// A new session hears only of recent messages nobody took or answered yet.
-		if first && (e.Status != "pending" || answered[e.ID] || time.Since(e.CreatedAt) > hookFirstWindow) {
-			continue
-		}
-		worker := e.JobStatus == node.JobQueued || e.JobStatus == node.JobRunning
-		out = append(out, hookMessage{ID: e.ID, From: e.From, At: e.CreatedAt, Body: e.Body, Worker: worker})
-	}
-	// The inbox lists the newest entries, so ids older than those never come back.
-	cur.Inbox = inbox
-	slices.SortStableFunc(out, func(a, b hookMessage) int { return a.At.Compare(b.At) })
-	return out, nil
-}
-
-// hookFilter decides which messages a session in folder cwd hears about. A
-// session inside the project folder of an area (the deepest one when folders
-// nest) gets only that area's messages: its chats and area:NAME messages. Any
-// other session (the working folder, a user-scope hook elsewhere) gets the
-// rest: direct messages, chats without an area and areas with no project
-// folder. That is where the worker answers them too.
-func hookFilter(cwd string, projects map[string]string) func(area string) bool {
-	var mine []string
-	best := -1
-	for area, dir := range projects {
-		if dir == "" || !inFolder(dir, cwd) {
-			continue
-		}
-		switch n := len(filepath.Clean(dir)); {
-		case n > best:
-			best, mine = n, []string{area}
-		case n == best:
-			mine = append(mine, area)
-		}
-	}
-	if mine != nil {
-		return func(area string) bool { return slices.Contains(mine, area) }
-	}
-	return func(area string) bool { return area == "" || projects[area] == "" }
-}
-
-// inFolder reports whether path is dir or inside it (case-insensitively on
-// Windows, like filepath.Rel).
-func inFolder(dir, path string) bool {
-	rel, err := filepath.Rel(dir, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
-}
-
-// formatHookMessages is the text the model reads: every new message with its
-// sender, chat and the command that answers it.
-func formatHookMessages(event string, msgs []hookMessage) string {
+// formatUnread is one message for the model: who wrote it, where, the text
+// and what to do with it.
+func formatUnread(m node.UnreadMessage) string {
 	var b strings.Builder
-	if event == evStop {
-		b.WriteString("Пока вы работали, пришли новые сообщения agentlink. Прочитайте их и, если нужно, ответьте, затем завершайте.\n")
-	} else {
-		fmt.Fprintf(&b, "agentlink: новые сообщения (%d).\n", len(msgs))
+	at := m.CreatedAt.Local().Format("2006-01-02 15:04")
+	switch {
+	case m.OwnHuman:
+		fmt.Fprintf(&b, "Ваш человек написал всем (%s, чат %s, id %s) — к сведению, отвечать не нужно:\n", at, m.ChatID, m.ID)
+	case m.ChatID != "":
+		fmt.Fprintf(&b, "От %s (%s) в чате %s (участники: %s), id %s, %s:\n", m.From, authorKind(m.AuthorKind), m.ChatID, strings.Join(m.Participants, ", "), m.ID, at)
+	default:
+		fmt.Fprintf(&b, "От %s (%s), id %s, %s:\n", m.From, authorKind(m.AuthorKind), m.ID, at)
 	}
-	shown := msgs
-	if len(shown) > hookMaxMessages {
-		shown = shown[len(shown)-hookMaxMessages:]
+	b.WriteString(capBody(m))
+	b.WriteString("\n")
+	if m.OwnHuman {
+		return b.String()
 	}
-	for _, m := range shown {
-		b.WriteString("\n")
-		if m.ChatID != "" {
-			fmt.Fprintf(&b, "Пришло сообщение от %s в чате %s (участники: %s), %s", m.From, m.ChatID, strings.Join(m.Participants, ", "), m.At.Local().Format("2006-01-02 15:04"))
-			if m.AsksMe {
-				b.WriteString(", просит ответа от вас")
+	reply := fmt.Sprintf("agentlink send --to %s --reply-to %s --body \"<текст>\"", m.From, m.ID)
+	if m.ChatID != "" {
+		reply = fmt.Sprintf("agentlink send --chat %s --reply-to %s --body \"<текст>\"", m.ChatID, m.ID)
+	}
+	switch {
+	case m.Assigned == "worker":
+		b.WriteString("Это уже обрабатывает агент-обработчик этого узла — не отвечайте.\n")
+	case m.Paused:
+		b.WriteString("Пауза: агенты ответили друг другу слишком много раз подряд, нужен человек — не отвечайте автоматически.\n")
+	case m.AsksYou:
+		fmt.Fprintf(&b, "Просит ответа от вас. Ответить: %s\n", reply)
+	default:
+		fmt.Fprintf(&b, "К сведению, ответ не обязателен. Ответить: %s\n", reply)
+	}
+	return b.String()
+}
+
+func authorKind(k string) string {
+	switch k {
+	case "human":
+		return "человек"
+	case "agent":
+		return "агент"
+	case "worker":
+		return "агент-обработчик"
+	}
+	return "автор не указан"
+}
+
+// capBody cuts a long body, pointing at the command that shows all of it.
+func capBody(m node.UnreadMessage) string {
+	if utf8.RuneCountInString(m.Body) <= hookMaxBody {
+		return m.Body
+	}
+	full := "agentlink inbox"
+	if m.ChatID != "" {
+		full = "agentlink chat history --chat " + m.ChatID
+	}
+	r := []rune(m.Body)
+	return string(r[:hookMaxBody]) + fmt.Sprintf("\n[… обрезано, всего %d символов; полностью: %s]", len(r), full)
+}
+
+// batchNotice is the line the person sees: «agent-link: 2 сообщения от
+// KPECTIK — беру в работу». The person's own messages need no line.
+func batchNotice(msgs []node.UnreadMessage) string {
+	var from []string
+	n, mine, worker := 0, false, true
+	for _, m := range msgs {
+		if m.OwnHuman {
+			continue
+		}
+		n++
+		if !slices.Contains(from, m.From) {
+			from = append(from, m.From)
+		}
+		if m.Assigned != "worker" {
+			worker = false
+			if m.AsksYou && !m.Paused {
+				mine = true
 			}
-		} else {
-			fmt.Fprintf(&b, "Пришло сообщение от %s (id %s), %s", m.From, m.ID, m.At.Local().Format("2006-01-02 15:04"))
-		}
-		b.WriteString(":\n")
-		b.WriteString(capRunes(m.Body, hookMaxBody))
-		b.WriteString("\n")
-		if m.Worker {
-			b.WriteString("Уже обрабатывает агент-обработчик этого узла: не дублируйте. Ответите сами — его работа остановится.\n")
-		} else if m.Held != "" {
-			fmt.Fprintf(&b, "Агент-обработчик этого узла не ответит (%s): ответить может только эта сессия или человек.\n", m.Held)
-		}
-		if m.ChatID != "" {
-			fmt.Fprintf(&b, "Ответить: agentlink send --chat %s --reply-to %s --body \"<текст>\"\n", m.ChatID, m.ID)
-		} else {
-			fmt.Fprintf(&b, "Ответить: agentlink send --to %s --reply-to %s --body \"<текст>\"\n", m.From, m.ID)
 		}
 	}
-	if rest := len(msgs) - len(shown); rest > 0 {
-		fmt.Fprintf(&b, "\nИ ещё %d более ранних; вся переписка: agentlink chat list, agentlink chat history --chat <id>, agentlink inbox.\n", rest)
+	if n == 0 {
+		return ""
 	}
-	return strings.TrimRight(b.String(), "\n")
+	what := "к сведению"
+	switch {
+	case mine:
+		what = "беру в работу"
+	case worker:
+		what = "отвечает агент-обработчик"
+	}
+	return fmt.Sprintf("agent-link: %d %s от %s — %s", n, plural(n, "сообщение", "сообщения", "сообщений"), strings.Join(from, ", "), what)
 }
 
-func capRunes(s string, n int) string {
-	if utf8.RuneCountInString(s) <= n {
-		return s
+// plural picks the Russian form for n: 1 сообщение, 2 сообщения, 5 сообщений.
+func plural(n int, one, few, many string) string {
+	switch n10, n100 := n%10, n%100; {
+	case n10 == 1 && n100 != 11:
+		return one
+	case n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14):
+		return few
 	}
-	r := []rune(s)
-	return string(r[:n]) + fmt.Sprintf("\n[... обрезано, всего %d символов; полностью: agentlink chat history / agentlink inbox]", len(r))
+	return many
 }
 
-// hookGet calls the local API with a short timeout: a hook must not stall the
-// session when the node is down.
-func hookGet(api, path string, q url.Values, out any) error {
-	ctx, cancel := context.WithTimeout(context.Background(), hookHTTPTimeout)
+// statusError is a non-2xx answer of the node.
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return fmt.Sprintf("node: %d %s", e.code, e.msg) }
+
+// hookCall calls the local API with a short timeout: a hook must not stall
+// the session when the node is down. body (when not nil) is sent as JSON, a
+// JSON answer is decoded into out (when not nil).
+func hookCall(api, method, path string, q url.Values, body, out any, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL(config.Config{API: api}, path, q), nil)
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(mustJSON(body))
+	}
+	req, err := http.NewRequestWithContext(ctx, method, apiURL(config.Config{API: api}, path, q), rd)
 	if err != nil {
 		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusNotFound {
-		return errNotFound
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return &statusError{code: resp.StatusCode, msg: strings.TrimSpace(string(msg))}
 	}
-	if err := checkStatus(resp, http.StatusOK); err != nil {
-		return err
+	if out == nil || resp.StatusCode == http.StatusNoContent {
+		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
-
-// errNotFound: the API has no such endpoint (a node from before chats).
-var errNotFound = errors.New("not found")
 
 var sessionJunk = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
@@ -452,23 +623,23 @@ func sessionFileName(id string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// loadCursor reads a session's cursor; first is true when there is none yet.
-func loadCursor(path string) (hookCursor, bool, error) {
-	var cur hookCursor
+func hookStatePath(dir, client, sid string) string {
+	return filepath.Join(dir, client+"-"+sessionFileName(sid)+".json")
+}
+
+// loadHookState reads a session's state; a missing or broken file is a new
+// session.
+func loadHookState(path string) hookState {
+	var st hookState
 	data, err := os.ReadFile(filepath.Clean(path))
-	if errors.Is(err, fs.ErrNotExist) {
-		return hookCursor{Chats: map[string]uint64{}}, true, nil
+	if err == nil && json.Unmarshal(data, &st) != nil {
+		st = hookState{}
 	}
-	if err != nil {
-		return cur, false, err
-	}
-	if err := json.Unmarshal(data, &cur); err != nil {
-		return hookCursor{Chats: map[string]uint64{}}, true, nil //nolint:nilerr // a broken cursor starts over
-	}
-	if cur.Chats == nil {
-		cur.Chats = map[string]uint64{}
-	}
-	return cur, false, nil
+	return st
+}
+
+func saveHookState(path string, st hookState) error {
+	return writeFileAtomic(path, mustJSON(st))
 }
 
 // lockFile serializes hooks of one session (Claude Code runs PostToolUse hooks
@@ -491,18 +662,18 @@ func lockFile(path string) (func(), error) {
 		if time.Now().After(deadline) {
 			return nil, err
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
-// pruneCursors removes cursor files of sessions not seen for hookCursorTTL.
-func pruneCursors(dir string) {
+// pruneHookState removes state files of sessions not seen for hookStateTTL.
+func pruneHookState(dir string, now time.Time) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
-		if info, err := e.Info(); err == nil && !e.IsDir() && time.Since(info.ModTime()) > hookCursorTTL {
+		if info, err := e.Info(); err == nil && !e.IsDir() && now.Sub(info.ModTime()) > hookStateTTL {
 			_ = os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}

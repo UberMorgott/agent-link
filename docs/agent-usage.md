@@ -181,34 +181,66 @@ it), so the node knows someone is there. All on the control API (loopback, no to
 ## Hearing about messages in a live session (hooks)
 
 Nobody can type into a Claude Code or Codex session on another machine, but both run hooks.
-`agentlink hook <claude|codex>` is such a hook: it reads the hook's JSON on stdin, lists the
-messages of this node's chats and inbox that this session was not shown yet, and prints them as
-extra context ("Пришло сообщение от X в чате <id> (участники: …)", the full body up to 4000
-characters, and the `agentlink send --chat <id> --reply-to <id>` / `--to <node> --reply-to <id>`
-command that answers). A message this node's handler agent already runs or queues is marked
-«Уже обрабатывает агент-обработчик этого узла»: do not duplicate it. If you answer it anyway with
-`--reply-to`, the node stops that agent's run and sends no failure for it. Enable it once per machine:
+`agentlink hook <claude|codex>` is such a hook: it reads the hook's JSON on stdin and talks to
+the node's control API (above). Enable it once per machine (the desktop app does it for its
+folders, below):
 
 ```powershell
 agentlink hook install claude            # ~/.claude/settings.json (--scope project: .claude/settings.json)
 agentlink hook install codex             # ~/.codex/hooks.json, then trust it with /hooks in Codex
 ```
 
-- Events: `SessionStart`, `UserPromptSubmit`, `PostToolUse` (during a long turn) add the
-  messages as context (`hookSpecificOutput.additionalContext`); `Stop` returns
-  `{"decision":"block","reason":…}` so the agent reads them before it stops. Stop blocks only
-  when there is something new, so `stop_hook_active` never loops; Codex gets `{}` otherwise.
-- It only reads: nothing is marked delivered and a background `wait` still returns every
-  message. What a session saw is kept in `%APPDATA%\agentlink\hooks\<client>-<session_id>.json`
-  (removed after 14 days unused). A new session starts from the current state and hears only
-  of inbox requests from the last 24 h that no `wait` took and nobody answered.
-- Skipped: your own messages, status/activity updates, chat control messages. More than 10 new
-  messages: the newest 10 and a count. Node not running, bad input, an agent the worker runs
-  for a job (`AGENTLINK_JOB_ID` set): exit 0 without output, the session is never disturbed.
+- **Session.** `SessionStart` registers the session (`POST /sessions`: `provider`, its `cwd` as
+  `folder`, `wake: "rewake"` for Claude Code, `"next-event"` for Codex); every later event is a
+  heartbeat (at most once a minute); `SessionEnd` deregisters it. A folder that is none of this
+  node's is refused by the node: the hook then does nothing in that session.
+- **Delivery.** On `SessionStart`, `UserPromptSubmit`, `PostToolUse` and `Stop` the hook reads
+  `GET /unread?folder=<cwd>` (every age, oldest first) and gives the model one batch as context
+  (`hookSpecificOutput.additionalContext`): per message the sender and whether a person or an
+  agent wrote it (`author_kind`), the chat id and members, the id, the full text (a body over
+  2500 characters is cut, with `agentlink chat history --chat <id>` for the rest) and the answer
+  command `agentlink send --chat <id> --reply-to <id> --body "…"`. Your own person's messages
+  (`own_human`) come as «Ваш человек написал всем …» — information, do not answer. A request
+  the worker took (`assigned: "worker"`) says «не отвечайте»; a paused one (`paused`) waits for
+  a person. A batch holds about 4500 characters; the rest stays unread and comes at the next
+  event (or now: the printed `agentlink chat unread --folder … --after …`, then `agentlink chat
+  ack --ids … --session …`).
+- **Read.** Right after printing a batch the hook acknowledges it (`POST /ack` with the
+  `session_id`): the senders get «прочитано», the requests are assigned to this session, and
+  nothing is delivered twice. If the worker took one in between, the next event tells the model
+  not to answer it.
+- **Stop.** `Stop` returns `{"decision":"block","reason":<batch>}` only when there is something
+  new, so the agent reads it before it stops. After 3 blocks in a row with `stop_hook_active`
+  it lets the session stop and leaves the rest unread. Codex gets `{}` otherwise.
+- **The person sees** a line in the session (`systemMessage`): «agent-link: 2 сообщения от
+  KPECTIK — беру в работу» (or «к сведению», «отвечает агент-обработчик»).
+- **Waking an idle Claude Code session.** On `SessionStart` and `Stop` Claude Code also starts
+  `agentlink hook claude --wait` in the background (`"asyncRewake": true`, `timeout` 86400 s;
+  [command hook fields](https://code.claude.com/docs/en/hooks#command-hook-fields)). It polls
+  the node every 2 s; when the session is idle (its last event was `Stop`) and unread messages
+  arrive, it writes the batch to stderr, acknowledges it and exits 2, which wakes Claude with
+  the batch as a system reminder. The next `Stop` arms it again. One waiter per session runs
+  at a time; it heartbeats the idle session every 5 minutes and ends with the session
+  (`SessionEnd`, or its parent process gone) or shortly before its timeout. The line for the
+  person comes with the session's next event. Codex has no such hook (a background hook
+  "doesn't start a new turn", [hooks](https://learn.chatgpt.com/docs/hooks)): it hears of
+  messages at its next event; its session registers `wake: "next-event"`.
+- **Activity.** Only for chats whose batch the session accepted (requests that ask it):
+  `PreToolUse` posts what it does to `POST /chats/{id}/activity` — «читает <path>», «правит
+  <path>» (relative to the folder, else the file name), «запускает <program>» (no arguments),
+  «ищет в коде», «ищет в сети», «работает: <tool>»; `UserPromptSubmit` «думает»; a `Stop` with
+  nothing new ends it (`phase: "idle"`). Never arguments, file contents or output. The same
+  text is not posted again within 20 s, nothing within 0.3 s of the last post.
+- State per session: `%APPDATA%\agentlink\hooks\<client>-<session_id>.json` (+ `.lock`,
+  `.wait`), removed after 14 days unused. Node not running, bad input, an agent the worker runs
+  for a job (`AGENTLINK_JOB_ID` set): exit 0 without output (Codex `Stop`: `{}`), each request
+  at most 1.5 s, so the session is never stalled.
 - `install` is idempotent: it keeps the file's other settings and key order, adds one entry per
-  event (or updates its path when the program moved) and saves the old file as
-  `*.agentlink.bak`. Claude Code gets an exec-form entry (`command` = this program, `args` =
-  `["hook","claude"]`, no shell); Codex a shell command. Re-run it after moving `agentlink.exe`.
+  event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SessionEnd`;
+  `SessionEnd` with a 3 s timeout) or replaces the entries of an older version, and saves the
+  old file as `*.agentlink.bak`. Claude Code gets exec-form entries (`command` = this program,
+  `args` = `["hook","claude"]`, no shell); Codex a shell command. Re-run it after moving
+  `agentlink.exe`.
 
 ### Folder hooks of the desktop app
 
@@ -231,11 +263,10 @@ every settings save:
 - The settings page shows the state next to the working folder and each project: «Хуки: Claude
   ✓», «Хуки: папка не найдена», or a write error (details in `agentlink.log`).
 
-Which messages a session hears depends on its `cwd` (from the hook input): a session inside the
-project folder of an area (the deepest one when folders nest) hears only of that area: chats
-whose area it is and legacy `area:NAME` requests. Every other session (the working folder, or a
-user-scope hook anywhere else) hears of the rest: direct messages, chats without an area and
-areas that have no project folder. That is also where the answering agent works on them.
+Which messages a session gets depends on its `cwd` (from the hook input), as the node binds it:
+a session inside the project folder of an area (the deepest one when folders nest) gets only
+that area's messages; a session in the working folder gets the rest: direct messages, chats
+without an area and areas that have no project folder. A session in any other folder gets none.
 
 ## What the answering side does
 

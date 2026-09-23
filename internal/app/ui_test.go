@@ -663,7 +663,7 @@ const flush = async () => { for (let i = 0; i < 50; i++) await Promise.resolve()
   streamResolve({ value: encoder.encode('event: change\ndata: {"revision":0,"topics":["all"]}\n\n'), done: false });
   await flush();
   const initial = calls.slice(1).map((call) => call.url).sort();
-  const wanted = ["chats", "dashboard", "participants", "settings", "status", "update"].map((name) => "/ui/api/" + name).sort();
+  const wanted = ["chats", "dashboard", "participants", "sessions", "settings", "status", "update"].map((name) => "/ui/api/" + name).sort();
   if (JSON.stringify(initial) !== JSON.stringify(wanted)) throw new Error("initial slices: " + JSON.stringify(initial));
   calls.length = 0;
   streamResolve({ value: encoder.encode('event: change\ndata: {"revision":1,"topics":["chats"]}\n\n'), done: false });
@@ -1144,6 +1144,12 @@ const iso = (ms) => new Date(ms).toISOString();
 const group = "c1 &";
 const history = [{ id: "open", seq: 1, kind: "chat_open", from: "local", body: "", created_at: iso(base), direction: "out" }]
   .concat(Array.from({ length: 205 }, (_, i) => ({ id: "m" + i, seq: i + 2, from: i % 2 ? "bob" : "local", direction: i % 2 ? "in" : "out", body: "line " + i, created_at: iso(base + i * 1000) })));
+// Delivery ticks and author kinds on a few messages.
+history[201].delivery = [{ peer: "bob", status: "sent", state: "read", at: iso(base) }, { peer: "карл & sons", status: "queued", state: "queued" }];
+history[199].delivery = [{ peer: "bob", status: "sent", state: "answered" }, { peer: "карл & sons", status: "sent", state: "delivered" }];
+history[197].delivery = [{ peer: "bob", status: "sent", state: "read" }, { peer: "карл & sons", status: "sent", state: "answered" }];
+history[195].author_kind = "agent";
+history[202].author_kind = "agent";
 const chats = {
   [group]: {
     info: { id: group, participants: ["bob", "local", "карл & sons"], title: "line 0", closed: false, archived: false, last_seq: 206, last_at: iso(base + 204000),
@@ -1159,6 +1165,7 @@ const chats = {
 const control = { releaseSend: null, sent: [] };
 async function api(method, path, body) {
   calls.push(method + " " + path);
+  if (method === "POST" && path.endsWith("/close")) { const chat = chats[decodeURIComponent(path.split("/")[1])]; chat.info = { ...chat.info, closed: true, archived: true }; return chat.info; }
   if (method === "POST" && path === "send") { control.sent.push(body); return new Promise((resolve) => { control.releaseSend = () => resolve({ id: "s1" }); }); }
   const m = path.match(/^chats\/([^/?]+)(\/messages)?(?:\?(.*))?$/);
   const chat = m && chats[decodeURIComponent(m[1])];
@@ -1179,15 +1186,27 @@ if (!calls.includes("GET chats/c1%20%26") || !calls.includes("GET chats/c1%20%26
 if (list.children.length !== 201 || list.children[0].className !== "msg-older") throw new Error("timeline: " + list.children.length + " " + list.children[0].className);
 const anchor = list.children.find((node) => node.dataset.messageId === "m204");
 if (!anchor || !anchor.scrolled) throw new Error("message anchor was not revealed");
-const heldBubble = list.children.find((node) => node.dataset.messageId === "m202");
-const holdNote = heldBubble.children.find((c) => c.className === "msg-meta msg-hold");
-if (holdNote.hidden || text(holdNote) !== "bob: никто не отвечает — ждёт человека") throw new Error("held note: " + text(holdNote));
-if (!anchor.children.find((c) => c.className === "msg-meta msg-hold").hidden) throw new Error("hold note on a message nobody held");
-if (!heldBubble.children.find((c) => c.className === "msg-reply").hidden) throw new Error("own message offers a reply");
+const part = (node, cls) => { const queue = [node]; while (queue.length) { const n = queue.shift(); if (String(n.className || "").split(" ").includes(cls)) return n; queue.push(...(n.children || [])); } return null; };
+const bubble = (id) => list.children.find((node) => node.dataset.messageId === id);
+const heldBubble = bubble("m202");
+const holdTick = part(heldBubble, "msg-ticks");
+if (holdTick.hidden || !holdTick.className.includes("held") || holdTick.title !== "bob: никто не отвечает — ждёт человека" || holdTick["aria-label"] !== holdTick.title) throw new Error("held tick: " + holdTick.className + " " + holdTick.title);
+if (!part(anchor, "msg-ticks").hidden) throw new Error("tick on a message with no delivery");
+if (!part(heldBubble, "msg-reply").hidden) throw new Error("own message offers a reply");
+// Ticks: the lowest state of a group; answered reads as read; per-recipient tooltip.
+const tick = (id) => part(bubble(id), "msg-ticks");
+if (!tick("m200").className.includes("queued") || !tick("m200").title.includes("bob: inbox.tick.read") || !tick("m200").title.includes("карл & sons: inbox.tick.queued")) throw new Error("group tick: " + tick("m200").className + " " + tick("m200").title);
+if (!tick("m198").className.includes("delivered") || !tick("m198").title.includes("bob: inbox.tick.answered")) throw new Error("answered+delivered tick: " + tick("m198").className + " " + tick("m198").title);
+if (!tick("m196").className.includes("read") || !String(tick("m196").innerHTML).includes("<svg")) throw new Error("read tick: " + tick("m196").className);
+// Authors: a person or an agent, on either side.
+if (part(bubble("m194"), "msg-author").textContent !== "inbox.author.own_agent" || !bubble("m194").className.includes("agent")) throw new Error("own agent label: " + part(bubble("m194"), "msg-author").textContent);
+if (part(bubble("m201"), "msg-author").textContent !== 'inbox.author.agent{"name":"bob"}') throw new Error("peer agent label: " + part(bubble("m201"), "msg-author").textContent);
+if (part(bubble("m199"), "msg-author").textContent !== "bob" || part(bubble("m198"), "msg-author").textContent !== "inbox.you") throw new Error("human labels");
 if (!text(elements.conversation_title).includes("bob, карл & sons")) throw new Error("title: " + elements.conversation_title.textContent);
 if (elements.chat_members.children.length !== 3 || elements.chat_close.hidden || elements.send.hidden) throw new Error("header or composer of an open chat");
 if (!elements.chat_members.children[2].className.includes("away") || !text(elements.chat_members.children[2]).includes("inbox.member.queued")) throw new Error("away member chip: " + text(elements.chat_members.children[2]));
 if (elements.ask_choices.children.some((label) => label.children[0].checked) || elements.ask_hint.hidden) throw new Error("a group chat must not ask anyone by default");
+if (elements.ask_row.hidden) throw new Error("a group chat hides whom to ask");
 
 // Live activity: one row per job, local timers, no app calls.
 const dock = elements.chat_activity;
@@ -1246,8 +1265,8 @@ store.patch("chats", [chats[group].info, second]);
 store.patch("chats", [chats[group].info, { ...second, last_seq: 4, last_message: { id: "a2", from: "alice", direction: "in", body: "latest from alice" } }]);
 const rows = elements.conversation_list.children;
 const groupText = text(rows[0]), aliceText = text(rows[1]);
-if (!groupText.includes("inbox.badge.open") || !groupText.includes("inbox.working") || groupText.includes("inbox.unread")) throw new Error("group row: " + groupText);
-if (!aliceText.includes("latest from alice") || !aliceText.includes("inbox.unread") || !aliceText.includes("inbox.badge.closed")) throw new Error("alice row: " + aliceText);
+if (!groupText.includes("правит app.go") || !rows[0].children[0].className.includes("live") || groupText.includes("inbox.unread")) throw new Error("group row: " + groupText);
+if (!aliceText.includes("latest from alice") || !aliceText.includes("inbox.unread")) throw new Error("alice row: " + aliceText);
 const aliceButton = rows[1].children[0];
 if (aliceButton.tagName !== "BUTTON" || aliceButton.tabIndex < 0) throw new Error("chat row is not keyboard focusable");
 aliceButton.listeners.click();
@@ -1261,6 +1280,29 @@ if (elements.new_chat_form.hidden || !elements.new_chat_members.children.some((l
 store.patch("chats", [{ id: "c3", participants: ["bob", "local"], closed: false, last_seq: 0, members: [] }, ...store.get().chats]);
 openInbox({ peer: "bob" });
 if (navigation().query.chat !== "c3") throw new Error("peer link did not open the existing chat: " + JSON.stringify(navigation()));
+
+// A chat of two: nobody to choose; an unread message this computer's agent has
+// not taken says why it waits.
+chats.c4 = { info: { id: "c4", participants: ["bob", "local"], closed: false, archived: false, last_seq: 1, members: [{ name: "bob", connected: true, compatible: true, queued: 0 }, { name: "local", self: true, connected: true, compatible: true, queued: 0 }] },
+  items: [{ id: "u1", seq: 1, from: "bob", author_kind: "agent", direction: "in", unread: true, body: "hi", created_at: iso(base) }] };
+store.patch("sessions", [{ session_id: "s", provider: "claude", folder: "W:/work", area: "", wake: "next-event" }]);
+await selectChat("c4", "");
+if (!elements.ask_row.hidden) throw new Error("a chat of two shows whom to ask");
+const waitText = () => elements.chat_activity.children.map(text).join(" | ");
+if (elements.chat_activity.hidden || !waitText().includes("inbox.activity.waiting_session")) throw new Error("waiting line: " + waitText());
+if (!text(elements.chat_sessions).includes("claude") || !text(elements.chat_sessions).includes("inbox.session.next_event")) throw new Error("sessions: " + text(elements.chat_sessions));
+store.patch("sessions", []);
+if (!waitText().includes("inbox.activity.no_session")) throw new Error("no-session line: " + waitText());
+store.patch("sessions", [{ session_id: "s", provider: "claude", folder: "W:/work", area: "", wake: "rewake" }]);
+if (!elements.chat_activity.hidden) throw new Error("a rewake session needs no waiting line: " + waitText());
+
+// Closing: the chat leaves the list at once and the view moves to the next chat.
+store.patch("chats", [chats.c4.info, { id: "c3", participants: ["bob", "local"], closed: false, last_seq: 0, members: [] }]);
+elements.chat_close.listeners.click();
+await flush();
+if (!calls.includes("POST chats/c4/close")) throw new Error("close call: " + JSON.stringify(calls.slice(-3)));
+if (store.get().chats.some((chat) => chat.id === "c4") || elements.conversation_list.children.some((row) => text(row).includes("c4"))) throw new Error("closed chat still listed");
+if (navigation().query?.chat !== "c3") throw new Error("view did not move on: " + JSON.stringify(navigation()));
 `
 	inboxRun(t, "chat-state", fixtures, testSource)
 }
@@ -1308,6 +1350,19 @@ runTimers();
 if (region.childElementCount !== 0) throw new Error("toasts did not auto-dismiss: " + region.childElementCount);
 `
 	inboxRun(t, "notification-watermark", fixtures, testSource)
+}
+
+// TestSessionsEndpoint: the chat's waiting line reads this computer's live
+// sessions; a stopped node has none, as an empty list.
+func TestSessionsEndpoint(t *testing.T) {
+	h := newHarness(t)
+	if code, _ := h.do(t, http.MethodGet, "/ui/api/sessions", "", nil); code != http.StatusForbidden {
+		t.Fatalf("sessions without the token: %d", code)
+	}
+	code, body := h.do(t, http.MethodGet, "/ui/api/sessions", "", h.tokenHdr())
+	if code != http.StatusOK || strings.TrimSpace(body) != "[]" {
+		t.Fatalf("sessions of a stopped node: %d %s", code, body)
+	}
 }
 
 func TestDashboardAPIsServeStoppedNodeDefaults(t *testing.T) {

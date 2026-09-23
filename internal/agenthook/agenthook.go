@@ -27,15 +27,31 @@ const (
 const (
 	SessionStart = "SessionStart"
 	Prompt       = "UserPromptSubmit"
+	PreTool      = "PreToolUse"
 	PostTool     = "PostToolUse"
 	Stop         = "Stop"
+	SessionEnd   = "SessionEnd"
 )
 
 // Events are installed in this order.
-var Events = []string{SessionStart, Prompt, PostTool, Stop}
+var Events = []string{SessionStart, Prompt, PreTool, PostTool, Stop, SessionEnd}
 
-// Timeout is the timeout (seconds) of an installed hook entry.
-const Timeout = 10
+// Hook entry timeouts, in seconds.
+const (
+	// Timeout is the timeout of an installed hook entry.
+	Timeout = 10
+	// EndTimeout is SessionEnd's: Codex allows at most 3 seconds there
+	// (https://learn.chatgpt.com/docs/hooks), Claude Code 1.5 by default.
+	EndTimeout = 3
+	// WaitTimeout is the timeout of Claude Code's background wait entry
+	// (`agentlink hook claude --wait`, asyncRewake). Claude Code enforces it on
+	// an asyncRewake hook; the docs name no maximum. The waiter ends itself a
+	// little earlier and is armed again at the next Stop.
+	WaitTimeout = 86400
+)
+
+// WaitArg is the flag of the background wait entry.
+const WaitArg = "--wait"
 
 // ProjectFile is the file of a project folder the hooks of client go to:
 // Claude Code's personal .claude/settings.local.json (not the shared
@@ -52,7 +68,11 @@ type Handler struct {
 	Type    string   `json:"type"`
 	Command string   `json:"command"`
 	Args    []string `json:"args,omitempty"`
-	Timeout int      `json:"timeout"`
+	// AsyncRewake: Claude Code runs it in the background and wakes the session
+	// (even an idle one) when it exits with code 2, showing Claude its stderr
+	// (https://code.claude.com/docs/en/hooks#command-hook-fields).
+	AsyncRewake bool `json:"asyncRewake,omitempty"`
+	Timeout     int  `json:"timeout"`
 }
 
 // Entry is the hook handler agentlink installs for client. Claude Code spawns
@@ -67,6 +87,24 @@ func Entry(client, exe string) Handler {
 		exe = `"` + exe + `"`
 	}
 	return Handler{Type: "command", Command: exe + " hook " + client, Timeout: Timeout}
+}
+
+// Handlers are the handlers of event ev for client: the hook itself and, for
+// Claude Code on SessionStart and Stop, the background waiter that wakes an
+// idle session when a message arrives (armed again at every Stop).
+func Handlers(client, exe, ev string) []Handler {
+	h := Entry(client, exe)
+	if ev == SessionEnd {
+		h.Timeout = EndTimeout
+	}
+	out := []Handler{h}
+	if client == Claude && (ev == SessionStart || ev == Stop) {
+		w := h
+		w.Args = append(slices.Clone(h.Args), WaitArg)
+		w.AsyncRewake, w.Timeout = true, WaitTimeout
+		out = append(out, w)
+	}
+	return out
 }
 
 // isAgentlink reports whether a matcher group runs `agentlink hook client`.
@@ -90,16 +128,16 @@ func isAgentlink(group json.RawMessage, client string) bool {
 }
 
 // Install adds (or updates) the agentlink matcher group of every event in the
-// settings file at path, creating it and its folder when missing. It reports
+// settings file at path, creating it and its folder when missing; an older
+// agentlink group (fewer events, no waiter) is replaced in place. It reports
 // whether the file changed.
 func Install(path, client, exe string) (bool, error) {
-	entry := Entry(client, exe)
 	return edit(path, func(ev string, groups []json.RawMessage) []json.RawMessage {
 		group := struct {
 			Matcher string    `json:"matcher,omitempty"`
 			Hooks   []Handler `json:"hooks"`
-		}{Hooks: []Handler{entry}}
-		if ev == PostTool {
+		}{Hooks: Handlers(client, exe, ev)}
+		if ev == PreTool || ev == PostTool {
 			group.Matcher = "*"
 		}
 		want := json.RawMessage(bytes.TrimSpace(mustJSON(group)))

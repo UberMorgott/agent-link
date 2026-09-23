@@ -375,28 +375,35 @@ agentlink wait --config C:\agentlink\node.json --timeout 0   (run_in_background)
 
 After handling the messages (and replying with `send --reply-to`), start `wait` again.
 
-### Hooks: told without a `wait`
+### Hooks: a live session in the folder
 
-A session that runs no `wait` can still hear of messages through its own hooks. Install once:
+A Claude Code or Codex session open in a folder of this node is connected through its own
+hooks. Install once (the desktop app does it for its folders, see below):
 
 ```powershell
 agentlink hook install claude     # ~/.claude/settings.json; --scope project for .claude/settings.json
 agentlink hook install codex      # ~/.codex/hooks.json; then trust the hook with /hooks in Codex
 ```
 
-On `SessionStart`, `UserPromptSubmit` and `PostToolUse` the hook (`agentlink hook claude|codex`)
-adds every message the session has not seen yet (sender, chat and members, time, full body, the
-reply command) as context; on `Stop` it keeps the agent going once to read news that came
-during the turn. It never marks messages delivered, stays silent when there is nothing new or
-the node is not running, and does nothing inside a handler job. Details:
+The hook (`agentlink hook claude|codex`) registers the session for its folder on `SessionStart`
+(every event is a heartbeat, `SessionEnd` ends it) and, on `SessionStart`, `UserPromptSubmit`,
+`PostToolUse` and `Stop`, hands the model the node's **unread** messages for that folder (all
+ages: sender, human or agent, chat, full text, the reply command), then marks them read, so each
+is delivered once and the sender sees «прочитано». The person at the session sees a line like
+«agent-link: 2 сообщения от KPECTIK — беру в работу». While the session works on them, what it
+does («читает src/x.go», «правит …», «запускает go») shows in the sender's chat. Claude Code
+also gets a background waiter (`asyncRewake`) that wakes an idle session when a message arrives;
+Codex has no such hook and reads new messages at its next event. The hook stays silent when the
+node is not running and does nothing inside a handler job. Details:
 [docs/agent-usage.md](docs/agent-usage.md#hearing-about-messages-in-a-live-session-hooks).
 
 The desktop app does this by itself for the folders it knows: the agent chosen in «Кто отвечает»
 gets the hook in the «Рабочая папка» and in every «Проекты» folder (Claude Code:
-`.claude/settings.local.json`, Codex: `.codex/hooks.json`), on start and on every save. A changed
-folder or agent takes agentlink's entries out of the old place; other hooks stay. A session in
-an area's project folder hears only of that area's messages; any other session hears of the rest
-(direct messages, chats without an area, areas without a folder). Codex runs a new hook only
+`.claude/settings.local.json`, Codex: `.codex/hooks.json`), on start and on every save; entries
+of an older version are replaced in place. A changed folder or agent takes agentlink's entries
+out of the old place; other hooks stay. A session in an area's project folder gets only that
+area's messages; a session in the working folder gets the rest (direct messages, chats without
+an area, areas without a folder); a session elsewhere gets none. Codex runs a new hook only
 after you trust it once with `/hooks` in that folder.
 
 ## Delivery

@@ -38,9 +38,10 @@ func TestInstall(t *testing.T) {
 		Hooks map[string][]struct {
 			Matcher string `json:"matcher"`
 			Hooks   []struct {
-				Command string   `json:"command"`
-				Args    []string `json:"args"`
-				Timeout int      `json:"timeout"`
+				Command     string   `json:"command"`
+				Args        []string `json:"args"`
+				AsyncRewake bool     `json:"asyncRewake"`
+				Timeout     int      `json:"timeout"`
 			} `json:"hooks"`
 		} `json:"hooks"`
 	}
@@ -49,12 +50,22 @@ func TestInstall(t *testing.T) {
 	}
 	for _, ev := range Events {
 		groups := cfg.Hooks[ev]
-		last := groups[len(groups)-1].Hooks[0]
-		if last.Command != "C:/Program Files/agentlink/agentlink.exe" || strings.Join(last.Args, " ") != "hook claude" || last.Timeout != Timeout {
+		hs := groups[len(groups)-1].Hooks
+		last, timeout := hs[0], Timeout
+		if ev == SessionEnd {
+			timeout = EndTimeout
+		}
+		if last.Command != "C:/Program Files/agentlink/agentlink.exe" || strings.Join(last.Args, " ") != "hook claude" || last.Timeout != timeout || last.AsyncRewake {
 			t.Fatalf("%s: %+v", ev, last)
 		}
+		// The background waiter: SessionStart and Stop only.
+		if wantWait := ev == SessionStart || ev == Stop; wantWait != (len(hs) == 2) {
+			t.Fatalf("%s: handlers %+v", ev, hs)
+		} else if wantWait && (strings.Join(hs[1].Args, " ") != "hook claude --wait" || !hs[1].AsyncRewake || hs[1].Timeout != WaitTimeout) {
+			t.Fatalf("%s waiter: %+v", ev, hs[1])
+		}
 	}
-	if len(cfg.Hooks[Stop]) != 2 || cfg.Hooks[PostTool][0].Matcher != "*" {
+	if len(cfg.Hooks[Stop]) != 2 || cfg.Hooks[PostTool][0].Matcher != "*" || cfg.Hooks[PreTool][0].Matcher != "*" {
 		t.Fatalf("groups: %+v", cfg.Hooks)
 	}
 	if bak, _ := os.ReadFile(filepath.Clean(path + ".agentlink.bak")); string(bak) != orig {
@@ -69,7 +80,7 @@ func TestInstall(t *testing.T) {
 		t.Fatalf("moved: %v %v", changed, err)
 	}
 	data, _ = os.ReadFile(filepath.Clean(path))
-	if strings.Count(string(data), "agentlink.exe") != len(Events) {
+	if strings.Count(string(data), "agentlink.exe") != len(Events)+2 {
 		t.Fatalf("duplicate entries:\n%s", data)
 	}
 
@@ -116,6 +127,33 @@ func TestInstall(t *testing.T) {
 	}
 	if _, err := Install(cpath, Codex, exe); err == nil {
 		t.Fatal("a non-object file must be refused, not overwritten")
+	}
+}
+
+// An install of an older agentlink (four events, no waiter) is migrated in
+// place: every agentlink group is replaced, none is duplicated, other hooks stay.
+func TestInstallMigratesOldEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.local.json")
+	old := `{"hooks": {
+  "SessionStart": [{"hooks": [{"type": "command", "command": "C:/old/agentlink.exe", "args": ["hook", "claude"], "timeout": 10}]}],
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "C:/old/agentlink.exe", "args": ["hook", "claude"], "timeout": 10}]}],
+  "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "C:/old/agentlink.exe", "args": ["hook", "claude"], "timeout": 10}]}],
+  "Stop": [{"hooks": [{"type": "command", "command": "mine"}]}, {"hooks": [{"type": "command", "command": "C:/old/agentlink.exe", "args": ["hook", "claude"], "timeout": 10}]}]
+}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 2 {
+		changed, err := Install(path, Claude, `C:\new\agentlink.exe`)
+		if err != nil || changed != (i == 0) {
+			t.Fatalf("install %d: %v %v", i, changed, err)
+		}
+	}
+	data, _ := os.ReadFile(filepath.Clean(path))
+	got := string(data)
+	if strings.Contains(got, "C:/old") || strings.Count(got, "C:/new/agentlink.exe") != len(Events)+2 ||
+		!strings.Contains(got, `"mine"`) || !strings.Contains(got, `"asyncRewake": true`) || !strings.Contains(got, SessionEnd) {
+		t.Fatalf("migrated:\n%s", got)
 	}
 }
 

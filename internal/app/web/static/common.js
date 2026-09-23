@@ -3,7 +3,7 @@
 const TOKEN = document.querySelector('meta[name="agentlink-token"]').content;
 // PAGE_VERSION is the app build this page was served by.
 const PAGE_VERSION = document.querySelector('meta[name="agentlink-version"]')?.content || "";
-const CORE_SLICES = new Set(["status", "dashboard", "participants", "update", "settings", "chats"]);
+const CORE_SLICES = new Set(["status", "dashboard", "participants", "update", "settings", "chats", "sessions"]);
 const inFlight = new Map();
 
 function createStore(initial) {
@@ -109,8 +109,11 @@ function renderStatus(s) {
   else text = fmt("link.off_count", { online: s.online || 0, total: s.total || 0 });
   if (s.configured && !s.zerotier) text += " · " + t("link.no_zerotier");
   if (s.warning) { text += " · " + t(s.warning); cls = "off"; }
-  el.textContent = text;
-  el.className = cls;
+  // The inbox repeats the indicator in its chat list, where the top bar is hidden.
+  for (const item of [el, ...document.querySelectorAll(".link-status")]) {
+    item.textContent = text;
+    item.className = item === el ? cls : "link-status " + cls;
+  }
   const names = document.getElementById("member_names");
   if (names) {
     names.replaceChildren(...(s.members || []).filter((m) => !m.self).map((m) => {

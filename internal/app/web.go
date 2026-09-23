@@ -56,6 +56,7 @@ func (a *App) URL(page string) string {
 //	GET  /ui/api/dashboard         DashboardSummary
 //	GET  /ui/api/participants      []ParticipantView
 //	GET  /ui/api/events            server-sent state-change events
+//	GET  /ui/api/sessions          []node.Session (this computer's live agent sessions)
 //	POST /ui/api/send              node.SendRequest -> node.Message (chat_id + ask: into a chat)
 //	GET  /ui/api/chats?archive=1   []node.ChatInfo, pre-chat history included as legacy chats
 //	POST /ui/api/chats             node.CreateChatRequest -> node.ChatInfo
@@ -93,6 +94,7 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("GET /ui/api/dashboard", a.dashboard)
 	api.HandleFunc("GET /ui/api/participants", a.participants)
 	api.HandleFunc("GET /ui/api/events", a.eventsStream)
+	api.HandleFunc("GET /ui/api/sessions", a.sessions)
 	api.HandleFunc("POST /ui/api/send", a.send)
 	api.HandleFunc("/ui/api/chats", a.chats)
 	api.HandleFunc("/ui/api/chats/", a.chats)
@@ -324,6 +326,17 @@ func (a *App) participants(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, buildParticipants(a.Status(), entries))
+}
+
+// sessions lists this computer's live agent sessions, for the chat's
+// "waiting for the session" line; a stopped node has none.
+func (a *App) sessions(w http.ResponseWriter, _ *http.Request) {
+	n := a.node()
+	if n == nil {
+		writeJSON(w, []node.Session{})
+		return
+	}
+	writeJSON(w, n.Sessions())
 }
 
 func (a *App) send(w http.ResponseWriter, r *http.Request) {

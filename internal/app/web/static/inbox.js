@@ -2,22 +2,29 @@
 
 // The inbox: a list of chats on the left, the open chat on the right. Chats,
 // their messages and the live activity of every participant come from
-// /ui/api/chats; SSE "chats"/"messages" events reload them (common.js).
+// /ui/api/chats; SSE "chats"/"messages"/"sessions" events reload them
+// (common.js). The open chat is one centered column: messages, one activity
+// line per working agent, the composer. Technical detail (connection, queues,
+// sessions) sits behind the header's info disclosure.
 
 const layout = document.getElementById("conversation_layout");
 const conversationList = document.getElementById("conversation_list");
 const archiveToggle = document.getElementById("archive_toggle");
+const archiveToggleText = document.getElementById("archive_toggle_text");
 const newChatButton = document.getElementById("new_chat");
 const list = document.getElementById("messages");
 const chatTitle = document.getElementById("conversation_title");
 const chatSubtitle = document.getElementById("chat_subtitle");
+const chatInfo = document.getElementById("chat_info");
 const chatMembers = document.getElementById("chat_members");
+const chatSessions = document.getElementById("chat_sessions");
 const chatCloseButton = document.getElementById("chat_close");
 const chatBack = document.getElementById("chat_back");
 const activityDock = document.getElementById("chat_activity");
 const sendForm = document.getElementById("send");
 const sendButton = document.getElementById("send_button");
 const sendResult = document.getElementById("inbox_result");
+const askRow = document.getElementById("ask_row");
 const askChoices = document.getElementById("ask_choices");
 const askHint = document.getElementById("ask_hint");
 const replyTo = document.getElementById("reply_to");
@@ -34,6 +41,9 @@ const newChatResult = document.getElementById("new_chat_result");
 const newChatCreate = document.getElementById("new_chat_create");
 
 const PAGE_SIZE = 200;
+// A message within GROUP_MS of the previous one by the same author continues it
+// without repeating the author line.
+const GROUP_MS = 5 * 60 * 1000;
 const messageNodes = new Map(); // message id -> <li>
 const rowNodes = new Map(); // chat id -> list <button>
 const activityNodes = new Map(); // participant/job -> activity <li>
@@ -42,6 +52,7 @@ let messages = []; // the open chat, ascending by seq
 let hasOlder = false;
 let loadTicket = 0;
 let sending = false;
+let closing = false;
 let newChatOpen = false;
 let pendingPeer = "";
 let readsNode = "";
@@ -49,14 +60,27 @@ let reads = {};
 let notificationNode = "";
 let notificationIDs = null;
 
+// Static inline icons (no user data inside), drawn with currentColor.
+const ICONS = {
+  queued: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 5v3.2l2 1.3"/></svg>',
+  delivered: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.4l2.9 2.9 6.1-6.6"/></svg>',
+  read: '<svg viewBox="0 0 20 16" aria-hidden="true"><path d="M1.8 8.4l2.9 2.9 6.1-6.6M8.6 10.6l.7.7 6.1-6.6"/></svg>',
+  held: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 5v3.6M8 10.8v.1"/></svg>',
+  agent: '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="5" width="10" height="8" rx="2.2"/><path d="M8 2.5V5M6 9h.01M10 9h.01"/></svg>',
+  human: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="5.6" r="2.6"/><path d="M3.2 13.5c.6-2.4 2.5-3.8 4.8-3.8s4.2 1.4 4.8 3.8"/></svg>',
+};
+
 if (composer) composer.placeholder = t("inbox.body.placeholder");
 chatMembers.setAttribute("aria-label", t("inbox.participants.label"));
 activityDock.setAttribute("aria-label", t("inbox.activity.label"));
+chatInfo.title = t("inbox.info");
+chatCloseButton.title = t("inbox.close");
 
 function self() { return store.get().status?.node || ""; }
 function chatPath(id) { return "chats/" + encodeURIComponent(id); }
 function setClass(el, name, on) { el.classList.toggle(name, Boolean(on)); }
 function inboxVisible() { return typeof routeFromPath !== "function" || routeFromPath(location.pathname) === "inbox"; }
+function narrow() { return typeof matchMedia === "function" && matchMedia("(max-width: 700px)").matches; }
 
 function others(info) { return (info?.participants || []).filter((name) => name !== self()); }
 function chatName(info) {
@@ -68,6 +92,12 @@ function chatName(info) {
 function authorName(name) { return name === self() ? t("inbox.you") : name; }
 // genitiveName is authorName after "для"/"от": "вас" for this node.
 function genitiveName(name) { return name === self() ? t("inbox.you.gen") : name; }
+
+// A person and their agent write from the same node; author_kind tells them
+// apart. A message of an old peer has no kind and counts as the person's.
+function isAgent(m) { return m.author_kind === "agent" || m.author_kind === "worker"; }
+function agentName(name) { return name === self() ? t("inbox.author.own_agent") : fmt("inbox.author.agent", { name }); }
+function authorLabel(m) { return isAgent(m) ? agentName(m.from) : authorName(m.from); }
 
 // whoIndex gives every name one of six stable colours, so a group chat can be
 // followed by colour as well as by name.
@@ -130,57 +160,74 @@ function unread(chat) {
     (chat.last_seq || 0) > (reads[chat.id] || 0));
 }
 
+// --- live activity text, shared by the chat list and the open chat ---
+
+function activityText(job) {
+  if (job.stale) return t("inbox.activity.stale");
+  if (job.job_status === "queued") return t("inbox.activity.queued");
+  const info = job.activity_info;
+  const text = info?.text || job.activity || "";
+  const typeKey = info?.type ? "inbox.activity.type." + info.type : "";
+  const verb = typeKey && t(typeKey) !== typeKey ? t(typeKey) : "";
+  // A step that only names its type ("thinking") reads as the verb alone.
+  if (verb && text && text.toLowerCase() !== info.type.toLowerCase()) return verb + " " + text;
+  return verb || text || t("inbox.activity.working");
+}
+
+function workingLines(chat) {
+  const out = [];
+  for (const m of chat.members || []) for (const job of m.jobs || []) out.push(agentName(m.name) + " " + activityText(job));
+  return out;
+}
+
 // --- the chat list ---
-
-function badge(chat) {
-  const el = document.createElement("span");
-  const kind = chat.legacy ? "legacy" : chat.closed ? "closed" : "open";
-  el.className = "chat-badge " + kind;
-  el.textContent = t("inbox.badge." + kind);
-  return el;
-}
-
-function workingNames(chat) {
-  return (chat.members || []).filter((m) => (m.jobs || []).length).map((m) => authorName(m.name));
-}
 
 function patchRow(button, chat) {
   const selected = chat.id === store.get().selectedChat && !newChatOpen;
-  button.className = "conversation-choice" + (selected ? " active" : "") + (chat.active ? " live" : "");
+  const working = workingLines(chat);
+  const fresh = unread(chat);
+  button.className = "conversation-choice" + (selected ? " active" : "") + (working.length ? " live" : "") + (fresh ? " fresh" : "");
   button.setAttribute("aria-pressed", selected ? "true" : "false");
   const top = document.createElement("span");
   top.className = "row-top";
   const who = document.createElement("strong");
   who.className = "row-who";
   who.textContent = chatName(chat);
+  top.append(who);
+  if (chat.legacy) {
+    const badge = document.createElement("span");
+    badge.className = "chat-badge legacy";
+    badge.textContent = t("inbox.badge.legacy");
+    top.append(badge);
+  }
   const at = document.createElement("span");
   at.className = "row-time";
   at.textContent = chat.last_at ? clock(chat.last_at) : "";
-  top.append(who, badge(chat), at);
-  const last = document.createElement("span");
-  last.className = "conversation-preview";
-  const lm = chat.last_message;
-  last.textContent = lm ? authorName(lm.from) + ": " + preview(lm.body, 90) : (chat.title || "");
+  top.append(at);
   const foot = document.createElement("span");
-  foot.className = "conversation-foot";
-  const live = document.createElement("span");
-  live.className = "row-live";
-  const working = workingNames(chat);
-  live.hidden = !working.length;
-  live.textContent = working.length ? fmt("inbox.working", { names: working.join(", ") }) : "";
-  const fresh = document.createElement("span");
-  fresh.className = "conversation-unread";
-  fresh.hidden = !unread(chat);
-  fresh.textContent = fresh.hidden ? "" : t("inbox.unread");
-  foot.append(live, fresh);
-  button.replaceChildren(top, last, foot);
+  foot.className = "row-foot";
+  const last = document.createElement("span");
+  const lm = chat.last_message;
+  if (working.length) {
+    last.className = "row-live";
+    last.textContent = working[0] + (working.length > 1 ? " +" + (working.length - 1) : "");
+  } else {
+    last.className = "conversation-preview";
+    last.textContent = lm ? authorLabel(lm) + ": " + preview(lm.body, 90) : (chat.title || "");
+  }
+  const dot = document.createElement("span");
+  dot.className = "conversation-unread";
+  dot.hidden = !fresh;
+  dot.textContent = fresh ? t("inbox.unread") : "";
+  foot.append(last, dot);
+  button.replaceChildren(top, foot);
 }
 
 function renderConversationList() {
   const archive = store.get().showArchive;
   const chats = (archive ? store.get().chatArchive : store.get().chats) || [];
   loadReads(store.get().chats);
-  archiveToggle.textContent = t(archive ? "inbox.archive.hide" : "inbox.archive.show");
+  archiveToggleText.textContent = t(archive ? "inbox.archive.hide" : "inbox.archive.show");
   archiveToggle.setAttribute("aria-pressed", archive ? "true" : "false");
   document.getElementById("chat_list_title").textContent = t(archive ? "inbox.archive.title" : "inbox.list.label");
   const seen = new Set();
@@ -206,44 +253,118 @@ function renderConversationList() {
     empty.textContent = t(archive ? "inbox.archive.empty" : "inbox.list.empty");
     rows.push(empty);
   }
-  for (let i = 0; i < rows.length; i++) {
-    if (conversationList.children[i] !== rows[i]) conversationList.insertBefore(rows[i], conversationList.children[i] || null);
-  }
-  while (conversationList.children.length > rows.length) conversationList.lastElementChild.remove();
+  reconcile(conversationList, rows);
 }
 
-// --- the open chat: header ---
+// --- the open chat: header and its info disclosure ---
+
+function memberState(member) { return member.self || member.connected ? (member.compatible ? "on" : "old") : "away"; }
 
 function renderHeader(info) {
   chatTitle.textContent = info ? chatName(info) : t("inbox.select");
-  const sub = [];
-  if (info?.title) sub.push(info.title);
-  if (info?.area) sub.push(fmt("inbox.area", { area: info.area }));
-  chatSubtitle.textContent = sub.join(" — ");
-  chatSubtitle.hidden = !sub.length;
+  // The subtitle: who is reachable right now, and the chat's project area.
+  const parts = [];
+  for (const member of info?.members || []) {
+    if (member.self) continue;
+    const state = memberState(member);
+    const item = document.createElement("span");
+    item.className = "presence " + state;
+    item.textContent = member.name + " — " + t(state === "old" ? "inbox.member.old_short" : state === "on" ? "inbox.member.online" : "inbox.member.away");
+    parts.push(item);
+  }
+  if (info?.area) {
+    const area = document.createElement("span");
+    area.className = "chat-area";
+    area.textContent = fmt("inbox.area", { area: info.area });
+    parts.push(area);
+  }
+  chatSubtitle.replaceChildren(...parts);
+  chatSubtitle.hidden = !parts.length;
   const chips = (info?.members || []).map((member) => {
     const chip = document.createElement("li");
-    const state = member.self || member.connected ? (member.compatible ? "on" : "old") : "away";
+    const state = memberState(member);
     chip.className = "member-chip " + state;
     chip.style.setProperty("--who", "var(--who-" + whoIndex(member.name) + ")");
-    const name = document.createElement("span");
+    const name = document.createElement("strong");
     name.textContent = member.self ? member.name + " (" + t("inbox.you") + ")" : member.name;
     chip.append(name);
     const notes = [];
     if (!member.self) notes.push(t(state === "old" ? "inbox.member.old" : state === "on" ? "inbox.member.online" : "inbox.member.away"));
-    if (member.queued) {
-      const queued = document.createElement("span");
-      queued.className = "member-queued";
-      queued.textContent = fmt("inbox.member.queued", { n: member.queued });
-      chip.append(queued);
+    if (member.queued) notes.push(fmt("inbox.member.queued", { n: member.queued }));
+    for (const job of member.held || []) notes.push(job.activity || t("inbox.hold.unknown"));
+    if (notes.length) {
+      const detail = document.createElement("span");
+      detail.className = "member-note";
+      detail.textContent = notes.join(" · ");
+      chip.append(detail);
     }
-    chip.title = notes.join(", ");
     return chip;
   });
   chatMembers.replaceChildren(...chips);
-  chatMembers.hidden = !chips.length;
+  renderSessions(info);
+  chatInfo.hidden = !info;
   // Closing is the only way into the archive (a legacy chat's peer archives it too).
   chatCloseButton.hidden = !info || info.closed || info.archived;
+}
+
+// localArea is the session area a chat's messages reach on this computer: an
+// area without a project folder here goes to the working folder ("").
+function localArea(area) {
+  const projects = store.get().settings?.projects || {};
+  return area && Object.prototype.hasOwnProperty.call(projects, area) ? area : "";
+}
+function chatSessionList(info) {
+  const area = localArea(info?.area || "");
+  return (Array.isArray(store.get().sessions) ? store.get().sessions : []).filter((s) => (s.area || "") === area);
+}
+
+function renderSessions(info) {
+  const items = chatSessionList(info).map((s) => {
+    const li = document.createElement("li");
+    li.textContent = [s.provider || "", s.folder || "", t(s.wake === "rewake" ? "inbox.session.rewake" : "inbox.session.next_event")].filter(Boolean).join(" · ");
+    return li;
+  });
+  if (!items.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = t("inbox.info.no_sessions");
+    items.push(li);
+  }
+  chatSessions.replaceChildren(...items);
+}
+
+// --- the open chat: delivery ticks ---
+
+// The recipient's progress; answered reads as read (the reply itself shows).
+const TICK_RANK = { queued: 0, delivered: 1, read: 2 };
+function tickState(d) {
+  if (d.state === "answered" || d.state === "read") return "read";
+  if (d.state === "delivered" || d.state === "queued") return d.state;
+  return d.status === "sent" ? "delivered" : "queued";
+}
+
+// ticksFor is the tick of an own message: the lowest state across its
+// recipients, or a hold «!» with the reason. Null when there is nothing to show.
+function ticksFor(m) {
+  if (m.direction !== "out" || m.kind) return null;
+  const holds = holdsFor(m.id);
+  const failed = m.job_status === "failed" && !!m.reply_to;
+  if (m.held || holds.length || failed) {
+    const lines = holds.map((h) => h.name + ": " + h.text);
+    if (m.held) lines.unshift(t("inbox.held"));
+    if (failed) lines.unshift(t("inbox.failed"));
+    return { state: "held", label: lines.join("\n") };
+  }
+  const delivery = m.delivery || [];
+  if (!delivery.length) return null;
+  let lowest = "read";
+  const lines = delivery.map((d) => {
+    const state = tickState(d);
+    if (TICK_RANK[state] < TICK_RANK[lowest]) lowest = state;
+    const word = t("inbox.tick." + (d.state === "answered" ? "answered" : state));
+    return d.peer + ": " + word + (state === "read" && d.at ? " " + clock(d.at) : "");
+  });
+  return { state: lowest, label: delivery.length === 1 ? lines[0] : lines.join("\n") };
 }
 
 // --- the open chat: timeline ---
@@ -258,42 +379,50 @@ function holdsFor(id) {
   return out;
 }
 
-function messageVersion(m) {
-  return JSON.stringify([m.seq, m.kind, m.body, m.from, m.created_at, m.reply_to, m.responders, m.held, m.job_status,
-    m.delivery, self(), store.get().chat?.closed, store.get().chat?.legacy, holdsFor(m.id)]);
+function messageVersion(m, cont) {
+  return JSON.stringify([m.seq, m.kind, m.body, m.from, m.author_kind, m.own_human, m.unread, m.created_at, m.reply_to, m.responders, m.held,
+    m.job_status, m.delivery, self(), store.get().chat?.closed, store.get().chat?.legacy, others(store.get().chat).length, holdsFor(m.id), cont]);
 }
 
 function createBubble() {
   const node = document.createElement("li");
   const head = document.createElement("div");
   head.className = "msg-head";
+  const icon = document.createElement("span");
+  icon.className = "msg-icon";
   const author = document.createElement("strong");
   author.className = "msg-author";
-  const at = document.createElement("time");
-  at.className = "msg-time";
-  head.append(author, at);
+  const fyi = document.createElement("span");
+  fyi.className = "msg-fyi";
+  head.append(icon, author, fyi);
   const quote = document.createElement("button");
   quote.type = "button";
   quote.className = "msg-quote";
   quote.addEventListener("click", () => revealMessage(node._message.reply_to));
   const body = document.createElement("pre");
   body.className = "msg-body";
-  const meta = document.createElement("p");
-  meta.className = "msg-meta";
-  const hold = document.createElement("p");
-  hold.className = "msg-meta msg-hold";
+  const foot = document.createElement("div");
+  foot.className = "msg-foot";
+  const note = document.createElement("span");
+  note.className = "msg-note";
+  const at = document.createElement("time");
+  at.className = "msg-time";
+  const ticks = document.createElement("span");
+  ticks.className = "msg-ticks";
+  ticks.setAttribute("role", "img");
+  foot.append(note, at, ticks);
   const answer = document.createElement("button");
   answer.type = "button";
   answer.className = "msg-reply";
   answer.textContent = t("inbox.reply");
   answer.addEventListener("click", () => setReply(node._message));
-  node.append(head, quote, body, meta, hold, answer);
-  node._parts = { author, at, quote, body, meta, hold, answer };
+  node.append(head, quote, body, foot, answer);
+  node._parts = { head, icon, author, fyi, at, quote, body, foot, note, ticks, answer };
   return node;
 }
 
-function patchBubble(node, m) {
-  const version = messageVersion(m);
+function patchBubble(node, m, cont) {
+  const version = messageVersion(m, cont);
   if (node._version === version) return;
   node._version = version;
   node._message = m;
@@ -304,16 +433,24 @@ function patchBubble(node, m) {
   if (m.kind === "chat_open" || m.kind === "chat_close") {
     node.className = "msg-event";
     p.author.textContent = fmt(m.kind === "chat_open" ? "inbox.event.open" : "inbox.event.close", { name: authorName(m.from) });
+    p.icon.hidden = true; p.fyi.hidden = true;
     p.at.textContent = clock(m.created_at);
     p.at.dateTime = m.created_at;
-    p.quote.hidden = true; p.body.hidden = true; p.meta.hidden = true; p.hold.hidden = true; p.answer.hidden = true;
+    p.head.append(p.at);
+    p.quote.hidden = true; p.body.hidden = true; p.foot.hidden = true; p.answer.hidden = true;
     return;
   }
-  // Only a failed reply is marked, never the question: another reply may answer it.
-  const failed = m.job_status === "failed" && !!m.reply_to;
-  node.className = "msg " + (m.direction === "out" ? "out" : "in") + (failed ? " failed-reply" : "");
+  const agent = isAgent(m);
+  const out = m.direction === "out";
+  node.className = "msg " + (out ? "out" : "in") + (agent ? " agent" : " human") + (cont ? " cont" : "");
   node.style.setProperty("--who", "var(--who-" + whoIndex(m.from) + ")");
-  p.author.textContent = authorName(m.from);
+  p.icon.hidden = false;
+  p.icon.innerHTML = agent ? ICONS.agent : ICONS.human;
+  p.author.textContent = authorLabel(m);
+  // A person's own message the local agent has not seen yet: it gets it as
+  // information, not as a request.
+  p.fyi.hidden = !(m.own_human && m.unread);
+  p.fyi.textContent = p.fyi.hidden ? "" : t("inbox.author.fyi");
   p.at.textContent = clock(m.created_at);
   p.at.dateTime = m.created_at;
   p.at.title = when(m.created_at);
@@ -322,21 +459,18 @@ function patchBubble(node, m) {
   p.quote.textContent = parent ? fmt("inbox.reply_to", { name: genitiveName(parent.from), text: preview(parent.body, 70) }) : "";
   p.body.hidden = false;
   p.body.textContent = m.body || "";
-  const notes = [];
-  if ((m.responders || []).length) notes.push(fmt("inbox.asks", { names: m.responders.map(genitiveName).join(", ") }));
-  const waiting = (m.delivery || []).filter((d) => d.status === "queued").map((d) => d.peer);
-  if (waiting.length) notes.push(fmt("inbox.undelivered", { names: waiting.join(", ") }));
-  if (m.held) notes.push(t("inbox.held"));
-  if (failed) notes.push(t("inbox.failed"));
-  p.meta.textContent = notes.join(" · ");
-  p.meta.hidden = !notes.length;
-  setClass(p.meta, "warn", m.held);
-  setClass(p.meta, "failed-note", failed);
-  const holds = holdsFor(m.id);
-  p.hold.textContent = holds.map((h) => authorName(h.name) + ": " + h.text).join(" · ");
-  p.hold.hidden = !holds.length;
+  // Whom a group message asks; in a chat of two it is always the other side.
+  const asks = (m.responders || []).filter((name) => name !== m.from);
+  p.note.hidden = !(asks.length && others(info).length > 1);
+  p.note.textContent = p.note.hidden ? "" : fmt("inbox.asks", { names: asks.map(genitiveName).join(", ") });
+  const tick = out ? ticksFor(m) : (m.held ? { state: "held", label: t("inbox.held") } : null);
+  p.ticks.hidden = !tick;
+  p.ticks.className = "msg-ticks" + (tick ? " " + tick.state : "");
+  p.ticks.innerHTML = tick ? ICONS[tick.state] : "";
+  p.ticks.title = tick ? tick.label : "";
+  p.ticks.setAttribute("aria-label", tick ? tick.label.replace(/\n/g, "; ") : "");
   // Own messages get no reply button: a reference to oneself asks nobody.
-  p.answer.hidden = !info || info.legacy || info.closed || m.direction === "out";
+  p.answer.hidden = !info || info.legacy || info.closed || out;
 }
 
 function reconcile(parent, nodes) {
@@ -360,6 +494,13 @@ function olderControl() {
   return olderButton;
 }
 
+// continues: m follows prev by the same author and kind, soon after.
+function continues(prev, m) {
+  if (!prev || prev.kind || m.kind || prev.from !== m.from || isAgent(prev) !== isAgent(m) || m.reply_to) return false;
+  const gap = Date.parse(m.created_at) - Date.parse(prev.created_at);
+  return gap >= 0 && gap < GROUP_MS;
+}
+
 // renderTimeline patches the bubbles in place. The view follows new messages
 // only when it was already at the bottom; otherwise it stays where it was.
 function renderTimeline(opts) {
@@ -369,10 +510,10 @@ function renderTimeline(opts) {
   const oldHeight = list.scrollHeight;
   const ids = new Set(messages.map((m) => m.id));
   for (const [id, node] of messageNodes) if (!ids.has(id)) { node.remove(); messageNodes.delete(id); }
-  const nodes = messages.map((m) => {
+  const nodes = messages.map((m, i) => {
     let node = messageNodes.get(m.id);
     if (!node) { node = createBubble(); messageNodes.set(m.id, node); }
-    patchBubble(node, m);
+    patchBubble(node, m, continues(messages[i - 1], m));
     return node;
   });
   if (hasOlder) nodes.unshift(olderControl());
@@ -401,59 +542,72 @@ function revealMessage(id) {
   target.scrollIntoView({ block: "center" });
 }
 
-// --- the open chat: live activity, one row per running or queued job ---
+// --- the open chat: live activity, one line per running or queued job ---
 
 function jobStart(job) {
   const request = messages.find((m) => m.id === job.reply_to);
   return request?.created_at || job.activity_info?.started_at || job.updated_at;
 }
 
-function activityText(job) {
-  if (job.stale) return t("inbox.activity.stale");
-  if (job.job_status === "queued") return t("inbox.activity.queued");
-  const info = job.activity_info;
-  const text = info?.text || job.activity || "";
-  const typeKey = info?.type ? "inbox.activity.type." + info.type : "";
-  const verb = typeKey && t(typeKey) !== typeKey ? t(typeKey) : "";
-  // A step that only names its type ("thinking") reads as the verb alone.
-  if (verb && text && text.toLowerCase() !== info.type.toLowerCase()) return verb + " " + text;
-  return verb || text || t("inbox.activity.working");
+// waitingLine: this computer's agent has unread messages of the chat but runs
+// nothing for them — say why, so a silent chat is never a mystery.
+function waitingLine(info) {
+  if (!info || info.closed || info.legacy) return null;
+  const mine = (info.members || []).find((m) => m.self);
+  if ((mine?.jobs || []).length) return null;
+  const pending = messages.filter((m) => m.unread && m.direction === "in" && !m.kind);
+  if (!pending.length) return null;
+  const sessions = chatSessionList(info);
+  let key = "";
+  if (sessions.length && sessions.every((s) => s.wake !== "rewake")) key = "inbox.activity.waiting_session";
+  else if (!sessions.length && !store.get().settings?.auto_answer) key = "inbox.activity.no_session";
+  if (!key) return null;
+  return { name: self(), text: t(key), since: pending[0].created_at };
+}
+
+function activityRow(key) {
+  let row = activityNodes.get(key);
+  if (!row) {
+    row = document.createElement("li");
+    const spin = document.createElement("span");
+    spin.className = "act-spin";
+    spin.setAttribute("aria-hidden", "true");
+    const who = document.createElement("strong");
+    who.className = "act-who";
+    const text = document.createElement("span");
+    text.className = "act-text";
+    const total = document.createElement("span");
+    total.className = "act-time";
+    row.append(spin, who, text, total);
+    row._parts = { who, text, total };
+    activityNodes.set(key, row);
+  }
+  return row;
 }
 
 function renderActivity(info) {
   const rows = [];
   const seen = new Set();
+  const place = (key, cls, name, text, since) => {
+    seen.add(key);
+    const row = activityRow(key);
+    const p = row._parts;
+    row.className = "act-row " + cls;
+    row.style.setProperty("--who", "var(--who-" + whoIndex(name) + ")");
+    p.who.textContent = agentName(name);
+    p.text.textContent = text;
+    p.text.title = text;
+    // One timer: how long it has taken so far.
+    p.total.dataset.since = since || "";
+    rows.push(row);
+  };
   for (const member of info?.members || []) {
     for (const job of member.jobs || []) {
-      const key = member.name + "\n" + job.reply_to;
-      seen.add(key);
-      let row = activityNodes.get(key);
-      if (!row) {
-        row = document.createElement("li");
-        const spin = document.createElement("span");
-        spin.className = "act-spin";
-        spin.setAttribute("aria-hidden", "true");
-        const who = document.createElement("strong");
-        who.className = "act-who";
-        const text = document.createElement("span");
-        text.className = "act-text";
-        const total = document.createElement("span");
-        total.className = "act-time";
-        row.append(spin, who, text, total);
-        row._parts = { who, text, total };
-        activityNodes.set(key, row);
-      }
-      const p = row._parts;
-      row.className = "act-row " + (job.stale ? "stale" : job.job_status === "queued" ? "queued" : "running");
-      row.style.setProperty("--who", "var(--who-" + whoIndex(member.name) + ")");
-      p.who.textContent = authorName(member.name);
-      p.text.textContent = activityText(job);
-      p.text.title = p.text.textContent;
-      // One timer: how long the job has taken so far.
-      p.total.dataset.since = jobStart(job) || "";
-      rows.push(row);
+      place(member.name + "\n" + job.reply_to, job.stale ? "stale" : job.job_status === "queued" ? "queued" : "running", member.name, activityText(job), jobStart(job));
     }
   }
+  const waiting = waitingLine(info);
+  if (waiting) place("\nwaiting", "waiting", waiting.name, waiting.text, waiting.since);
   for (const key of [...activityNodes.keys()]) if (!seen.has(key)) activityNodes.delete(key);
   reconcile(activityDock, rows);
   activityDock.hidden = !rows.length;
@@ -473,7 +627,8 @@ function tickActivity() {
 
 // --- the open chat: composer ---
 
-// askSet is the chat's "who must answer" choice: in a chat of two the other\n// side by default, in a group nobody until the user picks.
+// askSet is the chat's "who must answer" choice: in a chat of two the other
+// side by default, in a group nobody until the user picks.
 function askSet(info) {
   if (!askState.has(info.id)) {
     const names = others(info);
@@ -487,6 +642,8 @@ function askSet(info) {
 function renderAsk(info) {
   const chosen = askSet(info);
   const key = info.id + "\n" + others(info).join("\n");
+  // A chat of two always asks the other side: the choice is only for groups.
+  askRow.hidden = others(info).length < 2;
   askHint.hidden = chosen.size > 0;
   if (askChoices._key === key) return;
   askChoices._key = key;
@@ -547,7 +704,7 @@ function renderComposer(info) {
 function setReply(m) {
   replyTo.value = m ? m.id : "";
   document.getElementById("replying").hidden = !m;
-  document.getElementById("replying_text").textContent = m ? fmt("inbox.replying", { text: authorName(m.from) + ": " + preview(m.body, 60) }) : "";
+  document.getElementById("replying_text").textContent = m ? fmt("inbox.replying", { text: authorLabel(m) + ": " + preview(m.body, 60) }) : "";
   const info = store.get().chat;
   if (m && info && m.from !== self() && others(info).includes(m.from)) {
     askState.set(info.id, new Set([m.from]));
@@ -568,13 +725,13 @@ async function submitMessage() {
   sending = true;
   sendButton.disabled = true;
   sendForm.setAttribute("aria-busy", "true");
+  sendResult.textContent = "";
   try {
     const body = { chat_id: id, body: composer.value, ask: [...askSet(info)].sort() };
     if (replyTo.value) body.reply_to = replyTo.value;
     const sent = await api("POST", "send", body);
     store.patch("drafts", Object.assign({}, store.get().drafts, { [id]: "" }));
     if (store.get().selectedChat === id) { composer.value = ""; setReply(null); }
-    sendResult.textContent = t("inbox.sent");
     // A legacy chat continues elsewhere: in a real chat, or in the plain
     // message's own legacy chat; a closed chat in its conversation's next one.
     const next = info.legacy ? sent.chat_id || "legacy-" + sent.id + "-" + info.peer : sent.chat_id || id;
@@ -593,6 +750,7 @@ async function submitMessage() {
 function renderPanel() {
   const info = newChatOpen ? null : store.get().chat;
   setClass(layout, "has-chat", newChatOpen || store.get().selectedChat);
+  setClass(layout, "no-chat", !newChatOpen && !store.get().selectedChat);
   newChatForm.hidden = !newChatOpen;
   list.hidden = newChatOpen;
   setClass(layout, "new-open", newChatOpen);
@@ -648,6 +806,7 @@ async function selectChat(id, messageID) {
     composer.value = store.get().drafts[id] || "";
     setReply(null);
     sendResult.textContent = "";
+    chatInfo.open = false;
   }
   newChatOpen = false;
   store.patch("selectedChat", id || "");
@@ -743,16 +902,24 @@ async function createChat() {
   finally { newChatCreate.disabled = false; newChatForm.removeAttribute("aria-busy"); }
 }
 
-// --- chat actions ---
+// --- closing: the chat leaves the list at once and the view moves on ---
 
-async function chatAction(path, body) {
+async function closeChat() {
   const info = store.get().chat;
-  if (!info) return;
+  if (!info || closing) return;
+  closing = true;
+  chatCloseButton.disabled = true;
   try {
-    const next = await api("POST", chatPath(info.id) + "/" + path, body);
-    if (store.get().selectedChat === info.id) { store.patch("chat", next); renderPanel(); renderTimeline({}); }
+    await api("POST", chatPath(info.id) + "/close");
+    const rest = (store.get().chats || []).filter((chat) => chat.id !== info.id);
+    const next = narrow() ? null : rest.find((chat) => !chat.legacy) || rest[0];
+    // Leave the chat before the list changes, so nothing reloads it.
+    await selectChat("", "");
+    store.patch("chats", rest);
+    navigate("inbox", next ? { chat: next.id } : undefined);
     refreshSlice("chats");
   } catch (error) { sendResult.textContent = error.message; chatSubtitle.hidden = false; chatSubtitle.textContent = error.message; }
+  finally { closing = false; chatCloseButton.disabled = false; }
 }
 
 // --- notifications: a toast for a new incoming message in any chat ---
@@ -766,7 +933,7 @@ const MESSAGE_TOAST_TIMEOUT = 6000;
 function notificationKey(node) { return "agentlink.notifications.v1:" + node; }
 function incomingNotifications(chats) {
   return (chats || []).filter((chat) => chat.last_message && chat.last_message.direction === "in")
-    .map((chat) => ({ notificationID: chat.last_message.id, chat: chat.id, id: chat.last_message.id, from: chat.last_message.from, body: chat.last_message.body }));
+    .map((chat) => ({ notificationID: chat.last_message.id, chat: chat.id, id: chat.last_message.id, from: authorLabel(chat.last_message), body: chat.last_message.body }));
 }
 function persistNotificationIDs(node, ids) {
   const bounded = [...new Set(ids)].slice(0, 500);
@@ -857,10 +1024,11 @@ chatCloseButton.addEventListener("click", () => {
   const info = store.get().chat;
   const key = !info?.legacy ? "inbox.close.confirm" : legacyPeerOld(info) ? "inbox.close.confirm_old" : "inbox.close.confirm_legacy";
   if (typeof confirm === "function" && !confirm(t(key))) return;
-  chatAction("close");
+  closeChat();
 });
 store.subscribe("chats", onChats);
 store.subscribe("chatArchive", renderConversationList);
+store.subscribe("sessions", () => { if (store.get().chat && !newChatOpen) renderPanel(); });
 store.subscribe("status", () => {
   renderConversationList();
   if (store.get().chat && !newChatOpen) renderPanel();

@@ -47,6 +47,18 @@ func TestFolderHooksFollowSettings(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "missing")); err == nil {
 		t.Fatal("a missing project folder was created")
 	}
+	// Every event plus Claude's background waiter; a second sync changes nothing.
+	file := agenthook.ProjectFile(work, "claude")
+	before, _ := os.ReadFile(filepath.Clean(file))
+	for _, want := range []string{agenthook.PreTool, agenthook.SessionEnd, `"asyncRewake": true`, `"--wait"`} {
+		if !strings.Contains(string(before), want) {
+			t.Fatalf("folder hook lacks %s:\n%s", want, before)
+		}
+	}
+	apply("claude", work)
+	if after, _ := os.ReadFile(filepath.Clean(file)); string(after) != string(before) {
+		t.Fatalf("second sync changed the file:\n%s", after)
+	}
 	_, raw := h.do(t, http.MethodGet, "/ui/api/hooks", "", h.tokenHdr())
 	var st HookStatus
 	if err := json.Unmarshal([]byte(raw), &st); err != nil {
