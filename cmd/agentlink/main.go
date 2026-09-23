@@ -38,7 +38,13 @@ const usage = `usage:
   agentlink [-config <settings.json>] [-no-tray] [-api <addr>]   (no command: the desktop app with its tray icon)
   agentlink serve --config <path>
   agentlink send  --config <path> [--to <node|area:NAME>] --body <text> [--reply-to <id>]   (no --to: the only peer; with several it fails and lists them)
-  agentlink wait  --config <path> [--timeout 0]    (seconds or duration; 0 = forever; exit 2 on timeout)
+  agentlink send  --config <path> --chat <id> --body <text> [--ask <node,...>] [--reply-to <id>]   (to every chat participant; --ask: who must answer)
+  agentlink wait  --config <path> [--timeout 0] [--chat <id>]   (seconds or duration; 0 = forever; exit 2 on timeout; --chat: only that chat)
+  agentlink chat new     --config <path> --with <node,...> [--area <name>]   (prints the chat id; you are added)
+  agentlink chat list    --config <path> [--archive] [--legacy]   (one JSON line per chat)
+  agentlink chat history --config <path> --chat <id> [--limit 50] [--before <seq>] [--after <seq>]   (one JSON line per message, oldest first)
+  agentlink chat archive --config <path> --chat <id> [--undo]
+  agentlink close --config <path> --chat <id>      (close the chat for every participant)
   agentlink inbox --config <path> [--limit 50]
   agentlink members --config <path>                (one JSON line per member, this node first)
   agentlink add    --config <path> --addr <ip[:port]>   (dial a member's address; it spreads to all members)
@@ -71,15 +77,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, usage)
 		return 1
 	}
-	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	name, rest := args[0], args[1:]
+	if name == "chat" {
+		if len(rest) == 0 {
+			_, _ = fmt.Fprintln(stderr, usage)
+			return 1
+		}
+		name, rest = "chat "+rest[0], rest[1:]
+	}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	switch args[0] {
+	switch name {
 	case "version":
 		_, _ = fmt.Fprintln(stdout, selfupdate.Version)
 		return 0
 	case "update":
 		check := fs.Bool("check", false, "only report whether a newer release exists")
-		if err := fs.Parse(args[1:]); err != nil {
+		if err := fs.Parse(rest); err != nil {
 			return 1
 		}
 		if err := update(*check, stdout); err != nil {
@@ -90,17 +104,45 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	cfgPath := fs.String("config", "", "config file")
 	var cmd func(config.Config) (int, error)
-	switch args[0] {
+	switch name {
 	case "serve":
 		cmd = func(c config.Config) (int, error) { return 0, serve(c) }
 	case "send":
 		to := fs.String("to", "", "node name or area:NAME; empty sends to the only known peer (an error listing them when there are several)")
 		body := fs.String("body", "", "message text")
-		replyTo := fs.String("reply-to", "", "id of the message being answered")
-		cmd = func(c config.Config) (int, error) { return 0, send(c, *to, *body, *replyTo, stdout) }
+		replyTo := fs.String("reply-to", "", "id of the message being answered (in a chat only a reference)")
+		chat := fs.String("chat", "", "chat id; default $"+envChatID+" when --to is empty")
+		ask := fs.String("ask", "", "chat participants who must answer, comma-separated; none: the message only informs")
+		cmd = func(c config.Config) (int, error) {
+			return 0, send(c, sendArgs{to: *to, body: *body, replyTo: *replyTo, chat: *chat, ask: *ask}, stdout)
+		}
 	case "wait":
 		timeout := fs.String("timeout", "0", "seconds or Go duration; 0 waits forever")
-		cmd = func(c config.Config) (int, error) { return wait(c, *timeout, stdout) }
+		chat := fs.String("chat", "", "only messages of this chat; others stay for a later wait")
+		cmd = func(c config.Config) (int, error) { return wait(c, *timeout, *chat, stdout) }
+	case "close":
+		chat := fs.String("chat", "", "chat id")
+		cmd = func(c config.Config) (int, error) { return 0, chatPost(c, *chat, "/close", nil, stdout) }
+	case "chat new":
+		with := fs.String("with", "", "the other participants, comma-separated")
+		area := fs.String("area", "", "area (project) the participants' agents work in")
+		cmd = func(c config.Config) (int, error) { return 0, chatNew(c, *with, *area, stdout) }
+	case "chat list":
+		archive := fs.Bool("archive", false, "list the archive instead of the main list")
+		legacy := fs.Bool("legacy", false, "add history from before chats as virtual chats")
+		cmd = func(c config.Config) (int, error) { return 0, chatList(c, *archive, *legacy, stdout) }
+	case "chat history":
+		chat := fs.String("chat", "", "chat id; default $"+envChatID)
+		limit := fs.Int("limit", 50, "maximum messages")
+		before := fs.Uint64("before", 0, "only messages before this seq (0: up to the newest)")
+		after := fs.Uint64("after", 0, "only messages after this seq, oldest first")
+		cmd = func(c config.Config) (int, error) { return 0, chatHistory(c, *chat, *limit, *before, *after, stdout) }
+	case "chat archive":
+		chat := fs.String("chat", "", "chat id")
+		undo := fs.Bool("undo", false, "bring the chat back to the main list")
+		cmd = func(c config.Config) (int, error) {
+			return 0, chatPost(c, *chat, "/archive", node.ArchiveRequest{Archived: !*undo}, stdout)
+		}
 	case "inbox":
 		limit := fs.Int("limit", 50, "maximum entries")
 		cmd = func(c config.Config) (int, error) { return 0, inbox(c, *limit, stdout) }
@@ -120,7 +162,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, usage)
 		return 1
 	}
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(rest); err != nil {
 		return 1
 	}
 	if *cfgPath == "" {
@@ -169,11 +211,31 @@ func serve(cfg config.Config) error {
 	return n.Serve(ctx, peerLn, apiLn)
 }
 
-func send(cfg config.Config, to, body, replyTo string, stdout io.Writer) error {
-	if body == "" {
+// Environment of a job's agent, set by the worker: the chat and the request
+// the job answers. send and chat history fall back to the chat; a chat send
+// passes the request on, so the node continues its automatic chain.
+const (
+	envChatID = "AGENTLINK_CHAT_ID"
+	envJobID  = "AGENTLINK_JOB_ID"
+)
+
+type sendArgs struct{ to, body, replyTo, chat, ask string }
+
+func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
+	if a.body == "" {
 		return errors.New("--body is required")
 	}
-	req, err := json.Marshal(node.SendRequest{To: to, Body: body, ReplyTo: replyTo})
+	if a.chat == "" && a.to == "" {
+		a.chat = os.Getenv(envChatID)
+	}
+	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat}
+	if a.ask != "" {
+		r.Ask = []string{a.ask}
+	}
+	if a.chat != "" {
+		r.Parent = os.Getenv(envJobID)
+	}
+	req, err := json.Marshal(r)
 	if err != nil {
 		return err
 	}
@@ -193,12 +255,16 @@ func send(cfg config.Config, to, body, replyTo string, stdout io.Writer) error {
 	return err
 }
 
-func wait(cfg config.Config, timeout string, stdout io.Writer) (int, error) {
+func wait(cfg config.Config, timeout, chat string, stdout io.Writer) (int, error) {
 	d, err := parseTimeout(timeout)
 	if err != nil {
 		return 1, err
 	}
-	resp, err := apiDo(http.MethodGet, apiURL(cfg, "/wait", url.Values{"timeout": {d.String()}}), nil)
+	q := url.Values{"timeout": {d.String()}}
+	if chat != "" {
+		q.Set("chat", chat)
+	}
+	resp, err := apiDo(http.MethodGet, apiURL(cfg, "/wait", q), nil)
 	if err != nil {
 		return 1, err
 	}
@@ -222,6 +288,87 @@ func inbox(cfg config.Config, limit int, stdout io.Writer) error {
 		return err
 	}
 	return printLines[node.Entry](resp.Body, stdout)
+}
+
+func chatNew(cfg config.Config, with, area string, stdout io.Writer) error {
+	if strings.TrimSpace(with) == "" {
+		return errors.New("--with is required")
+	}
+	var info node.ChatInfo
+	if err := apiJSON(http.MethodPost, apiURL(cfg, "/chats", nil), node.CreateChatRequest{Participants: []string{with}, Area: area}, &info); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(stdout, info.ID)
+	return err
+}
+
+func chatList(cfg config.Config, archive, legacy bool, stdout io.Writer) error {
+	q := url.Values{}
+	if archive {
+		q.Set("archive", "1")
+	}
+	if legacy {
+		q.Set("legacy", "1")
+	}
+	var chats []node.ChatInfo
+	if err := apiJSON(http.MethodGet, apiURL(cfg, "/chats", q), nil, &chats); err != nil {
+		return err
+	}
+	return encodeLines(stdout, chats)
+}
+
+func chatHistory(cfg config.Config, chat string, limit int, before, after uint64, stdout io.Writer) error {
+	if chat == "" {
+		chat = os.Getenv(envChatID)
+	}
+	if chat == "" {
+		return errors.New("--chat is required")
+	}
+	q := url.Values{"limit": {strconv.Itoa(limit)}}
+	if before > 0 {
+		q.Set("before", strconv.FormatUint(before, 10))
+	}
+	if after > 0 {
+		q.Set("after", strconv.FormatUint(after, 10))
+	}
+	var msgs []node.ChatMessage
+	if err := apiJSON(http.MethodGet, apiURL(cfg, "/chats/"+url.PathEscape(chat)+"/messages", q), nil, &msgs); err != nil {
+		return err
+	}
+	return encodeLines(stdout, msgs)
+}
+
+// chatPost posts body (nil: none) to /chats/{chat}<action> and prints the chat as one JSON line.
+func chatPost(cfg config.Config, chat, action string, body any, stdout io.Writer) error {
+	if chat == "" {
+		return errors.New("--chat is required")
+	}
+	var info node.ChatInfo
+	if err := apiJSON(http.MethodPost, apiURL(cfg, "/chats/"+url.PathEscape(chat)+action, nil), body, &info); err != nil {
+		return err
+	}
+	return encodeLines(stdout, []node.ChatInfo{info})
+}
+
+// apiJSON calls the local API with req as the JSON body (nil: none) and
+// decodes a 200 answer into out.
+func apiJSON(method, u string, req, out any) error {
+	var body []byte
+	if req != nil {
+		var err error
+		if body, err = json.Marshal(req); err != nil {
+			return err
+		}
+	}
+	resp, err := apiDo(method, u, body)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return err
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
 }
 
 // members lists the member table, after posting req to path when req is set.
@@ -334,6 +481,11 @@ func printLines[T any](r io.Reader, w io.Writer) error {
 	if err := json.NewDecoder(r).Decode(&items); err != nil {
 		return err
 	}
+	return encodeLines(w, items)
+}
+
+// encodeLines prints one compact JSON object per line.
+func encodeLines[T any](w io.Writer, items []T) error {
 	enc := json.NewEncoder(w)
 	for _, it := range items {
 		if err := enc.Encode(it); err != nil {
