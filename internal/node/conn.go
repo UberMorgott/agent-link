@@ -69,7 +69,7 @@ const lingerTimeout = 2 * time.Second
 // Closing at once while input is unread resets the connection, and a reset
 // can discard the last frame before the peer reads it.
 func (pc *peerConn) closeAfterTelling() {
-	tc, ok := pc.c.(*net.TCPConn)
+	tc, ok := pc.c.(interface{ CloseWrite() error }) // *net.TCPConn, or the Hub's wrapper of one
 	if !ok {
 		pc.close()
 		return
@@ -124,6 +124,11 @@ func (n *Node) register(pc *peerConn) bool {
 	case old != nil && !preferred(n.cfg.Node, pc, old):
 		n.mu.Unlock()
 		return false
+	case old == nil && !n.hub.addSession():
+		// A replacement keeps the slot of the session it replaces.
+		n.mu.Unlock()
+		n.log.Warn("session refused: too many live sessions", "peer", pc.peer)
+		return false
 	}
 	n.conns[pc.peer] = pc
 	n.known[pc.peer] = true
@@ -174,6 +179,7 @@ func (n *Node) unregister(pc *peerConn) {
 	gone := n.conns[pc.peer] == pc
 	hadPresence := pc.presence != nil
 	if gone {
+		n.hub.dropSession()
 		delete(n.conns, pc.peer)
 		n.offline[pc.peer] = time.Now()
 		n.log.Info("peer disconnected", "peer", pc.peer)

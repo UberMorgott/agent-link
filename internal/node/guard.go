@@ -3,6 +3,7 @@ package node
 import (
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -46,19 +47,34 @@ func guardKey(ip net.IP) string {
 	return ""
 }
 
+// scopedKey is the guard entry of ip within scope: a Hub keeps the failures
+// of each context (and those before any hello) apart, so succeeding in one
+// project never clears guesses against another, and failing in one never
+// blocks the others. A node on its own uses the scope "".
+func scopedKey(ip net.IP, scope string) string {
+	if scope == "" {
+		return guardKey(ip)
+	}
+	return guardKey(ip) + "|" + scope
+}
+
 // allow reports whether a connection from ip may try a handshake now.
-func (g *authGuard) allow(ip net.IP) bool {
+func (g *authGuard) allow(ip net.IP) bool { return g.allowIn(ip, "") }
+
+func (g *authGuard) allowIn(ip net.IP, scope string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	e := g.m[guardKey(ip)]
+	e := g.m[scopedKey(ip, scope)]
 	return e == nil || !g.now().Before(e.until)
 }
 
 // fail records a failed handshake from ip and returns how long it is now blocked.
-func (g *authGuard) fail(ip net.IP) time.Duration {
+func (g *authGuard) fail(ip net.IP) time.Duration { return g.failIn(ip, "") }
+
+func (g *authGuard) failIn(ip net.IP, scope string) time.Duration {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	now, k := g.now(), guardKey(ip)
+	now, k := g.now(), scopedKey(ip, scope)
 	e := g.m[k]
 	if e != nil && now.Sub(e.last) > guardForget {
 		e = nil
@@ -82,9 +98,11 @@ func (g *authGuard) fail(ip net.IP) time.Duration {
 }
 
 // success forgets ip's failures.
-func (g *authGuard) success(ip net.IP) {
+func (g *authGuard) success(ip net.IP) { g.successIn(ip, "") }
+
+func (g *authGuard) successIn(ip net.IP, scope string) {
 	g.mu.Lock()
-	delete(g.m, guardKey(ip))
+	delete(g.m, scopedKey(ip, scope))
 	g.mu.Unlock()
 }
 
@@ -141,6 +159,49 @@ func (l *connLimit) acquire(ip net.IP) bool {
 	l.n++
 	l.by[k]++
 	return true
+}
+
+// inboundLease is one inbound connection's hold on a connLimit slot and its
+// pending verdict for the authGuard. Whoever owns the connection (the Hub
+// while it reads the first line, then the node) ends it: release frees the
+// slot, fail and ok also record the handshake's outcome. Each acts once.
+type inboundLease struct {
+	guard   *authGuard
+	pending *connLimit
+	ip      net.IP
+	// scope is the guard scope the verdict counts in (scopedKey); set by
+	// its owner before the handshake.
+	scope    string
+	released atomic.Bool
+	judged   atomic.Bool
+}
+
+func newInboundLease(g *authGuard, l *connLimit, ip net.IP) *inboundLease {
+	return &inboundLease{guard: g, pending: l, ip: ip}
+}
+
+func (l *inboundLease) release() {
+	if l.released.CompareAndSwap(false, true) {
+		l.pending.release(l.ip)
+	}
+}
+
+// fail releases and records a failed handshake; it returns how long the
+// source is now blocked.
+func (l *inboundLease) fail() time.Duration {
+	l.release()
+	if l.judged.CompareAndSwap(false, true) {
+		return l.guard.failIn(l.ip, l.scope)
+	}
+	return 0
+}
+
+// ok releases and forgets the source's failures.
+func (l *inboundLease) ok() {
+	l.release()
+	if l.judged.CompareAndSwap(false, true) {
+		l.guard.successIn(l.ip, l.scope)
+	}
 }
 
 func (l *connLimit) release(ip net.IP) {

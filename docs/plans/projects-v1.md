@@ -587,3 +587,15 @@ traversal, dynamic chat participants, converting the legacy network.
   the legacy code there. Invalid binding id/epoch/secret or a duplicate id is
   the problem `project_binding` (new sentence `error.project_binding`).
   `settings.Save` also refuses to overwrite a file whose version is newer.
+- A4 (after a Codex review): the shared `authGuard` counts failures per
+  `(source, scope)` — scope `#hello` before a hello names a context (timeout,
+  oversize or missing first line), then the project id (`""` = legacy) — so a
+  success in project A never clears guesses against project B and failures in
+  one context never block the others; `pendingTotal/PerSource` stay shared. An
+  unknown-project hello only `release()`s its lease (no guard failure): a member
+  may still dial a project this side left, or be ahead of this side's join.
+  The first-line cap is `maxHandshakeLine` (64 KiB), not `maxFrame`: the node's
+  wire refuses longer handshake lines anyway. `Hub.Remove` keeps the id taken
+  until the node has stopped; `Hub.Wait` closes the Hub to further `Add`.
+  `Hub.Start(ctx)`/`Wait()` replace a blocking run; the app calls `Add` after
+  `Start`.

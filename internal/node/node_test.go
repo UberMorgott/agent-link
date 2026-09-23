@@ -81,6 +81,7 @@ func (tn *testNode) start(t *testing.T) {
 		}
 	}()
 	t.Cleanup(tn.stop)
+	eventually(t, tn.cfg.Node+" running", tn.running)
 }
 
 func (tn *testNode) stop() {

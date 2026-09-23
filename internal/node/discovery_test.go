@@ -1,7 +1,6 @@
 package node
 
 import (
-	"context"
 	"encoding/json"
 	"net"
 	"testing"
@@ -74,7 +73,7 @@ func TestBeaconFiltered(t *testing.T) {
 		{T: beaconType, V: 1, Net: a.netTag, Node: "b c", Port: 1},
 		{T: beaconType, V: 1, Net: a.netTag, Node: "b", Port: 0},
 	} {
-		a.heard(context.Background(), b, ip)
+		a.heard(b, ip)
 	}
 	a.mu.Lock()
 	tried := len(a.tried)
@@ -94,10 +93,8 @@ func TestBeaconDials(t *testing.T) {
 	a.netTag = NetworkTag([]byte(testSecret))
 	a.start(t)
 	b.start(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 	bc := beacon{T: beaconType, V: 1, Net: a.netTag, Node: "b", ID: b.id, Port: tcpPort(t, b.peerLn)}
-	a.heard(ctx, bc, net.IPv4(127, 0, 0, 1))
+	a.heard(bc, net.IPv4(127, 0, 0, 1))
 	eventually(t, "a dialed b from its beacon", meshed(a, b))
 }
 
@@ -111,10 +108,8 @@ func TestLegacyBeaconDials(t *testing.T) {
 	}
 	a.start(t)
 	b.start(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 	bc := beacon{T: beaconType, V: 1, Net: a.oldNetTag, Node: "b", ID: b.id, Port: tcpPort(t, b.peerLn)}
-	a.heard(ctx, bc, net.IPv4(127, 0, 0, 1))
+	a.heard(bc, net.IPv4(127, 0, 0, 1))
 	eventually(t, "a dialed b from its v1 beacon", meshed(a, b))
 }
 

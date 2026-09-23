@@ -106,6 +106,13 @@ type Node struct {
 	isPrivate func(net.IP) bool // addresses allowed the legacy handshake (privateAddr)
 
 	wg sync.WaitGroup
+	// runCtx is Run's context while it runs, nil otherwise (guarded by runMu):
+	// spawn starts goroutines only then, so none is added once Run waits.
+	runMu  sync.Mutex
+	runCtx context.Context
+	// hub, when set (Hub.Add), owns the listener, the discovery socket and
+	// the handshake limits this node shares with the other contexts.
+	hub *Hub
 
 	resendAfter      time.Duration
 	resendTick       time.Duration
@@ -310,13 +317,19 @@ func (n *Node) Run(ctx context.Context, peerLn net.Listener) {
 	n.selfAddrs, n.listenPort = addrs, port
 	n.mu.Unlock()
 	n.refreshSelf()
+	n.runMu.Lock()
+	n.runCtx = ctx
+	n.runMu.Unlock()
 	n.wg.Go(func() { n.acceptLoop(ctx, peerLn) })
 	n.wg.Go(func() { n.meshLoop(ctx) }) // also dials the configured peers
-	if n.netTag != "" {
+	if n.netTag != "" && n.hub == nil { // under a Hub, its socket carries the beacons
 		n.wg.Go(func() { n.discoveryLoop(ctx) })
 	}
-	n.log.Info("serving peers", "listen", peerLn.Addr(), "addrs", addrs, "discovery", n.netTag != "")
+	n.log.Info("serving peers", "listen", peerLn.Addr(), "addrs", addrs, "discovery", n.netTag != "", "project", n.cfg.Project)
 	<-ctx.Done()
+	n.runMu.Lock()
+	n.runCtx = nil
+	n.runMu.Unlock()
 	_ = peerLn.Close()
 	n.wg.Wait()
 	n.mu.Lock()
@@ -324,6 +337,27 @@ func (n *Node) Run(ctx context.Context, peerLn net.Listener) {
 		t.started = false // a later Run dials them again
 	}
 	n.mu.Unlock()
+}
+
+// running reports whether Run is serving peers.
+func (n *Node) running() bool {
+	n.runMu.Lock()
+	defer n.runMu.Unlock()
+	return n.runCtx != nil
+}
+
+// spawn runs fn on the node's wait group while Run runs, reporting whether it
+// did; fn gets Run's context. Callers outside Run's own goroutines (the Hub's
+// beacon reader) start work this way.
+func (n *Node) spawn(fn func(ctx context.Context)) bool {
+	n.runMu.Lock()
+	defer n.runMu.Unlock()
+	ctx := n.runCtx
+	if ctx == nil {
+		return false
+	}
+	n.wg.Go(func() { fn(ctx) })
+	return true
 }
 
 // AddPeer dials addr (host or host:port, default port added) in addition to
@@ -582,28 +616,34 @@ func (n *Node) acceptLoop(ctx context.Context, ln net.Listener) {
 func (n *Node) handleInbound(ctx context.Context, c net.Conn) {
 	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
 	defer stop()
-	var ip net.IP
-	if tcp, ok := c.RemoteAddr().(*net.TCPAddr); ok {
-		ip = tcp.IP
-	}
-	if !n.guard.allow(ip) {
-		n.log.Debug("inbound connection closed: too many failed handshakes", "remote", c.RemoteAddr())
-		_ = c.Close()
-		return
-	}
-	if !n.pending.acquire(ip) {
-		n.log.Debug("inbound connection closed: too many unauthenticated connections", "remote", c.RemoteAddr())
-		_ = c.Close()
-		return
+	// A connection handed over by the Hub carries the Hub's lease; a node on
+	// its own listener takes one from its own guard and limit.
+	lease := leaseOf(c)
+	if lease == nil {
+		var ip net.IP
+		if tcp, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+			ip = tcp.IP
+		}
+		if !n.guard.allow(ip) {
+			n.log.Debug("inbound connection closed: too many failed handshakes", "remote", c.RemoteAddr())
+			_ = c.Close()
+			return
+		}
+		if !n.pending.acquire(ip) {
+			n.log.Debug("inbound connection closed: too many unauthenticated connections", "remote", c.RemoteAddr())
+			_ = c.Close()
+			return
+		}
+		lease = newInboundLease(n.guard, n.pending, ip)
 	}
 	_ = c.SetDeadline(time.Now().Add(n.handshakeTimeout))
 	w := newWire(c)
 	hello, err := n.acceptHandshake(w)
-	n.pending.release(ip)
+	lease.release()
 	if err != nil {
 		// A name clash is a state of the network, not a guess.
 		if !errors.Is(err, ErrSameName) && !errors.Is(err, ErrNameTaken) {
-			if d := n.guard.fail(ip); d > 0 {
+			if d := lease.fail(); d > 0 {
 				n.log.Warn("too many failed handshakes, source blocked", "remote", c.RemoteAddr(), "for", d)
 			}
 		}
@@ -611,7 +651,7 @@ func (n *Node) handleInbound(ctx context.Context, c net.Conn) {
 		_ = c.Close()
 		return
 	}
-	n.guard.success(ip)
+	lease.ok()
 	pc := newPeerConn(hello, hello.name, w)
 	if !n.register(pc) {
 		_ = c.Close()
@@ -652,6 +692,12 @@ func (n *Node) dialLoop(ctx context.Context, t *target) {
 // dialOnce connects, authenticates and serves one session. It reports whether
 // a session was established.
 func (n *Node) dialOnce(ctx context.Context, t *target) bool {
+	// Under a Hub, dial + handshake take one of its outbound slots.
+	release, ok := n.hub.acquireDial(ctx)
+	if !ok {
+		return false
+	}
+	defer release()
 	d := net.Dialer{Timeout: n.handshakeTimeout}
 	c, err := d.DialContext(ctx, "tcp", t.addr)
 	if err != nil {
@@ -692,6 +738,7 @@ func (n *Node) dialOnce(ctx context.Context, t *target) bool {
 	n.mu.Lock()
 	t.revive = false
 	n.mu.Unlock()
+	release() // the session runs; the dial slot is free again
 	n.runConn(ctx, pc, t.addr)
 	return true
 }

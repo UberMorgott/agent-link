@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net"
 	"strconv"
 	"sync"
@@ -146,50 +147,48 @@ func broadcastAddr(ipn *net.IPNet) net.IP {
 	return out
 }
 
-// discoveryLoop sends and receives beacons until ctx ends. Without a usable
-// socket it logs once and returns: the node works without discovery.
-func (n *Node) discoveryLoop(ctx context.Context) {
+// beaconSocket is where beacons are sent and heard: the port, multicast
+// group, interval and interfaces (a Node's own, or its Hub's).
+type beaconSocket struct {
+	port   int
+	group  net.IP
+	every  time.Duration
+	ifaces func() []net.Interface
+	log    *slog.Logger
+}
+
+// run sends msgs() every interval and hands every heard beacon to heard,
+// until ctx ends. Without a usable socket it logs once and returns: the
+// node works without discovery. Its reader runs on wg.
+func (s beaconSocket) run(ctx context.Context, wg *sync.WaitGroup, msgs func() [][]byte, heard func(beacon, net.IP)) {
 	lc := net.ListenConfig{Control: reuseAddr}
-	c, err := lc.ListenPacket(ctx, "udp4", ":"+strconv.Itoa(n.beaconPort))
+	c, err := lc.ListenPacket(ctx, "udp4", ":"+strconv.Itoa(s.port))
 	if err != nil {
-		n.log.Warn("discovery off: cannot listen", "port", n.beaconPort, "err", err)
+		s.log.Warn("discovery off: cannot listen", "port", s.port, "err", err)
 		return
 	}
-	defer func() { _ = c.Close() }() // also ends readBeacons
+	defer func() { _ = c.Close() }() // also ends the reader
 	p := ipv4.NewPacketConn(c)
 	_ = p.SetMulticastLoopback(true) // other instances on this machine (tests, two users)
 	_ = p.SetMulticastTTL(1)
-	n.wg.Go(func() { n.readBeacons(ctx, p) })
+	wg.Go(func() { s.read(ctx, p, heard) })
 
-	group := &net.UDPAddr{IP: n.beaconGroup, Port: n.beaconPort}
+	group := &net.UDPAddr{IP: s.group, Port: s.port}
 	joined := map[string]bool{}
-	tick := time.NewTicker(n.beaconEvery)
+	tick := time.NewTicker(s.every)
 	defer tick.Stop()
 	for {
-		msg, err := json.Marshal(n.beacon())
-		if err != nil {
-			return
-		}
-		for _, ifi := range n.beaconIfaces() {
+		out := msgs()
+		for _, ifi := range s.ifaces() {
 			key := ifi.Name + "/" + strconv.Itoa(ifi.Index)
 			if !joined[key] {
 				if err := p.JoinGroup(&ifi, group); err != nil {
-					n.log.Debug("discovery join", "iface", ifi.Name, "err", err)
+					s.log.Debug("discovery join", "iface", ifi.Name, "err", err)
 				}
 				joined[key] = true // retried only when the interface list changes
 			}
-			if ifi.Flags&net.FlagMulticast != 0 && p.SetMulticastInterface(&ifi) == nil {
-				if _, err := p.WriteTo(msg, nil, group); err != nil {
-					n.log.Debug("discovery send", "iface", ifi.Name, "err", err)
-				}
-			}
-			if ifi.Flags&net.FlagBroadcast == 0 {
-				continue
-			}
-			for _, ipn := range ipv4Nets(ifi) {
-				if b := broadcastAddr(ipn); b != nil {
-					_, _ = p.WriteTo(msg, nil, &net.UDPAddr{IP: b, Port: n.beaconPort})
-				}
+			for _, msg := range out {
+				s.send(p, ifi, group, msg)
 			}
 		}
 		select {
@@ -200,17 +199,25 @@ func (n *Node) discoveryLoop(ctx context.Context) {
 	}
 }
 
-// beacon is this node's beacon: v2 with the Argon2id tag for the legacy
-// network, v3 with the project tag (config.ProjectTag) for a project.
-func (n *Node) beacon() beacon {
-	v := beaconVersion
-	if n.cfg.Project != "" {
-		v = projectBeaconVersion
+// send writes one beacon on ifi: multicast, and a directed broadcast on each
+// of its IPv4 networks.
+func (s beaconSocket) send(p *ipv4.PacketConn, ifi net.Interface, group *net.UDPAddr, msg []byte) {
+	if ifi.Flags&net.FlagMulticast != 0 && p.SetMulticastInterface(&ifi) == nil {
+		if _, err := p.WriteTo(msg, nil, group); err != nil {
+			s.log.Debug("discovery send", "iface", ifi.Name, "err", err)
+		}
 	}
-	return beacon{T: beaconType, V: v, Net: n.netTag, Node: n.cfg.Node, ID: n.id, Port: n.port()}
+	if ifi.Flags&net.FlagBroadcast == 0 {
+		return
+	}
+	for _, ipn := range ipv4Nets(ifi) {
+		if b := broadcastAddr(ipn); b != nil {
+			_, _ = p.WriteTo(msg, nil, &net.UDPAddr{IP: b, Port: s.port})
+		}
+	}
 }
 
-func (n *Node) readBeacons(ctx context.Context, p *ipv4.PacketConn) {
+func (s beaconSocket) read(ctx context.Context, p *ipv4.PacketConn, heard func(beacon, net.IP)) {
 	buf := make([]byte, beaconMax)
 	for {
 		size, _, src, err := p.ReadFrom(buf)
@@ -218,7 +225,7 @@ func (n *Node) readBeacons(ctx context.Context, p *ipv4.PacketConn) {
 			if ctx.Err() != nil {
 				return
 			}
-			n.log.Debug("discovery read", "err", err)
+			s.log.Debug("discovery read", "err", err)
 			select {
 			case <-ctx.Done():
 				return
@@ -234,16 +241,46 @@ func (n *Node) readBeacons(ctx context.Context, p *ipv4.PacketConn) {
 		if json.Unmarshal(buf[:size], &b) != nil {
 			continue
 		}
-		n.heard(ctx, b, udp.IP)
+		heard(b, udp.IP)
 	}
+}
+
+// discoveryLoop runs the node's own beacon socket (a node without a Hub).
+func (n *Node) discoveryLoop(ctx context.Context) {
+	s := beaconSocket{port: n.beaconPort, group: n.beaconGroup, every: n.beaconEvery, ifaces: n.beaconIfaces, log: n.log}
+	s.run(ctx, &n.wg, func() [][]byte {
+		msg, err := json.Marshal(n.beacon())
+		if err != nil {
+			return nil
+		}
+		return [][]byte{msg}
+	}, n.heard)
+}
+
+// beacon is this node's beacon: v2 with the Argon2id tag for the legacy
+// network, v3 with the project tag (config.ProjectTag) for a project.
+func (n *Node) beacon() beacon {
+	v := beaconVersion
+	if n.cfg.Project != "" {
+		v = projectBeaconVersion
+	}
+	return beacon{T: beaconType, V: v, Net: n.netTag, Node: n.cfg.Node, ID: n.id, Port: n.port()}
+}
+
+// ownsTag reports whether a beacon's net is this node's network.
+func (n *Node) ownsTag(tag string) bool {
+	return n.netTag != "" && (tag == n.netTag || (n.oldNetTag != "" && tag == n.oldNetTag))
 }
 
 // heard dials the sender of a beacon of this network, unless it is this node,
 // a removed member, already connected, or was dialed at that address lately.
-func (n *Node) heard(ctx context.Context, b beacon, ip net.IP) {
-	if b.T != beaconType || (b.Net != n.netTag && (n.oldNetTag == "" || b.Net != n.oldNetTag)) || b.ID == n.id || b.Node == n.cfg.Node ||
+func (n *Node) heard(b beacon, ip net.IP) {
+	if b.T != beaconType || !n.ownsTag(b.Net) || b.ID == n.id || b.Node == n.cfg.Node ||
 		!config.ValidName(b.Node) || b.Port <= 0 || b.Port > 65535 || ip == nil {
 		return
+	}
+	if !n.running() {
+		return // nothing could dial it; a later beacon will do
 	}
 	addr := net.JoinHostPort(ip.String(), strconv.Itoa(b.Port))
 	now := time.Now()
@@ -263,5 +300,5 @@ func (n *Node) heard(ctx context.Context, b beacon, ip net.IP) {
 		return
 	}
 	n.log.Info("discovered", "peer", b.Node, "addr", addr)
-	n.wg.Go(func() { n.dialOnce(ctx, &target{addr: addr, name: b.Node, auto: true}) })
+	n.spawn(func(ctx context.Context) { n.dialOnce(ctx, &target{addr: addr, name: b.Node, auto: true}) })
 }
