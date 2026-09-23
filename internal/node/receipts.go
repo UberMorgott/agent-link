@@ -23,6 +23,10 @@ import (
 // folder of this node.
 var ErrFolderUnbound = errors.New("folder is not the working folder or a project folder of this node")
 
+// ErrNeedsFolder: a project node has no folder bound, so no folder is its
+// (docs/plans/projects-v1.md §3.5): no agent session can register there.
+var ErrNeedsFolder = errors.New("no project folder is bound")
+
 // folderMap maps local folders to areas: the deepest project folder that
 // holds a folder picks its area; the working folder (any folder when none is
 // set) is the one of direct messages and chats without a project here (area
@@ -31,6 +35,11 @@ type folderMap struct {
 	work     string
 	projects map[string]string // area -> dir
 }
+
+// NeedsFolder reports a project node without a bound folder: it has no
+// folder at all (FolderArea matches nothing), and requests that ask it are
+// held (HoldWithoutFolder). Outside projects an empty working folder means any.
+func (n *Node) NeedsFolder() bool { return n.cfg.Project != "" && n.folders.work == "" }
 
 // SetFolders tells the node its working folder and project folders (area ->
 // dir), which bind a session's folder to an area (Sessions, Unread). It must
@@ -42,6 +51,9 @@ func (n *Node) SetFolders(workDir string, projects map[string]string) {
 // FolderArea returns the area a session in folder works on; ok is false when
 // folder is no folder of this node (ErrFolderUnbound).
 func (n *Node) FolderArea(folder string) (area string, ok bool) {
+	if n.NeedsFolder() {
+		return "", false
+	}
 	best := -1
 	for a, dir := range n.folders.projects {
 		if dir != "" && inFolder(dir, folder) && len(filepath.Clean(dir)) > best {
@@ -107,6 +119,9 @@ func (n *Node) Unread(folder, after string, limit int) (UnreadPage, error) {
 	area, filter := "", folder != ""
 	if filter {
 		a, ok := n.FolderArea(folder)
+		if !ok && n.NeedsFolder() {
+			return UnreadPage{}, ErrNeedsFolder
+		}
 		if !ok {
 			return UnreadPage{}, fmt.Errorf("%w: %s", ErrFolderUnbound, folder)
 		}

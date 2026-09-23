@@ -183,3 +183,20 @@ func (n *Node) sendProject(pc *peerConn) {
 		pc.close()
 	}
 }
+
+// HoldWithoutFolder is the inbound hook of a project node without a bound
+// folder (NeedsFolder), which runs no worker: every chat request that asks
+// this node gets a terminal JobHeld status HoldNoFolder, so its sender sees
+// why no agent answers. The request stays unread for a person here. The
+// status id is derived from the request, so a resent request is safe.
+func (n *Node) HoldWithoutFolder(m Message) error {
+	if !m.Asks(n.cfg.Node) || m.From == n.cfg.Node {
+		return nil
+	}
+	if c, ok := n.chats.get(m.ChatID); !ok || c.Closed() {
+		return nil // nothing to answer in a chat that is gone or finished
+	}
+	_, err := n.SendMessage(Message{ID: DerivedID(m.ID, n.cfg.Node+"/held"), ChatID: m.ChatID, ReplyTo: m.ID,
+		Kind: KindStatus, JobStatus: JobHeld, HoldReason: HoldNoFolder, Activity: HoldText(HoldNoFolder)})
+	return err
+}

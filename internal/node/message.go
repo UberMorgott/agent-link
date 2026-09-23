@@ -103,6 +103,7 @@ const (
 	HoldAutoLimit  = "auto_limit"  // automatic chain limit, or its root already ran here
 	HoldChatClosed = "chat_closed" // the chat is closed (or gone)
 	HoldAnswered   = "answered"    // a person on this node answered it
+	HoldNoFolder   = "no_folder"   // a project member has no folder bound: no agent runs
 )
 
 // HoldText is the text shown for a hold reason.
@@ -118,6 +119,8 @@ func HoldText(reason string) string {
 		return "чат закрыт"
 	case HoldAnswered:
 		return "ответил человек"
+	case HoldNoFolder:
+		return "у участника не выбрана папка проекта"
 	}
 	return "не отвечает автоматически — ждёт человека"
 }

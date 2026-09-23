@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 )
 
 // projectPair starts two connected nodes a and b of project p.
@@ -312,5 +313,67 @@ func TestProjectMemberCap(t *testing.T) {
 		if alive != maxMembers {
 			t.Fatalf("alive members %d, want %d", alive, maxMembers)
 		}
+	}
+}
+
+// A project member without a folder has no folder at all, and answers every
+// request that asks it with the held status no_folder.
+func TestProjectHoldNoFolder(t *testing.T) {
+	p := newTestProject(t)
+	lnA, lnB := listen(t), listen(t)
+	a := newProjectNode(t, "a", p, lnA, map[string]net.Listener{"b": lnB})
+	b := newProjectNode(t, "b", p, lnB, nil)
+	b.SetInboundHook(b.HoldWithoutFolder)
+	a.start(t)
+	b.start(t)
+	eventually(t, "a<->b connected", func() bool { return a.Connected("b") && b.Connected("a") })
+	if !b.NeedsFolder() || !a.NeedsFolder() {
+		t.Fatal("a project node without SetFolders needs a folder")
+	}
+	dir := t.TempDir()
+	if _, ok := b.FolderArea(dir); ok {
+		t.Fatal("a node without a folder matched one")
+	}
+	if _, err := b.RegisterSession(SessionRequest{SessionID: "s1", Provider: "claude", Folder: dir}); !errors.Is(err, ErrNeedsFolder) {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := b.Unread(dir, "", 0); !errors.Is(err, ErrNeedsFolder) {
+		t.Fatalf("unread: %v", err)
+	}
+	c, err := a.NewProjectChat([]string{"b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := func() []JobActivity {
+		ci, _ := a.Chat(c.ID)
+		for _, m := range ci.Members {
+			if m.Name == "b" {
+				return m.Held
+			}
+		}
+		return nil
+	}
+	ask, err := a.SendChat(ChatSend{ChatID: c.ID, Body: "run it", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "held no_folder on a", func() bool {
+		h := info()
+		return len(h) == 1 && h[0].ReplyTo == ask.ID && h[0].HoldReason == HoldNoFolder && h[0].Activity == HoldText(HoldNoFolder)
+	})
+	// Only requests that ask b: a message that informs gets nothing.
+	if _, err := a.SendChat(ChatSend{ChatID: c.ID, Body: "fyi"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if h := info(); len(h) != 1 {
+		t.Fatalf("held %+v", h)
+	}
+	b.SetFolders(dir, nil)
+	if b.NeedsFolder() {
+		t.Fatal("a bound folder still needs one")
+	}
+	if _, ok := b.FolderArea(dir); !ok {
+		t.Fatal("the bound folder does not match")
 	}
 }

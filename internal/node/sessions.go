@@ -122,7 +122,7 @@ func validSessionID(id string) bool {
 
 // RegisterSession registers a live session or refreshes it (a heartbeat: the
 // same session_id again). Its folder must be one of this node's
-// (ErrFolderUnbound).
+// (ErrFolderUnbound); a project node without a folder takes none (ErrNeedsFolder).
 func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	switch {
 	case !validSessionID(req.SessionID):
@@ -142,7 +142,10 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 		return Session{}, fmt.Errorf("%w: wake must be %q or %q", ErrBadRequest, WakeRewake, WakeNextEvent)
 	}
 	area, ok := n.FolderArea(req.Folder)
-	if !ok {
+	switch {
+	case n.NeedsFolder():
+		return Session{}, ErrNeedsFolder
+	case !ok:
 		return Session{}, fmt.Errorf("%w: %s", ErrFolderUnbound, req.Folder)
 	}
 	ttl := req.TTLSec
