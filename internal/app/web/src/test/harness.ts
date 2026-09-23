@@ -12,16 +12,13 @@ import { createAppRouter } from '@/router'
 
 export type Handler = (method: string, path: string, body: unknown) => unknown
 
-export class HttpError extends Error {
-  status: number
-  constructor(status: number, message: string) {
-    super(message)
-    this.status = status
-  }
-}
+import { createBackend, handle, HttpError, type Backend } from './backend'
+
+export { HttpError }
 
 // fakeApi answers /ui/api/<path> with handler's value as JSON; an HttpError
-// becomes that status with {"error": message}. calls lists "METHOD path".
+// becomes that status with {"error": message, "code": code}. calls lists
+// "METHOD path".
 export function fakeApi(handler: Handler) {
   const calls: string[] = []
   const requests: { url: string; init: RequestInit }[] = []
@@ -36,11 +33,23 @@ export function fakeApi(handler: Handler) {
       return new Response(JSON.stringify(data ?? {}), { status: 200 })
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500
-      return new Response(JSON.stringify({ error: (error as Error).message }), { status })
+      const code = error instanceof HttpError ? error.code : ''
+      return new Response(JSON.stringify({ error: (error as Error).message, code }), { status })
     }
   })
   vi.stubGlobal('fetch', fetchMock)
   return { calls, requests, fetchMock }
+}
+
+// fakeBackend answers fetch from the contract fixtures (backend.ts); a request
+// override answers first when it returns anything but undefined.
+export function fakeBackend(override?: Handler) {
+  const backend: Backend = createBackend()
+  const api = fakeApi(async (method, path, body) => {
+    const own = override ? await override(method, path, body) : undefined
+    return own !== undefined ? own : handle(backend, method, path, body)
+  })
+  return { ...api, backend }
 }
 
 const mounted: VueWrapper[] = []

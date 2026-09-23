@@ -9,10 +9,22 @@ export type CoreSlice = (typeof CORE_SLICES)[number]
 
 export class ApiError extends Error {
   status?: number
-  constructor(message: string, status?: number) {
+  code: string // the projects API's error code, e.g. "project_busy"; "" otherwise
+  constructor(message: string, status?: number, code = '') {
     super(message)
     this.status = status
+    this.code = code
   }
+}
+
+// projectPath is a path of one project's API: projects/{pid}[/rest].
+export function projectPath(pid: string, rest = ''): string {
+  return 'projects/' + encodeURIComponent(pid) + (rest ? '/' + rest : '')
+}
+
+// chatPath is a path of one chat inside a project.
+export function chatPath(pid: string, chat: string, rest = ''): string {
+  return projectPath(pid, 'chats/' + encodeURIComponent(chat) + (rest ? '/' + rest : ''))
 }
 
 const inFlight = new Map<string, Promise<unknown>>()
@@ -45,9 +57,9 @@ async function apiRequest<T>(method: string, path: string, body?: unknown): Prom
   try { data = JSON.parse(text) } catch { /* plain-text error */ }
   if (!resp.ok) {
     // The token changes on every start: a tab left open from before gets 403.
-    const message = resp.status === 403 ? t("error.forbidden")
-      : (data && typeof data === 'object' && 'error' in data && (data as { error?: string }).error) || t("error.internal")
-    throw new ApiError(String(message), resp.status)
+    const coded = data && typeof data === 'object' ? (data as { error?: string; code?: string }) : {}
+    const message = resp.status === 403 ? t("error.forbidden") : coded.error || t("error.internal")
+    throw new ApiError(String(message), resp.status, typeof coded.code === 'string' ? coded.code : '')
   }
   return data as T
 }
