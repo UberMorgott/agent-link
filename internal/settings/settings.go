@@ -13,8 +13,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/UberMorgott/agent-link/internal/config"
@@ -28,8 +30,11 @@ const DefaultAPI = "127.0.0.1:7520"
 // code the node does not start, without Peers it runs, looks for members on
 // the local networks and waits to be dialed.
 type Settings struct {
-	Node string `json:"node"`
-	Code string `json:"code,omitempty"` // 6-character pairing code, same for every member
+	// Version is the file format (Version); Load migrates older files and
+	// refuses newer ones.
+	Version int    `json:"version"`
+	Node    string `json:"node"`
+	Code    string `json:"code,omitempty"` // 6-character pairing code, same for every member
 	// Peers are the addresses added by hand (IP, port optional); names are
 	// learned from the handshake unless set. Members learned from them or by
 	// discovery live in the node's own table, not here.
@@ -76,7 +81,39 @@ type Settings struct {
 	// HandlerCommand replaces the built-in agent command (argv, used by tests)
 	// and wins over AgentPath.
 	HandlerCommand []string `json:"handler_command,omitempty"`
+
+	// Bindings are the projects this member takes part in, with their
+	// secrets. Never sent to the page: the invite reveal is the only way out.
+	Bindings []ProjectBinding `json:"project_bindings,omitempty"`
 }
+
+// ProjectBinding is this member's local record of one project: the invite's
+// parts and its own choices. Nothing of it is sent to other members.
+type ProjectBinding struct {
+	ID     string   `json:"id"`              // project id (config.ValidProjectID)
+	Epoch  uint32   `json:"epoch"`           // config.ProjectEpoch in v1
+	Secret string   `json:"secret"`          // canonical base32 of 16 random bytes
+	Alias  string   `json:"alias,omitempty"` // this member's own name for it, ≤ maxAlias runes
+	Dir    string   `json:"dir,omitempty"`   // bound folder; "" = none
+	Peers  []string `json:"peers,omitempty"` // bootstrap addresses typed by the user (host:port)
+}
+
+// Version is the settings file format this build writes. Version 2 added
+// Bindings; a file without a version is version 1.
+const Version = 2
+
+// MaxProjects caps the bindings.
+const MaxProjects = 32
+
+// maxAlias caps a binding's Alias, in runes.
+const maxAlias = 64
+
+// ErrNewerVersion: the settings file was written by a newer agentlink. It is
+// neither loaded nor overwritten.
+var ErrNewerVersion = errors.New("settings from a newer agentlink")
+
+// backupName is the copy of a version 1 file the migration writes once.
+const backupName = "config.v1.bak.json"
 
 // Project is one project directory requests of an area are handled in. Every
 // request runs with full capability; an old "write" key in a saved file is
@@ -138,10 +175,43 @@ func Load(path string) (s Settings, ok bool, err error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return Settings{}, false, fmt.Errorf("parse %s: %w", path, err)
 	}
+	switch {
+	case s.Version > Version:
+		return Settings{}, false, fmt.Errorf("%s: %w (version %d)", path, ErrNewerVersion, s.Version)
+	case s.Version < Version:
+		// Version 1 → 2: keep a copy of the old file once, then the same
+		// fields with the new version (no bindings yet).
+		if err := writeBackup(filepath.Join(filepath.Dir(path), backupName), data); err != nil {
+			return Settings{}, false, err
+		}
+		s.Version = Version
+		if err := writeFile(path, s); err != nil {
+			return Settings{}, false, err
+		}
+	}
 	if s.Handler == "" {
 		s.Handler = worker.HandlerNone
 	}
 	return s.migrated(), true, nil
+}
+
+// writeBackup writes data to path unless a file is there already.
+func writeBackup(path string, data []byte) error {
+	f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(path)
+	}
+	return err
 }
 
 // migrated moves the single legacy peer (PeerAddr, PeerName) into Peers.
@@ -205,6 +275,17 @@ func (s Settings) Normalize() Settings {
 		s.Peers = peers
 	}
 	s.Projects, s.Areas = normalizeProjects(s.Projects, s.Areas)
+	if len(s.Bindings) > 0 {
+		bs := make([]ProjectBinding, len(s.Bindings))
+		for i, b := range s.Bindings {
+			b.Alias, b.Dir = strings.TrimSpace(b.Alias), strings.TrimSpace(b.Dir)
+			if b.Dir != "" {
+				b.Dir = filepath.Clean(b.Dir)
+			}
+			bs[i] = b
+		}
+		s.Bindings = bs
+	}
 	if s.Handler == "" {
 		s.Handler = worker.HandlerNone
 	}
@@ -238,6 +319,21 @@ func normalizeProjects(projects map[string]Project, areas []string) (map[string]
 func Save(path string, s Settings) error {
 	if err := s.Validate(); err != nil {
 		return err
+	}
+	s.Version = Version
+	return writeFile(path, s)
+}
+
+// writeFile writes s atomically, owner-only, unless the file there is from a
+// newer agentlink.
+func writeFile(path string, s Settings) error {
+	if old, err := os.ReadFile(filepath.Clean(path)); err == nil {
+		var v struct {
+			Version int `json:"version"`
+		}
+		if json.Unmarshal(old, &v) == nil && v.Version > Version {
+			return fmt.Errorf("%s: %w (version %d)", path, ErrNewerVersion, v.Version)
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -361,7 +457,9 @@ func (s Settings) Validate() error {
 	switch s.Handler {
 	case worker.HandlerNone, "":
 	case worker.HandlerClaude, worker.HandlerCodex:
-		if st, err := os.Stat(s.WorkDir); s.WorkDir == "" || err != nil || !st.IsDir() {
+		// The working folder serves the legacy network only; projects bring
+		// their own folders.
+		if st, err := os.Stat(s.WorkDir); s.Key() != nil && (s.WorkDir == "" || err != nil || !st.IsDir()) {
 			return problem("work_dir")
 		}
 		switch {
@@ -417,7 +515,59 @@ func (s Settings) Validate() error {
 		}
 		seen[name] = true
 	}
+	return validateBindings(s.Bindings)
+}
+
+// validateBindings checks every binding and that no two share an id or a
+// folder (one folder may still hold another: the deepest one wins).
+func validateBindings(bs []ProjectBinding) error {
+	if len(bs) > MaxProjects {
+		return problem("too_many_projects")
+	}
+	ids, dirs := map[string]bool{}, map[string]bool{}
+	for _, b := range bs {
+		switch {
+		case !config.ValidProjectID(b.ID) || b.Epoch != config.ProjectEpoch || !config.ValidProjectSecret(b.Secret) || ids[b.ID]:
+			return problem("project_binding")
+		case !ValidAlias(b.Alias):
+			return problem("alias")
+		}
+		ids[b.ID] = true
+		for _, p := range b.Peers {
+			if _, err := config.WithDefaultPort(p); err != nil {
+				return problem("addr")
+			}
+		}
+		if b.Dir == "" {
+			continue
+		}
+		if st, err := os.Stat(b.Dir); !filepath.IsAbs(b.Dir) || err != nil || !st.IsDir() {
+			return problem("dir")
+		}
+		key := DirKey(b.Dir)
+		if dirs[key] {
+			return problem("dir_taken")
+		}
+		dirs[key] = true
+	}
 	return nil
+}
+
+// ValidAlias reports a local project alias: at most 64 runes after trimming,
+// no control characters ("" = none).
+func ValidAlias(s string) bool {
+	s = strings.TrimSpace(s)
+	return utf8.ValidString(s) && utf8.RuneCountInString(s) <= maxAlias && !strings.ContainsFunc(s, unicode.IsControl)
+}
+
+// DirKey is the form of a folder path two bindings are compared by: cleaned,
+// and case-folded on Windows.
+func DirKey(dir string) string {
+	dir = filepath.Clean(dir)
+	if runtime.GOOS == "windows" {
+		dir = strings.ToLower(dir)
+	}
+	return dir
 }
 
 func peerNames(ps []config.Peer) []string {

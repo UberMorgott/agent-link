@@ -290,6 +290,9 @@ func (a *App) apply(ctx context.Context, s settings.Settings) (found settings.Fo
 		// without the field keeps them.
 		s.Projects = a.s.Projects
 	}
+	// The settings page never carries the project bindings: they change only
+	// through the projects API.
+	s.Version, s.Bindings = settings.Version, a.s.Bindings
 	s = s.Normalize()
 	s.HandlerCommand, s.Secret = a.s.HandlerCommand, ""
 	if s.API == "" {

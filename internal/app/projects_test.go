@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
+	"github.com/UberMorgott/agent-link/internal/settings"
 )
 
 // contractDir holds the projects API contract (docs/plans/projects-v1.md §7):
@@ -101,6 +103,28 @@ func contractValues() map[string]any {
 		"chat_messages":        []node.ChatMessage{out, in},
 		"send_result":          msg,
 		"sessions":             []SessionView{session},
+	}
+}
+
+// A settings page save keeps the project bindings, and no settings answer
+// carries a project secret.
+func TestSettingsSaveKeepsBindings(t *testing.T) {
+	id, _ := config.NewProjectID()
+	secret, _ := config.NewProjectSecret()
+	b := settings.ProjectBinding{ID: id, Epoch: config.ProjectEpoch, Secret: secret, Alias: "Сайт"}
+	h := newHarness(t, func(a *App) { a.s.Bindings = []settings.ProjectBinding{b} })
+	code, body := h.do(t, http.MethodPost, "/ui/api/settings", validJSON(t), h.tokenHdr())
+	if code != http.StatusOK || strings.Contains(body, secret) || strings.Contains(body, "project_bindings") {
+		t.Fatalf("save: %d %s", code, body)
+	}
+	if got := h.app.Settings().Bindings; len(got) != 1 || got[0].ID != id || got[0].Secret != secret || got[0].Alias != "Сайт" {
+		t.Fatalf("bindings after save: %+v", got)
+	}
+	if s, _, err := settings.Load(h.path); err != nil || len(s.Bindings) != 1 || s.Bindings[0].Secret != secret {
+		t.Fatalf("saved file: %+v, %v", s.Bindings, err)
+	}
+	if code, body := h.do(t, http.MethodGet, "/ui/api/settings", "", h.tokenHdr()); code != http.StatusOK || strings.Contains(body, secret) {
+		t.Fatalf("get: %d %s", code, body)
 	}
 }
 

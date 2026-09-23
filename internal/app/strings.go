@@ -350,6 +350,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"error.legacy_invite_unavailable": "У прежней сети нет кода приглашения: она настроена длинным секретом.",
 	"error.project_needs_folder":      "У проекта не выбрана папка — выберите её в меню проекта «Моя папка».",
 	"error.folder_not_in_project":     "Эта папка не входит в папку проекта — запустите агента внутри папки проекта.",
+	"error.project_binding":           "Запись одного из проектов в файле настроек повреждена — выйдите из проекта и присоединитесь снова по приглашению.",
 
 	// projects: UI (Track B)
 }

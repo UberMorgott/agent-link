@@ -89,6 +89,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("load: ok=%v err=%v", ok, err)
 	}
+	want.Version = Version // Save writes the current format
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v\nwant %+v", got, want)
 	}

@@ -581,3 +581,9 @@ traversal, dynamic chat participants, converting the legacy network.
   types; A6/A7 give them behaviour. `ChatInfo.project` and `Session.project` are
   served through the app wrappers `ChatInfoView`/`SessionView` (legacy →
   `"legacy"`).
+- A2: a settings page save keeps `project_bindings` (and never returns them);
+  keeping `code`/`secret` regardless of the page lands in A14 together with the
+  `settings` endpoint no longer accepting `code` — until B7 the page still edits
+  the legacy code there. Invalid binding id/epoch/secret or a duplicate id is
+  the problem `project_binding` (new sentence `error.project_binding`).
+  `settings.Save` also refuses to overwrite a file whose version is newer.

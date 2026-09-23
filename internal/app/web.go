@@ -239,7 +239,7 @@ type saveResult struct {
 
 func (a *App) webSettings() settings.Settings {
 	s := a.Settings()
-	s.Secret, s.HandlerCommand = "", nil
+	s.Secret, s.HandlerCommand, s.Bindings = "", nil, nil
 	s.Autostart, _ = a.Autostart() // reflect Windows after tray or Task Manager changes
 	return s
 }

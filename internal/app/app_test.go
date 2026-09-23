@@ -351,13 +351,13 @@ func TestPartialSave(t *testing.T) {
 func TestSaveErrorsAreSentences(t *testing.T) {
 	h := newHarness(t)
 	cases := map[string]string{
-		`{"node":""}`:                                   "error.node",
-		`{"node":"a b"}`:                                "error.node",
-		`{"node":"a","code":"12345!"}`:                  "error.code",
-		`{"node":"a","peer_addr":"10.0.0.1:99999"}`:     "error.peer_addr",
-		`{"node":"a","handler":"claude","work_dir":""}`: "error.work_dir",
-		`{"node":"a","api":"0.0.0.0:7520"}`:             "error.api",
-		`not json`:                                      "error.bad_request",
+		`{"node":""}`:                               "error.node",
+		`{"node":"a b"}`:                            "error.node",
+		`{"node":"a","code":"12345!"}`:              "error.code",
+		`{"node":"a","peer_addr":"10.0.0.1:99999"}`: "error.peer_addr",
+		`{"node":"a","code":"K7Q2-MXPA-4RTB","handler":"claude","work_dir":""}`: "error.work_dir",
+		`{"node":"a","api":"0.0.0.0:7520"}`:                                     "error.api",
+		`not json`:                                                              "error.bad_request",
 	}
 	for body, key := range cases {
 		code, got := h.do(t, http.MethodPost, "/ui/api/settings", body, h.tokenHdr())
