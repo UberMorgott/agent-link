@@ -32,6 +32,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/UberMorgott/agent-link/internal/agenthook"
 	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
 	"github.com/UberMorgott/agent-link/internal/settings"
@@ -39,20 +40,20 @@ import (
 
 // Hook clients.
 const (
-	hookClaude = "claude"
-	hookCodex  = "codex"
+	hookClaude = agenthook.Claude
+	hookCodex  = agenthook.Codex
 )
 
 // Hook events this command answers; others are ignored.
 const (
-	evSessionStart = "SessionStart"
-	evPrompt       = "UserPromptSubmit"
-	evPostTool     = "PostToolUse"
-	evStop         = "Stop"
+	evSessionStart = agenthook.SessionStart
+	evPrompt       = agenthook.Prompt
+	evPostTool     = agenthook.PostTool
+	evStop         = agenthook.Stop
 )
 
 // hookEvents are installed by `agentlink hook install`, in this order.
-var hookEvents = []string{evSessionStart, evPrompt, evPostTool, evStop}
+var hookEvents = agenthook.Events
 
 // Limits of what one hook prints.
 const (
@@ -69,6 +70,7 @@ type hookInput struct {
 	SessionID      string `json:"session_id"`
 	HookEventName  string `json:"hook_event_name"`
 	StopHookActive bool   `json:"stop_hook_active"`
+	Cwd            string `json:"cwd"`
 }
 
 // hookCursor is what one session has already been shown: the last chat Seq
@@ -93,6 +95,8 @@ type hookMessage struct {
 type hookEnv struct {
 	api string // host:port of the node's local API
 	dir string // cursor directory
+	// projects maps an area to its project folder (Settings.Projects).
+	projects map[string]string
 }
 
 // runHook runs `agentlink hook ...`. A hook never breaks the session it runs
@@ -141,7 +145,14 @@ func defaultHookEnv() (hookEnv, error) {
 	if err != nil {
 		return hookEnv{}, err
 	}
-	return hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks")}, nil
+	env := hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks")}
+	if s, _, err := settings.Load(p); err == nil {
+		env.projects = map[string]string{}
+		for area, pr := range s.Projects {
+			env.projects[area] = pr.Dir
+		}
+	}
+	return env, nil
 }
 
 // hookRun reads the hook input, collects the messages this session has not
@@ -174,7 +185,11 @@ func hookRun(client, event string, stdin io.Reader, env hookEnv) (string, error)
 	if err != nil {
 		return quiet, err
 	}
-	msgs, err := collectHookMessages(env.api, &cur, first)
+	cwd := in.Cwd
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	msgs, err := collectHookMessages(env.api, &cur, first, hookFilter(cwd, env.projects))
 	if err != nil {
 		return quiet, err
 	}
@@ -203,8 +218,8 @@ func hookOutput(event, text string) string {
 // collectHookMessages lists the messages newer than cur and moves cur past
 // them. On the first call of a session (first) it only records where chats
 // are now and reports inbox messages of the last day that no `wait` took and
-// this node has not answered.
-func collectHookMessages(api string, cur *hookCursor, first bool) ([]hookMessage, error) {
+// this node has not answered. Messages of an area wants refuses are skipped.
+func collectHookMessages(api string, cur *hookCursor, first bool, wants func(area string) bool) ([]hookMessage, error) {
 	var out []hookMessage
 	var chats []node.ChatInfo
 	if err := hookGet(api, "/chats", nil, &chats); err != nil && !errors.Is(err, errNotFound) {
@@ -214,7 +229,7 @@ func collectHookMessages(api string, cur *hookCursor, first bool) ([]hookMessage
 	for _, c := range chats {
 		last, known := cur.Chats[c.ID]
 		seenChats[c.ID] = max(last, c.LastSeq)
-		if first || c.LastSeq <= last {
+		if first || c.LastSeq <= last || !wants(c.Area) {
 			continue
 		}
 		self := ""
@@ -272,7 +287,7 @@ func collectHookMessages(api string, cur *hookCursor, first bool) ([]hookMessage
 			continue
 		}
 		inbox = append(inbox, e.ID)
-		if slices.Contains(cur.Inbox, e.ID) {
+		if slices.Contains(cur.Inbox, e.ID) || !wants(e.Area) {
 			continue
 		}
 		// A new session hears only of recent messages nobody took or answered yet.
@@ -285,6 +300,39 @@ func collectHookMessages(api string, cur *hookCursor, first bool) ([]hookMessage
 	cur.Inbox = inbox
 	slices.SortStableFunc(out, func(a, b hookMessage) int { return a.At.Compare(b.At) })
 	return out, nil
+}
+
+// hookFilter decides which messages a session in folder cwd hears about. A
+// session inside the project folder of an area (the deepest one when folders
+// nest) gets only that area's messages: its chats and area:NAME messages. Any
+// other session (the working folder, a user-scope hook elsewhere) gets the
+// rest: direct messages, chats without an area and areas with no project
+// folder. That is where the worker answers them too.
+func hookFilter(cwd string, projects map[string]string) func(area string) bool {
+	var mine []string
+	best := -1
+	for area, dir := range projects {
+		if dir == "" || !inFolder(dir, cwd) {
+			continue
+		}
+		switch n := len(filepath.Clean(dir)); {
+		case n > best:
+			best, mine = n, []string{area}
+		case n == best:
+			mine = append(mine, area)
+		}
+	}
+	if mine != nil {
+		return func(area string) bool { return slices.Contains(mine, area) }
+	}
+	return func(area string) bool { return area == "" || projects[area] == "" }
+}
+
+// inFolder reports whether path is dir or inside it (case-insensitively on
+// Windows, like filepath.Rel).
+func inFolder(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 // formatHookMessages is the text the model reads: every new message with its

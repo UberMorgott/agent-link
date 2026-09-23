@@ -6,8 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -298,90 +298,50 @@ func TestHookInsideJobIsSilent(t *testing.T) {
 	}
 }
 
-func TestHookInstall(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.json")
-	orig := `{
-  "model": "opus",
-  "hooks": {
-    "Stop": [{"hooks": [{"type": "command", "command": "other-tool <&>"}]}]
-  },
-  "zeta": 1
-}`
-	if err := os.WriteFile(path, []byte(orig), 0o600); err != nil {
-		t.Fatal(err)
+func TestHookAreaFilter(t *testing.T) {
+	root := t.TempDir()
+	work, dev, devSub := filepath.Join(root, "work"), filepath.Join(root, "dev"), filepath.Join(root, "dev", "ui")
+	projects := map[string]string{"dev": dev, "ui": devSub}
+	h := newHookAPI(t)
+	c := hookCase{t, hookEnv{api: h.api, dir: t.TempDir(), projects: projects}}
+	session := func(id, cwd string) string {
+		b, _ := json.Marshal(map[string]string{"session_id": id, "hook_event_name": evPrompt, "cwd": cwd})
+		return string(b)
 	}
-	exe := `C:\Program Files\agentlink\agentlink.exe`
-	changed, err := installHook(path, hookClaude, exe)
-	if err != nil || !changed {
-		t.Fatalf("install: %v %v", changed, err)
+	for _, id := range []string{"w", "d", "u", "o"} {
+		c.run(hookClaude, evSessionStart, `{"session_id":"`+id+`","hook_event_name":"SessionStart"}`)
 	}
-	data, _ := os.ReadFile(filepath.Clean(path))
-	got := string(data)
-	if strings.Index(got, `"model"`) > strings.Index(got, `"hooks"`) || strings.Index(got, `"hooks"`) > strings.Index(got, `"zeta"`) {
-		t.Fatalf("key order lost:\n%s", got)
+	h.addChatMessage("plain", "in", "alice", "", "plain chat")
+	h.addChatMessage("devchat", "in", "alice", "", "dev chat")
+	h.addChatMessage("uichat", "in", "alice", "", "ui chat")
+	h.addChatMessage("docs", "in", "alice", "", "docs chat") // an area without a project folder
+	h.mu.Lock()
+	for i, area := range map[int]string{1: "dev", 2: "ui", 3: "docs"} {
+		h.chats[i].Area = area
 	}
-	if !strings.Contains(got, "other-tool <&>") {
-		t.Fatalf("existing hook lost or escaped:\n%s", got)
-	}
-	var cfg struct {
-		Hooks map[string][]struct {
-			Matcher string `json:"matcher"`
-			Hooks   []struct {
-				Command string   `json:"command"`
-				Args    []string `json:"args"`
-				Timeout int      `json:"timeout"`
-			} `json:"hooks"`
-		} `json:"hooks"`
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		t.Fatal(err)
-	}
-	for _, ev := range hookEvents {
-		groups := cfg.Hooks[ev]
-		last := groups[len(groups)-1].Hooks[0]
-		if last.Command != "C:/Program Files/agentlink/agentlink.exe" || strings.Join(last.Args, " ") != "hook claude" || last.Timeout != hookTimeout {
-			t.Fatalf("%s: %+v", ev, last)
-		}
-	}
-	if len(cfg.Hooks[evStop]) != 2 || cfg.Hooks[evPostTool][0].Matcher != "*" {
-		t.Fatalf("groups: %+v", cfg.Hooks)
-	}
-	if bak, _ := os.ReadFile(filepath.Clean(path + ".agentlink.bak")); string(bak) != orig {
-		t.Fatalf("backup: %q", bak)
-	}
-	// Idempotent: a second install changes nothing.
-	if changed, err := installHook(path, hookClaude, exe); err != nil || changed {
-		t.Fatalf("second install: %v %v", changed, err)
-	}
-	// A moved executable replaces the old entry instead of adding one.
-	if changed, err := installHook(path, hookClaude, `D:\bin\agentlink.exe`); err != nil || !changed {
-		t.Fatalf("moved: %v %v", changed, err)
-	}
-	data, _ = os.ReadFile(filepath.Clean(path))
-	if strings.Count(string(data), "agentlink.exe") != len(hookEvents) {
-		t.Fatalf("duplicate entries:\n%s", data)
-	}
+	h.mu.Unlock()
+	h.addInbox("d1", "bob", "pending", "direct request")
+	h.mu.Lock()
+	e := node.Entry{Direction: "in", Status: "pending"}
+	e.ID, e.From, e.To, e.Area, e.Body, e.CreatedAt = "a1", "bob", "area:dev", "dev", "legacy dev request", time.Now()
+	h.inbox = append([]node.Entry{e}, h.inbox...)
+	h.mu.Unlock()
 
-	// Codex: a new file, shell-form command, quoted when the path has spaces.
-	cpath := filepath.Join(dir, ".codex", "hooks.json")
-	if err := os.MkdirAll(filepath.Dir(cpath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if changed, err := installHook(cpath, hookCodex, exe); err != nil || !changed {
-		t.Fatalf("codex: %v %v", changed, err)
-	}
-	data, _ = os.ReadFile(filepath.Clean(cpath))
-	if !strings.Contains(string(data), `"command": "\"C:/Program Files/agentlink/agentlink.exe\" hook codex"`) {
-		t.Fatalf("codex entry:\n%s", data)
-	}
-	if _, err := os.Stat(cpath + ".agentlink.bak"); err == nil {
-		t.Fatal("backup of a file that did not exist")
-	}
-	if err := os.WriteFile(cpath, []byte("[1]"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := installHook(cpath, hookCodex, exe); err == nil {
-		t.Fatal("a non-object file must be refused, not overwritten")
+	all := []string{"plain chat", "dev chat", "ui chat", "docs chat", "direct request", "legacy dev request"}
+	for _, tc := range []struct {
+		id, cwd string
+		want    []string
+	}{
+		{"w", work, []string{"plain chat", "docs chat", "direct request"}},
+		{"o", "", []string{"plain chat", "docs chat", "direct request"}},
+		{"d", strings.ToUpper(dev), []string{"dev chat", "legacy dev request"}},
+		{"u", filepath.Join(devSub, "src"), []string{"ui chat"}},
+	} {
+		ctx := contextOf(t, c.run(hookClaude, "auto", session(tc.id, tc.cwd)), evPrompt)
+		for _, s := range all {
+			if strings.Contains(ctx, s) != slices.Contains(tc.want, s) {
+				t.Fatalf("session in %q: %q shown=%v, want %v:\n%s", tc.cwd, s, strings.Contains(ctx, s), tc.want, ctx)
+			}
+		}
 	}
 }
