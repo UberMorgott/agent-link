@@ -49,11 +49,13 @@ type Chat struct {
 // Closed reports whether a participant closed the chat.
 func (c Chat) Closed() bool { return c.CloseID != "" }
 
-// ChatView is this node's own view of a legacy chat (local history): archived
-// when this node closed it. A real chat is archived exactly when it is closed.
+// ChatView is this node's view of a legacy chat (local history): archived when
+// a side closed it (By), up to At; a later message brings it back. A real chat
+// is archived exactly when it is closed.
 type ChatView struct {
 	Archived bool      `json:"archived"`
 	At       time.Time `json:"at,omitzero"`
+	By       string    `json:"by,omitempty"`
 }
 
 // Delivery is where one copy of an outbound chat message is: "queued" until
@@ -103,7 +105,9 @@ type ChatInfo struct {
 	Archived bool `json:"archived"`
 	// Legacy marks a virtual chat built from history before chats: one
 	// request with its replies, with one peer. Sending to it continues it in a
-	// real chat (continueLegacy); closing it only archives it on this node.
+	// real chat (continueLegacy); closing it archives it on both sides (on
+	// this node only when the peer has no chats), ClosedBy and ClosedAt then
+	// say who and when, and Closed stays false.
 	Legacy bool   `json:"legacy,omitempty"`
 	Peer   string `json:"peer,omitempty"` // legacy only: the other side
 	Title  string `json:"title"`          // the first message, shortened
@@ -192,18 +196,11 @@ func (n *Node) CreateChat(with []string, area string) (ChatInfo, error) {
 // CloseChat closes a chat for every participant, which moves it to the
 // archive on every node: a chat is archived exactly when it is closed, and
 // only people close chats. Closing a closed chat is a no-op. Jobs already
-// running finish; their replies are still kept. A legacy chat (local history
-// only) is moved to this node's archive.
+// running finish; their replies are still kept. A legacy chat is closed with
+// closeLegacy.
 func (n *Node) CloseChat(id string) (ChatInfo, error) {
-	if _, _, ok := parseLegacyChatID(id); ok {
-		if _, err := n.Chat(id); err != nil {
-			return ChatInfo{}, err
-		}
-		if err := n.chats.setView(id, ChatView{Archived: true, At: time.Now().UTC()}); err != nil {
-			return ChatInfo{}, err
-		}
-		n.changed("chats")
-		return n.Chat(id)
+	if _, peer, ok := parseLegacyChatID(id); ok {
+		return n.closeLegacy(id, peer)
 	}
 	c, ok := n.chats.get(id)
 	if !ok {
@@ -217,6 +214,61 @@ func (n *Node) CloseChat(id string) (ChatInfo, error) {
 		n.changed("chats")
 	}
 	return n.Chat(id)
+}
+
+// closeLegacy archives legacy chat id with peer here, up to its last message
+// or now, whichever is later, and tells the peer: a chat_close whose ChatID is
+// this legacy id and whose Area is the chat's area. The outbox only sends it
+// to a peer with chats (now or once it connects with them), so a peer
+// connected without chat support is not told at all.
+func (n *Node) closeLegacy(id, peer string) (ChatInfo, error) {
+	info, err := n.Chat(id)
+	if err != nil {
+		return ChatInfo{}, err
+	}
+	at := time.Now().UTC()
+	if info.LastAt.After(at) {
+		at = info.LastAt
+	}
+	if err := n.chats.setView(id, ChatView{Archived: true, At: at, By: n.cfg.Node}); err != nil {
+		return ChatInfo{}, err
+	}
+	if !n.Connected(peer) || n.PeerHas(peer, CapChat) {
+		m := Message{ID: newID(), From: n.cfg.Node, To: peer, ChatID: id, Kind: KindChatClose, Area: info.Area, CreatedAt: at}
+		if err := n.enqueue(peer, m); err != nil {
+			return ChatInfo{}, err
+		}
+	}
+	n.changed("chats")
+	return n.Chat(id)
+}
+
+// receiveLegacyClose archives, for peer's chat_close of its legacy chat, this
+// node's legacy chat with peer of the same area up to the close time. It
+// reports false for an invalid message.
+func (n *Node) receiveLegacyClose(peer string, m Message) bool {
+	if m.Kind != KindChatClose || (m.Area != "" && !config.ValidName(m.Area)) {
+		return false
+	}
+	chats, err := n.legacyChats()
+	if err != nil {
+		n.log.Warn("legacy chat close", "peer", peer, "err", err)
+		return true
+	}
+	for _, lc := range chats {
+		if lc.peer != peer || lc.info.Area != m.Area {
+			continue
+		}
+		if v, ok := n.chats.view(lc.info.ID); ok && v.Archived && !v.At.Before(m.CreatedAt) {
+			continue // a duplicate or an older close
+		}
+		if err := n.chats.setView(lc.info.ID, ChatView{Archived: true, At: m.CreatedAt, By: peer}); err != nil {
+			n.log.Warn("legacy chat close", "peer", peer, "err", err)
+			continue
+		}
+		n.changed("chats")
+	}
+	return true
 }
 
 // ChatSend is a message for a chat from the control API.
@@ -660,10 +712,11 @@ func (n *Node) chatInfo(s chatSnapshot, queued map[string]map[string]int) ChatIn
 	return info
 }
 
-// legacyArchived reports whether this node moved a legacy chat to the archive.
-func legacyArchived(cs *chatStore, id string) bool {
+// legacyView reports whether a legacy chat whose last message is at last is
+// archived, and by whom: a message after the close brings it back.
+func legacyView(cs *chatStore, id string, last time.Time) (ChatView, bool) {
 	v, ok := cs.view(id)
-	return ok && v.Archived
+	return v, ok && v.Archived && !last.After(v.At)
 }
 
 // title is the first line of body, at most 80 characters.
@@ -767,7 +820,9 @@ func (n *Node) legacyChats() ([]legacyChat, error) {
 		info.LastSeq = uint64(len(lc.msgs))
 		last := lc.msgs[len(lc.msgs)-1]
 		info.LastMessage, info.LastAt = &last, last.CreatedAt
-		info.Archived = legacyArchived(n.chats, id)
+		if v, archived := legacyView(n.chats, id, info.LastAt); archived {
+			info.Archived, info.ClosedBy, info.ClosedAt = true, cmp.Or(v.By, n.cfg.Node), v.At
+		}
 		_, caps, connected := n.PeerCaps(g.peer)
 		peerState := ParticipantState{Name: g.peer, Connected: connected, Compatible: !connected || slices.Contains(caps, CapChat)}
 		if job != nil {

@@ -380,6 +380,49 @@ func TestChatLegacyPeer(t *testing.T) {
 	if m, err := a.SendChat(ChatSend{ChatID: chats[0].ID, Body: "plain again", Ask: []string{"b"}}); err != nil || m.ChatID != "" || m.To != "b" {
 		t.Fatalf("send to a legacy peer's legacy chat = %+v, %v", m, err)
 	}
+	// Closing it archives it here only: b is never told.
+	if info, err := a.CloseChat(chats[0].ID); err != nil || !info.Archived || info.ClosedBy != "a" {
+		t.Fatalf("close a legacy peer's legacy chat = %+v, %v", info, err)
+	}
+	pending, _ := a.store.pending("b")
+	if slices.ContainsFunc(pending, func(m Message) bool { return m.Kind == KindChatClose }) {
+		t.Fatal("legacy close queued for a peer without chats")
+	}
+}
+
+// Closing a legacy chat archives it on both sides, whichever side closes, and
+// a later message brings it back on both.
+func TestLegacyChatClosePropagates(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	eventually(t, "connected", func() bool { return a.Connected("b") && b.Connected("a") })
+	q, err := a.Send("b", "question", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b got it", func() bool { e, _ := b.Recent(0); return len(e) == 1 })
+	aID, bID := legacyChatID(q.ID, "b"), legacyChatID(q.ID, "a")
+	archived := func(tn *testNode, id, by string) bool {
+		info, err := tn.Chat(id)
+		return err == nil && info.Archived && info.ClosedBy == by && !info.ClosedAt.IsZero() && !info.Closed
+	}
+	open := func(tn *testNode, id string) bool { info, err := tn.Chat(id); return err == nil && !info.Archived }
+	if _, err := b.CloseChat(bID); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "closed by b on both", func() bool { return archived(b, bID, "b") && archived(a, aID, "b") })
+	// The close is a control message: no inbox entry, no history entry.
+	if e, _ := a.Recent(0); len(e) != 1 {
+		t.Fatalf("a's history after the close: %+v", e)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if _, err := b.Send("a", "answer", q.ID); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "reopened on both", func() bool { return open(a, aID) && open(b, bID) })
+	if _, err := a.CloseChat(aID); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "closed by a on both", func() bool { return archived(a, aID, "a") && archived(b, bID, "a") })
 }
 
 // The side that answers a plain request sees its own agent working on it in
@@ -447,9 +490,13 @@ func TestLegacyHistoryAsVirtualChats(t *testing.T) {
 	if info, _ := b.Chat(m.ChatID); info.Legacy || !slices.Equal(info.Participants, []string{"a", "b"}) {
 		t.Fatalf("b sees %+v", info)
 	}
-	if _, err := a.CloseChat(id); err != nil { // a legacy chat: archived here only
+	if _, err := a.CloseChat(id); err != nil { // a legacy chat: archived on both sides
 		t.Fatal(err)
 	}
+	eventually(t, "b archived its legacy chat", func() bool {
+		info, err := b.Chat(legacyChatID(q1.ID, "a"))
+		return err == nil && info.Archived && info.ClosedBy == "a"
+	})
 	if arch, _ := a.Chats(true, true); len(arch) != 1 || arch[0].ID != id {
 		t.Fatalf("archived legacy chat: %+v", arch)
 	}

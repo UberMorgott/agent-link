@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -251,6 +252,12 @@ func (n *Node) receive(pc *peerConn, m *Message) bool {
 	if m == nil || !validID(m.ID) || m.From != pc.peer {
 		n.log.Warn("rejected message", "peer", pc.peer)
 		return true
+	}
+	if strings.HasPrefix(m.ChatID, legacyPrefix) { // a legacy chat closed there: control only
+		if !n.receiveLegacyClose(pc.peer, *m) {
+			n.log.Warn("rejected legacy chat message", "peer", pc.peer, "id", m.ID)
+		}
+		return pc.write(frame{Type: "ack", ID: m.ID}) == nil
 	}
 	if m.ChatID != "" {
 		if !n.receiveChat(pc.peer, *m) {

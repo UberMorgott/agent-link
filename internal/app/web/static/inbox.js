@@ -242,7 +242,7 @@ function renderHeader(info) {
   });
   chatMembers.replaceChildren(...chips);
   chatMembers.hidden = !chips.length;
-  // Closing is the only way into the archive (a legacy chat is archived here only).
+  // Closing is the only way into the archive (a legacy chat's peer archives it too).
   chatCloseButton.hidden = !info || info.closed || info.archived;
 }
 
@@ -500,6 +500,12 @@ function renderAsk(info) {
   askHint.hidden = chosen.size > 0;
 }
 
+// legacyPeerOld: the legacy chat's peer is connected without chats, so it
+// cannot take part in closing it either.
+function legacyPeerOld(info) {
+  return (info.members || []).some((m) => !m.self && m.connected && !m.compatible);
+}
+
 // A legacy chat is writable too: the node continues it in a real chat with the
 // peer, or with a plain message when the peer's version has no chats.
 function renderComposer(info) {
@@ -510,8 +516,11 @@ function renderComposer(info) {
   if (!info) return;
   if (writable) renderAsk(info);
   if (info.legacy) {
-    const old = (info.members || []).some((m) => !m.self && m.connected && !m.compatible);
-    chatNoteText.textContent = fmt(old ? "inbox.legacy_note_old" : "inbox.legacy_note", { name: info.peer || "" });
+    let note = fmt(legacyPeerOld(info) ? "inbox.legacy_note_old" : "inbox.legacy_note", { name: info.peer || "" });
+    if (info.archived && info.closed_by) {
+      note = fmt("inbox.legacy_closed_note", { name: authorName(info.closed_by), when: info.closed_at ? when(info.closed_at) : "" }) + " " + note;
+    }
+    chatNoteText.textContent = note;
     return;
   }
   if (writable) return;
@@ -834,7 +843,9 @@ chatBack.addEventListener("click", () => {
   navigate("inbox");
 });
 chatCloseButton.addEventListener("click", () => {
-  if (typeof confirm === "function" && !confirm(t("inbox.close.confirm"))) return;
+  const info = store.get().chat;
+  const key = !info?.legacy ? "inbox.close.confirm" : legacyPeerOld(info) ? "inbox.close.confirm_old" : "inbox.close.confirm_legacy";
+  if (typeof confirm === "function" && !confirm(t(key))) return;
   chatAction("close");
 });
 store.subscribe("chats", onChats);
