@@ -41,6 +41,9 @@ describe('message toasts', () => {
     expect(router.currentRoute.value.name).toBe('inbox')
     expect(router.currentRoute.value.query).toEqual({ chat: 'c-new', message: 'new' })
     expect(toasts()).toHaveLength(0)
+    // The inbox's inputs schedule their autofocus with a zero delay; the
+    // toast's own timer must be gone.
+    vi.advanceTimersByTime(0)
     expect(vi.getTimerCount()).toBe(0)
     const saved = JSON.parse(localStorage.getItem('agentlink.notifications.v1:local')!) as string[]
     expect(saved).toContain('old')

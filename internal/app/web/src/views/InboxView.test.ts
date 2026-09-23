@@ -96,6 +96,10 @@ const $$ = <T extends Element = HTMLElement>(sel: string) => Array.from(document
 const bubble = (id: string) => $('[data-message-id="' + id + '"]')!
 const tick = (id: string) => bubble(id).querySelector<HTMLElement>('.msg-ticks')
 const text = (el: Element | null) => el?.textContent || ''
+// The timeline's rows: the older-page button, then one per message or event.
+const timeline = () => $$('#messages .msg-older, #messages [data-message-id]')
+// Ticked people among the checkboxes of a group (Nuxt UI checkboxes are buttons).
+const ticked = (sel: string) => $$(sel + ' [role="checkbox"]').filter((box) => box.getAttribute('aria-checked') === 'true').map((box) => box.id)
 
 beforeEach(() => {
   chats = fixtures()
@@ -124,7 +128,7 @@ describe('the open chat', () => {
     await settle()
     expect(api.calls).toContain('GET chats/c1%20%26')
     expect(api.calls).toContain('GET chats/c1%20%26/messages?limit=200')
-    const items = $$('#messages > li')
+    const items = timeline()
     expect(items).toHaveLength(201)
     expect(items[0]!.className).toContain('msg-older')
     // The message a link names is revealed.
@@ -153,6 +157,9 @@ describe('the open chat', () => {
     expect(text(bubble('m198').querySelector('.msg-author'))).toBe('inbox.you')
 
     expect(text($('#conversation_title'))).toContain('bob, карл & sons')
+    // Members and sessions live in the chat's info popover.
+    inbox.infoOpen = true
+    await settle()
     const chips = $$('#chat_members > li')
     expect(chips).toHaveLength(3)
     expect($('#chat_close')).not.toBeNull()
@@ -161,7 +168,7 @@ describe('the open chat', () => {
     expect(text(chips[2]!)).toContain('в очереди 2')
     // A group chat asks nobody by default and says so.
     expect($('#ask_row')).not.toBeNull()
-    expect($$<HTMLInputElement>('#ask_choices input').some((box) => box.checked)).toBe(false)
+    expect(ticked('#ask_choices')).toEqual([])
     expect($('#ask_hint')).not.toBeNull()
 
     // Live activity: one row per job, local timers, no app calls.
@@ -187,12 +194,12 @@ describe('the open chat', () => {
     await inbox.selectChat(group, '')
     await settle()
     const list = $('#messages')!
-    const kept = $$('#messages > li')[11]!
+    const kept = timeline()[11]!
     const replyControl = kept.querySelector<HTMLButtonElement>('.msg-reply')!
     replyControl.focus()
     await inbox.loadChat(group, false)
     await settle()
-    expect($$('#messages > li')[11]).toBe(kept)
+    expect(timeline()[11]).toBe(kept)
     expect(kept.querySelector('.msg-reply')).toBe(replyControl)
     expect(document.activeElement).toBe(replyControl)
 
@@ -208,7 +215,7 @@ describe('the open chat', () => {
     chats[group]!.items[20] = { ...chats[group]!.items[20]!, body: 'edited' }
     await inbox.loadChat(group, false)
     await settle()
-    expect($$('#messages > li')[11]).toBe(kept)
+    expect(timeline()[11]).toBe(kept)
     expect(body.value).toBe('first\nsecond')
     expect(document.activeElement).toBe(body)
     expect(body.selectionStart).toBe(3)
@@ -222,13 +229,13 @@ describe('the open chat', () => {
     // The older page, then a reply with its author asked, guarded against a double submit.
     $<HTMLButtonElement>('.msg-older button')!.click()
     await settle()
-    expect($$('#messages > li')).toHaveLength(207)
+    expect(timeline()).toHaveLength(207)
     expect($('.msg-older')).toBeNull()
     bubble('m203').querySelector<HTMLButtonElement>('.msg-reply')!.click()
     await settle()
     expect($('#replying')).not.toBeNull()
     expect(inbox.replyTo?.id).toBe('m203')
-    expect($$<HTMLInputElement>('#ask_choices input').filter((box) => box.checked).map((box) => box.value)).toEqual(['bob'])
+    expect(ticked('#ask_choices')).toEqual(['ask_bob'])
     const form = $<HTMLFormElement>('#send')!
     form.dispatchEvent(new Event('submit', { cancelable: true }))
     form.dispatchEvent(new Event('submit', { cancelable: true }))
@@ -275,8 +282,7 @@ describe('the chat list and the ways into a chat', () => {
     await router.push('/inbox?peer=alice')
     await settle()
     expect($('#new_chat_form')).not.toBeNull()
-    const aliceBox = $$<HTMLInputElement>('#new_chat_members input').find((box) => box.closest('label')!.textContent!.includes('alice'))
-    expect(aliceBox?.checked).toBe(true)
+    expect(ticked('#new_chat_members')).toEqual(['new_chat_alice'])
     app.chats = [chats.c3!.info, ...app.chats!]
     await router.push('/inbox?peer=bob')
     await settle()
@@ -286,6 +292,7 @@ describe('the chat list and the ways into a chat', () => {
     // not taken says why it waits.
     app.sessions = [{ session_id: 's', provider: 'claude', folder: 'W:/work', area: '', wake: 'next-event' }]
     await inbox.selectChat('c4', '')
+    inbox.infoOpen = true
     await settle()
     expect($('#ask_row')).toBeNull()
     expect(text($('#chat_activity'))).toContain('inbox.activity.waiting_session')

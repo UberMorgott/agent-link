@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue'
-import Button from 'primevue/button'
-import InputText from 'primevue/inputtext'
-import ToggleSwitch from 'primevue/toggleswitch'
-import AppIcon from '@/components/AppIcon.vue'
+import UButton from '@nuxt/ui/components/Button.vue'
+import UCollapsible from '@nuxt/ui/components/Collapsible.vue'
+import UInput from '@nuxt/ui/components/Input.vue'
+import USwitch from '@nuxt/ui/components/Switch.vue'
+import { icon } from '@/lib/icons'
 import { api } from '@/lib/api'
 import { browser, fmt, t } from '@/lib/runtime'
 import {
@@ -29,7 +30,6 @@ const advancedOpen = ref(false)
 const picking = ref(false)
 const pickingAgent = ref(false)
 const findingAgent = ref(false)
-const codeInput = ref<{ $el: HTMLInputElement } | null>(null)
 const projectList = ref<HTMLElement | null>(null)
 let rowSeq = 0
 
@@ -124,7 +124,7 @@ function editedAndSave(note?: string) {
 }
 
 // The auto-update switch sits in the form but saves through its own request.
-const ownRequest = (ev: Event) => (ev.target as HTMLElement | null)?.id === 'update_auto'
+const ownRequest = (ev: Event) => !!(ev.target as HTMLElement | null)?.closest?.('#update_auto_row')
 function onInput(ev: Event) { if (!ownRequest(ev)) edits++ }
 function onChange(ev: Event) { if (!ownRequest(ev)) void saveSettings() }
 
@@ -248,7 +248,7 @@ async function copyCode() {
     await navigator.clipboard.writeText(form.code.toUpperCase())
     result.value = t("settings.code.copied")
   } catch {
-    codeInput.value?.$el.select()
+    document.querySelector<HTMLInputElement>('#code')?.select()
     result.value = t("settings.code.copy_manual")
   }
 }
@@ -342,7 +342,7 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
           <h2 id="settings_identity_title">
             {{ t("settings.identity.title") }}
           </h2>
-          <label class="field"><span>{{ t("settings.node.label") }}</span><InputText
+          <label class="field"><span>{{ t("settings.node.label") }}</span><UInput
             v-model="form.node"
             name="node"
             autocomplete="off"
@@ -352,30 +352,30 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
           </p>
           <label class="field"><span>{{ t("settings.code.label") }}</span>
             <span class="flex flex-wrap gap-2">
-              <InputText
+              <UInput
                 id="code"
-                ref="codeInput"
                 v-model="form.code"
                 name="code"
                 maxlength="16"
                 autocomplete="off"
                 spellcheck="false"
-                class="code flex-1 font-mono uppercase"
+                class="code flex-1"
+                :ui="{ base: 'font-mono uppercase' }"
               />
-              <Button
+              <UButton
                 id="generate"
                 type="button"
                 :label="t('settings.code.generate')"
-                severity="secondary"
-                outlined
+                color="neutral"
+                variant="outline"
                 @click="generate"
               />
-              <Button
+              <UButton
                 id="copy"
                 type="button"
                 :label="t('settings.code.copy')"
-                severity="secondary"
-                outlined
+                color="neutral"
+                variant="outline"
                 @click="copyCode"
               />
             </span>
@@ -422,23 +422,23 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
                 id="agent_shown"
                 class="min-w-0 flex-1 text-sm break-all"
               >{{ agentShown }}</span>
-              <Button
+              <UButton
                 id="find_agent"
                 type="button"
                 :label="t('settings.agent.find')"
-                severity="secondary"
-                outlined
-                size="small"
+                color="neutral"
+                variant="outline"
+                size="sm"
                 :disabled="findingAgent"
                 @click="findAgent"
               />
-              <Button
+              <UButton
                 id="pick_agent"
                 type="button"
                 :label="t('settings.agent.pick')"
-                severity="secondary"
-                outlined
-                size="small"
+                color="neutral"
+                variant="outline"
+                size="sm"
                 :disabled="pickingAgent"
                 @click="pickAgent"
               />
@@ -447,11 +447,13 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
               {{ t("settings.agent.hint") }}
             </p>
           </div>
-          <label class="check"><ToggleSwitch
+          <USwitch
+            id="auto_answer"
             v-model="form.auto_answer"
             name="auto_answer"
-            input-id="auto_answer"
-          /> <span>{{ t("settings.auto_answer.label") }}</span></label>
+            :label="t('settings.auto_answer.label')"
+            class="check"
+          />
           <p class="hint">
             {{ t("settings.auto_answer.hint") }}
           </p>
@@ -467,7 +469,7 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
           </h2>
           <label class="field"><span>{{ t("settings.work_dir.label") }}</span>
             <span class="flex gap-2">
-              <InputText
+              <UInput
                 id="work_dir"
                 v-model="form.work_dir"
                 name="work_dir"
@@ -476,12 +478,12 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
                 class="flex-1"
                 @input="workDirKey = 'settings.work_dir.current'"
               />
-              <Button
+              <UButton
                 id="pick"
                 type="button"
                 :label="t('settings.work_dir.pick')"
-                severity="secondary"
-                outlined
+                color="neutral"
+                variant="outline"
                 :disabled="picking"
                 @click="pickWorkDir"
               />
@@ -510,11 +512,13 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
           <p class="hint">
             {{ t("settings.work_dir.hint") }}
           </p>
-          <label class="check"><ToggleSwitch
+          <USwitch
+            id="autostart"
             v-model="form.autostart"
             name="autostart"
-            input-id="autostart"
-          /> <span>{{ t("settings.autostart.label") }}</span></label>
+            :label="t('settings.autostart.label')"
+            class="check"
+          />
         </section>
 
         <section
@@ -546,27 +550,27 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
             <li
               v-for="row in rows"
               :key="row.key"
-              class="project-card flex flex-col gap-2 border-l-2 border-[var(--app-line)] pl-4"
+              class="project-card flex flex-col gap-2 border-l-2 border-default pl-4"
               :data-row="row.key"
             >
-              <label class="field"><span>{{ t("settings.projects.area") }}</span><InputText
+              <label class="field"><span>{{ t("settings.projects.area") }}</span><UInput
                 v-model="row.area"
                 autocomplete="off"
                 spellcheck="false"
               /></label>
               <label class="field"><span>{{ t("settings.projects.dir") }}</span>
                 <span class="flex gap-2">
-                  <InputText
+                  <UInput
                     v-model="row.dir"
                     autocomplete="off"
                     spellcheck="false"
                     class="flex-1"
                   />
-                  <Button
+                  <UButton
                     type="button"
                     :label="t('settings.work_dir.pick')"
-                    severity="secondary"
-                    outlined
+                    color="neutral"
+                    variant="outline"
                     @click="pickProjectDir(row)"
                   />
                 </span>
@@ -574,30 +578,27 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
               <p class="hint">
                 {{ row.hooks }}
               </p>
-              <Button
+              <UButton
                 type="button"
                 class="project-remove self-start"
                 :label="t('settings.projects.remove')"
-                severity="danger"
-                text
-                size="small"
+                color="error"
+                variant="ghost"
+                size="sm"
                 @click="removeProject(row)"
               />
             </li>
           </ul>
-          <Button
+          <UButton
             id="add_project"
             type="button"
             class="self-start"
             :label="t('settings.projects.add')"
-            severity="secondary"
-            text
+            :icon="icon('plus')"
+            color="neutral"
+            variant="ghost"
             @click="addProject"
-          >
-            <template #icon>
-              <AppIcon name="plus" />
-            </template>
-          </Button>
+          />
         </section>
 
         <section
@@ -614,21 +615,21 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
               id="update_version"
               class="text-sm"
             >{{ fmt("update.version", { version: upd.current || "" }) }}</span>
-            <Button
+            <UButton
               id="update_check"
               type="button"
               :label="t('update.check')"
-              severity="secondary"
-              outlined
-              size="small"
+              color="neutral"
+              variant="outline"
+              size="sm"
               :disabled="!upd.enabled || upd.busy || updWorking"
               @click="updateAction('update/check', undefined, t('update.checking'))"
             />
-            <Button
+            <UButton
               v-if="upd.available"
               id="update_apply"
               type="button"
-              size="small"
+              size="sm"
               :label="fmt('update.apply', { version: upd.latest || '' })"
               :disabled="upd.busy || updWorking"
               @click="updateAction('update/apply', undefined, fmt('update.applying', { version: upd.latest || '' }))"
@@ -642,15 +643,18 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
           >
             {{ updText ?? upd.text ?? "" }}
           </p>
-          <label class="check">
-            <ToggleSwitch
+          <div
+            id="update_auto_row"
+            class="check"
+          >
+            <USwitch
+              id="update_auto"
               v-model="updAuto"
-              input-id="update_auto"
+              :label="t('update.auto')"
               :disabled="!upd.enabled"
               @update:model-value="(v: boolean) => updateAction('update/auto', { auto: v })"
             />
-            <span>{{ t("update.auto") }}</span>
-          </label>
+          </div>
           <p class="hint">
             {{ t("update.auto.hint") }}
           </p>
@@ -660,71 +664,80 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
           class="settings-card settings-advanced"
           data-settings-card="advanced"
         >
-          <details
+          <UCollapsible
             id="advanced"
-            :open="advancedOpen"
-            @toggle="advancedOpen = ($event.target as HTMLDetailsElement).open"
+            v-model:open="advancedOpen"
+            :unmount-on-hide="false"
           >
-            <summary class="cursor-pointer font-semibold">
-              {{ t("settings.advanced") }}
-            </summary>
-            <div class="advanced-fields mt-4 flex flex-col gap-2">
-              <label class="field"><span>{{ t("settings.listen.label") }}</span><InputText
-                v-model="form.listen"
-                name="listen"
-                autocomplete="off"
-              /></label>
-              <p class="hint">
-                {{ t("settings.listen.hint") }}
-              </p>
-              <p
-                v-if="myAddr"
-                id="my_addr"
-                class="hint"
-              >
-                {{ myAddr }}
-              </p>
-              <label class="field"><span>{{ t("settings.api.label") }}</span><InputText
-                v-model="form.api"
-                name="api"
-                autocomplete="off"
-                placeholder="127.0.0.1:7520"
-              /></label>
-              <p class="hint">
-                {{ t("settings.api.hint") }}
-              </p>
-              <label class="field"><span>{{ t("settings.areas.label") }}</span><InputText
-                v-model="form.areas"
-                name="areas"
-                autocomplete="off"
-              /></label>
-              <p class="hint">
-                {{ t("settings.areas.hint") }}
-              </p>
-              <label class="check"><ToggleSwitch
-                v-model="form.discovery"
-                name="discovery"
-                input-id="discovery"
-              /> <span>{{ t("settings.discovery.label") }}</span></label>
-              <p class="hint">
-                {{ t("settings.discovery.hint") }}
-              </p>
-              <label class="field"><span>{{ t("settings.max_jobs.label") }}</span><InputText
-                v-model="form.max_jobs"
-                name="max_jobs"
-                type="number"
-                min="1"
-                max="4"
-                step="1"
-                placeholder="2"
-              /></label>
-              <p class="hint">
-                {{ t("settings.max_jobs.hint") }}
-              </p>
-            </div>
-          </details>
+            <UButton
+              type="button"
+              :label="t('settings.advanced')"
+              :trailing-icon="icon(advancedOpen ? 'collapse' : 'expand')"
+              color="neutral"
+              variant="ghost"
+              class="-ml-2.5 font-semibold"
+            />
+            <template #content>
+              <div class="advanced-fields mt-4 flex flex-col gap-2">
+                <label class="field"><span>{{ t("settings.listen.label") }}</span><UInput
+                  v-model="form.listen"
+                  name="listen"
+                  autocomplete="off"
+                /></label>
+                <p class="hint">
+                  {{ t("settings.listen.hint") }}
+                </p>
+                <p
+                  v-if="myAddr"
+                  id="my_addr"
+                  class="hint"
+                >
+                  {{ myAddr }}
+                </p>
+                <label class="field"><span>{{ t("settings.api.label") }}</span><UInput
+                  v-model="form.api"
+                  name="api"
+                  autocomplete="off"
+                  placeholder="127.0.0.1:7520"
+                /></label>
+                <p class="hint">
+                  {{ t("settings.api.hint") }}
+                </p>
+                <label class="field"><span>{{ t("settings.areas.label") }}</span><UInput
+                  v-model="form.areas"
+                  name="areas"
+                  autocomplete="off"
+                /></label>
+                <p class="hint">
+                  {{ t("settings.areas.hint") }}
+                </p>
+                <USwitch
+                  id="discovery"
+                  v-model="form.discovery"
+                  name="discovery"
+                  :label="t('settings.discovery.label')"
+                  class="check"
+                />
+                <p class="hint">
+                  {{ t("settings.discovery.hint") }}
+                </p>
+                <label class="field"><span>{{ t("settings.max_jobs.label") }}</span><UInput
+                  v-model="form.max_jobs"
+                  name="max_jobs"
+                  type="number"
+                  min="1"
+                  max="4"
+                  step="1"
+                  placeholder="2"
+                /></label>
+                <p class="hint">
+                  {{ t("settings.max_jobs.hint") }}
+                </p>
+              </div>
+            </template>
+          </UCollapsible>
         </section>
-        <footer class="settings-actions sticky bottom-0 bg-[var(--app-bg)] py-2">
+        <footer class="settings-actions sticky bottom-0 bg-default py-2">
           <p
             id="settings_result"
             role="status"
@@ -740,9 +753,10 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
 
 <style scoped>
 .field { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.9rem; }
-.check { display: flex; align-items: center; gap: 0.6rem; font-size: 0.9rem; }
+.check { font-size: 0.9rem; }
 .native-select {
-  padding: 0.5rem 0.75rem; border: 1px solid var(--p-inputtext-border-color, var(--app-line)); border-radius: var(--p-inputtext-border-radius, 6px);
-  background: var(--p-inputtext-background, var(--app-bg)); color: var(--app-text); font: inherit;
+  padding: 0.375rem 0.625rem; border-radius: calc(var(--ui-radius) * 1.5); font: inherit; font-size: 0.875rem;
+  background: var(--ui-bg); color: var(--ui-text-highlighted); border: 0; box-shadow: inset 0 0 0 1px var(--ui-border-accented);
 }
+.native-select:focus-visible { outline: 2px solid var(--ui-primary); outline-offset: 0; }
 </style>

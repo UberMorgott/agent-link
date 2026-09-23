@@ -4,7 +4,11 @@ import {
   authorLabel, authorName, clock, continues, genitiveName, isAgent, messageTick, others, preview, when, whoColor,
 } from '@/lib/chat'
 import { fmt, t } from '@/lib/runtime'
-import AppIcon from './AppIcon.vue'
+import UButton from '@nuxt/ui/components/Button.vue'
+import UChatMessage from '@nuxt/ui/components/ChatMessage.vue'
+import UChatMessages from '@nuxt/ui/components/ChatMessages.vue'
+import UIcon from '@nuxt/ui/components/Icon.vue'
+import { icon } from '@/lib/icons'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore } from '@/stores/inbox'
 import type { ChatMessage } from '@/types'
@@ -16,6 +20,8 @@ const list = ref<HTMLElement | null>(null)
 interface Bubble {
   m: ChatMessage
   event: boolean
+  out: boolean
+  cont: boolean
   cls: string
   who: string
   icon: string
@@ -35,7 +41,7 @@ const bubbles = computed<Bubble[]>(() => {
   return msgs.map((m, i) => {
     if (m.kind === 'chat_open' || m.kind === 'chat_close') {
       return {
-        m, event: true, cls: 'msg-event', who: '', icon: '', fyi: '', quote: '', note: '', tick: null, canReply: false,
+        m, event: true, out: false, cont: false, cls: 'msg-event', who: '', icon: '', fyi: '', quote: '', note: '', tick: null, canReply: false,
         author: fmt(m.kind === 'chat_open' ? "inbox.event.open" : "inbox.event.close", { name: authorName(m.from, self) }),
       }
     }
@@ -47,7 +53,7 @@ const bubbles = computed<Bubble[]>(() => {
     const asks = (m.responders || []).filter((name) => name !== m.from)
     const tick = messageTick(m, info)
     return {
-      m, event: false,
+      m, event: false, out, cont,
       cls: 'msg ' + (out ? 'out' : 'in') + (agent ? ' agent' : ' human') + (cont ? ' cont' : ''),
       who: whoColor(m.from),
       icon: agent ? 'agent' : 'human',
@@ -101,96 +107,133 @@ watch(source, () => {
 </script>
 
 <template>
-  <ul
-    id="messages"
-    ref="list"
-    class="conversation-timeline min-h-0 flex-1 overflow-y-auto py-4"
-  >
-    <li
-      v-if="!inbox.messages.length"
-      class="empty chat-column py-10 text-center text-sm text-[var(--app-muted)]"
+  <!-- #messages is the scroll box; ChatMessages finds it as its scroll parent
+       and offers the jump to the newest message when scrolled up. -->
+  <div class="relative flex min-h-0 flex-1 flex-col">
+    <div
+      id="messages"
+      ref="list"
+      class="conversation-timeline min-h-0 flex-1 overflow-y-auto py-4"
     >
-      {{ t(inbox.selectedChat ? "inbox.empty_conversation" : "inbox.select_hint") }}
-    </li>
-    <li
-      v-else-if="inbox.hasOlder"
-      class="msg-older chat-column flex justify-center pb-4"
-    >
-      <button
-        type="button"
-        class="cursor-pointer text-sm text-[var(--app-muted)] hover:underline"
-        @click="inbox.loadOlder"
-      >
-        {{ t("inbox.older") }}
-      </button>
-    </li>
-    <li
-      v-for="b in bubbles"
-      :key="b.m.id"
-      :class="[b.cls, 'chat-column']"
-      :style="b.who ? { '--who': b.who } : undefined"
-      :data-message-id="b.m.id"
-      tabindex="-1"
-    >
-      <template v-if="b.event">
-        <strong class="msg-author">{{ b.author }}</strong>
-        <time
-          class="msg-time"
-          :datetime="b.m.created_at"
-        >{{ clock(b.m.created_at) }}</time>
-      </template>
-      <template v-else>
-        <div class="msg-head">
-          <span class="msg-icon"><AppIcon :name="b.icon" /></span>
-          <strong class="msg-author">{{ b.author }}</strong>
-          <span
-            v-if="b.fyi"
-            class="msg-fyi"
-          >{{ b.fyi }}</span>
-        </div>
-        <button
-          v-if="b.quote"
-          type="button"
-          class="msg-quote"
-          @click="reveal(b.m.reply_to)"
+      <div class="chat-column">
+        <p
+          v-if="!inbox.messages.length"
+          class="empty py-10 text-center text-sm text-muted"
         >
-          {{ b.quote }}
-        </button>
-        <pre class="msg-body">{{ b.m.body || "" }}</pre>
-        <div class="msg-foot">
-          <span
-            v-if="b.note"
-            class="msg-note"
-          >{{ b.note }}</span>
-          <time
-            class="msg-time"
-            :datetime="b.m.created_at"
-            :title="when(b.m.created_at)"
-          >{{ clock(b.m.created_at) }}</time>
-          <span
-            v-if="b.tick"
-            class="msg-ticks"
-            :class="b.tick.state"
-            role="img"
-            :title="b.tick.label"
-            :aria-label="b.tick.label.replace(/\n/g, '; ')"
-          >
-            <AppIcon :name="b.tick.state" />
-          </span>
-          <button
-            v-if="b.canReply"
-            type="button"
-            class="msg-reply"
-            @click="inbox.setReply(b.m)"
-          >
-            {{ t("inbox.reply") }}
-          </button>
+          {{ t(inbox.selectedChat ? "inbox.empty_conversation" : "inbox.select_hint") }}
+        </p>
+        <div
+          v-else-if="inbox.hasOlder"
+          class="msg-older flex justify-center pb-4"
+        >
+          <UButton
+            :label="t('inbox.older')"
+            color="neutral"
+            variant="ghost"
+            size="sm"
+            @click="inbox.loadOlder"
+          />
         </div>
-      </template>
-    </li>
-  </ul>
+        <UChatMessages
+          v-if="inbox.messages.length"
+          compact
+          :should-scroll-to-bottom="false"
+          :ui="{ root: 'px-0' }"
+        >
+          <template
+            v-for="b in bubbles"
+            :key="b.m.id"
+          >
+            <div
+              v-if="b.event"
+              :class="b.cls"
+              :data-message-id="b.m.id"
+              tabindex="-1"
+            >
+              <strong class="msg-author">{{ b.author }}</strong>
+              <time
+                class="msg-time"
+                :datetime="b.m.created_at"
+              >{{ clock(b.m.created_at) }}</time>
+            </div>
+            <UChatMessage
+              v-else
+              :id="b.m.id"
+              :role="b.out ? 'user' : 'assistant'"
+              :parts="[]"
+              :side="b.out ? 'right' : 'left'"
+              :variant="b.out ? 'soft' : 'naked'"
+              color="neutral"
+              compact
+              :class="b.cls"
+              :ui="{ content: b.out ? 'px-3.5 py-2 rounded-2xl' : '', container: b.cont ? 'pb-1.5' : 'pb-3' }"
+              :style="{ '--who': b.who }"
+              :data-message-id="b.m.id"
+              tabindex="-1"
+            >
+              <template
+                v-if="!b.cont"
+                #header
+              >
+                <div class="msg-head">
+                  <UIcon
+                    :name="icon(b.icon)"
+                    class="msg-icon"
+                  />
+                  <strong class="msg-author">{{ b.author }}</strong>
+                  <span
+                    v-if="b.fyi"
+                    class="msg-fyi"
+                  >{{ b.fyi }}</span>
+                </div>
+              </template>
+              <template #content>
+                <button
+                  v-if="b.quote"
+                  type="button"
+                  class="msg-quote"
+                  @click="reveal(b.m.reply_to)"
+                >
+                  {{ b.quote }}
+                </button>
+                <pre class="msg-body">{{ b.m.body || "" }}</pre>
+                <div class="msg-foot">
+                  <span
+                    v-if="b.note"
+                    class="msg-note"
+                  >{{ b.note }}</span>
+                  <time
+                    class="msg-time"
+                    :datetime="b.m.created_at"
+                    :title="when(b.m.created_at)"
+                  >{{ clock(b.m.created_at) }}</time>
+                  <span
+                    v-if="b.tick"
+                    class="msg-ticks"
+                    :class="b.tick.state"
+                    role="img"
+                    :title="b.tick.label"
+                    :aria-label="b.tick.label.replace(/\n/g, '; ')"
+                  >
+                    <UIcon
+                      :name="icon(b.tick.state)"
+                      class="msg-tick-icon"
+                    />
+                  </span>
+                  <button
+                    v-if="b.canReply"
+                    type="button"
+                    class="msg-reply"
+                    @click="inbox.setReply(b.m)"
+                  >
+                    {{ t("inbox.reply") }}
+                  </button>
+                </div>
+              </template>
+            </UChatMessage>
+          </template>
+        </UChatMessages>
+      </div>
+    </div>
+  </div>
 </template>
-
-<style scoped>
-.conversation-timeline > li { list-style: none; }
-</style>

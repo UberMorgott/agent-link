@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref } from 'vue'
-import Button from 'primevue/button'
-import InputText from 'primevue/inputtext'
+import UButton from '@nuxt/ui/components/Button.vue'
+import UInput from '@nuxt/ui/components/Input.vue'
 import { api } from '@/lib/api'
 import { navigate } from '@/lib/nav'
 import { browser, fmt, t } from '@/lib/runtime'
@@ -14,7 +14,6 @@ const result = ref('')
 const adding = ref(false)
 const removing = ref<string[]>([])
 const list = ref<HTMLElement | null>(null)
-const addrInput = ref<{ $el: HTMLInputElement } | null>(null)
 
 function participantDetail(person: ParticipantView): string[] {
   const details: string[] = []
@@ -61,7 +60,7 @@ async function removeParticipant(name: string, index: number) {
     await nextTick()
     const next = list.value?.querySelectorAll<HTMLElement>('.participant-main') || []
     if (next.length) next[Math.min(index, next.length - 1)]!.focus()
-    else addrInput.value?.$el.focus()
+    else document.querySelector<HTMLInputElement>('#participant_addr')?.focus()
   } catch (e) {
     result.value = (e as Error).message
   } finally {
@@ -90,9 +89,8 @@ async function removeParticipant(name: string, index: number) {
         <label class="flex flex-col gap-1.5">
           <span class="text-sm">{{ t("participants.add.label") }}</span>
           <span class="flex gap-2">
-            <InputText
+            <UInput
               id="participant_addr"
-              ref="addrInput"
               v-model="addr"
               name="participant_addr"
               autocomplete="off"
@@ -101,7 +99,7 @@ async function removeParticipant(name: string, index: number) {
               :placeholder="t('participants.add.placeholder')"
               :disabled="adding"
             />
-            <Button
+            <UButton
               id="add_participant"
               type="submit"
               :label="t('participants.add.submit')"
@@ -130,7 +128,7 @@ async function removeParticipant(name: string, index: number) {
       <ul
         id="participants"
         ref="list"
-        class="participant-list flex flex-col divide-y divide-[var(--app-line)]"
+        class="participant-list flex flex-col divide-y divide-default"
       >
         <li
           v-for="(person, index) in app.participants || []"
@@ -140,7 +138,7 @@ async function removeParticipant(name: string, index: number) {
         >
           <button
             type="button"
-            class="participant-main flex min-w-0 flex-1 cursor-pointer flex-col items-start gap-0.5 rounded-lg px-2 py-1 text-left hover:bg-[var(--app-soft)]"
+            class="participant-main flex min-w-0 flex-1 cursor-pointer flex-col items-start gap-0.5 rounded-lg px-2 py-1 text-left hover:bg-elevated"
             :aria-label="fmt('participants.open_chat', { name: person.name })"
             @click="navigate('inbox', { peer: person.name })"
           >
@@ -151,23 +149,23 @@ async function removeParticipant(name: string, index: number) {
                 :class="person.online ? 'on' : 'off'"
               >{{ t(person.online ? "participants.online" : "participants.lost") }}</span>
             </span>
-            <span class="participant-counts text-sm text-[var(--app-muted)]">
+            <span class="participant-counts text-sm text-muted">
               {{ fmt("participants.counts", { sent: person.sent || 0, received: person.received || 0, total: person.total || 0 }) }}
             </span>
             <span
               v-if="participantDetail(person).length"
-              class="participant-detail text-xs text-[var(--app-muted)]"
+              class="participant-detail text-xs text-muted"
             >
               {{ participantDetail(person).join(" · ") }}
             </span>
           </button>
-          <Button
+          <UButton
             class="participant-remove"
             :label="t('participants.remove')"
             :aria-label="fmt('participants.remove_named', { name: person.name })"
-            severity="danger"
-            text
-            size="small"
+            color="error"
+            variant="ghost"
+            size="sm"
             :disabled="removing.includes(person.name)"
             @click="removeParticipant(person.name, index)"
           />

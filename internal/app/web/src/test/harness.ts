@@ -1,8 +1,9 @@
 // Test helpers: a fake /ui/api behind fetch, and the whole application shell
 // mounted on an in-memory router.
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import PrimeVue from 'primevue/config'
+import ui from '@nuxt/ui/vue-plugin'
+import { createHead } from '@unhead/vue/client'
 import { vi } from 'vitest'
 import { createMemoryHistory } from 'vue-router'
 import App from '@/App.vue'
@@ -42,6 +43,14 @@ export function fakeApi(handler: Handler) {
   return { calls, requests, fetchMock }
 }
 
+const mounted: VueWrapper[] = []
+
+// unmountAll takes down every shell a test mounted (setup.ts, after each test),
+// so a late store update finds no half-removed page to patch.
+export function unmountAll() {
+  for (const wrapper of mounted.splice(0)) wrapper.unmount()
+}
+
 // mountApp mounts the shell at path, e.g. "/inbox?chat=c1".
 export async function mountApp(path: string) {
   const pinia = createPinia()
@@ -53,10 +62,14 @@ export async function mountApp(path: string) {
   })
   await router.push(path)
   await router.isReady()
+  // The page's head (Nuxt UI's colour <style>) is not drawn in tests: its
+  // renderer waits on a timer, which the fake timers of a test would hold.
+  const head = createHead({ render: () => false })
   const wrapper = mount(App, {
     attachTo: document.body,
-    global: { plugins: [pinia, router, [PrimeVue, { theme: 'none' }]] },
+    global: { plugins: [pinia, router, head, ui] },
   })
+  mounted.push(wrapper)
   await flushPromises()
   return { wrapper, router, pinia }
 }

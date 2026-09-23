@@ -25,6 +25,7 @@ async function open(path: string) {
 // labelled: a form control has a visible or an aria label.
 function labelled(el: Element) {
   return el.hasAttribute('aria-label') || el.hasAttribute('aria-labelledby') || !!el.closest('label')
+    || (!!el.id && !!document.querySelector('label[for="' + CSS.escape(el.id) + '"]'))
 }
 
 describe('the application shell', () => {
@@ -44,8 +45,10 @@ describe('the application shell', () => {
       expect(views[0]!.querySelectorAll('h1')).toHaveLength(1)
       expect(document.title).toBe('page.title.' + route)
       expect($$('fieldset')).toHaveLength(0)
-      for (const control of $$('input, select, textarea')) {
-        if ((control as HTMLInputElement).type === 'hidden') continue
+      // A Nuxt UI switch or checkbox is a labelled button; the input it keeps
+      // for the form is hidden from everyone (aria-hidden, out of the tab order).
+      for (const control of $$('input, select, textarea, [role="switch"], [role="checkbox"]')) {
+        if ((control as HTMLInputElement).type === 'hidden' || control.getAttribute('aria-hidden') === 'true') continue
         expect(labelled(control), control.outerHTML).toBe(true)
       }
     })

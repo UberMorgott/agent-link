@@ -1,6 +1,7 @@
 // Runs before every test file: a clean page, storage and dictionary.
 import { afterEach, beforeEach, vi } from 'vitest'
 import { runtime } from '@/lib/runtime'
+import { unmountAll } from './harness'
 
 beforeEach(() => {
   localStorage.clear()
@@ -14,6 +15,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  unmountAll()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
   vi.useRealTimers()

@@ -23,8 +23,12 @@ export const layoutState = reactive({ mobileMenuActive: false })
 
 const isDarkTheme = computed(() => layoutConfig.theme === 'dark' || (layoutConfig.theme === 'system' && systemDark.value))
 
+// Nuxt UI's theme and Tailwind's dark: variant key on the "dark" class of
+// <html>; color-scheme gives native controls and scrollbars the same mode.
 function applyTheme() {
-  document.documentElement.classList.toggle('app-dark', isDarkTheme.value)
+  const root = document.documentElement
+  root.classList.toggle('dark', isDarkTheme.value)
+  root.style.colorScheme = isDarkTheme.value ? 'dark' : 'light'
 }
 
 watch(layoutConfig, (value) => {

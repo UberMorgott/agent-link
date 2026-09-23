@@ -35,17 +35,17 @@ const cards = computed(() => [
       </header>
       <div
         id="dashboard_cards"
-        class="dashboard-cards grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-4"
+        class="dashboard-cards grid grid-cols-2 gap-3 sm:grid-cols-4"
       >
         <article
           v-for="card in data ? cards : []"
           :key="card.label"
-          class="flex flex-col gap-1"
+          class="flex flex-col gap-1 rounded-lg bg-muted px-4 py-3 ring ring-default"
         >
-          <h2 class="text-xs font-medium text-[var(--app-muted)]">
+          <h2 class="text-xs font-medium text-muted">
             {{ card.label }}
           </h2>
-          <p class="text-lg font-semibold">
+          <p class="text-lg font-semibold text-highlighted">
             {{ card.value }}
           </p>
         </article>
@@ -59,7 +59,7 @@ const cards = computed(() => [
         </h2>
         <ul
           id="dashboard_recent"
-          class="dashboard-recent flex flex-col divide-y divide-[var(--app-line)]"
+          class="dashboard-recent flex flex-col divide-y divide-default"
         >
           <template v-if="data">
             <li
@@ -67,11 +67,11 @@ const cards = computed(() => [
               :key="i"
               class="truncate py-2 text-sm"
             >
-              <strong>{{ conversation.peer || "—" }}</strong>: <span class="text-[var(--app-muted)]">{{ conversation.preview || "" }}</span>
+              <strong>{{ conversation.peer || "—" }}</strong>: <span class="text-muted">{{ conversation.preview || "" }}</span>
             </li>
             <li
               v-if="!(data.recent || []).length"
-              class="py-2 text-sm text-[var(--app-muted)]"
+              class="py-2 text-sm text-muted"
             >
               {{ t("dashboard.recent.empty") }}
             </li>

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import Button from 'primevue/button'
-import AppIcon from './AppIcon.vue'
+import UBadge from '@nuxt/ui/components/Badge.vue'
+import UButton from '@nuxt/ui/components/Button.vue'
+import { icon } from '@/lib/icons'
 import { authorLabel, chatName, clock, isUnread, preview, workingLines } from '@/lib/chat'
 import { navigate } from '@/lib/nav'
 import { t } from '@/lib/runtime'
@@ -56,21 +57,18 @@ function toggleArchive() {
     <div class="flex items-center justify-between px-4 pb-1">
       <h2
         id="chat_list_title"
-        class="text-xs font-semibold tracking-wide text-[var(--app-muted)] uppercase"
+        class="text-xs font-semibold tracking-wide text-muted uppercase"
       >
         {{ t(archive ? "inbox.archive.title" : "inbox.list.label") }}
       </h2>
-      <Button
+      <UButton
         id="new_chat"
         :label="t('inbox.new')"
-        text
-        size="small"
+        :icon="icon('plus')"
+        variant="ghost"
+        size="sm"
         @click="inbox.showNewChat([])"
-      >
-        <template #icon>
-          <AppIcon name="plus" />
-        </template>
-      </Button>
+      />
     </div>
     <ul
       id="conversation_list"
@@ -90,43 +88,45 @@ function toggleArchive() {
         >
           <span class="row-top">
             <strong class="row-who">{{ row.name }}</strong>
-            <span
+            <UBadge
               v-if="row.chat.legacy"
               class="chat-badge legacy"
-            >{{ t("inbox.badge.legacy") }}</span>
+              :label="t('inbox.badge.legacy')"
+              color="neutral"
+              variant="soft"
+              size="sm"
+            />
             <span class="row-time">{{ row.time }}</span>
           </span>
           <span class="row-foot">
             <span :class="row.working.length ? 'row-live' : 'conversation-preview'">{{ row.last }}</span>
-            <span
+            <UBadge
               v-if="row.fresh"
               class="conversation-unread"
-            >{{ t("inbox.unread") }}</span>
+              :label="t('inbox.unread')"
+              size="sm"
+            />
           </span>
         </button>
       </li>
       <li
         v-if="!rows.length && source"
-        class="empty px-3 py-2 text-sm text-[var(--app-muted)]"
+        class="empty px-3 py-2 text-sm text-muted"
       >
         {{ t(archive ? "inbox.archive.empty" : "inbox.list.empty") }}
       </li>
     </ul>
     <div class="flex flex-col gap-1 px-2 pt-2">
-      <Button
+      <UButton
         id="archive_toggle"
         :label="t(archive ? 'inbox.archive.hide' : 'inbox.archive.show')"
-        text
-        size="small"
-        severity="secondary"
-        class="!justify-start"
+        :icon="icon('archive')"
+        color="neutral"
+        variant="ghost"
+        size="sm"
         :aria-pressed="archive ? 'true' : 'false'"
         @click="toggleArchive"
-      >
-        <template #icon>
-          <AppIcon name="archive" />
-        </template>
-      </Button>
+      />
       <span
         class="link-status truncate px-3 text-xs"
         :class="app.link.cls"

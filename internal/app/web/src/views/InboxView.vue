@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import Button from 'primevue/button'
-import Checkbox from 'primevue/checkbox'
-import InputText from 'primevue/inputtext'
-import Textarea from 'primevue/textarea'
-import AppIcon from '@/components/AppIcon.vue'
+import UButton from '@nuxt/ui/components/Button.vue'
+import UChatPrompt from '@nuxt/ui/components/ChatPrompt.vue'
+import UCheckbox from '@nuxt/ui/components/Checkbox.vue'
+import UInput from '@nuxt/ui/components/Input.vue'
+import UPopover from '@nuxt/ui/components/Popover.vue'
 import ChatTimeline from '@/components/ChatTimeline.vue'
 import ConversationList from '@/components/ConversationList.vue'
 import { isNarrow } from '@/layout/composables/layout'
+import { icon } from '@/lib/icons'
 import {
   activityLines, authorLabel, authorName, chatName, chatSessionList, elapsed, legacyPeerOld, memberState, others, preview,
   when, whoColor,
@@ -21,7 +22,6 @@ import { useInboxStore } from '@/stores/inbox'
 const app = useAppStore()
 const inbox = useInboxStore()
 const route = useRoute()
-const composer = ref<{ $el: HTMLTextAreaElement } | null>(null)
 const newChatForm = ref<HTMLFormElement | null>(null)
 
 // Every visit and every query change of /ui/inbox opens what it names.
@@ -100,16 +100,15 @@ const note = computed(() => {
   }
 })
 
-function onComposerKey(event: KeyboardEvent) {
-  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-    event.preventDefault()
-    void inbox.submitMessage()
-  }
+// One checkbox per person: a name in the list is a ticked box.
+function toggle(names: string[], name: string, on: boolean | 'indeterminate'): string[] {
+  const rest = names.filter((n) => n !== name)
+  return on === true ? [...rest, name] : rest
 }
 
-watch(() => inbox.focusComposer, () => nextTick(() => composer.value?.$el.focus()))
+watch(() => inbox.focusComposer, () => nextTick(() => document.getElementById('body')?.focus()))
 watch(() => inbox.focusNewChat, () => nextTick(() => {
-  newChatForm.value?.querySelector<HTMLInputElement>('#new_chat_members input, #new_chat_area')?.focus()
+  newChatForm.value?.querySelector<HTMLElement>('#new_chat_members [role="checkbox"], #new_chat_area')?.focus()
 }))
 
 function back() {
@@ -142,21 +141,17 @@ function back() {
         class="conversation-panel flex h-full flex-col"
         aria-labelledby="conversation_title"
       >
-        <header class="chat-head chat-column flex flex-none items-start gap-2 pb-2">
-          <Button
+        <header class="chat-head chat-column flex flex-none items-start gap-1 pb-2">
+          <UButton
             v-if="isNarrow"
             id="chat_back"
+            :icon="icon('back')"
             :aria-label="t('inbox.back')"
-            text
-            rounded
-            size="small"
-            severity="secondary"
+            color="neutral"
+            variant="ghost"
+            size="sm"
             @click="back"
-          >
-            <template #icon>
-              <AppIcon name="back" />
-            </template>
-          </Button>
+          />
           <div class="chat-head-main min-w-0 flex-1">
             <h2
               id="conversation_title"
@@ -167,7 +162,7 @@ function back() {
             <p
               v-if="inbox.subtitleError"
               id="chat_subtitle"
-              class="chat-subtitle text-xs text-[var(--app-danger)]"
+              class="chat-subtitle text-xs text-error"
             >
               {{ inbox.subtitleError }}
             </p>
@@ -184,78 +179,79 @@ function back() {
               >{{ p.text }}</span>
               <span
                 v-if="info?.area"
-                class="chat-area text-[var(--app-muted)]"
+                class="chat-area text-muted"
               >{{ fmt("inbox.area", { area: info.area }) }}</span>
             </p>
           </div>
-          <details
+          <UPopover
             v-if="info"
-            id="chat_info"
-            class="chat-info relative"
-            :open="inbox.infoOpen"
-            :title="t('inbox.info')"
-            @toggle="inbox.infoOpen = ($event.target as HTMLDetailsElement).open"
+            v-model:open="inbox.infoOpen"
+            :content="{ align: 'end' }"
           >
-            <summary class="flex h-8 w-8 cursor-pointer list-none items-center justify-center rounded-full text-[var(--app-muted)] hover:bg-[var(--app-soft)]">
-              <AppIcon name="info" /><span class="sr-only">{{ t("inbox.info") }}</span>
-            </summary>
-            <div class="chat-info-panel absolute right-0 z-20 mt-1 flex w-72 flex-col gap-2 rounded-xl border border-[var(--app-line)] bg-[var(--app-bg)] p-4 shadow-lg">
-              <h3>{{ t("inbox.participants.label") }}</h3>
-              <ul
-                id="chat_members"
-                class="chat-members flex flex-col gap-1.5"
-                :aria-label="t('inbox.participants.label')"
-              >
-                <li
-                  v-for="chip in chips"
-                  :key="chip.name"
-                  class="member-chip flex flex-col text-sm"
-                  :class="chip.state"
-                  :style="{ '--who': chip.who }"
+            <UButton
+              id="chat_info"
+              :icon="icon('info')"
+              :aria-label="t('inbox.info')"
+              :title="t('inbox.info')"
+              color="neutral"
+              variant="ghost"
+              size="sm"
+            />
+            <template #content>
+              <div class="chat-info-panel flex w-72 max-w-[calc(100vw-2rem)] flex-col gap-2 p-4">
+                <h3>{{ t("inbox.participants.label") }}</h3>
+                <ul
+                  id="chat_members"
+                  class="chat-members flex flex-col gap-1.5"
+                  :aria-label="t('inbox.participants.label')"
                 >
-                  <strong class="text-[var(--who)]">{{ chip.name }}</strong>
-                  <span
-                    v-if="chip.note"
-                    class="member-note text-xs text-[var(--app-muted)]"
-                  >{{ chip.note }}</span>
-                </li>
-              </ul>
-              <h3>{{ t("inbox.info.sessions") }}</h3>
-              <ul
-                id="chat_sessions"
-                class="chat-sessions flex flex-col gap-1 text-sm"
-              >
-                <li
-                  v-for="(s, i) in sessions"
-                  :key="i"
+                  <li
+                    v-for="chip in chips"
+                    :key="chip.name"
+                    class="member-chip flex flex-col text-sm"
+                    :class="chip.state"
+                    :style="{ '--who': chip.who }"
+                  >
+                    <strong class="text-[var(--who)]">{{ chip.name }}</strong>
+                    <span
+                      v-if="chip.note"
+                      class="member-note text-xs text-muted"
+                    >{{ chip.note }}</span>
+                  </li>
+                </ul>
+                <h3>{{ t("inbox.info.sessions") }}</h3>
+                <ul
+                  id="chat_sessions"
+                  class="chat-sessions flex flex-col gap-1 text-sm"
                 >
-                  {{ s }}
-                </li>
-                <li
-                  v-if="!sessions.length"
-                  class="empty text-[var(--app-muted)]"
-                >
-                  {{ t("inbox.info.no_sessions") }}
-                </li>
-              </ul>
-            </div>
-          </details>
-          <Button
+                  <li
+                    v-for="(s, i) in sessions"
+                    :key="i"
+                  >
+                    {{ s }}
+                  </li>
+                  <li
+                    v-if="!sessions.length"
+                    class="empty text-muted"
+                  >
+                    {{ t("inbox.info.no_sessions") }}
+                  </li>
+                </ul>
+              </div>
+            </template>
+          </UPopover>
+          <UButton
             v-if="canClose"
             id="chat_close"
+            :icon="icon('archive')"
             :aria-label="t('inbox.close')"
             :title="t('inbox.close')"
-            text
-            rounded
-            size="small"
-            severity="secondary"
+            color="neutral"
+            variant="ghost"
+            size="sm"
             :disabled="inbox.closing"
             @click="inbox.confirmClose"
-          >
-            <template #icon>
-              <AppIcon name="archive" />
-            </template>
-          </Button>
+          />
         </header>
 
         <form
@@ -282,20 +278,18 @@ function back() {
               id="new_chat_members"
               class="ask-choices flex flex-wrap gap-x-4 gap-y-2"
             >
-              <label
+              <UCheckbox
                 v-for="person in inbox.newChatPeople"
+                :id="'new_chat_' + person.name"
                 :key="person.name"
+                :label="person.name"
+                :model-value="inbox.newChatChosen.includes(person.name)"
                 class="choice"
                 :class="{ on: person.online }"
                 :style="{ '--who': whoColor(person.name) }"
-              >
-                <Checkbox
-                  v-model="inbox.newChatChosen"
-                  :value="person.name"
-                  :input-id="'new_chat_' + person.name"
-                />
-                <span>{{ person.name }}</span>
-              </label>
+                :ui="{ label: 'text-[var(--who)]' }"
+                @update:model-value="inbox.newChatChosen = toggle(inbox.newChatChosen, person.name, $event)"
+              />
             </span>
           </div>
           <p
@@ -307,7 +301,7 @@ function back() {
           </p>
           <label class="flex flex-col gap-1.5">
             <span class="text-sm font-medium">{{ t("inbox.new.area") }}</span>
-            <InputText
+            <UInput
               id="new_chat_area"
               v-model="inbox.newChatArea"
               name="area"
@@ -330,19 +324,19 @@ function back() {
             <p
               id="new_chat_result"
               role="status"
-              class="mr-auto text-sm text-[var(--app-danger)]"
+              class="mr-auto text-sm text-error"
             >
               {{ inbox.newChatResult }}
             </p>
-            <Button
+            <UButton
               id="new_chat_dismiss"
               type="button"
               :label="t('inbox.new.dismiss')"
-              text
-              severity="secondary"
+              color="neutral"
+              variant="ghost"
               @click="inbox.hideNewChat"
             />
-            <Button
+            <UButton
               id="new_chat_create"
               type="submit"
               :label="t('inbox.new.create')"
@@ -395,25 +389,24 @@ function back() {
               >
                 <span
                   id="ask_label"
-                  class="field-label text-[var(--app-muted)]"
+                  class="field-label text-muted"
                 >{{ t("inbox.ask.label") }}</span>
                 <span
                   id="ask_choices"
                   class="ask-choices flex flex-wrap gap-x-4 gap-y-1"
                 >
-                  <label
+                  <UCheckbox
                     v-for="name in askNames"
+                    :id="'ask_' + name"
                     :key="name"
+                    :label="name"
+                    :model-value="asked.includes(name)"
+                    size="sm"
                     class="choice"
                     :style="{ '--who': whoColor(name) }"
-                  >
-                    <Checkbox
-                      v-model="asked"
-                      :value="name"
-                      :input-id="'ask_' + name"
-                    />
-                    <span>{{ name }}</span>
-                  </label>
+                    :ui="{ label: 'text-[var(--who)]' }"
+                    @update:model-value="asked = toggle(asked, name, $event)"
+                  />
                 </span>
                 <span
                   v-if="!asked.length"
@@ -421,59 +414,59 @@ function back() {
                   class="ask-hint text-xs text-[var(--app-off)]"
                 >{{ t("inbox.ask.none") }}</span>
               </div>
-              <div class="composer-box rounded-3xl border border-[var(--app-line)] bg-[var(--app-bg)] px-4 py-2 shadow-sm focus-within:border-[var(--p-primary-color)]">
-                <p
+              <!-- Enter starts a new line, Ctrl+Enter sends. -->
+              <UChatPrompt
+                id="body"
+                v-model="inbox.composer"
+                as="div"
+                name="body"
+                :aria-label="t('inbox.body.label')"
+                :placeholder="t('inbox.body.placeholder')"
+                :rows="1"
+                :maxrows="10"
+                :autofocus="false"
+                :submit-on-enter="false"
+                :ui="{ root: 'rounded-3xl px-4', base: 'text-[15px]' }"
+                @update:model-value="inbox.saveDraft(inbox.selectedChat)"
+                @submit="inbox.submitMessage()"
+              >
+                <template
                   v-if="inbox.replyTo"
-                  id="replying"
-                  class="replying flex items-center gap-2 pt-1 text-xs text-[var(--app-muted)]"
+                  #header
                 >
-                  <span
-                    id="replying_text"
-                    class="min-w-0 flex-1 truncate"
-                  >{{ replying }}</span>
-                  <button
-                    id="cancel_reply"
-                    type="button"
-                    class="cursor-pointer hover:underline"
-                    @click="inbox.setReply(null)"
+                  <p
+                    id="replying"
+                    class="replying flex w-full items-center gap-2 pt-1 text-xs text-muted"
                   >
-                    {{ t("inbox.cancel_reply") }}
-                  </button>
-                </p>
-                <div class="composer-row flex items-end gap-2">
-                  <label class="composer-body min-w-0 flex-1">
-                    <span class="sr-only">{{ t("inbox.body.label") }}</span>
-                    <Textarea
-                      id="body"
-                      ref="composer"
-                      v-model="inbox.composer"
-                      name="body"
-                      rows="1"
-                      auto-resize
-                      class="max-h-60 w-full !border-0 !bg-transparent !px-0 !shadow-none"
-                      :placeholder="t('inbox.body.placeholder')"
-                      @update:model-value="inbox.saveDraft(inbox.selectedChat)"
-                      @keydown="onComposerKey"
-                    />
-                  </label>
-                  <Button
+                    <span
+                      id="replying_text"
+                      class="min-w-0 flex-1 truncate"
+                    >{{ replying }}</span>
+                    <button
+                      id="cancel_reply"
+                      type="button"
+                      class="cursor-pointer hover:underline"
+                      @click="inbox.setReply(null)"
+                    >
+                      {{ t("inbox.cancel_reply") }}
+                    </button>
+                  </p>
+                </template>
+                <template #footer>
+                  <span />
+                  <UButton
                     id="send_button"
                     type="submit"
-                    rounded
-                    size="small"
-                    class="mb-1 flex-none"
+                    :icon="icon('send')"
                     :aria-label="t('inbox.send')"
                     :disabled="inbox.sending"
-                  >
-                    <template #icon>
-                      <AppIcon name="send" />
-                    </template>
-                  </Button>
-                </div>
-              </div>
+                    class="rounded-full"
+                  />
+                </template>
+              </UChatPrompt>
               <p
                 id="inbox_result"
-                class="composer-result px-1 text-xs text-[var(--app-danger)]"
+                class="composer-result px-1 text-xs text-error"
                 role="status"
               >
                 {{ inbox.sendResult }}
@@ -482,15 +475,15 @@ function back() {
             <p
               v-if="note"
               id="chat_note"
-              class="chat-note flex flex-wrap items-center gap-2 rounded-xl bg-[var(--app-soft)] px-4 py-3 text-sm"
+              class="chat-note flex flex-wrap items-center gap-2 rounded-xl bg-elevated px-4 py-3 text-sm"
             >
               <span id="chat_note_text">{{ note.text }}</span>
-              <Button
+              <UButton
                 v-if="note.invite.length"
                 id="chat_note_action"
                 :label="fmt('inbox.new_with', { names: note.invite.join(', ') })"
-                size="small"
-                text
+                size="sm"
+                variant="link"
                 @click="inbox.showNewChat(note.invite)"
               />
             </p>
