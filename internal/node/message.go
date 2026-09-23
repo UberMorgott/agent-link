@@ -157,6 +157,12 @@ type Message struct {
 	ChatGen uint32 `json:"chat_gen,omitempty"`
 	// AuthorKind says who wrote the message (Author*); empty from older peers.
 	AuthorKind string `json:"author_kind,omitempty"`
+	// ParticipantIDs are the node ids of Participants (same order), on every
+	// envelope of a project chat.
+	ParticipantIDs []string `json:"participant_ids,omitempty"`
+	// ChatMode is the chat's Mode (ChatModeProject for a standalone project
+	// chat), on every envelope of it.
+	ChatMode string `json:"chat_mode,omitempty"`
 	// Receipts are the read receipts of a KindReceipt message.
 	Receipts []Receipt `json:"receipts,omitempty"`
 }

@@ -48,7 +48,18 @@ type Chat struct {
 	// Gen is the generation of a keyed chat (0 for the first one and for the
 	// random-id chats of v0.5).
 	Gen uint32 `json:"gen,omitempty"`
+	// Project is the project id of a chat in a project node; "" in the
+	// legacy network.
+	Project string `json:"project,omitempty"`
+	// Mode is ChatModeProject for a standalone project chat, "" otherwise.
+	Mode string `json:"mode,omitempty"`
+	// ParticipantIDs pins each of Participants (same order) to a node id in
+	// project chats.
+	ParticipantIDs []string `json:"participant_ids,omitempty"`
 }
+
+// ChatModeProject marks a standalone project chat (Chat.Mode, Message.ChatMode).
+const ChatModeProject = "project"
 
 // Closed reports whether a participant closed the chat.
 func (c Chat) Closed() bool { return c.CloseID != "" }

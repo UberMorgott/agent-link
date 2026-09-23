@@ -13,7 +13,7 @@ import (
 //
 // Keys are English identifiers; only the values are shown to the user.
 // {name} placeholders are filled in by fmt() in the page scripts.
-var uiStrings = map[string]string{
+var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys like error.conflict_secret name errors, not credentials
 	// Navigation, page titles and the connection indicator.
 	"nav.dashboard":           "Обзор",
 	"nav.label":               "Разделы приложения",
@@ -333,6 +333,25 @@ var uiStrings = map[string]string{
 	"inbox.new.create":       "Начать беседу",
 	"inbox.new.dismiss":      "Отмена",
 	"inbox.new.no_members":   "Пока некого позвать — добавьте участника на странице «Участники».",
+
+	// projects: server (Track A)
+	"error.name":                      "Название проекта — от 1 до 80 символов, без управляющих символов.",
+	"error.alias":                     "Своё название проекта — не длиннее 64 символов, без управляющих символов.",
+	"error.dir":                       "Укажите полный путь к существующей папке или оставьте поле пустым.",
+	"error.dir_taken":                 "Эта папка уже привязана к другому проекту — выберите другую.",
+	"error.too_many_projects":         "Проектов уже 32 — выйдите из ненужного, чтобы добавить новый.",
+	"error.invite":                    "Приглашение не распознано — скопируйте его целиком: ALP1.… или код вида XXXX-XXXX-XXXX.",
+	"error.addr":                      "Адрес участника не похож на IP — впишите, например, 10.147.20.9 или 10.147.20.9:7420.",
+	"error.conflict_secret":           "Этот проект уже есть здесь с другим приглашением — попросите участников прислать новое.",
+	"error.legacy_exists":             "Код прежней сети уже задан — чтобы сменить его, сначала выйдите из «Прежней сети».",
+	"error.not_found":                 "Такого проекта нет — обновите страницу (F5).",
+	"error.legacy_rename":             "«Прежнюю сеть» переименовать нельзя.",
+	"error.project_busy":              "Агент ещё выполняет запросы этого проекта — дождитесь окончания и повторите.",
+	"error.legacy_invite_unavailable": "У прежней сети нет кода приглашения: она настроена длинным секретом.",
+	"error.project_needs_folder":      "У проекта не выбрана папка — выберите её в меню проекта «Моя папка».",
+	"error.folder_not_in_project":     "Эта папка не входит в папку проекта — запустите агента внутри папки проекта.",
+
+	// projects: UI (Track B)
 }
 
 // stringsAttr renders uiStrings as JSON escaped for an HTML attribute value.

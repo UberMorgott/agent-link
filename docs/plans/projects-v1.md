@@ -568,3 +568,16 @@ traversal, dynamic chat participants, converting the legacy network.
   for the `error` state (§7.2).
 - Round 3 (Codex): no blocking objections. Notes adopted: §10 wording on
   branches; intake resumed when a save fails after `Quiesce` (§3.5).
+
+### Implementation deviations (Track A)
+
+- A0: the contract fixtures live in `internal/app/testdata/projects/*.json`, not
+  under `internal/app/web/src/test/fixtures/projects/` — Track A must not touch
+  `internal/app/web` while Track B works there; vitest mocks load them by the
+  relative path `../testdata/projects` from `web/`. Error fixtures are
+  `error_<code>.json` = `{status, body: {error, code}}`. The DTO fields that §3.4
+  names (`Chat.Project/Mode/ParticipantIDs`, `Message.ParticipantIDs/ChatMode`)
+  land in A0 as plain fields so the chat fixtures are marshalled from the real
+  types; A6/A7 give them behaviour. `ChatInfo.project` and `Session.project` are
+  served through the app wrappers `ChatInfoView`/`SessionView` (legacy →
+  `"legacy"`).
