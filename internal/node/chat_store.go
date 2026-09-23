@@ -16,9 +16,11 @@ import (
 //	chats/<chat id>/chat.json            Chat
 //	chats/<chat id>/messages/<id>.json   chatRecord: a message with its local sequence number
 //	chats/<chat id>/runs.json            automatic runs on this node: root id -> request id
+//	chats/<chat id>/held.json            held statuses (JobHeld): author/request id -> status
 //	chat_views.json                      ChatView per chat id, this node only
 //
-// Status updates are not kept: only the latest one per job, in memory.
+// Status updates are not kept: only the latest one per job, in memory, except
+// held ones, which never repeat.
 type chatStore struct {
 	dir string
 
@@ -76,6 +78,9 @@ func openChatStore(dir string) (*chatStore, error) {
 		if err := readJSON(filepath.Join(root, e.Name(), "runs.json"), &st.runs); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, err
 		}
+		if err := readJSON(filepath.Join(root, e.Name(), "held.json"), &st.jobs); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
 		files, err := jsonFiles(filepath.Join(root, e.Name(), "messages"))
 		if err != nil {
 			return nil, err
@@ -92,6 +97,7 @@ func openChatStore(dir string) (*chatStore, error) {
 			st.index[r.Message.ID] = i
 			cs.byMsg[r.Message.ID] = st.chat.ID
 			st.noteDone(r.Message)
+			st.clearHeld(r.Message)
 		}
 		cs.chats[st.chat.ID] = st
 	}
@@ -174,6 +180,9 @@ func (cs *chatStore) add(m Message) (chatRecord, bool, bool, error) {
 	st.msgs = append(st.msgs, r)
 	cs.byMsg[m.ID] = m.ChatID
 	st.noteDone(m)
+	if st.clearHeld(m) {
+		cs.saveHeldLocked(st)
+	}
 	closed := false
 	if m.Kind == KindChatClose && (st.chat.CloseID == "" || m.ID < st.chat.CloseID) {
 		c := st.chat
@@ -209,20 +218,62 @@ func (cs *chatStore) noteStatus(m Message) bool {
 	if st.done[key] {
 		return false
 	}
+	old, had := st.jobs[key]
+	wasHeld := had && old.JobStatus == JobHeld
 	if m.JobStatus == JobCompleted || m.JobStatus == JobFailed {
 		// A job that ends without a reply of its own (answered another way).
 		st.done[key] = true
 		delete(st.jobs, key)
+		if wasHeld {
+			cs.saveHeldLocked(st)
+		}
 		return true
 	}
-	if old, ok := st.jobs[key]; ok {
+	if had && m.JobStatus != JobHeld && !wasHeld {
 		oldSeq, newSeq := activitySeq(old), activitySeq(m)
 		if newSeq < oldSeq || (newSeq == oldSeq && m.CreatedAt.Before(old.CreatedAt)) {
 			return false
 		}
 	}
+	if had && (wasHeld || m.JobStatus == JobHeld) && m.CreatedAt.Before(old.CreatedAt) {
+		return false
+	}
 	st.jobs[key] = m
+	if wasHeld || m.JobStatus == JobHeld {
+		cs.saveHeldLocked(st)
+	}
 	return true
+}
+
+// clearHeld drops the held requests of m's author that m answers: the one it
+// replies to, or all of them when a person wrote m (no JobStatus). Only a
+// message written after the held status counts; both come from one node.
+func (st *chatState) clearHeld(m Message) bool {
+	if m.Kind != "" {
+		return false
+	}
+	changed := false
+	for key, j := range st.jobs {
+		if j.JobStatus == JobHeld && j.From == m.From && (j.ReplyTo == m.ReplyTo || m.JobStatus == "") &&
+			!m.CreatedAt.Before(j.CreatedAt) {
+			delete(st.jobs, key)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// saveHeldLocked persists st's held statuses: unlike queued and running ones
+// they are never refreshed, so a restart must not lose them. A failed write
+// only loses them on the next restart. The caller holds cs.mu.
+func (cs *chatStore) saveHeldLocked(st *chatState) {
+	held := map[string]Message{}
+	for key, m := range st.jobs {
+		if m.JobStatus == JobHeld {
+			held[key] = m
+		}
+	}
+	_ = writeJSON(filepath.Join(cs.chatDir(st.chat.ID), "held.json"), held)
 }
 
 func activitySeq(m Message) uint64 {

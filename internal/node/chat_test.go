@@ -234,7 +234,7 @@ func TestChatCloseRace(t *testing.T) {
 	if _, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "more", Ask: []string{"b"}}); !errors.Is(err, ErrChatClosed) {
 		t.Fatalf("send to a closed chat: %v", err)
 	}
-	if ok, _ := c.ClaimRun(Message{ID: q.ID, ChatID: info.ID, Responders: []string{"c"}, RootID: q.ID}); ok {
+	if ok, hold, _ := c.ClaimRun(Message{ID: q.ID, ChatID: info.ID, Responders: []string{"c"}, RootID: q.ID}); ok || hold != HoldChatClosed {
 		t.Fatal("a closed chat still starts a job")
 	}
 	// The job that was already running still delivers its answer.
@@ -293,13 +293,13 @@ func TestClaimRunLimitsAutomaticChains(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "b has the root", func() bool { return slices.Contains(chatIDs(b, info.ID), root.ID) })
-	if ok, err := b.ClaimRun(root); !ok || err != nil {
-		t.Fatalf("b claims the external request: %v %v", ok, err)
+	if ok, hold, err := b.ClaimRun(root); !ok || hold != "" || err != nil {
+		t.Fatalf("b claims the external request: %v %q %v", ok, hold, err)
 	}
-	if ok, _ := b.ClaimRun(root); !ok {
+	if ok, _, _ := b.ClaimRun(root); !ok {
 		t.Fatal("a resent duplicate is refused")
 	}
-	if ok, _ := c.ClaimRun(root); ok {
+	if ok, hold, _ := c.ClaimRun(root); ok || hold != "" {
 		t.Fatal("c claims a request not asking it")
 	}
 	// b's job asks c: the chain continues at depth 1 with the same root.
@@ -311,7 +311,7 @@ func TestClaimRunLimitsAutomaticChains(t *testing.T) {
 		t.Fatalf("continued request %+v", next)
 	}
 	eventually(t, "c has it", func() bool { return slices.Contains(chatIDs(c, info.ID), next.ID) })
-	if ok, _ := c.ClaimRun(next); !ok {
+	if ok, _, _ := c.ClaimRun(next); !ok {
 		t.Fatal("c refuses its first run of the chain")
 	}
 	// c's job asks b back: b already ran for this root.
@@ -320,7 +320,7 @@ func TestClaimRunLimitsAutomaticChains(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "b has it", func() bool { return slices.Contains(chatIDs(b, info.ID), back.ID) })
-	if ok, _ := b.ClaimRun(back); ok || back.AutoDepth != 2 {
+	if ok, hold, _ := b.ClaimRun(back); ok || hold != HoldAutoLimit || back.AutoDepth != 2 {
 		t.Fatalf("b ran twice for one root (depth %d)", back.AutoDepth)
 	}
 	// Past MaxAutoDepth a request is held.
@@ -328,7 +328,7 @@ func TestClaimRunLimitsAutomaticChains(t *testing.T) {
 	if !deep.Held() {
 		t.Fatal("deep request not held")
 	}
-	if ok, _ := b.ClaimRun(deep); ok {
+	if ok, hold, _ := b.ClaimRun(deep); ok || hold != HoldAutoLimit {
 		t.Fatal("held request claimed")
 	}
 	// Asking oneself or an outsider is refused.
@@ -640,4 +640,70 @@ func TestChatJobEndsByStatus(t *testing.T) {
 	for _, n := range []*testNode{a, b} {
 		eventually(t, n.cfg.Node+" shows b idle", func() bool { got, _ := n.Chat(info.ID); return !got.Active })
 	}
+}
+
+// A held status shows on the asked participant as held, never as a running
+// job, on both sides; it survives a restart and ends when that participant
+// answers (a reply to it, or any message a person there writes).
+func TestChatHeldStatus(t *testing.T) {
+	a, b, _ := trio(t)
+	info, err := a.CreateChat([]string{"b"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b knows the chat", func() bool { _, ok := b.ChatOf(info.ID); return ok })
+	held := func(n *testNode) []JobActivity {
+		got, _ := n.Chat(info.ID)
+		for _, m := range got.Members {
+			if m.Name == "b" {
+				if len(m.Jobs) > 0 || got.Active {
+					t.Fatalf("%s shows a held request as running: %+v", n.cfg.Node, got)
+				}
+				return m.Held
+			}
+		}
+		return nil
+	}
+	hold := func(q Message) {
+		t.Helper()
+		if _, err := b.SendMessage(Message{ID: DerivedID(q.ID, "b/held"), ChatID: info.ID, ReplyTo: q.ID, Kind: KindStatus,
+			JobStatus: JobHeld, HoldReason: HoldNoHandler, Activity: HoldText(HoldNoHandler)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q1, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "anyone?", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold(q1)
+	for _, n := range []*testNode{a, b} {
+		eventually(t, n.cfg.Node+" shows b holding q1", func() bool {
+			h := held(n)
+			return len(h) == 1 && h[0].ReplyTo == q1.ID && h[0].JobStatus == JobHeld && h[0].HoldReason == HoldNoHandler &&
+				h[0].Activity == "никто не отвечает — ждёт человека"
+		})
+	}
+	reopened, err := openChatStore(a.cfg.DataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := reopened.snapshot(info.ID); len(s.jobs) != 1 || s.jobs[0].JobStatus != JobHeld {
+		t.Fatalf("held status lost on restart: %+v", s.jobs)
+	}
+	if _, err := b.SendChat(ChatSend{ChatID: info.ID, Body: "answer by hand", ReplyTo: q1.ID}); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []*testNode{a, b} {
+		eventually(t, n.cfg.Node+" drops the answered hold", func() bool { return len(held(n)) == 0 })
+	}
+	q2, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "and this?", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold(q2)
+	eventually(t, "a shows b holding q2", func() bool { return len(held(a)) == 1 })
+	if _, err := b.SendChat(ChatSend{ChatID: info.ID, Body: "a person writes here"}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a person's message ends the hold", func() bool { return len(held(a)) == 0 })
 }

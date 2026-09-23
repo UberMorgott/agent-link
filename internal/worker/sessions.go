@@ -30,8 +30,9 @@ import (
 // implements it.
 type Chats interface {
 	// ClaimRun reports whether this node should answer chat message m (see
-	// node.Node.ClaimRun); it is asked once per new request.
-	ClaimRun(m node.Message) (bool, error)
+	// node.Node.ClaimRun); it is asked once per new request. When m must not
+	// run, hold is the reason (node.Hold*), "" when m does not ask this node.
+	ClaimRun(m node.Message) (run bool, hold string, err error)
 	ChatOf(id string) (node.Chat, bool)
 	ChatMessages(id string, before, after uint64, limit int) ([]node.ChatMessage, error)
 }

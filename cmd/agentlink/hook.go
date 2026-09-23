@@ -12,6 +12,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -91,6 +92,8 @@ type hookMessage struct {
 	AsksMe       bool
 	// Worker: this node's worker (agent handler) already runs or queues it.
 	Worker bool
+	// Held: it asks this node, but no worker answers it; why (node.HoldText).
+	Held string
 }
 
 // hookEnv is where the hook finds the node and keeps its cursors.
@@ -218,9 +221,12 @@ func hookOutput(event, text string) string {
 }
 
 // collectHookMessages lists the messages newer than cur and moves cur past
-// them. On the first call of a session (first) it only records where chats
-// are now and reports inbox messages of the last day that no `wait` took and
-// this node has not answered. Messages of an area wants refuses are skipped.
+// them. On the first call of a session (first) it records where chats are now
+// and reports only what of the last day still waits for this node: inbox
+// messages no `wait` took and this node has not answered, and chat requests
+// asking this node that it has not replied to and its worker does not handle
+// (held ones say why no worker answers). Messages of an area wants refuses
+// are skipped.
 func collectHookMessages(api string, cur *hookCursor, first bool, wants func(area string) bool) ([]hookMessage, error) {
 	var out []hookMessage
 	var chats []node.ChatInfo
@@ -231,21 +237,30 @@ func collectHookMessages(api string, cur *hookCursor, first bool, wants func(are
 	for _, c := range chats {
 		last, known := cur.Chats[c.ID]
 		seenChats[c.ID] = max(last, c.LastSeq)
-		if first || c.LastSeq <= last || !wants(c.Area) {
+		if !wants(c.Area) || !first && c.LastSeq <= last {
 			continue
 		}
 		self := ""
 		working := map[string]bool{} // requests this node's worker handles
+		held := map[string]string{}  // requests asking this node that no worker answers: why
 		for _, m := range c.Members {
 			if m.Self {
 				self = m.Name
 				for _, j := range m.Jobs {
 					working[j.ReplyTo] = true
 				}
+				for _, j := range m.Held {
+					held[j.ReplyTo] = cmp.Or(j.Activity, node.HoldText(j.HoldReason))
+				}
 			}
 		}
+		// A new session hears of a chat only through its recent requests that
+		// ask this node and nobody here answered or handles yet.
+		if first && (self == "" || time.Since(c.LastAt) > hookFirstWindow) {
+			continue
+		}
 		q := url.Values{"limit": {"200"}}
-		if known && last > 0 {
+		if !first && known && last > 0 {
 			q.Set("after", strconv.FormatUint(last, 10))
 		}
 		var msgs []node.ChatMessage
@@ -254,14 +269,21 @@ func collectHookMessages(api string, cur *hookCursor, first bool, wants func(are
 		} else if err != nil {
 			return nil, err
 		}
+		answered := map[string]bool{} // requests this node replied to
 		for _, m := range msgs {
-			if m.Seq <= last {
+			if m.From == self && m.ReplyTo != "" && m.Kind == "" {
+				answered[m.ReplyTo] = true
+			}
+		}
+		for _, m := range msgs {
+			if first && (!m.Asks(self) || answered[m.ID] || working[m.ID] || time.Since(m.CreatedAt) > hookFirstWindow) ||
+				!first && m.Seq <= last {
 				continue
 			}
 			if m.Direction == "in" && m.Kind == "" && m.Body != "" {
 				out = append(out, hookMessage{
 					ID: m.ID, From: m.From, ChatID: c.ID, Participants: c.Participants,
-					At: m.CreatedAt, Body: m.Body, AsksMe: self != "" && m.Asks(self), Worker: working[m.ID],
+					At: m.CreatedAt, Body: m.Body, AsksMe: self != "" && m.Asks(self), Worker: working[m.ID], Held: held[m.ID],
 				})
 			}
 		}
@@ -370,6 +392,8 @@ func formatHookMessages(event string, msgs []hookMessage) string {
 		b.WriteString("\n")
 		if m.Worker {
 			b.WriteString("Уже обрабатывает агент-обработчик этого узла: не дублируйте. Ответите сами — его работа остановится.\n")
+		} else if m.Held != "" {
+			fmt.Fprintf(&b, "Агент-обработчик этого узла не ответит (%s): ответить может только эта сессия или человек.\n", m.Held)
 		}
 		if m.ChatID != "" {
 			fmt.Fprintf(&b, "Ответить: agentlink send --chat %s --reply-to %s --body \"<текст>\"\n", m.ChatID, m.ID)

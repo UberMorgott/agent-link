@@ -47,7 +47,37 @@ const (
 	JobRunning   = "running"
 	JobCompleted = "completed"
 	JobFailed    = "failed"
+	// JobHeld is a terminal status of a chat request this node was asked but
+	// will not answer automatically; HoldReason says why. Peers without it
+	// ignore the status (it is neither queued nor running).
+	JobHeld = "held"
 )
+
+// Hold reasons carried in Message.HoldReason.
+const (
+	HoldNoHandler  = "no_handler"  // no agent handler is configured
+	HoldNoAgent    = "no_agent"    // the handler's agent program is not found
+	HoldAutoLimit  = "auto_limit"  // automatic chain limit, or its root already ran here
+	HoldChatClosed = "chat_closed" // the chat is closed (or gone)
+	HoldAnswered   = "answered"    // a person on this node answered it
+)
+
+// HoldText is the text shown for a hold reason.
+func HoldText(reason string) string {
+	switch reason {
+	case HoldNoHandler:
+		return "никто не отвечает — ждёт человека"
+	case HoldNoAgent:
+		return "программа агента не найдена — ждёт человека"
+	case HoldAutoLimit:
+		return "лимит автоответов — нужен человек"
+	case HoldChatClosed:
+		return "чат закрыт"
+	case HoldAnswered:
+		return "ответил человек"
+	}
+	return "не отвечает автоматически — ждёт человека"
+}
 
 // Message is one agent-to-agent message.
 type Message struct {
@@ -78,6 +108,10 @@ type Message struct {
 	AutoDepth uint8  `json:"auto_depth,omitempty"`
 	// ActivityInfo details Activity on status updates of chat jobs.
 	ActivityInfo *ActivityState `json:"activity_info,omitempty"`
+	// HoldReason is why a chat request is not answered automatically, on a
+	// JobHeld status (and on the completed status of an answered job); Activity
+	// then carries HoldText. Older peers neither send nor read it.
+	HoldReason string `json:"hold_reason,omitempty"`
 }
 
 // IsRequest reports whether m is a request outside chats: neither a reply, a

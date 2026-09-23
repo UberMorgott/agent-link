@@ -1147,7 +1147,7 @@ const chats = {
   [group]: {
     info: { id: group, participants: ["bob", "local", "карл & sons"], title: "line 0", closed: false, archived: false, last_seq: 206, last_at: iso(base + 204000),
       members: [
-        { name: "bob", connected: true, compatible: true, queued: 0, jobs: [{ reply_to: "m204", job_status: "running", activity_info: { type: "edit", text: "app.go", phase: "running", started_at: iso(base + 241000) }, updated_at: iso(base + 241000) }] },
+        { name: "bob", connected: true, compatible: true, queued: 0, jobs: [{ reply_to: "m204", job_status: "running", activity_info: { type: "edit", text: "app.go", phase: "running", started_at: iso(base + 241000) }, updated_at: iso(base + 241000) }], held: [{ reply_to: "m202", job_status: "held", hold_reason: "no_handler", activity: "никто не отвечает — ждёт человека" }] },
         { name: "local", self: true, connected: true, compatible: true, queued: 0 },
         { name: "карл & sons", connected: false, compatible: true, queued: 2, jobs: [{ reply_to: "m204", job_status: "queued", updated_at: iso(base + 204000), stale: true }] },
       ] },
@@ -1178,6 +1178,11 @@ if (!calls.includes("GET chats/c1%20%26") || !calls.includes("GET chats/c1%20%26
 if (list.children.length !== 201 || list.children[0].className !== "msg-older") throw new Error("timeline: " + list.children.length + " " + list.children[0].className);
 const anchor = list.children.find((node) => node.dataset.messageId === "m204");
 if (!anchor || !anchor.scrolled) throw new Error("message anchor was not revealed");
+const heldBubble = list.children.find((node) => node.dataset.messageId === "m202");
+const holdNote = heldBubble.children.find((c) => c.className === "msg-meta msg-hold");
+if (holdNote.hidden || text(holdNote) !== "bob: никто не отвечает — ждёт человека") throw new Error("held note: " + text(holdNote));
+if (!anchor.children.find((c) => c.className === "msg-meta msg-hold").hidden) throw new Error("hold note on a message nobody held");
+if (!heldBubble.children.find((c) => c.className === "msg-reply").hidden) throw new Error("own message offers a reply");
 if (!text(elements.conversation_title).includes("bob, карл & sons")) throw new Error("title: " + elements.conversation_title.textContent);
 if (elements.chat_members.children.length !== 3 || elements.chat_close.hidden || elements.send.hidden) throw new Error("header or composer of an open chat");
 if (!elements.chat_members.children[2].className.includes("away") || !text(elements.chat_members.children[2]).includes("inbox.member.queued")) throw new Error("away member chip: " + text(elements.chat_members.children[2]));
@@ -1193,11 +1198,11 @@ Date.now = () => base + 246000;
 const before = calls.length;
 if (intervals.length !== 1 || intervals[0].ms !== 1000) throw new Error("one 1s timer expected: " + JSON.stringify(intervals));
 intervals[0].fn();
-const total = bobRow.children.find((c) => c.className === "act-time"), step = bobRow.children.find((c) => c.className === "act-step");
-if (total.textContent !== "0:42" || !step.textContent.includes("0:05")) throw new Error("timers: " + total.textContent + " / " + step.textContent);
+const total = bobRow.children.find((c) => c.className === "act-time");
+if (total.textContent !== "· 0:42" || bobRow.children.some((c) => c.className === "act-step")) throw new Error("one timer expected: " + text(bobRow));
 Date.now = () => base + 306000;
 intervals[0].fn();
-if (total.textContent !== "1:42" || !step.textContent.includes("1:05") || calls.length !== before) throw new Error("timer tick: " + total.textContent + " calls " + (calls.length - before));
+if (total.textContent !== "· 1:42" || calls.length !== before) throw new Error("timer tick: " + total.textContent + " calls " + (calls.length - before));
 Date.now = realNow;
 
 // A refresh keeps nodes, focus, draft, caret and an upward scroll.

@@ -86,11 +86,19 @@ func newFakeChats() *fakeChats {
 	return &fakeChats{chat: node.Chat{ID: chatID, Participants: []string{"carol", "me", "peer"}}}
 }
 
-func (f *fakeChats) ClaimRun(m node.Message) (bool, error) {
+func (f *fakeChats) ClaimRun(m node.Message) (bool, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.claims++
-	return !f.deny && m.Asks("me") && !f.chat.Closed(), nil
+	switch {
+	case !m.Asks("me"):
+		return false, "", nil
+	case f.chat.Closed():
+		return false, node.HoldChatClosed, nil
+	case f.deny:
+		return false, node.HoldAutoLimit, nil
+	}
+	return true, "", nil
 }
 
 func (f *fakeChats) ChatOf(id string) (node.Chat, bool) {
@@ -386,5 +394,88 @@ func TestChatTurnRecovery(t *testing.T) {
 	w2.mu.Unlock()
 	if err != nil || s.LastSeq != chats.seqOf(id2) {
 		t.Fatalf("session %+v, %v", s, err)
+	}
+}
+
+// A chat request that asks this node but will not run gets exactly one
+// terminal held status to the chat, with the reason and its text, and no job;
+// messages that do not ask this node get nothing.
+func TestChatHeldReasons(t *testing.T) {
+	for _, c := range []struct {
+		name, want string
+		opt        Options
+		run        Runner
+		setup      func(*fakeChats)
+	}{
+		{name: "no handler", want: node.HoldNoHandler},
+		{name: "agent program missing", want: node.HoldNoAgent,
+			opt: Options{Agent: func() Command { return Command{Name: filepath.Join(t.TempDir(), "gone-agent.exe")} }}},
+		{name: "chain limit", want: node.HoldAutoLimit, run: echoRunner, setup: func(f *fakeChats) { f.deny = true }},
+		{name: "chat closed", want: node.HoldChatClosed, run: echoRunner, setup: func(f *fakeChats) { f.chat.CloseID = id3 }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			chats := newFakeChats()
+			if c.setup != nil {
+				c.setup(chats)
+			}
+			rec, send := chatRecorder(chats)
+			opt := c.opt
+			opt.Chats, opt.Self = chats, "me"
+			w, err := New(c.run, send, t.TempDir(), t.TempDir(), opt, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hook := w.Accept
+			if c.run == nil && c.opt.Agent == nil {
+				hook = w.ChatsOnly // what the app installs without a handler
+			}
+			q := ask(chats, id1, "peer", "q")
+			for range 2 { // a resent duplicate repeats the same status id
+				if err := hook(q); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := hook(chats.post(node.Message{ID: id2, From: "peer", Body: "fyi"})); err != nil {
+				t.Fatal(err)
+			}
+			if err := hook(msg(id3, "direct")); err != nil {
+				t.Fatal(err)
+			}
+			held := rec.filter(func(m node.Message) bool { return m.JobStatus == node.JobHeld })
+			if len(held) != 2 || held[0].ID != held[1].ID {
+				t.Fatalf("held statuses %+v", held)
+			}
+			h := held[0]
+			if h.Kind != node.KindStatus || h.ReplyTo != id1 || h.ChatID != chatID || h.ID != node.DerivedID(id1, "me/held") ||
+				h.HoldReason != c.want || h.Activity != node.HoldText(c.want) {
+				t.Fatalf("held status %+v", h)
+			}
+			if all := rec.filter(func(node.Message) bool { return true }); c.run == nil && c.opt.Agent == nil && len(all) != 2 {
+				t.Fatalf("no handler: a direct request was queued or answered: %+v", all)
+			}
+			if _, ok := w.Job(id1); ok {
+				t.Fatal("a held request got a job")
+			}
+		})
+	}
+}
+
+func echoRunner(_ context.Context, _, prompt string, _ func(string)) (string, error) {
+	return "echo " + prompt, nil
+}
+
+// A queued chat job answered here by hand completes with the answered reason.
+func TestChatAnsweredStatusSaysWhy(t *testing.T) {
+	chats := newFakeChats()
+	rec, send := chatRecorder(chats)
+	agent := fakeAgent(t, "echo")
+	w := chatWorker(t, chats, send, t.TempDir(), t.TempDir(), Options{Agent: func() Command { return agent }})
+	accept(t, w, ask(chats, id1, "peer", "q"))
+	if !w.Answered(id1) {
+		t.Fatal("queued job not answered")
+	}
+	got := rec.filter(func(m node.Message) bool { return m.JobStatus == node.JobCompleted })
+	if len(got) != 1 || got[0].Kind != node.KindStatus || got[0].HoldReason != node.HoldAnswered || got[0].ChatID != chatID {
+		t.Fatalf("answered status %+v", got)
 	}
 }

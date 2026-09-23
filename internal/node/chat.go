@@ -81,6 +81,7 @@ type JobActivity struct {
 	JobStatus    string         `json:"job_status"`
 	Activity     string         `json:"activity,omitempty"`
 	ActivityInfo *ActivityState `json:"activity_info,omitempty"`
+	HoldReason   string         `json:"hold_reason,omitempty"` // held only
 	UpdatedAt    time.Time      `json:"updated_at"`
 	// Stale: the participant is disconnected, so this may be over.
 	Stale bool `json:"stale,omitempty"`
@@ -96,6 +97,10 @@ type ParticipantState struct {
 	Compatible bool          `json:"compatible"`
 	Queued     int           `json:"queued"` // messages of the chat not yet ACKed by it
 	Jobs       []JobActivity `json:"jobs,omitempty"`
+	// Held are the requests the participant was asked but will not answer
+	// automatically (JobHeld, with HoldReason and HoldText as Activity), until
+	// it answers them. They do not make the chat active.
+	Held []JobActivity `json:"held,omitempty"`
 }
 
 // ChatInfo describes a chat for the chat list and the chat page.
@@ -502,17 +507,25 @@ func (n *Node) receiveChat(peer string, m Message) bool {
 
 // ClaimRun reports whether this node's handler should answer m and records
 // the run: m must ask this node, the chat be open, m within MaxAutoDepth, and
-// no other request of m's automatic chain (RootID) have run here. Asking the
-// same m again gives the same answer, so a resent duplicate is safe.
-func (n *Node) ClaimRun(m Message) (bool, error) {
-	if !m.Asks(n.cfg.Node) || m.Held() {
-		return false, nil
+// no other request of m's automatic chain (RootID) have run here. When m asks
+// this node but must not run, hold is the reason (a Hold* constant). Asking
+// the same m again gives the same answer, so a resent duplicate is safe.
+func (n *Node) ClaimRun(m Message) (run bool, hold string, err error) {
+	if !m.Asks(n.cfg.Node) {
+		return false, "", nil
+	}
+	if m.Held() {
+		return false, HoldAutoLimit, nil
 	}
 	c, ok := n.chats.get(m.ChatID)
 	if !ok || c.Closed() {
-		return false, nil
+		return false, HoldChatClosed, nil
 	}
-	return n.chats.claimRun(c.ID, cmp.Or(m.RootID, m.ID), m.ID)
+	run, err = n.chats.claimRun(c.ID, cmp.Or(m.RootID, m.ID), m.ID)
+	if err != nil || run {
+		return run, "", err
+	}
+	return false, HoldAutoLimit, nil // another request of the chain ran here
 }
 
 // ChatOf returns a chat's description; ok is false for an unknown chat.
@@ -687,16 +700,22 @@ func (n *Node) chatInfo(s chatSnapshot, queued map[string]map[string]int) ChatIn
 		info.LastMessage, info.LastAt = &cm, last.Message.CreatedAt
 	}
 	info.Archived = info.Closed
-	jobs := map[string][]JobActivity{}
+	jobs, held := map[string][]JobActivity{}, map[string][]JobActivity{}
 	for _, m := range s.jobs {
-		if m.JobStatus != JobQueued && m.JobStatus != JobRunning {
-			continue
+		a := JobActivity{ReplyTo: m.ReplyTo, JobStatus: m.JobStatus, Activity: m.Activity, ActivityInfo: m.ActivityInfo, UpdatedAt: m.CreatedAt}
+		switch m.JobStatus {
+		case JobQueued, JobRunning:
+			jobs[m.From] = append(jobs[m.From], a)
+		case JobHeld:
+			a.HoldReason, a.ActivityInfo = m.HoldReason, nil
+			if a.Activity == "" {
+				a.Activity = HoldText(m.HoldReason)
+			}
+			held[m.From] = append(held[m.From], a)
 		}
-		jobs[m.From] = append(jobs[m.From], JobActivity{ReplyTo: m.ReplyTo, JobStatus: m.JobStatus,
-			Activity: m.Activity, ActivityInfo: m.ActivityInfo, UpdatedAt: m.CreatedAt})
 	}
 	for _, p := range s.chat.Participants {
-		ps := ParticipantState{Name: p, Self: p == n.cfg.Node, Connected: true, Compatible: true, Jobs: jobs[p]}
+		ps := ParticipantState{Name: p, Self: p == n.cfg.Node, Connected: true, Compatible: true, Jobs: jobs[p], Held: held[p]}
 		if !ps.Self {
 			_, caps, ok := n.PeerCaps(p)
 			ps.Connected = ok

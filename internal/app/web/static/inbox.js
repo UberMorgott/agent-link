@@ -248,9 +248,19 @@ function renderHeader(info) {
 
 // --- the open chat: timeline ---
 
+// holdsFor lists the participants that were asked message id but will not
+// answer it automatically, with why (their node's text); such a hold is idle.
+function holdsFor(id) {
+  const out = [];
+  for (const member of store.get().chat?.members || []) {
+    for (const job of member.held || []) if (job.reply_to === id) out.push({ name: member.name, text: job.activity || t("inbox.hold.unknown") });
+  }
+  return out;
+}
+
 function messageVersion(m) {
   return JSON.stringify([m.seq, m.kind, m.body, m.from, m.created_at, m.reply_to, m.responders, m.held, m.job_status,
-    m.delivery, self(), store.get().chat?.closed, store.get().chat?.legacy]);
+    m.delivery, self(), store.get().chat?.closed, store.get().chat?.legacy, holdsFor(m.id)]);
 }
 
 function createBubble() {
@@ -270,13 +280,15 @@ function createBubble() {
   body.className = "msg-body";
   const meta = document.createElement("p");
   meta.className = "msg-meta";
+  const hold = document.createElement("p");
+  hold.className = "msg-meta msg-hold";
   const answer = document.createElement("button");
   answer.type = "button";
   answer.className = "msg-reply";
   answer.textContent = t("inbox.reply");
   answer.addEventListener("click", () => setReply(node._message));
-  node.append(head, quote, body, meta, answer);
-  node._parts = { author, at, quote, body, meta, answer };
+  node.append(head, quote, body, meta, hold, answer);
+  node._parts = { author, at, quote, body, meta, hold, answer };
   return node;
 }
 
@@ -294,7 +306,7 @@ function patchBubble(node, m) {
     p.author.textContent = fmt(m.kind === "chat_open" ? "inbox.event.open" : "inbox.event.close", { name: authorName(m.from) });
     p.at.textContent = clock(m.created_at);
     p.at.dateTime = m.created_at;
-    p.quote.hidden = true; p.body.hidden = true; p.meta.hidden = true; p.answer.hidden = true;
+    p.quote.hidden = true; p.body.hidden = true; p.meta.hidden = true; p.hold.hidden = true; p.answer.hidden = true;
     return;
   }
   // Only a failed reply is marked, never the question: another reply may answer it.
@@ -320,7 +332,11 @@ function patchBubble(node, m) {
   p.meta.hidden = !notes.length;
   setClass(p.meta, "warn", m.held);
   setClass(p.meta, "failed-note", failed);
-  p.answer.hidden = !info || info.legacy || info.closed;
+  const holds = holdsFor(m.id);
+  p.hold.textContent = holds.map((h) => authorName(h.name) + ": " + h.text).join(" · ");
+  p.hold.hidden = !holds.length;
+  // Own messages get no reply button: a reference to oneself asks nobody.
+  p.answer.hidden = !info || info.legacy || info.closed || m.direction === "out";
 }
 
 function reconcile(parent, nodes) {
@@ -399,8 +415,9 @@ function activityText(job) {
   const text = info?.text || job.activity || "";
   const typeKey = info?.type ? "inbox.activity.type." + info.type : "";
   const verb = typeKey && t(typeKey) !== typeKey ? t(typeKey) : "";
-  if (verb && text) return verb + " " + text;
-  return text || verb || t("inbox.activity.working");
+  // A step that only names its type ("thinking") reads as the verb alone.
+  if (verb && text && text.toLowerCase() !== info.type.toLowerCase()) return verb + " " + text;
+  return verb || text || t("inbox.activity.working");
 }
 
 function renderActivity(info) {
@@ -420,12 +437,10 @@ function renderActivity(info) {
         who.className = "act-who";
         const text = document.createElement("span");
         text.className = "act-text";
-        const step = document.createElement("span");
-        step.className = "act-step";
         const total = document.createElement("span");
         total.className = "act-time";
-        row.append(spin, who, text, step, total);
-        row._parts = { who, text, step, total };
+        row.append(spin, who, text, total);
+        row._parts = { who, text, total };
         activityNodes.set(key, row);
       }
       const p = row._parts;
@@ -434,10 +449,8 @@ function renderActivity(info) {
       p.who.textContent = authorName(member.name);
       p.text.textContent = activityText(job);
       p.text.title = p.text.textContent;
+      // One timer: how long the job has taken so far.
       p.total.dataset.since = jobStart(job) || "";
-      const stepStart = job.activity_info?.phase === "running" ? job.activity_info.started_at : "";
-      p.step.dataset.since = stepStart || "";
-      p.step.hidden = !stepStart || job.stale;
       rows.push(row);
     }
   }
@@ -452,11 +465,9 @@ function renderActivity(info) {
 function tickActivity() {
   const now = Date.now();
   for (const row of activityNodes.values()) {
-    const { total, step } = row._parts;
+    const { total } = row._parts;
     const since = Date.parse(total.dataset.since);
-    total.textContent = Number.isNaN(since) ? "" : elapsed(now - since);
-    const stepSince = Date.parse(step.dataset.since);
-    step.textContent = step.hidden || Number.isNaN(stepSince) ? "" : fmt("inbox.activity.step", { time: elapsed(now - stepSince) });
+    total.textContent = Number.isNaN(since) ? "" : "· " + elapsed(now - since);
   }
 }
 

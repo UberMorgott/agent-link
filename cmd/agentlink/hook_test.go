@@ -362,3 +362,40 @@ func TestHookMarksWorkerMessages(t *testing.T) {
 		t.Fatalf("worker note on a message the worker does not handle:\n%s", out)
 	}
 }
+
+// A session that starts after a chat request arrived still hears of it when
+// it asks this node and nobody here answered or handles it (a held one says
+// why), but not of answered, handled or informational messages.
+func TestHookFirstCallShowsWaitingChatRequests(t *testing.T) {
+	h := newHookAPI(t)
+	h.addChatMessage("c1", "in", "alice", node.KindChatOpen, "")
+	h.addChatMessage("c1", "in", "alice", "", "fyi only")
+	h.addChatMessage("c1", "in", "alice", "", "long question ... MARKER-END", "me")
+	h.addChatMessage("c1", "in", "bob", "", "answered already", "me")
+	h.addChatMessage("c1", "in", "bob", "", "worker has it", "me")
+	h.mu.Lock()
+	h.msgs["c1"] = append(h.msgs["c1"], node.ChatMessage{Seq: 6, Direction: "out",
+		ID: "r1", From: "me", Body: "done", ChatID: "c1", ReplyTo: "mc1-4", CreatedAt: time.Now()})
+	for i := range h.msgs["c1"] {
+		h.msgs["c1"][i].CreatedAt = time.Now().Add(-time.Hour)
+	}
+	h.chats[0].LastSeq, h.chats[0].LastAt = 6, time.Now()
+	h.chats[0].Members[0].Jobs = []node.JobActivity{{ReplyTo: "mc1-5", JobStatus: node.JobRunning}}
+	h.chats[0].Members[0].Held = []node.JobActivity{{ReplyTo: "mc1-3", JobStatus: node.JobHeld, HoldReason: node.HoldNoHandler, Activity: node.HoldText(node.HoldNoHandler)}}
+	h.mu.Unlock()
+	c := hookCase{t, hookEnv{api: h.api, dir: t.TempDir()}}
+	ctx := contextOf(t, c.run(hookClaude, "auto", stdin(evSessionStart)), evSessionStart)
+	for _, want := range []string{"long question ... MARKER-END", "просит ответа от вас", "никто не отвечает — ждёт человека", "--reply-to mc1-3"} {
+		if !strings.Contains(ctx, want) {
+			t.Fatalf("missing %q in:\n%s", want, ctx)
+		}
+	}
+	for _, not := range []string{"fyi only", "answered already", "worker has it"} {
+		if strings.Contains(ctx, not) {
+			t.Fatalf("%q shown to a new session:\n%s", not, ctx)
+		}
+	}
+	if out := c.run(hookClaude, "auto", stdin(evPrompt)); out != "" {
+		t.Fatalf("shown twice: %q", out)
+	}
+}

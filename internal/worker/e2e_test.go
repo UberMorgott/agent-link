@@ -275,3 +275,75 @@ func (e *e2eNode) serve(t *testing.T) {
 	go func() { defer close(done); e.n.Run(ctx, e.ln) }()
 	t.Cleanup(func() { cancel(); <-done; e.api.Close() })
 }
+
+// A chat opened between two real nodes, then a long question whose end
+// carries a marker: without a handler b answers the question with one held
+// status that a sees; with one, exactly one job runs and its agent gets the
+// whole text.
+func TestChatQuestionReachesTheOtherSide(t *testing.T) {
+	for _, handler := range []bool{false, true} {
+		t.Run(map[bool]string{false: "no handler", true: "handler"}[handler], func(t *testing.T) {
+			agent, runs := chatAgent(t)
+			lnA, lnB := listenTCP(t), listenTCP(t)
+			a := startNode(t, "a", lnA, "b", lnB)
+			b := startNode(t, "b", lnB, "a", lnA)
+			opt := Options{Chats: b.n, Self: "b"}
+			if handler {
+				opt.Agent = func() Command { return agent }
+			}
+			w, err := New(nil, b.n.SendMessage, t.TempDir(), t.TempDir(), opt, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if handler {
+				b.n.SetInboundHook(w.Accept)
+			} else {
+				b.n.SetInboundHook(w.ChatsOnly)
+			}
+			a.serve(t)
+			b.serve(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() { defer close(done); w.Run(ctx) }()
+			t.Cleanup(func() { cancel(); <-done })
+
+			var chat node.ChatInfo
+			eventually(t, "chat created", func() bool { chat, err = a.n.CreateChat([]string{"b"}, ""); return err == nil })
+			body := strings.Repeat("длинный вопрос ", 400) + "MARKER-END"
+			q, err := a.n.SendRequest(node.SendRequest{ChatID: chat.ID, Body: body, Ask: []string{"b"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !handler {
+				eventually(t, "a sees b's held status", func() bool {
+					info, _ := a.n.Chat(chat.ID)
+					for _, m := range info.Members {
+						if m.Name == "b" && len(m.Held) == 1 && m.Held[0].ReplyTo == q.ID && m.Held[0].HoldReason == node.HoldNoHandler {
+							return !info.Active
+						}
+					}
+					return false
+				})
+				if msgs, _ := b.n.ChatMessages(chat.ID, 0, 0, 10); len(msgs) != 2 || msgs[1].Body != body {
+					t.Fatalf("b's copy of the chat: %+v", msgs)
+				}
+				return
+			}
+			eventually(t, "reply", func() bool {
+				msgs, _ := a.n.ChatMessages(chat.ID, 0, 0, 10)
+				for _, m := range msgs {
+					if m.From == "b" && m.ReplyTo == q.ID && m.JobStatus == node.JobCompleted {
+						if !strings.Contains(m.Body, body) {
+							t.Fatalf("the agent did not get the whole question: %.200q", m.Body)
+						}
+						return true
+					}
+				}
+				return false
+			})
+			if r := runs(); len(r) != 1 {
+				t.Fatalf("agent runs %v, want one", r)
+			}
+		})
+	}
+}

@@ -418,7 +418,7 @@ func (a *App) startNode(ctx context.Context) error {
 	n.SetAppVersion(a.Version)
 	n.SetChangeHook(func(topic string) { a.events.publish(topic) })
 	// The job store always opens: with no handler, jobs left from an earlier
-	// handler fail with a reply, and new requests stay manual (no hook).
+	// handler fail with a reply, and new requests stay manual.
 	opt := a.Worker
 	opt.MaxJobs = a.s.MaxJobs
 	opt.OnChange = func() { a.events.publish("worker") }
@@ -436,8 +436,12 @@ func (a *App) startNode(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Without a handler the hook only answers chat requests with a held status
+	// (nobody answers automatically); other requests stay for a person.
 	if hasHandler {
 		n.SetInboundHook(w.Accept)
+	} else {
+		n.SetInboundHook(w.ChatsOnly)
 	}
 	// A request answered here by hand or by an interactive session stops its job.
 	n.SetLocalReplyHook(func(id string) { w.Answered(id) })

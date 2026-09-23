@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -211,11 +212,15 @@ func New(run Runner, send SendFunc, stateDir, dir string, opt Options, log *slog
 
 // Accept durably queues m if it is a request and its id is new; replies,
 // status updates and duplicates are ignored. A chat message is a request
-// only when the node lets this worker answer it (Chats.ClaimRun). It is the
-// node's inbound hook: an error withholds the ACK so the sender resends.
+// only when the node lets this worker answer it (Chats.ClaimRun). A chat
+// message that asks this node but will not run (no handler, no agent program,
+// the chain limit, a closed chat) gets a JobHeld status to the chat instead,
+// so its sender never waits in silence. It is the node's inbound hook (only
+// for chat messages when no handler is configured: see ChatsOnly); an error
+// withholds the ACK so the sender resends.
 func (w *Worker) Accept(m node.Message) error {
 	chat := m.ChatID != "" && m.Kind == ""
-	if chat && w.opt.Chats == nil || !chat && !m.IsRequest() {
+	if chat && (w.opt.Chats == nil || !m.Asks(w.opt.Self)) || !chat && !m.IsRequest() {
 		return nil
 	}
 	if _, err := hex.DecodeString(m.ID); err != nil || len(m.ID) != 32 {
@@ -228,9 +233,19 @@ func (w *Worker) Accept(m node.Message) error {
 		return nil
 	}
 	if chat {
-		ok, err := w.opt.Chats.ClaimRun(m)
-		if err != nil || !ok {
+		if hold := w.unavailable(); hold != "" {
+			w.hold(m, hold)
+			return nil
+		}
+		ok, hold, err := w.opt.Chats.ClaimRun(m)
+		if err != nil {
 			return err
+		}
+		if !ok {
+			if hold != "" {
+				w.hold(m, hold)
+			}
+			return nil
 		}
 	}
 	w.mu.Lock()
@@ -252,6 +267,15 @@ func (w *Worker) Accept(m node.Message) error {
 	w.status(m, node.JobQueued, "queued", nil)
 	w.wake()
 	return nil
+}
+
+// ChatsOnly is the inbound hook of a node without a handler: chat requests
+// get their held status from Accept, other requests stay for a person.
+func (w *Worker) ChatsOnly(m node.Message) error {
+	if m.ChatID == "" {
+		return nil
+	}
+	return w.Accept(m)
 }
 
 // wake lets one idle slot look for a queued job. A slot that takes a job
@@ -336,6 +360,31 @@ func (w *Worker) slot(ctx context.Context) {
 }
 
 func (w *Worker) hasHandler() bool { return w.run != nil || w.opt.Agent != nil }
+
+// unavailable reports why no job could answer a request now: no handler, or
+// the agent program is not found (after the handler looked for it again).
+func (w *Worker) unavailable() string {
+	switch {
+	case !w.hasHandler():
+		return node.HoldNoHandler
+	case w.run == nil:
+		if _, err := exec.LookPath(w.opt.Agent().Name); err != nil {
+			return node.HoldNoAgent
+		}
+	}
+	return ""
+}
+
+// hold tells chat request m's chat that this node will not answer it
+// automatically, and why: a terminal JobHeld status.
+func (w *Worker) hold(m node.Message, reason string) {
+	w.log.Warn("chat request held", "id", m.ID, "from", m.From, "chat", m.ChatID, "reason", reason)
+	out := node.Message{ReplyTo: m.ID, Kind: node.KindStatus, JobStatus: node.JobHeld, HoldReason: reason, Activity: node.HoldText(reason)}
+	w.address(&out, m, "held")
+	if _, err := w.send(out); err != nil {
+		w.log.Warn("send status", "id", m.ID, "status", node.JobHeld, "err", err)
+	}
+}
 
 // chatClosed reports whether m belongs to a chat that is closed or gone.
 func (w *Worker) chatClosed(m node.Message) bool {
@@ -666,6 +715,9 @@ func (w *Worker) reply(j *Job) {
 	w.address(&out, m, "reply")
 	if answered {
 		out = node.Message{ReplyTo: m.ID, Kind: node.KindStatus, JobStatus: node.JobCompleted}
+		if m.ChatID != "" {
+			out.HoldReason = node.HoldAnswered
+		}
 		w.address(&out, m, "answered")
 	}
 	_, err := w.send(out)
