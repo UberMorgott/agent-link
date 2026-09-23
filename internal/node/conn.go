@@ -200,6 +200,7 @@ func (n *Node) runConn(ctx context.Context, pc *peerConn, dialed string) {
 	stop := context.AfterFunc(ctx, pc.close)
 	defer stop()
 	n.noteSession(pc, dialed)
+	n.sendProject(pc)
 	n.wg.Go(func() { n.writeLoop(pc) })
 	n.readLoop(pc)
 	pc.close()
@@ -251,6 +252,8 @@ func (n *Node) readLoop(pc *peerConn) {
 			n.mergeMembers(f.Members)
 		case f.Type == framePresence:
 			n.receivePresence(pc, f.Presence)
+		case f.Type == frameProject:
+			n.mergeProjectMeta(f.ProjectMeta)
 		default:
 			n.log.Debug("unknown frame type ignored", "peer", pc.peer, "type", f.Type)
 		}

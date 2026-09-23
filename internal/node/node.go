@@ -84,7 +84,8 @@ type Node struct {
 	members map[string]*Member   // the gossiped membership table, incl. this node and tombstones
 	dialing map[string]bool      // members with a running dial loop
 	tried   map[string]time.Time // discovered addresses by when they were last dialed
-	saveMu  sync.Mutex           // orders members.json writes
+	meta    ProjectMeta          // a project node's shared meta (project.json)
+	saveMu  sync.Mutex           // orders members.json and project.json writes
 
 	ensureMu sync.Mutex // serializes EnsureOpenChat
 	sess     *sessionRegistry
@@ -230,6 +231,11 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 			delete(n.known, m.Name)
 		default:
 			n.known[m.Name] = true
+		}
+	}
+	if cfg.Project != "" {
+		if err := n.loadProjectMeta(); err != nil {
+			return nil, err
 		}
 	}
 	if n.sess, err = openSessions(cfg.DataDir); err != nil {

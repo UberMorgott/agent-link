@@ -88,6 +88,8 @@ type frame struct {
 	Project string `json:"project,omitempty"`
 	// Presence: this node's sessions per shared area (presence frames, CapPresence).
 	Presence []AreaPresence `json:"presence,omitempty"`
+	// ProjectMeta: the project's shared name (project frames, CapProjects).
+	ProjectMeta *ProjectMeta `json:"project_meta,omitempty"`
 }
 
 // ProtocolVersion is announced in hello. It only grows; it never gates a

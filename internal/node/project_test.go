@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,7 +40,22 @@ func newTestProject(t *testing.T) testProject {
 // newProjectNode builds a node of project p on ln; peers maps name -> listener.
 func newProjectNode(t *testing.T, name string, p testProject, ln net.Listener, peers map[string]net.Listener) *testNode {
 	t.Helper()
-	cfg := config.Config{Node: name, Listen: ln.Addr().String(), API: "127.0.0.1:0", DataDir: t.TempDir(), SecretEnv: "UNUSED", Project: p.id}
+	return newProjectNodeAt(t, name, p, t.TempDir(), ln, peers)
+}
+
+// restartProject stops tn and starts its project node again on its data
+// directory and a new peer port.
+func restartProject(t *testing.T, tn *testNode, p testProject, peers map[string]net.Listener) *testNode {
+	t.Helper()
+	tn.stop()
+	next := newProjectNodeAt(t, tn.cfg.Node, p, tn.cfg.DataDir, listen(t), peers)
+	next.start(t)
+	return next
+}
+
+func newProjectNodeAt(t *testing.T, name string, p testProject, dir string, ln net.Listener, peers map[string]net.Listener) *testNode {
+	t.Helper()
+	cfg := config.Config{Node: name, Listen: ln.Addr().String(), API: "127.0.0.1:0", DataDir: dir, SecretEnv: "UNUSED", Project: p.id}
 	for peer, pl := range peers {
 		cfg.Peers = append(cfg.Peers, config.Peer{Name: peer, Addr: pl.Addr().String()})
 	}
@@ -228,5 +244,83 @@ func TestProjectDialerProblems(t *testing.T) {
 			a.start(t)
 			eventually(t, name, func() bool { return errors.Is(a.Problem(), c.want) })
 		})
+	}
+}
+
+func TestProjectMetaLWW(t *testing.T) {
+	l := ProjectMeta{Lamport: 2, Writer: "bb"}
+	for name, c := range map[string]struct {
+		r    ProjectMeta
+		want bool
+	}{
+		"higher lamport":          {ProjectMeta{Lamport: 3, Writer: "aa"}, true},
+		"lower lamport":           {ProjectMeta{Lamport: 1, Writer: "zz"}, false},
+		"tie, higher writer":      {ProjectMeta{Lamport: 2, Writer: "cc"}, true},
+		"tie, lower writer":       {ProjectMeta{Lamport: 2, Writer: "aa"}, false},
+		"same lamport and writer": {ProjectMeta{Lamport: 2, Writer: "bb"}, false},
+	} {
+		if got := metaNewer(c.r, l); got != c.want {
+			t.Errorf("%s: metaNewer = %v, want %v", name, got, c.want)
+		}
+	}
+	for _, bad := range []string{"", "   ", strings.Repeat("я", 81), "a\nb", "a\x00"} {
+		if _, err := NormalizeProjectName(bad); !errors.Is(err, ErrProjectName) {
+			t.Errorf("NormalizeProjectName(%q) = %v", bad, err)
+		}
+	}
+	if got, err := NormalizeProjectName("  Проект  "); err != nil || got != "Проект" {
+		t.Fatalf("NormalizeProjectName = %q, %v", got, err)
+	}
+}
+
+// The creator's name reaches a joiner on connect; renames on both sides at
+// once converge on the higher (Lamport, writer) everywhere, and survive a restart.
+func TestProjectMetaGossip(t *testing.T) {
+	p := newTestProject(t)
+	lnA, lnB := listen(t), listen(t)
+	a := newProjectNode(t, "a", p, lnA, map[string]net.Listener{"b": lnB})
+	b := newProjectNode(t, "b", p, lnB, nil)
+	if m := b.ProjectMeta(); m.Lamport != 0 || m.Name != "" || m.ID != p.id {
+		t.Fatalf("joiner meta %+v", m)
+	}
+	created, err := a.Rename("Alpha")
+	if err != nil || created.Lamport != 1 || created.Writer != a.ID() || created.CreatedAt.IsZero() {
+		t.Fatalf("create: %+v, %v", created, err)
+	}
+	a.start(t)
+	b.start(t)
+	eventually(t, "b learns the name", func() bool { return b.ProjectMeta().Name == "Alpha" })
+
+	// Concurrent renames at Lamport 2: the larger writer id wins on both.
+	a.stop()
+	if _, err := a.Rename("From A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Rename("From B"); err != nil {
+		t.Fatal(err)
+	}
+	want := "From A"
+	if b.ID() > a.ID() {
+		want = "From B"
+	}
+	a = restartProject(t, a, p, map[string]net.Listener{"b": lnB})
+	eventually(t, "names converge", func() bool {
+		return a.ProjectMeta().Name == want && b.ProjectMeta().Name == want
+	})
+	if a.ProjectMeta() != b.ProjectMeta() {
+		t.Fatalf("metas differ: %+v vs %+v", a.ProjectMeta(), b.ProjectMeta())
+	}
+
+	// A rename while connected spreads at once.
+	if _, err := b.Rename("Gamma"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a learns the rename", func() bool { return a.ProjectMeta().Name == "Gamma" })
+	if _, err := a.Rename(" \t"); !errors.Is(err, ErrProjectName) {
+		t.Fatalf("blank rename: %v", err)
+	}
+	legacy := openNode(t, time.Second, 5*time.Second)
+	if _, err := legacy.Rename("x"); !errors.Is(err, ErrNotProject) {
+		t.Fatalf("legacy rename: %v", err)
 	}
 }
