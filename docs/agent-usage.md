@@ -4,17 +4,21 @@ How an agent on one machine asks the agent on another member's machine a questio
 Everything goes through the `agentlink` CLI against the node that is already running on this
 machine (the tray app or `agentlink serve`).
 
-## The config path
+## Finding the node (no config needed)
 
-Every subcommand needs `--config <path>` — a **node config** (`node`, `listen`, `api`,
-`data_dir`, `secret_env`, optional `areas`/`peers`; see README "Config"). `send`, `inbox`,
-`wait` and `members` only talk to the local control API, so the one field that must be right is
-`api`: the loopback address of the running node (the tray app's default is `127.0.0.1:7520`,
-from `%APPDATA%\agentlink\config.json`, key `api`, absent means the default). The remaining
-fields must be valid but are unused by these commands.
+The client commands (`send`, `wait`, `inbox`, `members`, `add`, `remove`, `close`, `chat *`)
+only talk to the local control API, so they need just its loopback address. Without
+`--config` they take it from:
 
-If there is no node config on the machine, write one next to the settings, e.g.
-`%APPDATA%\agentlink\cli.json`, using `examples/node-a.json` as the template:
+1. `$AGENTLINK_API` (`host:port`) — set automatically for an agent the node runs as a handler;
+2. else the desktop app's settings, `%APPDATA%\agentlink\config.json`, key `api` (absent means
+   the default `127.0.0.1:7520`).
+
+So on a machine with the tray app the commands below work as written. Only `serve` needs
+`--config <path>`, a **node config** (`node`, `listen`, `api`, `data_dir`, `secret_env`,
+optional `areas`/`peers`; see README "Config"). A client command given `--config` uses that
+file's `api` instead (e.g. for a node started with `agentlink serve`); such a file can be
+written from `examples/node-a.json`:
 
 ```json
 {
@@ -27,7 +31,7 @@ If there is no node config on the machine, write one next to the settings, e.g.
 }
 ```
 
-No code or secret is needed for `send`/`inbox`/`wait`/`members`: the running node holds it.
+No code or secret is needed for the client commands: the running node holds it.
 
 ## Message format (agent to agent)
 
@@ -48,10 +52,10 @@ question typed in the inbox page is answered briefly in that human's language.
 ## Ask and get the answer
 
 ```powershell
-agentlink members --config <path>                                 # who is in the network: one JSON line each, this node first
-agentlink send  --config <path> --to <node> --body "<question>"   # prints the message id
-agentlink inbox --config <path> --limit 20                        # one JSON object per line
-agentlink wait  --config <path> --timeout 0                       # blocks until a message arrives
+agentlink members                                 # who is in the network: one JSON line each, this node first
+agentlink send  --to <node> --body "<question>"   # prints the message id
+agentlink inbox --limit 20                        # one JSON object per line
+agentlink wait  --timeout 0                       # blocks until a message arrives
 ```
 
 0. The network can have many members (everyone with the same code). `members` lists them:
@@ -93,14 +97,14 @@ takes more than one question, or when several members must see it. Plain `send -
 working (and is the only way to reach a member on an old version without chats).
 
 ```powershell
-agentlink chat new     --config <path> --with nikita,olga [--area dev]      # prints the chat id
-agentlink send         --config <path> --chat <id> --ask nikita --body "<question>"   # prints the message id
-agentlink send         --config <path> --chat <id> --body "<info, no answer needed>"
-agentlink wait         --config <path> --chat <id> --timeout 0              # only this chat's messages
-agentlink chat history --config <path> --chat <id> [--limit 50] [--before <seq>] [--after <seq>]
-agentlink chat list    --config <path> [--archive] [--legacy]
-agentlink close        --config <path> --chat <id>
-agentlink chat archive --config <path> --chat <id> [--undo]
+agentlink chat new     --with nikita,olga [--area dev]      # prints the chat id
+agentlink send         --chat <id> --ask nikita --body "<question>"   # prints the message id
+agentlink send         --chat <id> --body "<info, no answer needed>"
+agentlink wait         --chat <id> --timeout 0              # only this chat's messages
+agentlink chat history --chat <id> [--limit 50] [--before <seq>] [--after <seq>]
+agentlink chat list    [--archive] [--legacy]
+agentlink close        --chat <id>
+agentlink chat archive --chat <id> [--undo]
 ```
 
 - `chat new` fails with `participant is not connected with chat support: <names>` when a
@@ -131,8 +135,8 @@ agentlink chat archive --config <path> --chat <id> [--undo]
 
 ### Inside a job (you are the answering agent)
 
-When your task came from a chat, the environment has `AGENTLINK_CHAT_ID` and
-`AGENTLINK_JOB_ID`. `send` without `--to`/`--chat` then goes to that chat, and `chat history`
+The environment has `AGENTLINK_API` (this node's API, so no `--config`); when your task came
+from a chat also `AGENTLINK_CHAT_ID` and `AGENTLINK_JOB_ID`. `send` without `--to`/`--chat` then goes to that chat, and `chat history`
 without `--chat` reads it. Do **not** send your final answer yourself: it is posted to the chat
 automatically. To involve another member, send `--ask <name>` with a complete question; the
 node counts such automatic hops from the original request and stops the chain after 4 hops, and

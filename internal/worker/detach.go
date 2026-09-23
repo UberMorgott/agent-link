@@ -134,9 +134,9 @@ func (w *Worker) launch(ctx context.Context, j *Job, c Command, dir string, spec
 		cmd := exec.CommandContext(context.WithoutCancel(ctx), c.Name, args...) //nolint:gosec // G204: the agent program the user configured, argv without a shell
 		cmd.Dir = rec.Dir
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = files[0], files[1], files[2]
-		if chatID != "" {
-			// The agentlink CLI inside the job finds its chat and request here.
-			cmd.Env = append(os.Environ(), envChatID+"="+chatID, envJobID+"="+id)
+		// The agentlink CLI inside the job finds the node, its chat and request here.
+		if env := w.agentEnv(chatID, id); len(env) > 0 {
+			cmd.Env = append(os.Environ(), env...)
 		}
 		detach(cmd, breakaway)
 		return cmd, cmd.Start()

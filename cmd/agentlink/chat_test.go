@@ -11,12 +11,14 @@ import (
 	"testing"
 
 	"github.com/UberMorgott/agent-link/internal/node"
+	"github.com/UberMorgott/agent-link/internal/settings"
 )
 
 // fakeAPI records the requests of one CLI command and answers them.
 type fakeAPI struct {
 	t    *testing.T
 	cfg  string
+	api  string // host:port of the fake API
 	reqs []string
 	send node.SendRequest
 }
@@ -40,8 +42,9 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		}
 	}))
 	t.Cleanup(srv.Close)
+	f.api = strings.TrimPrefix(srv.URL, "http://")
 	f.cfg = filepath.Join(t.TempDir(), "config.json")
-	cfg := `{"node":"a","listen":"127.0.0.1:0","api":"` + strings.TrimPrefix(srv.URL, "http://") + `","data_dir":"` +
+	cfg := `{"node":"a","listen":"127.0.0.1:0","api":"` + f.api + `","data_dir":"` +
 		filepath.ToSlash(t.TempDir()) + `","secret_env":"X"}`
 	if err := os.WriteFile(f.cfg, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
@@ -80,6 +83,46 @@ func TestChatCommands(t *testing.T) {
 	}
 	if strings.Join(f.reqs, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests:\n%s\nwant:\n%s", strings.Join(f.reqs, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// Without --config a client command uses $AGENTLINK_API, else the desktop
+// app's settings file.
+func TestClientWithoutConfig(t *testing.T) {
+	f := newFakeAPI(t)
+	runNoConfig := func(args ...string) {
+		t.Helper()
+		var out, errw bytes.Buffer
+		if code := run(args, &out, &errw); code != 0 {
+			t.Fatalf("%v: code %d, stderr %s", args, code, errw.String())
+		}
+	}
+	t.Setenv(envAPI, f.api)
+	t.Setenv(envChatID, "c1")
+	runNoConfig("chat", "history")
+	runNoConfig("send", "--body", "hi")
+	if f.send.ChatID != "c1" {
+		t.Fatalf("send via $%s = %+v", envAPI, f.send)
+	}
+
+	t.Setenv(envAPI, "")
+	dir := t.TempDir()
+	t.Setenv("AppData", dir)         // os.UserConfigDir on Windows
+	t.Setenv("XDG_CONFIG_HOME", dir) // and on Unix
+	t.Setenv("HOME", dir)            // and on macOS (Library/Application Support)
+	p, err := settings.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(`{"api":"`+f.api+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runNoConfig("members")
+	if last := f.reqs[len(f.reqs)-1]; last != "GET /members" {
+		t.Fatalf("members via settings: last request %q", last)
 	}
 }
 

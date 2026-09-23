@@ -416,6 +416,8 @@ func (a *App) startNode(ctx context.Context) error {
 	opt.OnChange = func() { a.events.publish("worker") }
 	// Chat requests run in per-chat agent sessions and answer the whole chat.
 	opt.Chats, opt.Self = n, cfg.Node
+	// Agents reach this node's API through $AGENTLINK_API.
+	opt.API = cfg.API
 	cmd, hasHandler := a.s.Command()
 	if hasHandler {
 		opt.Agent = a.agentCommand(cmd, a.s.Handler, a.s.AgentPath != "" && len(a.s.HandlerCommand) == 0)

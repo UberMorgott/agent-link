@@ -59,10 +59,24 @@ const (
 	chatFetch      = 1000 // messages read since the session's LastSeq
 	chatContext    = 50   // messages shown to the agent, the latest ones
 	chatBodyRunes  = 2000 // one message's text is cut after this
+	envAPI         = "AGENTLINK_API"
 	envChatID      = "AGENTLINK_CHAT_ID"
 	envJobID       = "AGENTLINK_JOB_ID"
 	chatHistoryCmd = "agentlink chat history"
 )
+
+// agentEnv is the environment added to a job's agent: the node's API (so the
+// agentlink CLI needs no --config) and, for a chat job, the chat and request.
+func (w *Worker) agentEnv(chatID, jobID string) []string {
+	var env []string
+	if w.opt.API != "" {
+		env = append(env, envAPI+"="+w.opt.API)
+	}
+	if chatID != "" {
+		env = append(env, envChatID+"="+chatID, envJobID+"="+jobID)
+	}
+	return env
+}
 
 func provider(format, name string) string { return cmp.Or(format, filepath.Base(name)) }
 
@@ -221,7 +235,11 @@ func (w *Worker) chatInput(m node.Message, after uint64, resumed bool) (text str
 			b.WriteString(": " + cutRunes(strings.TrimSpace(cm.Body), chatBodyRunes) + "\n")
 		}
 	}
-	b.WriteString("Read more of this chat with `" + chatHistoryCmd + "` ($" + envChatID + " is set); ask a member with `agentlink send --ask NAME --body TEXT`.\n")
+	set := "$" + envChatID + " is set"
+	if w.opt.API != "" {
+		set = "$" + envChatID + " and $" + envAPI + " are set, no --config needed"
+	}
+	b.WriteString("Read more of this chat with `" + chatHistoryCmd + "` (" + set + "); ask a member with `agentlink send --ask NAME --body TEXT`.\n")
 	return b.String(), through
 }
 

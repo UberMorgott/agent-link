@@ -32,6 +32,7 @@ import (
 	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
 	"github.com/UberMorgott/agent-link/internal/selfupdate"
+	"github.com/UberMorgott/agent-link/internal/settings"
 )
 
 const usage = `usage:
@@ -50,7 +51,9 @@ const usage = `usage:
   agentlink add    --config <path> --addr <ip[:port]>   (dial a member's address; it spreads to all members)
   agentlink remove --config <path> --name <node>        (remove a member from the whole network)
   agentlink update [--check]    (install the latest GitHub release next to this program; --check only reports)
-  agentlink version`
+  agentlink version
+Client commands (all but serve) may omit --config: they then use $AGENTLINK_API, else the desktop
+app's settings (api, default 127.0.0.1:7520).`
 
 // exitTimeout is returned by wait when no message arrived in time.
 const exitTimeout = 2
@@ -165,11 +168,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(rest); err != nil {
 		return 1
 	}
-	if *cfgPath == "" {
-		_, _ = fmt.Fprintln(stderr, "--config is required")
-		return 1
-	}
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := loadConfig(name, *cfgPath)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 1
@@ -180,6 +179,31 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return code
+}
+
+// loadConfig reads the --config file. Without one, a client command only needs
+// the local API address: $AGENTLINK_API (set by the worker for its agents), else
+// the desktop app's settings (api key, absent: settings.DefaultAPI). serve
+// always needs --config.
+func loadConfig(name, path string) (config.Config, error) {
+	if path != "" {
+		return config.Load(path)
+	}
+	if name == "serve" {
+		return config.Config{}, errors.New("--config is required")
+	}
+	if api := os.Getenv(envAPI); api != "" {
+		return config.Config{API: api}, nil
+	}
+	p, err := settings.DefaultPath()
+	if err != nil {
+		return config.Config{}, err
+	}
+	s, _, err := settings.Load(p)
+	if err != nil {
+		return config.Config{}, err
+	}
+	return config.Config{API: s.APIAddr()}, nil
 }
 
 func serve(cfg config.Config) error {
@@ -211,10 +235,12 @@ func serve(cfg config.Config) error {
 	return n.Serve(ctx, peerLn, apiLn)
 }
 
-// Environment of a job's agent, set by the worker: the chat and the request
-// the job answers. send and chat history fall back to the chat; a chat send
-// passes the request on, so the node continues its automatic chain.
+// Environment of a job's agent, set by the worker: the node's local API, the
+// chat and the request the job answers. Without --config the CLI talks to that
+// API; send and chat history fall back to the chat; a chat send passes the
+// request on, so the node continues its automatic chain.
 const (
+	envAPI    = "AGENTLINK_API"
 	envChatID = "AGENTLINK_CHAT_ID"
 	envJobID  = "AGENTLINK_JOB_ID"
 )

@@ -97,6 +97,9 @@ type Options struct {
 	// Self is this node's name, which chat reply and status ids include.
 	Chats Chats
 	Self  string
+	// API is the node's local control API address, passed to the agent as
+	// $AGENTLINK_API so its agentlink CLI works without --config.
+	API string
 }
 
 func (o Options) withDefaults() Options {

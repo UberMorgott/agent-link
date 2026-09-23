@@ -41,8 +41,13 @@ func TestRunExitCodes(t *testing.T) {
 	if code := run([]string{"bogus"}, &out, &errw); code != 1 || !strings.Contains(errw.String(), "usage:") {
 		t.Fatalf("bogus: code %d, stderr %q", code, errw.String())
 	}
+	errw.Reset()
+	if code := run([]string{"serve"}, &out, &errw); code != 1 || !strings.Contains(errw.String(), "--config is required") {
+		t.Fatalf("serve without --config: code %d, stderr %q", code, errw.String())
+	}
+	t.Setenv(envAPI, "127.0.0.1:1") // nothing listens: the command fails to connect
 	if code := run([]string{"members"}, &out, &errw); code != 1 {
-		t.Fatalf("members without --config: code %d", code)
+		t.Fatalf("members against a dead api: code %d", code)
 	}
 }
 
