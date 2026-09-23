@@ -1,2 +1,3 @@
 [files]
-extend-exclude = ["third_party/"]
+# Vendored code, and the web UI's generated, minified bundle (built from internal/app/web/src).
+extend-exclude = ["third_party/", "internal/app/web/dist/"]

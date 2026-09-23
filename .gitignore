@@ -10,3 +10,6 @@ bin/
 *.local.json
 /agentlink.json
 /dist/
+
+# Web UI dependencies; its build output internal/app/web/dist/ is committed
+node_modules/

@@ -2,3 +2,4 @@
 third_party/** linguist-vendored
 *.syso binary
 *.ico binary
+internal/app/web/** text eol=lf

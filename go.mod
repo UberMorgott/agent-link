@@ -2,6 +2,9 @@ module github.com/UberMorgott/agent-link
 
 go 1.27
 
+// The web UI's npm dependencies ship stray Go files; they are not part of this module.
+ignore ./internal/app/web/node_modules
+
 require (
 	fyne.io/systray v1.12.2
 	github.com/gtank/ristretto255 v0.2.0
