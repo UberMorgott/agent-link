@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+// changeEvent is the data of an SSE "change" event. Topics name what changed:
+// "chats" (a chat was created, closed or archived: reload the chat list),
+// "messages" (a message, delivery or job status changed: reload the open chat
+// and the list), "worker", "peer", "members", "settings", "status",
+// "dashboard", "participants", "update"; "all" after (re)connecting.
 type changeEvent struct {
 	Revision uint64   `json:"revision"`
 	Topics   []string `json:"topics"`

@@ -85,6 +85,60 @@ agentlink wait  --config <path> --timeout 0                       # blocks until
 - The other side answers up to 2 (1–4) requests at once, so several questions can be in flight;
   answers may arrive in any order — match them by `reply_to`.
 
+## Chats: multi-turn and group conversations
+
+A chat is a conversation with a fixed set of members (2 or more; you are added). Every
+message goes to all of them and everyone keeps the same history. Use a chat when the topic
+takes more than one question, or when several members must see it. Plain `send --to` keeps
+working (and is the only way to reach a member on an old version without chats).
+
+```powershell
+agentlink chat new     --config <path> --with nikita,olga [--area dev]      # prints the chat id
+agentlink send         --config <path> --chat <id> --ask nikita --body "<question>"   # prints the message id
+agentlink send         --config <path> --chat <id> --body "<info, no answer needed>"
+agentlink wait         --config <path> --chat <id> --timeout 0              # only this chat's messages
+agentlink chat history --config <path> --chat <id> [--limit 50] [--before <seq>] [--after <seq>]
+agentlink chat list    --config <path> [--archive] [--legacy]
+agentlink close        --config <path> --chat <id>
+agentlink chat archive --config <path> --chat <id> [--undo]
+```
+
+- `chat new` fails with `participant is not connected with chat support: <names>` when a
+  member is offline or on an old version: wait for it, or ask it with plain `send --to`.
+  Members are fixed; to add someone, start a new chat. `--area` picks the project the
+  members' agents work in, for the whole chat.
+- `--ask` names who must answer (comma-separated, members of the chat, not you). Only they
+  run their agent; everyone else just sees the message. Without `--ask` the message only
+  informs. Mentioning a name or ending with `?` asks nobody. `--reply-to` is only a reference.
+- Each asked member answers with its own message: `reply_to` = your message id, its own `id`,
+  `job_status` `completed`/`failed`. With two asked members expect two replies.
+- `wait --chat <id>` returns only that chat's messages and leaves everything else for a later
+  `wait`. Without `--chat`, `wait` returns chat messages too (they carry `chat_id`).
+- `chat history` prints one JSON line per message in this node's order (`seq`), oldest first:
+  `from`, `body`, `created_at`, `responders`, `reply_to`, `kind` (`""` a message,
+  `chat_open`/`chat_close` who created/closed it). Read it whenever you need earlier context,
+  e.g. `--limit 20` for the latest 20, `--after <seq>` for what came since. Your own messages
+  carry `delivery` per member (`queued` until that member received it, then `sent`).
+- `chat list` prints one JSON line per chat: `id`, `participants`, `closed`, `closed_by`,
+  `archived`, `title`, `count`, `last_message`, `active`, and `members[]` with `connected`,
+  `compatible` and `jobs[]` (what a member's agent is doing now: `job_status`, `activity`).
+  `--legacy` adds read-only virtual chats built from history before chats.
+- A chat stays open until a member closes it; nothing closes it automatically. `close` is
+  final for everyone (continue the topic in a new chat); an agent already working finishes and
+  its answer is still delivered. Close a chat when its topic is done.
+- Archive only hides a chat from the main list on this machine; nothing is deleted. Closed
+  chats are archived automatically; an open archived chat comes back with its next message.
+
+### Inside a job (you are the answering agent)
+
+When your task came from a chat, the environment has `AGENTLINK_CHAT_ID` and
+`AGENTLINK_JOB_ID`. `send` without `--to`/`--chat` then goes to that chat, and `chat history`
+without `--chat` reads it. Do **not** send your final answer yourself: it is posted to the chat
+automatically. To involve another member, send `--ask <name>` with a complete question; the
+node counts such automatic hops from the original request and stops the chain after 4 hops, and
+each member's agent answers at most once per original request (a message past the limit is
+kept with `held: true` and waits for a human).
+
 ## What the answering side does
 
 If the other machine has a handler agent configured, your request is its **task**: `claude`
