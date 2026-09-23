@@ -345,3 +345,20 @@ func TestHookAreaFilter(t *testing.T) {
 		}
 	}
 }
+
+// A message this node's worker already handles says so, and a chat answer
+// names the request, so replying stops the worker's run.
+func TestHookMarksWorkerMessages(t *testing.T) {
+	out := formatHookMessages(evPrompt, []hookMessage{
+		{ID: "r1", From: "bob", ChatID: "c1", Participants: []string{"bob", "me"}, Body: "q", AsksMe: true, Worker: true},
+		{ID: "r2", From: "bob", Body: "plain"},
+	})
+	for _, want := range []string{"Уже обрабатывает агент-обработчик", "agentlink send --chat c1 --reply-to r1", "agentlink send --to bob --reply-to r2"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "Уже обрабатывает") != 1 {
+		t.Fatalf("worker note on a message the worker does not handle:\n%s", out)
+	}
+}

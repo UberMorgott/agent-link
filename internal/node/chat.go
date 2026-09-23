@@ -27,8 +27,9 @@ var (
 	// ErrBadParticipants: a chat needs at least one other known member, and
 	// only participants other than the author can be asked.
 	ErrBadParticipants = errors.New("invalid chat participants")
-	// ErrLegacyChat: a virtual chat built from pre-chat history cannot be closed.
-	ErrLegacyChat = errors.New("history from before chats cannot be closed")
+	// ErrLegacyChat: a virtual chat built from pre-chat history cannot take
+	// messages of its own (sending to it continues it in a real chat).
+	ErrLegacyChat = errors.New("history from before chats")
 )
 
 // Chat is one conversation with a fixed set of participants (sorted, this node
@@ -48,9 +49,8 @@ type Chat struct {
 // Closed reports whether a participant closed the chat.
 func (c Chat) Closed() bool { return c.CloseID != "" }
 
-// ChatView is this node's own view of a chat. An archived chat is hidden from
-// the main list until a new message arrives after At (a closed chat stays
-// archived). A closed chat without a view is archived.
+// ChatView is this node's own view of a legacy chat (local history): archived
+// when this node closed it. A real chat is archived exactly when it is closed.
 type ChatView struct {
 	Archived bool      `json:"archived"`
 	At       time.Time `json:"at,omitzero"`
@@ -103,7 +103,7 @@ type ChatInfo struct {
 	Archived bool `json:"archived"`
 	// Legacy marks a virtual chat built from history before chats: one
 	// request with its replies, with one peer. Sending to it continues it in a
-	// real chat (continueLegacy); it cannot be closed.
+	// real chat (continueLegacy); closing it only archives it on this node.
 	Legacy bool   `json:"legacy,omitempty"`
 	Peer   string `json:"peer,omitempty"` // legacy only: the other side
 	Title  string `json:"title"`          // the first message, shortened
@@ -189,11 +189,21 @@ func (n *Node) CreateChat(with []string, area string) (ChatInfo, error) {
 	return n.Chat(c.ID)
 }
 
-// CloseChat closes a chat for every participant. Closing a closed chat is a
-// no-op. Jobs already running finish; their replies are still kept.
+// CloseChat closes a chat for every participant, which moves it to the
+// archive on every node: a chat is archived exactly when it is closed, and
+// only people close chats. Closing a closed chat is a no-op. Jobs already
+// running finish; their replies are still kept. A legacy chat (local history
+// only) is moved to this node's archive.
 func (n *Node) CloseChat(id string) (ChatInfo, error) {
 	if _, _, ok := parseLegacyChatID(id); ok {
-		return ChatInfo{}, ErrLegacyChat
+		if _, err := n.Chat(id); err != nil {
+			return ChatInfo{}, err
+		}
+		if err := n.chats.setView(id, ChatView{Archived: true, At: time.Now().UTC()}); err != nil {
+			return ChatInfo{}, err
+		}
+		n.changed("chats")
+		return n.Chat(id)
 	}
 	c, ok := n.chats.get(id)
 	if !ok {
@@ -206,21 +216,6 @@ func (n *Node) CloseChat(id string) (ChatInfo, error) {
 		}
 		n.changed("chats")
 	}
-	return n.Chat(id)
-}
-
-// ArchiveChat hides a chat from the main list (archived) or brings it back.
-// Nothing is deleted; legacy chats can be archived too.
-func (n *Node) ArchiveChat(id string, archived bool) (ChatInfo, error) {
-	if _, _, ok := parseLegacyChatID(id); !ok {
-		if _, ok := n.chats.get(id); !ok {
-			return ChatInfo{}, fmt.Errorf("%w %s", ErrUnknownChat, id)
-		}
-	}
-	if err := n.chats.setView(id, ChatView{Archived: archived, At: time.Now().UTC()}); err != nil {
-		return ChatInfo{}, err
-	}
-	n.changed("chats")
 	return n.Chat(id)
 }
 
@@ -275,23 +270,32 @@ func (n *Node) continueLegacy(peer string, s ChatSend) (Message, error) {
 	if n.Connected(peer) && !n.PeerHas(peer, CapChat) {
 		return n.Send(peer, s.Body, s.ReplyTo)
 	}
+	open, err := n.openChatWith(peer, legacy.Area)
+	if err != nil {
+		return Message{}, err
+	}
+	s.ChatID, s.ReplyTo = open.ID, ""
+	return n.SendChat(s)
+}
+
+// openChatWith returns the newest open chat of just this node and peer with
+// area, creating one when there is none.
+func (n *Node) openChatWith(peer, area string) (Chat, error) {
+	parts := []string{n.cfg.Node, peer}
+	slices.Sort(parts)
 	var open *Chat
 	for _, cs := range n.chats.all() {
 		c := cs.chat
-		if !c.Closed() && c.Area == legacy.Area && slices.Equal(c.Participants, legacy.Participants) &&
+		if !c.Closed() && c.Area == area && slices.Equal(c.Participants, parts) &&
 			(open == nil || c.CreatedAt.After(open.CreatedAt)) {
 			open = &c
 		}
 	}
-	if open == nil {
-		info, err := n.CreateChat([]string{peer}, legacy.Area)
-		if err != nil {
-			return Message{}, err
-		}
-		open = &info.Chat
+	if open != nil {
+		return *open, nil
 	}
-	s.ChatID, s.ReplyTo = open.ID, ""
-	return n.SendChat(s)
+	info, err := n.CreateChat([]string{peer}, area)
+	return info.Chat, err
 }
 
 // sendChat is SendMessage for a chat message or status update.
@@ -630,7 +634,7 @@ func (n *Node) chatInfo(s chatSnapshot, queued map[string]map[string]int) ChatIn
 		cm := n.chatMessage(s.chat, *last)
 		info.LastMessage, info.LastAt = &cm, last.Message.CreatedAt
 	}
-	info.Archived = archivedNow(n.chats, s.chat.ID, info.Closed, info.LastAt)
+	info.Archived = info.Closed
 	jobs := map[string][]JobActivity{}
 	for _, m := range s.jobs {
 		if m.JobStatus != JobQueued && m.JobStatus != JobRunning {
@@ -656,15 +660,10 @@ func (n *Node) chatInfo(s chatSnapshot, queued map[string]map[string]int) ChatIn
 	return info
 }
 
-// archivedNow applies ChatView: an archived chat returns to the main list when
-// a message arrives after it was archived, unless it is closed; a closed chat
-// without a view is archived.
-func archivedNow(cs *chatStore, id string, closed bool, lastAt time.Time) bool {
+// legacyArchived reports whether this node moved a legacy chat to the archive.
+func legacyArchived(cs *chatStore, id string) bool {
 	v, ok := cs.view(id)
-	if !ok {
-		return closed
-	}
-	return v.Archived && (closed || !lastAt.After(v.At))
+	return ok && v.Archived
 }
 
 // title is the first line of body, at most 80 characters.
@@ -686,17 +685,21 @@ type legacyChat struct {
 }
 
 // legacyChats groups history from before chats (Recent) into virtual chats:
-// a request with every reply that leads back to it, per peer, so an area
-// request gets one chat for each member it went to. Old jobs with one peer
-// are not merged into one conversation.
+// one per peer and area (the area of the request a message leads back to), in
+// time order, so an area request gets one chat for each member it went to and
+// every plain exchange with one member reads as one conversation. The chat's
+// id names its oldest request.
 func (n *Node) legacyChats() ([]legacyChat, error) {
 	entries, err := n.Recent(0)
 	if err != nil {
 		return nil, err
 	}
-	parent := map[string]string{}
+	parent, area := map[string]string{}, map[string]string{}
 	for _, e := range entries {
 		parent[e.ID] = e.ReplyTo
+		if e.Area != "" {
+			area[e.ID] = e.Area
+		}
 	}
 	rootOf := func(id string) string {
 		for range 64 { // guards against a reply_to cycle
@@ -717,18 +720,21 @@ func (n *Node) legacyChats() ([]legacyChat, error) {
 		if e.Kind != "" || e.Peer == "" {
 			continue
 		}
-		root := rootOf(e.ID)
-		key := legacyChatID(root, e.Peer)
+		key := e.Peer + "\x00" + area[rootOf(e.ID)]
 		g := groups[key]
 		if g == nil {
-			g = &group{root: root, peer: e.Peer}
+			g = &group{peer: e.Peer}
 			groups[key] = g
 		}
 		g.entries = append(g.entries, e)
 	}
 	out := make([]legacyChat, 0, len(groups))
-	for id, g := range groups {
-		slices.SortFunc(g.entries, func(a, b Entry) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	for _, g := range groups {
+		slices.SortFunc(g.entries, func(a, b Entry) int {
+			return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), strings.Compare(a.ID, b.ID))
+		})
+		g.root = rootOf(g.entries[0].ID)
+		id := legacyChatID(g.root, g.peer)
 		parts := []string{n.cfg.Node, g.peer}
 		slices.Sort(parts)
 		lc := legacyChat{root: g.root, peer: g.peer}
@@ -740,6 +746,11 @@ func (n *Node) legacyChats() ([]legacyChat, error) {
 				info.Area = m.Area
 			}
 			cm := ChatMessage{Seq: uint64(i + 1), Direction: e.Direction, Message: m}
+			if e.IsRequest() {
+				// A request's folded job state goes to its participant's jobs;
+				// the message itself shows what was said, never a failure.
+				cm.JobStatus = ""
+			}
 			busy := e.IsRequest() && e.Answer == "" && (e.JobStatus == JobQueued || e.JobStatus == JobRunning)
 			if e.Direction == "out" {
 				cm.Delivery = []Delivery{{Peer: g.peer, Status: e.Status}}
@@ -756,7 +767,7 @@ func (n *Node) legacyChats() ([]legacyChat, error) {
 		info.LastSeq = uint64(len(lc.msgs))
 		last := lc.msgs[len(lc.msgs)-1]
 		info.LastMessage, info.LastAt = &last, last.CreatedAt
-		info.Archived = archivedNow(n.chats, id, false, info.LastAt)
+		info.Archived = legacyArchived(n.chats, id)
 		_, caps, connected := n.PeerCaps(g.peer)
 		peerState := ParticipantState{Name: g.peer, Connected: connected, Compatible: !connected || slices.Contains(caps, CapChat)}
 		if job != nil {

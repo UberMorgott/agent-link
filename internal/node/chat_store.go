@@ -209,6 +209,12 @@ func (cs *chatStore) noteStatus(m Message) bool {
 	if st.done[key] {
 		return false
 	}
+	if m.JobStatus == JobCompleted || m.JobStatus == JobFailed {
+		// A job that ends without a reply of its own (answered another way).
+		st.done[key] = true
+		delete(st.jobs, key)
+		return true
+	}
 	if old, ok := st.jobs[key]; ok {
 		oldSeq, newSeq := activitySeq(old), activitySeq(m)
 		if newSeq < oldSeq || (newSeq == oldSeq && m.CreatedAt.Before(old.CreatedAt)) {

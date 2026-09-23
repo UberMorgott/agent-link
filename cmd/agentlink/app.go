@@ -40,7 +40,7 @@ func runApp(args []string) error {
 	cfgPath := fs.String("config", defPath, "settings file; its folder also holds data and the log")
 	apiAddr := fs.String("api", "", "loopback address of the web UI and control API (default from settings, else "+settings.DefaultAPI+")")
 	noTray := fs.Bool("no-tray", false, "run without the tray icon until interrupted or quit via the API (scripts and tests)")
-	idle := fs.Duration("handler-idle-timeout", 0, "fail an agent run that printed nothing this long (default 3m; scripts and tests)")
+	idle := fs.Duration("handler-idle-timeout", 0, "fail an agent run that printed nothing this long (default 10m; scripts and tests)")
 	restarted := fs.Bool(restartFlag, false, "started by an update: wait for the previous instance to release the API address")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	_ = fs.Parse(args) // ExitOnError

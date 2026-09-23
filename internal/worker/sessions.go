@@ -239,7 +239,7 @@ func (w *Worker) chatInput(m node.Message, after uint64, resumed bool) (text str
 	if w.opt.API != "" {
 		set = "$" + envChatID + " and $" + envAPI + " are set, no --config needed"
 	}
-	b.WriteString("Read more of this chat with `" + chatHistoryCmd + "` (" + set + "); ask a member with `agentlink send --ask NAME --body TEXT`.\n")
+	b.WriteString("Read more of this chat with `" + chatHistoryCmd + "` (" + set + "); ask a member with `agentlink send --ask NAME --body TEXT`. Do not close the chat: only people do.\n")
 	return b.String(), through
 }
 

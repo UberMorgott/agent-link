@@ -439,6 +439,8 @@ func (a *App) startNode(ctx context.Context) error {
 	if hasHandler {
 		n.SetInboundHook(w.Accept)
 	}
+	// A request answered here by hand or by an interactive session stops its job.
+	n.SetLocalReplyHook(func(id string) { w.Answered(id) })
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.Listen)
 	if err != nil {

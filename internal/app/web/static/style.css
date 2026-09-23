@@ -180,7 +180,9 @@ button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accen
 .msg { --who: var(--who-1); position: relative; width: fit-content; min-width: min(180px, 100%); max-width: min(760px, 86%); border-radius: 12px; padding: 8px 12px 9px; background: var(--canvas); box-shadow: inset 0 0 0 1px var(--border); }
 .msg.in { align-self: flex-start; border-top-left-radius: 4px; }
 .msg.out { align-self: flex-end; border-top-right-radius: 4px; background: var(--accent-soft); box-shadow: none; }
-.msg.failed { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 45%, var(--border)); }
+/* A failed reply keeps readable text: only a thin outline and a red dot mark it. */
+.msg.failed-reply { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.msg-meta.failed-note::before { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--danger); content: ""; vertical-align: 1px; }
 .msg:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
 .msg-head { display: flex; align-items: baseline; gap: 9px; font-size: 12px; }
 .msg-author { color: var(--who); font-weight: 680; }

@@ -248,45 +248,37 @@ func TestChatCloseRace(t *testing.T) {
 	}
 }
 
-func TestChatArchive(t *testing.T) {
+// A chat is archived exactly when a participant closes it, on every node; a
+// new message does not bring an open chat anywhere else. History stays.
+func TestChatArchiveIsClose(t *testing.T) {
 	a, b := pair(t, testSecret, testSecret)
 	eventually(t, "connected", func() bool { return a.Connected("b") && b.Connected("a") })
 	info, err := a.CreateChat([]string{"b"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.ArchiveChat(info.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	main, _ := a.Chats(false, false)
-	arch, _ := a.Chats(true, false)
-	if len(main) != 0 || len(arch) != 1 || arch[0].ID != info.ID {
-		t.Fatalf("after archive: main %d, archive %d", len(main), len(arch))
-	}
 	eventually(t, "b knows the chat", func() bool { _, ok := b.ChatOf(info.ID); return ok })
-	time.Sleep(10 * time.Millisecond)
-	m, err := b.SendChat(ChatSend{ChatID: info.ID, Body: "new message"})
-	if err != nil {
+	if _, err := b.SendChat(ChatSend{ChatID: info.ID, Body: "new message"}); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, "a new message brings the chat back", func() bool {
-		main, _ := a.Chats(false, false)
-		return len(main) == 1 && main[0].LastMessage != nil && main[0].LastMessage.ID == m.ID
-	})
-	if _, err := a.CloseChat(info.ID); err != nil {
+	eventually(t, "a has the message", func() bool { return len(chatIDs(a, info.ID)) == 1 })
+	if main, _ := a.Chats(false, false); len(main) != 1 || main[0].Archived {
+		t.Fatalf("open chat: %+v", main)
+	}
+	if _, err := b.CloseChat(info.ID); err != nil {
 		t.Fatal(err)
 	}
-	if main, _ := a.Chats(false, false); len(main) != 0 {
-		t.Fatal("a closed chat stays in the main list")
-	}
-	if got, _ := a.ArchiveChat(info.ID, false); got.Archived || !got.Closed {
-		t.Fatalf("unarchived closed chat: %+v", got)
+	for _, n := range []*testNode{a, b} {
+		eventually(t, n.cfg.Node+" archives the closed chat", func() bool {
+			main, _ := n.Chats(false, false)
+			arch, _ := n.Chats(true, false)
+			return len(main) == 0 && len(arch) == 1 && arch[0].ID == info.ID && arch[0].Closed
+		})
 	}
 	if ids := chatIDs(a, info.ID); len(ids) != 1 {
 		t.Fatalf("archive changed the history: %v", ids)
 	}
 }
-
 func TestClaimRunLimitsAutomaticChains(t *testing.T) {
 	a, b, c := trio(t)
 	info, err := a.CreateChat([]string{"b", "c"}, "")
@@ -428,14 +420,19 @@ func TestLegacyHistoryAsVirtualChats(t *testing.T) {
 	if _, err := b.Send("a", "answer one", q1.ID); err != nil {
 		t.Fatal(err)
 	}
+	// Every plain exchange with b is one conversation, in time order, named
+	// after its oldest request.
 	eventually(t, "a got the answer", func() bool {
 		chats, _ := a.Chats(false, true)
-		return len(chats) == 2 && slices.ContainsFunc(chats, func(c ChatInfo) bool { return c.Count == 2 })
+		return len(chats) == 1 && chats[0].Count == 3
 	})
 	id := legacyChatID(q1.ID, "b")
 	msgs, err := a.ChatMessages(id, 0, 0, 0)
-	if err != nil || len(msgs) != 2 || msgs[0].ID != q1.ID || msgs[1].Direction != "in" {
+	if err != nil || len(msgs) != 3 || msgs[0].ID != q1.ID || msgs[1].ID != q2.ID || msgs[2].Direction != "in" {
 		t.Fatalf("legacy chat messages %+v %v", msgs, err)
+	}
+	if bc, _ := b.Chats(false, true); len(bc) != 1 || bc[0].ID != legacyChatID(q1.ID, "a") {
+		t.Fatalf("b's legacy chats %+v", bc)
 	}
 	// Writing into a legacy chat continues it in a real chat of a and b, the
 	// same one next time.
@@ -450,10 +447,10 @@ func TestLegacyHistoryAsVirtualChats(t *testing.T) {
 	if info, _ := b.Chat(m.ChatID); info.Legacy || !slices.Equal(info.Participants, []string{"a", "b"}) {
 		t.Fatalf("b sees %+v", info)
 	}
-	if _, err := a.ArchiveChat(legacyChatID(q2.ID, "b"), true); err != nil {
+	if _, err := a.CloseChat(id); err != nil { // a legacy chat: archived here only
 		t.Fatal(err)
 	}
-	if arch, _ := a.Chats(true, true); len(arch) != 1 || arch[0].ID != legacyChatID(q2.ID, "b") {
+	if arch, _ := a.Chats(true, true); len(arch) != 1 || arch[0].ID != id {
 		t.Fatalf("archived legacy chat: %+v", arch)
 	}
 	if chats, _ := a.Chats(false, false); len(chats) != 1 || chats[0].Legacy {
@@ -481,5 +478,119 @@ func TestChatFanoutRepairedAfterCrash(t *testing.T) {
 	}
 	if got := re.store.delivery("b", lost.ID); got != "queued" {
 		t.Fatalf("after restart the copy for b is %q", got)
+	}
+}
+
+// A real reply answers a request for good: a failed reply that came later
+// (a worker that ran the same request in parallel) does not turn it failed.
+func TestFailedReplyDoesNotOverrideAnswer(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	eventually(t, "connected", func() bool { return a.Connected("b") && b.Connected("a") })
+	q, err := a.Send("b", "which version?", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Send("a", "Godot 4.7.1", q.ID); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond) // the failed reply is newer
+	if _, err := b.SendMessage(Message{ID: DerivedID(q.ID, "reply"), To: "a", ReplyTo: q.ID, Body: "agentlink: handler timed out", JobStatus: JobFailed}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a got both replies", func() bool { e, _ := a.Recent(0); return len(e) == 3 })
+	entries, _ := a.Recent(0)
+	for _, e := range entries {
+		if e.ID == q.ID && (e.Answer != "Godot 4.7.1" || e.JobStatus == JobFailed) {
+			t.Fatalf("request entry %+v", e)
+		}
+	}
+	msgs, err := a.ChatMessages(legacyChatID(q.ID, "b"), 0, 0, 0)
+	if err != nil || len(msgs) != 3 || msgs[0].JobStatus != "" || msgs[2].JobStatus != JobFailed {
+		t.Fatalf("legacy chat %+v %v", msgs, err)
+	}
+}
+
+// A reply sent through the control API reports the request it answers,
+// unless it comes from the job that answers that very request.
+func TestLocalReplyHook(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	eventually(t, "connected", func() bool { return a.Connected("b") && b.Connected("a") })
+	var answered []string
+	b.SetLocalReplyHook(func(id string) { answered = append(answered, id) })
+	q, err := a.Send("b", "question", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.SendRequest(SendRequest{To: "a", Body: "from the job", ReplyTo: q.ID, Parent: q.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.SendRequest(SendRequest{To: "a", Body: "by hand", ReplyTo: q.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.SendRequest(SendRequest{To: "a", Body: "a new question"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(answered, []string{q.ID}) {
+		t.Fatalf("answered = %q", answered)
+	}
+}
+
+// A new question sent "to" a member with chats through the control API goes
+// into the open chat of the two (created once); a reply to a plain request stays plain.
+func TestSendToContinuesChat(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	eventually(t, "chat support", func() bool { return a.PeerHas("b", CapChat) && b.PeerHas("a", CapChat) })
+	q1, err := a.SendToChat(SendRequest{To: "b", Body: "first"})
+	if err != nil || q1.ChatID == "" || !q1.Asks("b") {
+		t.Fatalf("first = %+v, %v", q1, err)
+	}
+	q2, err := a.SendToChat(SendRequest{To: "b", Body: "second"})
+	if err != nil || q2.ChatID != q1.ChatID {
+		t.Fatalf("second = %+v, %v", q2, err)
+	}
+	if chats, _ := a.Chats(false, true); len(chats) != 1 || chats[0].Legacy || chats[0].Count != 2 {
+		t.Fatalf("chats %+v", chats)
+	}
+	plain, _ := b.Send("a", "plain question", "")
+	eventually(t, "a got it", func() bool { e, _ := a.Recent(0); return len(e) == 1 })
+	if r, err := a.SendToChat(SendRequest{To: "b", Body: "plain answer", ReplyTo: plain.ID}); err != nil || r.ChatID != "" {
+		t.Fatalf("reply = %+v, %v", r, err)
+	}
+	// The control API's inbox lists chat messages too, with the chat reply.
+	if _, err := b.SendChat(ChatSend{ChatID: q1.ChatID, Body: "answer", ReplyTo: q1.ID}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "answer in a's inbox", func() bool {
+		e, _ := a.store.recent(0, true)
+		return slices.ContainsFunc(e, func(e Entry) bool { return e.ID == q1.ID && e.Answer == "answer" })
+	})
+}
+
+// A job that ends with a completed status and no reply of its own (the request
+// was answered by hand) no longer shows as running, on both sides.
+func TestChatJobEndsByStatus(t *testing.T) {
+	a, b, _ := trio(t)
+	info, err := a.CreateChat([]string{"b"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b knows the chat", func() bool { _, ok := b.ChatOf(info.ID); return ok })
+	q, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "do it", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.SendMessage(Message{ID: DerivedID(q.ID, "b/running"), ChatID: info.ID, ReplyTo: q.ID, Kind: KindStatus, JobStatus: JobRunning,
+		ActivityInfo: &ActivityState{Text: "step", Seq: 99}}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a shows b running", func() bool { got, _ := a.Chat(info.ID); return got.Active })
+	if _, err := b.SendChat(ChatSend{ChatID: info.ID, Body: "by hand", ReplyTo: q.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.SendMessage(Message{ID: DerivedID(q.ID, "b/answered"), ChatID: info.ID, ReplyTo: q.ID, Kind: KindStatus, JobStatus: JobCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []*testNode{a, b} {
+		eventually(t, n.cfg.Node+" shows b idle", func() bool { got, _ := n.Chat(info.ID); return !got.Active })
 	}
 }

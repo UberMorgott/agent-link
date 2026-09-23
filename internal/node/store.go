@@ -147,8 +147,10 @@ func (s *store) claimUndelivered(chat string) ([]Message, error) {
 }
 
 // recent lists inbound, queued and sent messages, newest first. Status updates
-// are folded into the outbound request they refer to.
-func (s *store) recent(limit int) ([]Entry, error) {
+// are folded into the outbound request they refer to; a request with a real
+// (not failed) reply is answered, whatever failed reply came before or after.
+// With chats, chat messages are listed too (the control API's inbox).
+func (s *store) recent(limit int, chats bool) ([]Entry, error) {
 	var out []Entry
 	// progress[peer/request id]: the latest status update, the latest reply
 	// and when anything about the request last arrived.
@@ -160,7 +162,7 @@ func (s *store) recent(limit int) ([]Entry, error) {
 	s.mu.Lock()
 	for _, r := range s.inbox {
 		m := r.Message
-		if m.ChatID != "" { // chats have their own history (chatStore)
+		if m.ChatID != "" && !chats { // chats have their own history (chatStore)
 			continue
 		}
 		if m.ReplyTo != "" {
@@ -177,7 +179,7 @@ func (s *store) recent(limit int) ([]Entry, error) {
 			if m.Kind == KindStatus {
 				slot = &p.status
 			}
-			if *slot == nil || m.CreatedAt.After((*slot).CreatedAt) {
+			if better(*slot, &r.Message) {
 				*slot = &r.Message
 			}
 		}
@@ -212,7 +214,7 @@ func (s *store) recent(limit int) ([]Entry, error) {
 				return nil, err
 			}
 			for _, m := range msgs {
-				if m.ChatID != "" {
+				if m.ChatID != "" && (!chats || m.Kind == KindChatOpen || m.Kind == KindChatClose) {
 					continue
 				}
 				if m.ReplyTo != "" {
@@ -229,10 +231,10 @@ func (s *store) recent(limit int) ([]Entry, error) {
 					}
 				}
 				e := Entry{Direction: "out", Status: box.status, Peer: p.Name(), Message: m}
-				if m.IsRequest() {
+				if isRequest(m) {
 					e.LastHeard = m.CreatedAt
 				}
-				if pr := byRequest[p.Name()+"/"+m.ID]; pr != nil && m.IsRequest() {
+				if pr := byRequest[p.Name()+"/"+m.ID]; pr != nil && isRequest(m) {
 					switch {
 					case pr.reply != nil:
 						e.JobStatus, e.Answer = pr.reply.JobStatus, pr.reply.Body
@@ -252,7 +254,7 @@ func (s *store) recent(limit int) ([]Entry, error) {
 	}
 	for i := range out {
 		e := &out[i]
-		if e.Direction != "in" || !e.IsRequest() {
+		if e.Direction != "in" || !isRequest(e.Message) {
 			continue
 		}
 		if o := own[e.Peer+"/"+e.ID]; o != nil && !o.replied && o.status != nil &&
@@ -265,6 +267,22 @@ func (s *store) recent(limit int) ([]Entry, error) {
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+// isRequest is Message.IsRequest that also counts a chat message which is
+// not a reply (recent lists chat messages only when asked to).
+func isRequest(m Message) bool { return m.ReplyTo == "" && m.Kind == "" }
+
+// better reports whether next replaces cur as a request's reply (or status):
+// a failed one never replaces one that did not fail, else the newer wins.
+func better(cur, next *Message) bool {
+	if cur == nil {
+		return true
+	}
+	if curFailed, nextFailed := cur.JobStatus == JobFailed, next.JobStatus == JobFailed; curFailed != nextFailed {
+		return curFailed
+	}
+	return next.CreatedAt.After(cur.CreatedAt)
 }
 
 func (s *store) loadAreas() (map[string][]string, error) {
@@ -331,7 +349,13 @@ func readMessages(dir string) ([]Message, error) {
 	msgs := make([]Message, 0, len(files))
 	for _, f := range files {
 		var m Message
-		if err := readJSON(f, &m); err != nil {
+		err := readJSON(f, &m)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			// On Windows a file being moved (ACKed) cannot be opened for a moment.
+			time.Sleep(20 * time.Millisecond)
+			err = readJSON(f, &m)
+		}
+		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) { // ACKed concurrently
 				continue
 			}

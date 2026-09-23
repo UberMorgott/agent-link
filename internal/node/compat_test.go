@@ -136,7 +136,7 @@ func TestFuturePeerUnknownFramesAndFields(t *testing.T) {
 	if !a.Connected("b") {
 		t.Fatal("session dropped")
 	}
-	entries, err := a.store.recent(0)
+	entries, err := a.store.recent(0, false)
 	if err != nil {
 		t.Fatal(err)
 	}

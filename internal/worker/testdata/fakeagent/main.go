@@ -1,5 +1,6 @@
 // Command fakeagent stands in for an agent CLI in the e2e scripts. It prints
-// "echo: " followed by the prompt read from stdin, except for a prompt
+// "echo: " followed by the first line of the prompt read from stdin (a chat
+// request's prompt adds the chat's context after it), except for a prompt
 // "tree MARKER": then it starts a child "fakeagent sleep MARKER" and blocks,
 // like an agent shim with a long-running child, so a script can look for
 // leftover processes by MARKER on their command line. A prompt
@@ -33,7 +34,9 @@ func main() {
 		os.Exit(1)
 	}
 	prompt := strings.TrimSpace(string(in))
-	if f := strings.Fields(prompt); len(f) == 4 && f[0] == "stream" {
+	// A chat request's prompt continues after its first line with chat context.
+	first, _, _ := strings.Cut(prompt, "\n")
+	if f := strings.Fields(first); len(f) == 4 && f[0] == "stream" {
 		secs, err := strconv.Atoi(f[1])
 		if err != nil || stamp(f[2], "start", f[3]) != nil {
 			os.Exit(1)
@@ -46,7 +49,7 @@ func main() {
 		_, _ = os.Stdout.WriteString(`{"type":"result","subtype":"success","is_error":false,"result":"done ` + f[3] + `"}` + "\n")
 		return
 	}
-	if f := strings.Fields(prompt); len(f) == 3 && f[0] == "stall" {
+	if f := strings.Fields(first); len(f) == 3 && f[0] == "stall" {
 		if stamp(f[1], "start", f[2]) != nil {
 			os.Exit(1)
 		}
@@ -54,23 +57,23 @@ func main() {
 		time.Sleep(10 * time.Minute)
 		return
 	}
-	if f := strings.Fields(prompt); len(f) == 4 && f[0] == "slow" {
+	if f := strings.Fields(first); len(f) == 4 && f[0] == "slow" {
 		secs, err := strconv.Atoi(f[1])
 		if err != nil || appendLine(f[2], f[3]) != nil {
 			os.Exit(1)
 		}
 		time.Sleep(time.Duration(secs) * time.Second)
-		_, _ = os.Stdout.WriteString("echo: " + string(in))
+		_, _ = os.Stdout.WriteString("echo: " + first + "\n")
 		return
 	}
-	if marker, ok := strings.CutPrefix(prompt, "tree "); ok {
+	if marker, ok := strings.CutPrefix(first, "tree "); ok {
 		if err := exec.Command(os.Args[0], "sleep", marker).Start(); err != nil {
 			os.Exit(1)
 		}
 		time.Sleep(10 * time.Minute)
 		return
 	}
-	_, _ = os.Stdout.WriteString("echo: " + string(in))
+	_, _ = os.Stdout.WriteString("echo: " + first + "\n")
 }
 
 // toolCall prints one Claude stream-json assistant event with a tool call.

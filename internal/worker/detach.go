@@ -284,6 +284,10 @@ func (w *Worker) watch(ctx context.Context, j *Job, p *proc) {
 	}
 	cancelled := make(chan struct{})
 	w.live[m.ID] = cancelled
+	if j.Answered { // answered while it was being claimed or started
+		delete(w.live, m.ID)
+		close(cancelled)
+	}
 	w.mu.Unlock()
 	defer func() {
 		w.mu.Lock()
@@ -454,6 +458,39 @@ func (w *Worker) Cancel(id string) bool {
 		w.finish(j, node.JobFailed, "", ErrCancelled)
 	}
 	return queued
+}
+
+// Answered stops job id because this node answered its request another way
+// (its user, or an interactive agent session): a queued job never runs, a
+// running agent has its process tree killed. Either way the job completes
+// without a reply of its own and without a failure; the sender gets a
+// completed status. It reports whether the job was still pending.
+func (w *Worker) Answered(id string) bool {
+	w.mu.Lock()
+	j, ok := w.jobs[id]
+	if !ok || j.terminal() || j.Answered {
+		w.mu.Unlock()
+		return false
+	}
+	j.Answered = true
+	if err := w.save(j); err != nil {
+		w.log.Error("save job", "id", id, "err", err)
+	}
+	if ch, running := w.live[id]; running {
+		delete(w.live, id)
+		close(ch)
+		w.mu.Unlock()
+		w.log.Info("job answered on this node, stopping agent", "id", id)
+		return true
+	}
+	// A running job not watched yet sees Answered when its watch starts.
+	queued := j.Status == node.JobQueued
+	w.mu.Unlock()
+	w.log.Info("job answered on this node", "id", id, "queued", queued)
+	if queued {
+		w.finish(j, node.JobCompleted, "", ErrAnswered)
+	}
+	return true
 }
 
 // killLeftover kills a detached agent that no handler will watch.

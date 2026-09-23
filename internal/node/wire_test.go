@@ -98,7 +98,7 @@ func TestSealedRoundTrip(t *testing.T) {
 
 func hasEntry(t *testing.T, tn *testNode, id string) bool {
 	t.Helper()
-	entries, err := tn.store.recent(0)
+	entries, err := tn.store.recent(0, false)
 	if err != nil {
 		t.Fatal(err)
 	}

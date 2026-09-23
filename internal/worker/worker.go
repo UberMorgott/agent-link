@@ -10,8 +10,10 @@
 // reattaches to it, or finalizes it from its output, or resumes its session
 // when it died mid-run. A job interrupted while running without a way to
 // continue runs once more after restart; a second interruption fails it.
-// Timeouts (hard, or idle: no output from the agent), Cancel and agent errors
-// fail at once and kill the agent's process tree. The sender
+// Timeouts (idle: no output from the agent, or the generous total cap), Cancel
+// and agent errors fail at once and kill the agent's process tree. A request
+// answered on this node another way (Answered) stops its job without a failure
+// reply. The sender
 // gets status updates (queued, running, then running with the agent's current
 // activity, throttled) and a final reply that carries completed or failed.
 // A chat request (Options.Chats) is answered to the whole chat and runs in the
@@ -39,10 +41,11 @@ import (
 
 // Defaults of Options.
 const (
-	// DefaultTimeout bounds one agent run.
-	DefaultTimeout = 10 * time.Minute
+	// DefaultTimeout bounds one agent run in total; a long turn that keeps
+	// working is stopped by it only as a last resort.
+	DefaultTimeout = 60 * time.Minute
 	// DefaultIdleTimeout fails a run whose agent printed nothing for this long.
-	DefaultIdleTimeout = 3 * time.Minute
+	DefaultIdleTimeout = 10 * time.Minute
 	// DefaultMaxJobs is how many agents run at once.
 	DefaultMaxJobs = 2
 	// MaxMaxJobs is the largest MaxJobs the settings accept.
@@ -63,6 +66,9 @@ const (
 	ErrInterrupted = "handler was interrupted twice (the agent or the app stopped mid-run)"
 	// ErrIdle starts the failure of a run stopped by the idle timeout.
 	ErrIdle = "агент завис"
+	// ErrAnswered notes a job stopped because this node answered the request
+	// another way (see Answered); no failure is reported for it.
+	ErrAnswered = "answered on this node"
 )
 
 var (
@@ -138,6 +144,9 @@ type Job struct {
 	// InputThrough is the last chat message (node's Seq) a chat job's run was
 	// given; the chat's session is advanced to it when the job completes.
 	InputThrough uint64 `json:"input_through,omitempty"`
+	// Answered: this node answered the request another way (see Answered);
+	// the job stops, completes without a reply and sends a neutral status.
+	Answered bool `json:"answered,omitempty"`
 }
 
 func (j *Job) terminal() bool { return j.Status == node.JobCompleted || j.Status == node.JobFailed }
@@ -440,7 +449,7 @@ func (w *Worker) nextLocked() *Job {
 	}
 	var best *Job
 	for _, j := range w.jobs {
-		if j.Status == node.JobQueued && !busy[j.Request.ChatID] && (best == nil || j.Seq < best.Seq) {
+		if j.Status == node.JobQueued && !j.Answered && !busy[j.Request.ChatID] && (best == nil || j.Seq < best.Seq) {
 			best = j
 		}
 	}
@@ -451,9 +460,20 @@ func (w *Worker) nextLocked() *Job {
 // after Timeout, or after IdleTimeout without any output from the agent.
 func (w *Worker) handle(ctx context.Context, j *Job) {
 	m := j.Request
+	cancelled := make(chan struct{})
 	w.mu.Lock()
 	attempt := j.Attempts
+	w.live[m.ID] = cancelled
+	if j.Answered { // answered while it was being claimed
+		delete(w.live, m.ID)
+		close(cancelled)
+	}
 	w.mu.Unlock()
+	defer func() {
+		w.mu.Lock()
+		delete(w.live, m.ID)
+		w.mu.Unlock()
+	}()
 	w.log.Info("handler started", "id", m.ID, "from", m.From, "attempt", attempt)
 	w.status(m, node.JobRunning, "running-"+strconv.Itoa(attempt), nil)
 	prompt := m.Body
@@ -465,6 +485,13 @@ func (w *Worker) handle(ctx context.Context, j *Job) {
 	idleCtx, cancelIdle := context.WithCancelCause(ctx)
 	jobCtx, cancel := context.WithTimeoutCause(idleCtx, w.opt.Timeout, errHardTimeout)
 	idle := time.AfterFunc(w.opt.IdleTimeout, func() { cancelIdle(errIdleTimeout) })
+	go func() {
+		select {
+		case <-cancelled:
+			cancelIdle(errCancelled)
+		case <-idleCtx.Done():
+		}
+	}()
 	relay := w.relay(m, "activity-"+strconv.Itoa(attempt))
 	out, err := w.run(jobCtx, w.where(m.Area), prompt, func(activity string) {
 		idle.Reset(w.opt.IdleTimeout)
@@ -477,13 +504,15 @@ func (w *Worker) handle(ctx context.Context, j *Job) {
 	cancelIdle(nil)
 	body := strings.TrimSpace(out)
 	done := err == nil && body != "" // a timer that fired after the run ended does not count
-	if !done && ctx.Err() != nil && !errors.Is(cause, errHardTimeout) && !errors.Is(cause, errIdleTimeout) {
+	if !done && ctx.Err() != nil && !errors.Is(cause, errHardTimeout) && !errors.Is(cause, errIdleTimeout) && !errors.Is(cause, errCancelled) {
 		w.log.Info("handler interrupted, will retry on restart", "id", m.ID, "attempt", attempt)
 		return
 	}
 	switch {
 	case done:
 		w.finish(j, node.JobCompleted, body, "")
+	case errors.Is(cause, errCancelled):
+		w.finish(j, node.JobFailed, "", ErrCancelled)
 	case errors.Is(cause, errIdleTimeout):
 		w.finish(j, node.JobFailed, "", fmt.Sprintf("%s (нет активности %s)", ErrIdle, minutes(w.opt.IdleTimeout)))
 	case errors.Is(cause, errHardTimeout):
@@ -594,8 +623,13 @@ func (r *relay) stop() {
 }
 
 // finish records the outcome durably, then sends the final reply.
+// A job answered on this node another way completes without a result.
 func (w *Worker) finish(j *Job, status, result, errText string) {
 	w.mu.Lock()
+	answered := j.Answered
+	if answered {
+		status, result, errText = node.JobCompleted, "", ErrAnswered
+	}
 	j.Status, j.Result, j.Error, j.FinishedAt = status, result, errText, time.Now().UTC()
 	err := w.save(j)
 	w.mu.Unlock()
@@ -605,7 +639,8 @@ func (w *Worker) finish(j *Job, status, result, errText string) {
 	w.log.Info("handler finished", "id", j.Request.ID, "status", status, "error", errText)
 	if err != nil {
 		w.log.Error("save job", "id", j.Request.ID, "err", err)
-	} else if status == node.JobCompleted {
+	} else if status == node.JobCompleted && !answered {
+		// An answered job's session did not take the turn, so it is not advanced.
 		w.advanceSession(j)
 		// A failed run keeps its files (<jobs>/<id>/) for diagnosis.
 		_ = os.RemoveAll(filepath.Join(w.jobsDir, j.Request.ID))
@@ -617,16 +652,22 @@ func (w *Worker) finish(j *Job, status, result, errText string) {
 }
 
 // reply sends the final reply under an id derived from the request, so a
-// reply re-sent after a crash is deduplicated by the receiver.
+// reply re-sent after a crash is deduplicated by the receiver. A job answered
+// on this node another way sends only a completed status: the answer is out.
 func (w *Worker) reply(j *Job) {
 	w.mu.Lock()
 	m, status, body := j.Request, j.Status, j.Result
 	if status == node.JobFailed {
 		body = "agentlink: " + j.Error
 	}
+	answered := j.Answered
 	w.mu.Unlock()
 	out := node.Message{Body: body, ReplyTo: m.ID, JobStatus: status}
 	w.address(&out, m, "reply")
+	if answered {
+		out = node.Message{ReplyTo: m.ID, Kind: node.KindStatus, JobStatus: node.JobCompleted}
+		w.address(&out, m, "answered")
+	}
 	_, err := w.send(out)
 	if err != nil {
 		w.log.Error("send reply", "id", m.ID, "err", err)

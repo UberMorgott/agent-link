@@ -27,7 +27,17 @@ type SendRequest struct {
 }
 
 // SendRequest sends req like POST /send: to a chat with ChatID, else like Send.
+// A reply (ReplyTo) that is not from the job answering that very request
+// (Parent) is reported to the local reply hook: the request is answered here.
 func (n *Node) SendRequest(req SendRequest) (Message, error) {
+	m, err := n.sendRequest(req)
+	if err == nil && req.ReplyTo != "" && req.Parent != req.ReplyTo && n.onLocalReply != nil {
+		n.onLocalReply(req.ReplyTo)
+	}
+	return m, err
+}
+
+func (n *Node) sendRequest(req SendRequest) (Message, error) {
 	if req.ChatID != "" {
 		if req.To != "" {
 			return Message{}, errors.New("give either to or chat_id")
@@ -40,20 +50,31 @@ func (n *Node) SendRequest(req SendRequest) (Message, error) {
 	return n.Send(req.To, req.Body, req.ReplyTo)
 }
 
+// SendToChat is SendRequest for the control API's POST /send (the CLI): a new
+// question to one member that takes part in chats continues the conversation
+// with it, in the newest open chat of just the two (a new one when there is
+// none), so its agent keeps the context. Replies and area messages stay plain.
+func (n *Node) SendToChat(req SendRequest) (Message, error) {
+	if req.ChatID != "" || req.ReplyTo != "" || len(req.Ask) > 0 || req.To == "" ||
+		strings.HasPrefix(req.To, AreaPrefix) || !n.PeerHas(req.To, CapChat) {
+		return n.SendRequest(req)
+	}
+	c, err := n.openChatWith(req.To, "")
+	if err != nil {
+		return Message{}, err
+	}
+	return n.SendRequest(SendRequest{ChatID: c.ID, Body: req.Body, Ask: []string{req.To}, Parent: req.Parent})
+}
+
 // CreateChatRequest is the body of POST /chats.
 type CreateChatRequest struct {
 	Participants []string `json:"participants"` // the other members; this node is added
 	Area         string   `json:"area,omitempty"`
 }
 
-// ArchiveRequest is the body of POST /chats/{id}/archive.
-type ArchiveRequest struct {
-	Archived bool `json:"archived"`
-}
-
 // APIHandler serves the loopback control API:
 //
-//	POST /send               SendRequest -> Message
+//	POST /send               SendRequest -> Message (SendToChat: --to a member with chats goes to your chat with it)
 //	GET  /wait?timeout=30s   200 []Message (marked delivered) or 204 on timeout; 0 waits forever.
 //	                         Requests and replies only: status updates never wake it.
 //	     &chat=ID            only that chat's messages; the others stay for a later wait
@@ -61,9 +82,8 @@ type ArchiveRequest struct {
 //	GET  /chats?archive=1    200 []ChatInfo: the archive (default the main list); &legacy=1 adds pre-chat history
 //	GET  /chats/{id}         200 ChatInfo
 //	GET  /chats/{id}/messages?before=SEQ&after=SEQ&limit=50   200 []ChatMessage in Seq order
-//	POST /chats/{id}/close   -> ChatInfo
-//	POST /chats/{id}/archive ArchiveRequest -> ChatInfo
-//	GET  /inbox?limit=50     200 []Entry
+//	POST /chats/{id}/close   -> ChatInfo: closed for everyone, which archives it
+//	GET  /inbox?limit=50     200 []Entry, chat messages included (with chat_id)
 //	GET  /members            200 []MemberInfo (this node first)
 //	POST /members            {"addr"} -> dial that address too (AddPeer)
 //	POST /members/remove     {"name"} -> remove the member from the network
@@ -132,7 +152,7 @@ func (n *Node) handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	m, err := n.SendRequest(req)
+	m, err := n.SendToChat(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -186,7 +206,7 @@ func (n *Node) handleInbox(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = v
 	}
-	entries, err := n.store.recent(limit)
+	entries, err := n.store.recent(limit, true)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -256,15 +276,6 @@ func (n *Node) ChatRoutes(mux *http.ServeMux, prefix string, fail func(w http.Re
 	})
 	mux.HandleFunc("POST "+prefix+"/chats/{id}/close", func(w http.ResponseWriter, r *http.Request) {
 		info, err := n.CloseChat(r.PathValue("id"))
-		reply(w, info, err)
-	})
-	mux.HandleFunc("POST "+prefix+"/chats/{id}/archive", func(w http.ResponseWriter, r *http.Request) {
-		var req ArchiveRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxFrame)).Decode(&req); err != nil {
-			failed(w, fmt.Errorf("%w: %w", ErrBadRequest, err))
-			return
-		}
-		info, err := n.ArchiveChat(r.PathValue("id"), req.Archived)
 		reply(w, info, err)
 	})
 }

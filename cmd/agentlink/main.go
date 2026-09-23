@@ -44,8 +44,7 @@ const usage = `usage:
   agentlink chat new     --config <path> --with <node,...> [--area <name>]   (prints the chat id; you are added)
   agentlink chat list    --config <path> [--archive] [--legacy]   (one JSON line per chat)
   agentlink chat history --config <path> --chat <id> [--limit 50] [--before <seq>] [--after <seq>]   (one JSON line per message, oldest first)
-  agentlink chat archive --config <path> --chat <id> [--undo]
-  agentlink close --config <path> --chat <id>      (close the chat for every participant)
+  agentlink close --config <path> --chat <id>      (close the chat for every participant and move it to the archive; not from a worker job)
   agentlink inbox --config <path> [--limit 50]
   agentlink members --config <path>                (one JSON line per member, this node first)
   agentlink add    --config <path> --addr <ip[:port]>   (dial a member's address; it spreads to all members)
@@ -130,7 +129,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmd = func(c config.Config) (int, error) { return wait(c, *timeout, *chat, stdout) }
 	case "close":
 		chat := fs.String("chat", "", "chat id")
-		cmd = func(c config.Config) (int, error) { return 0, chatPost(c, *chat, "/close", nil, stdout) }
+		cmd = func(c config.Config) (int, error) {
+			// Only people close chats: an agent a worker runs must not end the conversation.
+			if os.Getenv(envJobID) != "" {
+				return 0, errors.New("close: a worker job cannot close chats; a person closes them in the app")
+			}
+			return 0, chatPost(c, *chat, "/close", nil, stdout)
+		}
 	case "chat new":
 		with := fs.String("with", "", "the other participants, comma-separated")
 		area := fs.String("area", "", "area (project) the participants' agents work in")
@@ -145,12 +150,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		before := fs.Uint64("before", 0, "only messages before this seq (0: up to the newest)")
 		after := fs.Uint64("after", 0, "only messages after this seq, oldest first")
 		cmd = func(c config.Config) (int, error) { return 0, chatHistory(c, *chat, *limit, *before, *after, stdout) }
-	case "chat archive":
-		chat := fs.String("chat", "", "chat id")
-		undo := fs.Bool("undo", false, "bring the chat back to the main list")
-		cmd = func(c config.Config) (int, error) {
-			return 0, chatPost(c, *chat, "/archive", node.ArchiveRequest{Archived: !*undo}, stdout)
-		}
 	case "inbox":
 		limit := fs.Int("limit", 50, "maximum entries")
 		cmd = func(c config.Config) (int, error) { return 0, inbox(c, *limit, stdout) }
@@ -263,9 +262,9 @@ func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 	if a.ask != "" {
 		r.Ask = []string{a.ask}
 	}
-	if a.chat != "" {
-		r.Parent = os.Getenv(envJobID)
-	}
+	// A job's agent names its request: in a chat that continues its chain, and
+	// its own reply to it never counts as answered by someone else.
+	r.Parent = os.Getenv(envJobID)
 	req, err := json.Marshal(r)
 	if err != nil {
 		return err
@@ -281,6 +280,10 @@ func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 	var m node.Message
 	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
 		return err
+	}
+	if m.ChatID != "" && a.chat == "" {
+		// send --to continued the chat with that member; stdout stays the id alone.
+		fmt.Fprintln(os.Stderr, "chat "+m.ChatID)
 	}
 	_, err = fmt.Fprintln(stdout, m.ID)
 	return err

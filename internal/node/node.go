@@ -113,8 +113,9 @@ type Node struct {
 	beaconEvery  time.Duration
 	beaconIfaces func() []net.Interface
 
-	onInbound func(Message) error
-	onChange  func(topic string)
+	onInbound    func(Message) error
+	onChange     func(topic string)
+	onLocalReply func(requestID string)
 }
 
 // New opens the node's data directory. log may be nil.
@@ -229,6 +230,12 @@ func (n *Node) ID() string { return n.id }
 // set before Serve or Run, and fn must not block for long.
 func (n *Node) SetInboundHook(fn func(Message) error) { n.onInbound = fn }
 
+// SetLocalReplyHook registers fn to be called after this node's user or an
+// agent session sent a reply through the control API (SendRequest), with the
+// id of the request it answers; a job's own reply to its request is not
+// reported. It must be set before Serve or Run, and fn must not block for long.
+func (n *Node) SetLocalReplyHook(fn func(requestID string)) { n.onLocalReply = fn }
+
 // SetChangeHook registers a nonblocking observer for local state changes. The
 // hook is invoked after persistence and outside Node locks.
 func (n *Node) SetChangeHook(fn func(topic string)) { n.onChange = fn }
@@ -337,7 +344,7 @@ const (
 // Recent lists inbound, queued and sent messages, newest first. Unanswered
 // outbound requests the peer has been silent about carry NoNewsMin.
 func (n *Node) Recent(limit int) ([]Entry, error) {
-	entries, err := n.store.recent(limit)
+	entries, err := n.store.recent(limit, false)
 	if err != nil {
 		return nil, err
 	}

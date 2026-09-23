@@ -62,7 +62,6 @@ func (a *App) URL(page string) string {
 //	GET  /ui/api/chats/{id}        node.ChatInfo
 //	GET  /ui/api/chats/{id}/messages?before=SEQ&after=SEQ&limit=50   []node.ChatMessage
 //	POST /ui/api/chats/{id}/close  -> node.ChatInfo
-//	POST /ui/api/chats/{id}/archive  node.ArchiveRequest -> node.ChatInfo
 //	POST /ui/api/members/add       {"addr"} -> keep and dial that address -> Status
 //	POST /ui/api/members/remove    {"name"} -> remove the member everywhere -> Status
 //	POST /ui/api/pick-folder       {"start"} -> native folder dialog -> pickResult

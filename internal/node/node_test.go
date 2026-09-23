@@ -305,7 +305,7 @@ func TestDedupeOnResend(t *testing.T) {
 	if code, msgs := waitHTTP(t, b, "300ms"); code != http.StatusNoContent {
 		t.Fatalf("duplicate delivered: %d %+v", code, msgs)
 	}
-	entries, err := b.store.recent(0)
+	entries, err := b.store.recent(0, false)
 	if err != nil {
 		t.Fatal(err)
 	}

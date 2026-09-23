@@ -182,6 +182,76 @@ func TestCancelKillsDetachedAgent(t *testing.T) {
 	eventually(t, "agent killed", func() bool { return !alive(p) })
 }
 
+// completedStatus reports whether a completed status (no final reply) was sent for id.
+func completedStatus(rec *recorder, id string) bool {
+	return len(rec.filter(func(m node.Message) bool {
+		return m.Kind == node.KindStatus && m.ReplyTo == id && m.JobStatus == node.JobCompleted
+	})) == 1
+}
+
+// A request answered on this node another way kills its running detached
+// agent; the job completes without a reply and without a failure.
+func TestAnsweredStopsDetachedAgent(t *testing.T) {
+	rec := newRecorder()
+	w := detachedWorker(t, fakeAgent(t, "sleep"), rec, t.TempDir(), Options{})
+	start(t, w)
+	accept(t, w, msg(id1, "x"))
+	p := agentPID(t, w, id1)
+	if !w.Answered(id1) {
+		t.Fatal("Answered on a running job = false")
+	}
+	eventually(t, "agent killed", func() bool { return !alive(p) })
+	eventually(t, "job completed", func() bool { j, _ := w.Job(id1); return j.Status == node.JobCompleted && j.Replied })
+	if j, _ := w.Job(id1); !j.Answered || j.Error != ErrAnswered || j.Result != "" {
+		t.Fatalf("job = %+v", j)
+	}
+	rec.quiet(t)
+	if !completedStatus(rec, id1) {
+		t.Fatalf("no completed status: %+v", rec.filter(func(node.Message) bool { return true }))
+	}
+	if w.Answered(id1) {
+		t.Fatal("Answered on a finished job = true")
+	}
+}
+
+// A queued request answered on this node never runs; a running one is
+// cancelled. Neither sends a failure.
+func TestAnsweredQueuedAndRunning(t *testing.T) {
+	rec := newRecorder()
+	var mu sync.Mutex
+	var prompts []string
+	run := func(ctx context.Context, _, prompt string, _ func(string)) (string, error) {
+		mu.Lock()
+		prompts = append(prompts, prompt)
+		mu.Unlock()
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	w, err := New(run, rec.send, t.TempDir(), t.TempDir(), Options{MaxJobs: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start(t, w)
+	accept(t, w, msg(id1, "first"))
+	eventually(t, "first running", func() bool { mu.Lock(); defer mu.Unlock(); return len(prompts) == 1 })
+	accept(t, w, msg(id2, "second"))
+	for _, id := range []string{id2, id1} {
+		if !w.Answered(id) {
+			t.Fatalf("Answered(%s) = false", id)
+		}
+		eventually(t, "job completed", func() bool { j, _ := w.Job(id); return j.Status == node.JobCompleted && j.Replied })
+		if !completedStatus(rec, id) {
+			t.Fatalf("no completed status for %s", id)
+		}
+	}
+	rec.quiet(t)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(prompts) != 1 || prompts[0] != "first" {
+		t.Fatalf("runs = %q", prompts)
+	}
+}
+
 // Stopping the worker (an app restart or update) leaves the agent running; the
 // next worker reattaches, relays its activity and delivers the full answer.
 // The agent runs once.

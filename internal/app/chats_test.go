@@ -93,13 +93,17 @@ func TestUIChatEndpoints(t *testing.T) {
 	if code != http.StatusBadRequest || errorText(t, body) != uiStrings["error.chat_closed"] {
 		t.Fatalf("send to a closed chat: %d %s", code, body)
 	}
+	// Closing is archiving: the closed chat is in the archive, on bob's side too.
 	if code, body = alice.do(t, http.MethodGet, "/ui/api/chats?archive=1", "", hdr); code != http.StatusOK ||
 		len(decodeAs[[]node.ChatInfo](t, body)) != 1 {
 		t.Fatalf("archive: %d %s", code, body)
 	}
-	if code, body = alice.do(t, http.MethodPost, "/ui/api/chats/"+chat.ID+"/archive", `{"archived":false}`, hdr); code != http.StatusOK ||
-		decodeAs[node.ChatInfo](t, body).Archived {
-		t.Fatalf("unarchive: %d %s", code, body)
+	waitFor(t, "bob archives the closed chat", func() bool {
+		_, body := bob.do(t, http.MethodGet, "/ui/api/chats?archive=1", "", bob.tokenHdr())
+		return strings.Contains(body, chat.ID)
+	})
+	if code, _ = alice.do(t, http.MethodPost, "/ui/api/chats/"+chat.ID+"/archive", `{"archived":false}`, hdr); code == http.StatusOK {
+		t.Fatal("a separate archive endpoint still exists")
 	}
 	code, body = alice.do(t, http.MethodGet, "/ui/api/chats/"+strings.Repeat("0", 32), "", hdr)
 	if code != http.StatusNotFound || errorText(t, body) != uiStrings["error.unknown_chat"] {

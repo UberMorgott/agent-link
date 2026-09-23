@@ -74,7 +74,10 @@ try {
     $ids = [ordered]@{}
     foreach ($p in @("stream 10 $log long", "stall $log hung", "stream 3 $log short")) {
         $label = ($p -split ' ')[-1]
-        $ids[$label] = "$(& $cli send --config $nodes['node-a'].cli --to node-b --body $p)".Trim()
+        # One chat per request: a chat's session takes one turn at a time, separate chats run in parallel.
+        $chat = "$(& $cli chat new --config $nodes['node-a'].cli --with node-b)".Trim()
+        if ($LASTEXITCODE -ne 0) { throw "chat new $label failed" }
+        $ids[$label] = "$(& $cli send --config $nodes['node-a'].cli --chat $chat --ask node-b --body $p)".Trim()
         if ($LASTEXITCODE -ne 0) { throw "send $label failed" }
     }
     Write-Host "request ids: $(($ids.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ' ')"

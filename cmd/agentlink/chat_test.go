@@ -70,19 +70,30 @@ func TestChatCommands(t *testing.T) {
 	if out := f.run("chat", "history", "--chat", "c1", "--limit", "5", "--after", "3"); strings.Count(out, "\n") != 2 {
 		t.Fatalf("chat history printed %q", out)
 	}
-	f.run("chat", "archive", "--chat", "c1", "--undo")
 	f.run("close", "--chat", "c1")
 	f.run("wait", "--chat", "c1", "--timeout", "1")
 	want := []string{
 		"POST /chats",
 		"GET /chats?archive=1",
 		"GET /chats/c1/messages?after=3&limit=5",
-		"POST /chats/c1/archive",
 		"POST /chats/c1/close",
 		"GET /wait?chat=c1&timeout=1s",
 	}
 	if strings.Join(f.reqs, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests:\n%s\nwant:\n%s", strings.Join(f.reqs, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// An agent a worker runs cannot close a chat: only people close chats.
+func TestCloseRefusedInsideJob(t *testing.T) {
+	f := newFakeAPI(t)
+	t.Setenv(envJobID, "j1")
+	var out, errw bytes.Buffer
+	if code := run([]string{"close", "--chat", "c1", "--config", f.cfg}, &out, &errw); code == 0 || !strings.Contains(errw.String(), "cannot close") {
+		t.Fatalf("close in a job: code %d, stderr %q", code, errw.String())
+	}
+	if len(f.reqs) != 0 {
+		t.Fatalf("requests %q", f.reqs)
 	}
 }
 
@@ -126,7 +137,8 @@ func TestClientWithoutConfig(t *testing.T) {
 	}
 }
 
-// Inside a job the agent's send goes to the job's chat and continues its chain.
+// Inside a job the agent's send goes to the job's chat and continues its chain;
+// every send names the job, so its own reply is not taken for someone else's.
 func TestSendInsideJobUsesChatContext(t *testing.T) {
 	f := newFakeAPI(t)
 	t.Setenv(envChatID, "c1")
@@ -136,7 +148,7 @@ func TestSendInsideJobUsesChatContext(t *testing.T) {
 		t.Fatalf("send in a job = %+v", s)
 	}
 	f.run("send", "--to", "b", "--body", "plain")
-	if s := f.send; s.ChatID != "" || s.Parent != "" || s.To != "b" {
+	if s := f.send; s.ChatID != "" || s.Parent != "j1" || s.To != "b" {
 		t.Fatalf("send --to in a job = %+v", s)
 	}
 	f.run("send", "--chat", "other", "--body", "elsewhere")

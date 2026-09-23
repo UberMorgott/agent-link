@@ -12,7 +12,6 @@ const list = document.getElementById("messages");
 const chatTitle = document.getElementById("conversation_title");
 const chatSubtitle = document.getElementById("chat_subtitle");
 const chatMembers = document.getElementById("chat_members");
-const chatArchiveButton = document.getElementById("chat_archive");
 const chatCloseButton = document.getElementById("chat_close");
 const chatBack = document.getElementById("chat_back");
 const activityDock = document.getElementById("chat_activity");
@@ -243,10 +242,8 @@ function renderHeader(info) {
   });
   chatMembers.replaceChildren(...chips);
   chatMembers.hidden = !chips.length;
-  const writable = info && !info.legacy;
-  chatCloseButton.hidden = !writable || info.closed;
-  chatArchiveButton.hidden = !info;
-  chatArchiveButton.textContent = t(info?.archived ? "inbox.unarchive" : "inbox.archive");
+  // Closing is the only way into the archive (a legacy chat is archived here only).
+  chatCloseButton.hidden = !info || info.closed || info.archived;
 }
 
 // --- the open chat: timeline ---
@@ -300,7 +297,9 @@ function patchBubble(node, m) {
     p.quote.hidden = true; p.body.hidden = true; p.meta.hidden = true; p.answer.hidden = true;
     return;
   }
-  node.className = "msg " + (m.direction === "out" ? "out" : "in") + (m.job_status === "failed" ? " failed" : "");
+  // Only a failed reply is marked, never the question: another reply may answer it.
+  const failed = m.job_status === "failed" && !!m.reply_to;
+  node.className = "msg " + (m.direction === "out" ? "out" : "in") + (failed ? " failed-reply" : "");
   node.style.setProperty("--who", "var(--who-" + whoIndex(m.from) + ")");
   p.author.textContent = authorName(m.from);
   p.at.textContent = clock(m.created_at);
@@ -316,10 +315,11 @@ function patchBubble(node, m) {
   const waiting = (m.delivery || []).filter((d) => d.status === "queued").map((d) => d.peer);
   if (waiting.length) notes.push(fmt("inbox.undelivered", { names: waiting.join(", ") }));
   if (m.held) notes.push(t("inbox.held"));
-  if (m.job_status === "failed") notes.push(t("inbox.failed"));
+  if (failed) notes.push(t("inbox.failed"));
   p.meta.textContent = notes.join(" · ");
   p.meta.hidden = !notes.length;
-  setClass(p.meta, "warn", m.held || m.job_status === "failed");
+  setClass(p.meta, "warn", m.held);
+  setClass(p.meta, "failed-note", failed);
   p.answer.hidden = !info || info.legacy || info.closed;
 }
 
@@ -837,7 +837,6 @@ chatCloseButton.addEventListener("click", () => {
   if (typeof confirm === "function" && !confirm(t("inbox.close.confirm"))) return;
   chatAction("close");
 });
-chatArchiveButton.addEventListener("click", () => chatAction("archive", { archived: !store.get().chat?.archived }));
 store.subscribe("chats", onChats);
 store.subscribe("chatArchive", renderConversationList);
 store.subscribe("status", () => {
