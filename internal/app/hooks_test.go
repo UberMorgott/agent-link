@@ -21,10 +21,15 @@ func TestFolderHooksFollowSettings(t *testing.T) {
 		}
 	}
 	exe := filepath.Join(root, "bin", "agentlink.exe") // never run: only written into the hook entries
+	agent := fakeAgentFile(t)
 	h := newHarness(t, func(a *App) { a.HookExe, a.Agents = exe, settings.Finder{} })
 	apply := func(handler, workDir string) {
 		t.Helper()
-		s := settings.Settings{Node: "alice", Handler: handler, WorkDir: workDir,
+		agentPath := agent
+		if handler == "none" {
+			agentPath = ""
+		}
+		s := settings.Settings{Node: "alice", Handler: handler, AgentPath: agentPath, WorkDir: workDir,
 			Projects: map[string]settings.Project{"dev": {Dir: dev}, "gone": {Dir: filepath.Join(root, "missing")}}}
 		if _, err := h.app.Apply(t.Context(), s); err != nil {
 			t.Fatal(err)
@@ -90,10 +95,22 @@ func TestFolderHooksFollowSettings(t *testing.T) {
 func TestNoFolderHooksWithoutExe(t *testing.T) {
 	work := t.TempDir()
 	h := newHarness(t, func(a *App) { a.Agents = settings.Finder{} })
-	if _, err := h.app.Apply(t.Context(), settings.Settings{Node: "alice", Handler: "claude", WorkDir: work}); err != nil {
+	s := settings.Settings{Node: "alice", Handler: "claude", AgentPath: fakeAgentFile(t), WorkDir: work}
+	if _, err := h.app.Apply(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(work, ".claude")); err == nil {
 		t.Fatal("hooks installed without HookExe")
 	}
+}
+
+// fakeAgentFile is an agent program path that passes settings validation
+// on machines (CI) without claude or codex on PATH; it is never run.
+func fakeAgentFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "agent.exe")
+	if err := os.WriteFile(p, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
