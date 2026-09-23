@@ -21,3 +21,10 @@ qgate where   # install path + commit, paste this into the issue
 gh issue create --repo UberMorgott/quality-gate --title "<what broke>" --body "<qgate output, the command you ran, the file it blamed, `qgate where` output>"
 ```
 <!-- /quality-gate -->
+
+## Releases
+
+Standing owner authorization: after every verified change, push `main` and cut the next patch
+release without asking — annotated tag `vX.Y.Z` (bump Z from the latest tag), `git push origin vX.Y.Z`;
+`.github/workflows/release.yml` builds and publishes it. Watch the run and confirm the
+`agentlink.exe` asset exists.
