@@ -344,6 +344,22 @@ agentlink wait --config C:\agentlink\node.json --timeout 0   (run_in_background)
 
 After handling the messages (and replying with `send --reply-to`), start `wait` again.
 
+### Hooks: told without a `wait`
+
+A session that runs no `wait` can still hear of messages through its own hooks. Install once:
+
+```powershell
+agentlink hook install claude     # ~/.claude/settings.json; --scope project for .claude/settings.json
+agentlink hook install codex      # ~/.codex/hooks.json; then trust the hook with /hooks in Codex
+```
+
+On `SessionStart`, `UserPromptSubmit` and `PostToolUse` the hook (`agentlink hook claude|codex`)
+adds every message the session has not seen yet (sender, chat and members, time, full body, the
+reply command) as context; on `Stop` it keeps the agent going once to read news that came
+during the turn. It never marks messages delivered, stays silent when there is nothing new or
+the node is not running, and does nothing inside a handler job. Details:
+[docs/agent-usage.md](docs/agent-usage.md#hearing-about-messages-in-a-live-session-hooks).
+
 ## Delivery
 
 - Sent messages are written to `outbox/<peer>/` first and removed only when the peer ACKs, so an

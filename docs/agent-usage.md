@@ -143,6 +143,36 @@ node counts such automatic hops from the original request and stops the chain af
 each member's agent answers at most once per original request (a message past the limit is
 kept with `held: true` and waits for a human).
 
+## Hearing about messages in a live session (hooks)
+
+Nobody can type into a Claude Code or Codex session on another machine, but both run hooks.
+`agentlink hook <claude|codex>` is such a hook: it reads the hook's JSON on stdin, lists the
+messages of this node's chats and inbox that this session was not shown yet, and prints them as
+extra context ("Пришло сообщение от X в чате <id> (участники: …)", the full body up to 4000
+characters, and the `agentlink send --chat <id>` / `--to <node> --reply-to <id>` command that
+answers). Enable it once per machine:
+
+```powershell
+agentlink hook install claude            # ~/.claude/settings.json (--scope project: .claude/settings.json)
+agentlink hook install codex             # ~/.codex/hooks.json, then trust it with /hooks in Codex
+```
+
+- Events: `SessionStart`, `UserPromptSubmit`, `PostToolUse` (during a long turn) add the
+  messages as context (`hookSpecificOutput.additionalContext`); `Stop` returns
+  `{"decision":"block","reason":…}` so the agent reads them before it stops. Stop blocks only
+  when there is something new, so `stop_hook_active` never loops; Codex gets `{}` otherwise.
+- It only reads: nothing is marked delivered and a background `wait` still returns every
+  message. What a session saw is kept in `%APPDATA%\agentlink\hooks\<client>-<session_id>.json`
+  (removed after 14 days unused). A new session starts from the current state and hears only
+  of inbox requests from the last 24 h that no `wait` took and nobody answered.
+- Skipped: your own messages, status/activity updates, chat control messages. More than 10 new
+  messages: the newest 10 and a count. Node not running, bad input, an agent the worker runs
+  for a job (`AGENTLINK_JOB_ID` set): exit 0 without output, the session is never disturbed.
+- `install` is idempotent: it keeps the file's other settings and key order, adds one entry per
+  event (or updates its path when the program moved) and saves the old file as
+  `*.agentlink.bak`. Claude Code gets an exec-form entry (`command` = this program, `args` =
+  `["hook","claude"]`, no shell); Codex a shell command. Re-run it after moving `agentlink.exe`.
+
 ## What the answering side does
 
 If the other machine has a handler agent configured, your request is its **task**: `claude`
