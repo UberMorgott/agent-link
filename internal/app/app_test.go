@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -79,15 +80,14 @@ func TestPageEmbedsToken(t *testing.T) {
 	h := newHarness(t)
 	for _, page := range []string{"/ui/settings", "/ui/inbox"} {
 		code, body := h.do(t, http.MethodGet, page, "", nil)
-		if code != http.StatusOK || !strings.Contains(body, h.app.token) {
+		if code != http.StatusOK || !strings.Contains(body, `<meta name="agentlink-token" content="`+h.app.token+`">`) {
 			t.Fatalf("%s: status %d, token embedded=%v", page, code, strings.Contains(body, h.app.token))
 		}
 	}
-	if code, _ := h.do(t, http.MethodGet, "/ui/static/settings.js", "", nil); code != http.StatusOK {
-		t.Fatalf("static: %d", code)
-	}
 }
 
+// TestOpenPageIsPublicLauncher: /ui/open carries no token or dictionary and
+// loads only its own same-origin launcher module (web/src/open.ts).
 func TestOpenPageIsPublicLauncher(t *testing.T) {
 	h := newHarness(t)
 	code, body := h.do(t, http.MethodGet, "/ui/open", "", nil)
@@ -97,33 +97,12 @@ func TestOpenPageIsPublicLauncher(t *testing.T) {
 	if strings.Contains(body, h.app.token) || strings.Contains(body, "agentlink-token") || strings.Contains(body, "agentlink-strings") {
 		t.Fatal("launcher contains private application data")
 	}
-	if strings.Count(body, "<script") != 1 || !strings.Contains(body, `<script src="/ui/static/open.js"></script>`) {
-		t.Fatalf("launcher must load only same-origin open.js: %s", body)
+	script := regexp.MustCompile(`<script type="module" crossorigin src="(/ui/assets/open-[^"]+\.js)"></script>`).FindStringSubmatch(body)
+	if strings.Count(body, "<script") != 1 || script == nil {
+		t.Fatalf("launcher must load only its same-origin module: %s", body)
 	}
-}
-
-func TestLauncherAlwaysTargetsNamedDashboard(t *testing.T) {
-	script, err := webFS.ReadFile("web/static/open.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	body := string(script)
-	for _, required := range []string{
-		`window.open(DASHBOARD_PATH, DASHBOARD_WINDOW_NAME)`,
-		`if (!target)`,
-		`window.name = DASHBOARD_WINDOW_NAME`,
-		`location.replace(DASHBOARD_PATH)`,
-		`target.focus()`,
-		`window.close()`,
-	} {
-		if !strings.Contains(body, required) {
-			t.Errorf("launcher missing contract %q", required)
-		}
-	}
-	for _, forbidden := range []string{"launcherDecision", "DASHBOARD_HEARTBEAT_KEY", "module.exports", "setTimeout"} {
-		if strings.Contains(body, forbidden) {
-			t.Errorf("launcher still depends on %q", forbidden)
-		}
+	if code, _ := h.do(t, http.MethodGet, script[1], "", nil); code != http.StatusOK {
+		t.Fatalf("%s: status %d", script[1], code)
 	}
 }
 

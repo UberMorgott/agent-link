@@ -1,0 +1,147 @@
+@import "tailwindcss";
+@plugin "tailwindcss-primeui";
+
+/* PrimeVue's own layer sits between Tailwind's base and the utilities, so a
+   utility class always wins over a component's theme rule. Must match the
+   cssLayer order passed to app.use(PrimeVue) in main.ts. */
+@layer theme, base, primevue, components, utilities;
+@custom-variant dark (&:where(.app-dark, .app-dark *));
+
+/* Calm tokens for the shell, mapped onto the PrimeVue theme. */
+:root {
+  --app-bg: var(--p-surface-0);
+  --app-side: var(--p-surface-50);
+  --app-line: var(--p-surface-200);
+  --app-soft: var(--p-surface-100);
+  --app-text: var(--p-surface-900);
+  --app-muted: var(--p-surface-500);
+  --app-on: var(--p-primary-600);
+  --app-off: #b45309;
+  --app-danger: #b91c1c;
+  /* Six stable colours for names in a chat (lib/chat.ts whoIndex). */
+  --who-1: #2f6f9f;
+  --who-2: #9a4f8c;
+  --who-3: #a8612a;
+  --who-4: #4f7a2e;
+  --who-5: #6a5bb0;
+  --who-6: #a63f4f;
+}
+
+:root.app-dark {
+  --app-bg: var(--p-surface-900);
+  --app-side: var(--p-surface-950);
+  --app-line: var(--p-surface-800);
+  --app-soft: var(--p-surface-800);
+  --app-text: var(--p-surface-100);
+  --app-muted: var(--p-surface-400);
+  --app-on: var(--p-primary-400);
+  --app-off: #f59e0b;
+  --app-danger: #f87171;
+  --who-1: #7fb2dc;
+  --who-2: #d494c7;
+  --who-3: #e0a26c;
+  --who-4: #9cc57a;
+  --who-5: #a99ae6;
+  --who-6: #ea8c99;
+}
+
+@layer base {
+  html, body, #app { height: 100%; }
+  body {
+    margin: 0;
+    color: var(--app-text);
+    background: var(--app-bg);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; }
+  h2 { font-size: 1rem; font-weight: 600; }
+  h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--app-muted); }
+  :focus-visible { outline: 2px solid var(--p-primary-color); outline-offset: 2px; }
+}
+
+@layer components {
+  .hint { color: var(--app-muted); font-size: 0.85rem; }
+  .hint.warn { color: var(--app-off); }
+  .hint.failed { color: var(--app-danger); }
+  .on { color: var(--app-on); }
+  .off { color: var(--app-off); }
+
+  /* The slim sidebar: brand, sections, the chat list on the inbox. */
+  .nav-link {
+    display: flex; align-items: center; gap: 0.7rem;
+    padding: 0.45rem 0.7rem; border-radius: 0.6rem;
+    color: var(--app-text); text-decoration: none; font-size: 0.92rem;
+  }
+  .nav-link:hover { background: var(--app-soft); }
+  .nav-link.active { background: var(--app-soft); font-weight: 600; }
+  .nav-link .app-icon { color: var(--app-muted); }
+
+  .chat-row {
+    display: block; width: 100%; text-align: left; cursor: pointer;
+    padding: 0.5rem 0.7rem; border: 0; border-radius: 0.6rem;
+    background: transparent; color: inherit; font: inherit;
+  }
+  .chat-row:hover { background: var(--app-soft); }
+  .chat-row.active { background: var(--app-soft); }
+  .chat-row .row-top { display: flex; align-items: baseline; gap: 0.4rem; }
+  .chat-row .row-who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.9rem; font-weight: 500; }
+  .chat-row.fresh .row-who { font-weight: 700; }
+  .chat-row .row-time { color: var(--app-muted); font-size: 0.72rem; }
+  .chat-row .row-foot { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--app-muted); }
+  .chat-row .row-foot > :first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-row.live .row-live { color: var(--app-on); }
+  .conversation-unread {
+    flex: none; padding: 0 0.4rem; border-radius: 999px; font-size: 0.68rem; font-weight: 600;
+    background: var(--p-primary-color); color: var(--p-primary-contrast-color);
+  }
+  .chat-badge { font-size: 0.68rem; padding: 0 0.35rem; border-radius: 0.3rem; background: var(--app-soft); color: var(--app-muted); }
+
+  /* The open chat: one centered column. */
+  .chat-column { width: 100%; max-width: 48rem; margin: 0 auto; padding: 0 1rem; }
+  .presence.on { color: var(--app-on); }
+  .presence.old, .presence.away { color: var(--app-muted); }
+
+  .msg { position: relative; padding: 0.35rem 0; }
+  .msg + .msg:not(.cont) { margin-top: 0.9rem; }
+  .msg-head { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--who); }
+  .msg.cont .msg-head { display: none; }
+  .msg-author { font-weight: 600; }
+  .msg-icon { display: inline-flex; width: 1rem; height: 1rem; }
+  .msg-icon, .msg-ticks { --icon-size: 100%; }
+  .msg-fyi { color: var(--app-muted); font-weight: 400; }
+  .msg-body {
+    margin: 0.15rem 0 0; white-space: pre-wrap; word-break: break-word;
+    font: inherit; line-height: 1.6;
+  }
+  .msg.out { display: flex; flex-direction: column; align-items: flex-end; }
+  .msg.out .msg-body { max-width: 85%; padding: 0.55rem 0.9rem; border-radius: 1.2rem; background: var(--app-soft); }
+  .msg-quote {
+    display: block; max-width: 85%; margin: 0.2rem 0 0; padding: 0.1rem 0.6rem;
+    border: 0; border-left: 2px solid var(--app-line); background: transparent;
+    color: var(--app-muted); font: inherit; font-size: 0.8rem; text-align: left; cursor: pointer;
+  }
+  .msg-foot { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.15rem; font-size: 0.72rem; color: var(--app-muted); }
+  .msg-ticks { display: inline-flex; width: 1rem; height: 0.9rem; }
+  .msg-ticks.read { color: var(--app-on); width: 1.2rem; }
+  .msg-ticks.held { color: var(--app-off); }
+  .msg-reply {
+    border: 0; background: transparent; color: var(--app-muted); font: inherit; font-size: 0.75rem; cursor: pointer;
+    padding: 0; opacity: 0; transition: opacity 0.15s;
+  }
+  .msg:hover .msg-reply, .msg:focus-within .msg-reply, .msg-reply:focus-visible { opacity: 1; }
+  .msg-event { display: flex; justify-content: center; gap: 0.5rem; margin: 1rem 0; font-size: 0.78rem; color: var(--app-muted); }
+  .msg-event .msg-author { font-weight: 400; }
+
+  .act-row { display: flex; align-items: baseline; gap: 0.4rem; font-size: 0.82rem; color: var(--app-muted); min-width: 0; }
+  .act-row .act-who { color: var(--who); font-weight: 600; white-space: nowrap; }
+  .act-row .act-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .act-spin { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-on); animation: act-pulse 1.4s ease-in-out infinite; align-self: center; }
+  .act-row.queued .act-spin, .act-row.waiting .act-spin, .act-row.presence .act-spin { background: var(--app-muted); animation: none; }
+  .act-row.stale .act-spin { background: var(--app-off); animation: none; }
+  @keyframes act-pulse { 50% { opacity: 0.3; } }
+
+  .choice { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--who); }
+}

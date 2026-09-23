@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,7 +21,10 @@ import (
 	"github.com/UberMorgott/agent-link/internal/worker"
 )
 
-//go:embed web
+// webFS is the built web UI (internal/app/web, npm run build): only dist/, so the
+// frontend sources and node_modules never reach the binary.
+//
+//go:embed all:web/dist
 var webFS embed.FS
 
 // TokenHeader carries the per-run token on every web UI API call.
@@ -48,6 +52,7 @@ func (a *App) URL(page string) string {
 //
 //	GET  /ui/dashboard, /ui/inbox, /ui/participants, /ui/settings  application shell with the per-run token embedded
 //	GET  /ui/open                 public launcher that activates or adopts the dashboard tab
+//	GET  /ui/assets/..., /ui/icon.svg  the built UI's scripts, styles and icon (web/dist)
 //	GET  /ui/api/status            Status
 //	GET  /ui/api/settings          settings.Settings
 //	POST /ui/api/settings          settings.Settings -> save, restart node
@@ -76,12 +81,17 @@ func (a *App) URL(page string) string {
 //	POST /ui/api/quit              exit the app (same path as the tray's Quit)
 func (a *App) Handler() http.Handler {
 	ui := http.NewServeMux()
+	// The single-page app answers its own routes; a reload of any of them gets
+	// the same shell. Other /ui/ paths stay 404.
 	for _, path := range []string{"/ui/dashboard", "/ui/inbox", "/ui/participants", "/ui/settings"} {
-		ui.HandleFunc("GET "+path, a.page("web/app.html"))
+		ui.HandleFunc("GET "+path, a.page("web/dist/index.html"))
 	}
-	ui.HandleFunc("GET /ui/open", a.page("web/open.html"))
-	static, _ := fs.Sub(webFS, "web/static") // constant path inside the embed
-	ui.Handle("GET /ui/static/", http.StripPrefix("/ui/static/", http.FileServerFS(static)))
+	ui.HandleFunc("GET /ui/open", a.page("web/dist/open.html"))
+	dist, _ := fs.Sub(webFS, "web/dist") // constant path inside the embed
+	files := http.StripPrefix("/ui/", http.FileServerFS(dist))
+	// Vite names every asset by its content hash, so a cached one never goes stale.
+	ui.Handle("GET /ui/assets/", immutable(files))
+	ui.Handle("GET /ui/icon.svg", files)
 	api := http.NewServeMux()
 	api.HandleFunc("GET /ui/api/status", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.Status()) })
 	api.HandleFunc("GET /ui/api/settings", func(w http.ResponseWriter, _ *http.Request) {
@@ -178,6 +188,9 @@ func (a *App) requireToken(next http.Handler) http.Handler {
 	})
 }
 
+// page serves one built HTML page with its placeholders filled: the per-run
+// token, the dictionary, the version and a fresh nonce. The nonce admits the
+// <style> elements the UI library injects at run time and nothing else inline.
 func (a *App) page(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		data, err := webFS.ReadFile(name)
@@ -185,13 +198,33 @@ func (a *App) page(name string) http.HandlerFunc {
 			http.Error(w, msg("error.internal", nil), http.StatusInternalServerError)
 			return
 		}
+		nonce := newNonce()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		page := strings.ReplaceAll(string(data), "{{TOKEN}}", a.token)
-		page = strings.ReplaceAll(page, "{{STRINGS}}", stringsAttr())
-		page = strings.ReplaceAll(page, "{{VERSION}}", html.EscapeString(a.Version))
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'nonce-"+nonce+"'; frame-ancestors 'none'")
+		page := strings.NewReplacer(
+			"{{TOKEN}}", a.token,
+			"{{STRINGS}}", stringsAttr(),
+			"{{VERSION}}", html.EscapeString(a.Version),
+			"{{NONCE}}", nonce,
+		).Replace(string(data))
 		_, _ = w.Write([]byte(page))
 	}
+}
+
+// newNonce is a CSP nonce: 128 random bits, base64.
+func newNonce() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// immutable marks responses of content-hashed files as cacheable for good.
+func immutable(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		next.ServeHTTP(w, r)
+	})
 }
 
 type saveResult struct {
