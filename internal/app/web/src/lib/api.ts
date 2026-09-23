@@ -4,7 +4,7 @@ export const TOKEN_HEADER = 'X-Agentlink-Token'
 export const VERSION_HEADER = 'X-Agentlink-Version'
 
 // The state slices the page keeps; a GET of one of them is shared while it runs.
-export const CORE_SLICES = ['status', 'dashboard', 'participants', 'update', 'settings', 'chats', 'sessions'] as const
+export const CORE_SLICES = ['status', 'dashboard', 'participants', 'update', 'settings', 'sessions'] as const
 export type CoreSlice = (typeof CORE_SLICES)[number]
 
 export class ApiError extends Error {

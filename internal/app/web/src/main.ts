@@ -6,7 +6,7 @@ import App from './App.vue'
 import { createAppRouter } from './router'
 import { applyUiState } from './layout/composables/layout'
 import { claimDashboardWindow } from './lib/dashboardWindow'
-import { setNavigator, type Query } from './lib/nav'
+import { setNavigator, type Params, type Query } from './lib/nav'
 import { runtime } from './lib/runtime'
 import { useAppStore } from './stores/app'
 
@@ -42,7 +42,7 @@ try {
 }
 
 setNavigator({
-  go: (route: string, query?: Query) => router.push({ name: route, query: query || {} }),
+  go: (route: string, query?: Query, params?: Params) => router.push({ name: route, query: query || {}, params: params || {} }),
   current: () => String(router.currentRoute.value.name || ''),
 })
 applyUiState()

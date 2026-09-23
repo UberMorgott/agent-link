@@ -140,7 +140,7 @@ async function removeParticipant(name: string, index: number) {
             type="button"
             class="participant-main flex min-w-0 flex-1 cursor-pointer flex-col items-start gap-0.5 rounded-lg px-2 py-1 text-left hover:bg-elevated"
             :aria-label="fmt('participants.open_chat', { name: person.name })"
-            @click="navigate('inbox', { peer: person.name })"
+            @click="navigate('project', { peer: person.name }, { project: 'legacy' })"
           >
             <span class="participant-heading flex items-baseline gap-2">
               <strong>{{ person.name }}</strong>

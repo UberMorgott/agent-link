@@ -4,40 +4,44 @@ import { useRoute } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UChatPrompt from '@nuxt/ui/components/ChatPrompt.vue'
 import UCheckbox from '@nuxt/ui/components/Checkbox.vue'
-import UInput from '@nuxt/ui/components/Input.vue'
 import UPopover from '@nuxt/ui/components/Popover.vue'
 import ChatTimeline from '@/components/ChatTimeline.vue'
-import ConversationList from '@/components/ConversationList.vue'
 import { isNarrow } from '@/layout/composables/layout'
 import { icon } from '@/lib/icons'
 import {
   activityLines, authorLabel, authorName, chatName, chatSessionList, elapsed, legacyPeerOld, memberState, others, preview,
   when, whoColor,
 } from '@/lib/chat'
-import { navigate, type Query } from '@/lib/nav'
+import { openProject } from '@/lib/nav'
 import { fmt, t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore } from '@/stores/inbox'
+import { useProjectsStore } from '@/stores/projects'
 
 const app = useAppStore()
 const inbox = useInboxStore()
+const projects = useProjectsStore()
 const route = useRoute()
 const newChatForm = ref<HTMLFormElement | null>(null)
 
-// Every visit and every query change of /ui/inbox opens what it names.
+const pid = computed(() => String(route.params.project || ''))
+
+// Every visit of /ui/p/{pid}/c/{chat} opens what it names.
 watch(() => route.fullPath, () => {
-  if (route.name === 'inbox') inbox.openInbox(route.query as Query)
+  if (route.name !== 'chat') return
+  const message = route.query.message
+  projects.open(pid.value)
+  void inbox.selectChat(pid.value, String(route.params.chat || ''), typeof message === 'string' ? message : '')
 }, { immediate: true })
 
 const info = computed(() => (inbox.newChatOpen ? null : inbox.chat))
 const self = computed(() => app.self)
-const showList = computed(() => isNarrow.value && !inbox.selectedChat && !inbox.newChatOpen)
 
 // --- header ---
 
 const title = computed(() => {
   if (inbox.newChatOpen) return t("inbox.new.title")
-  return info.value ? chatName(info.value, self.value) : t("inbox.select")
+  return chatName(info.value, self.value)
 })
 // The subtitle: who is reachable right now, and the chat's project area.
 const presence = computed(() => (info.value?.members || []).filter((m) => !m.self).map((member) => {
@@ -108,35 +112,25 @@ function toggle(names: string[], name: string, on: boolean | 'indeterminate'): s
 
 watch(() => inbox.focusComposer, () => nextTick(() => document.getElementById('body')?.focus()))
 watch(() => inbox.focusNewChat, () => nextTick(() => {
-  newChatForm.value?.querySelector<HTMLElement>('#new_chat_members [role="checkbox"], #new_chat_area')?.focus()
+  newChatForm.value?.querySelector<HTMLElement>('#new_chat_members [role="checkbox"]')?.focus()
 }))
 
 function back() {
-  if (inbox.newChatOpen) { inbox.hideNewChat(); if (!inbox.selectedChat) return }
-  void inbox.selectChat('', '')
-  navigate('inbox')
+  inbox.hideNewChat()
+  openProject(pid.value)
 }
 </script>
 
 <template>
   <section
-    data-view="inbox"
+    data-view="chat"
     class="h-full"
   >
-    <h1 class="sr-only">
-      {{ t("inbox.h1") }}
-    </h1>
     <div
       id="conversation_layout"
       class="conversation-layout h-full"
-      :class="{ 'has-chat': inbox.newChatOpen || inbox.selectedChat, 'no-chat': !inbox.newChatOpen && !inbox.selectedChat, 'new-open': inbox.newChatOpen }"
     >
-      <ConversationList
-        v-if="showList"
-        class="h-full py-2"
-      />
       <section
-        v-else
         id="conversation_panel"
         class="conversation-panel flex h-full flex-col"
         aria-labelledby="conversation_title"
@@ -153,12 +147,12 @@ function back() {
             @click="back"
           />
           <div class="chat-head-main min-w-0 flex-1">
-            <h2
+            <h1
               id="conversation_title"
               class="truncate text-base font-semibold"
             >
               {{ title }}
-            </h2>
+            </h1>
             <p
               v-if="inbox.subtitleError"
               id="chat_subtitle"
@@ -299,27 +293,7 @@ function back() {
           >
             {{ t("inbox.new.no_members") }}
           </p>
-          <label class="flex flex-col gap-1.5">
-            <span class="text-sm font-medium">{{ t("inbox.new.area") }}</span>
-            <UInput
-              id="new_chat_area"
-              v-model="inbox.newChatArea"
-              name="area"
-              autocomplete="off"
-              spellcheck="false"
-              list="new_chat_areas"
-            />
-          </label>
-          <datalist id="new_chat_areas">
-            <option
-              v-for="area in inbox.newChatAreas"
-              :key="area"
-              :value="area"
-            />
-          </datalist>
-          <p class="hint">
-            {{ t("inbox.new.area.hint") }}
-          </p>
+
           <div class="new-chat-actions flex items-center justify-end gap-2">
             <p
               id="new_chat_result"
@@ -484,7 +458,7 @@ function back() {
                 :label="fmt('inbox.new_with', { names: note.invite.join(', ') })"
                 size="sm"
                 variant="link"
-                @click="inbox.showNewChat(note.invite)"
+                @click="inbox.showNewChat(pid, note.invite)"
               />
             </p>
           </div>

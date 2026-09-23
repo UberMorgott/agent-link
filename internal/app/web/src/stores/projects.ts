@@ -72,7 +72,7 @@ export const useProjectsStore = defineStore('projects', () => {
 
   // --- reading ---
 
-  async function refreshList() {
+  async function loadList() {
     const ticket = ++listTicket
     const items = await api<ProjectView[]>('GET', 'projects')
     if (ticket !== listTicket) return
@@ -80,6 +80,12 @@ export const useProjectsStore = defineStore('projects', () => {
     // A project gone from the list takes its chats with it.
     const known = new Set(list.value.map((p) => p.id))
     for (const pid of Object.keys(chats.value)) if (!known.has(pid)) drop(pid)
+  }
+
+  // refreshList reads the list, and the chats of a project new in it.
+  async function refreshList() {
+    await loadList()
+    await Promise.all((list.value || []).filter((p) => !Object.hasOwn(chats.value, p.id)).map((p) => refreshChats(p.id)))
   }
 
   async function refreshProject(pid: string) {
@@ -103,7 +109,7 @@ export const useProjectsStore = defineStore('projects', () => {
   }
 
   async function refreshAll() {
-    await refreshList()
+    await loadList()
     await Promise.all((list.value || []).map((p) => refreshChats(p.id)))
   }
 

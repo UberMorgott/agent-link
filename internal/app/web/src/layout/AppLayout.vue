@@ -2,36 +2,24 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
-import UIcon from '@nuxt/ui/components/Icon.vue'
-import ConversationList from '@/components/ConversationList.vue'
 import MessageToasts from '@/components/MessageToasts.vue'
+import ProjectSidebar from '@/components/ProjectSidebar.vue'
 import { icon } from '@/lib/icons'
 import { browser, t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
-import { isNarrow, useLayout } from './composables/layout'
+import { useLayout } from './composables/layout'
 
 const app = useAppStore()
 const route = useRoute()
-const { layoutConfig, layoutState, cycleTheme, toggleMenu, hideMobileMenu } = useLayout()
+const { layoutState, toggleMenu, hideMobileMenu } = useLayout()
 const view = ref<HTMLElement | null>(null)
-// The app icon from public/, served next to the page.
-const logo = `${import.meta.env.BASE_URL}icon.svg`
 
-const links = [
-  { route: 'dashboard', icon: 'dashboard', label: "nav.dashboard" },
-  { route: 'inbox', icon: 'inbox', label: "nav.inbox" },
-  { route: 'participants', icon: 'participants', label: "nav.participants" },
-  { route: 'settings', icon: 'settings', label: "nav.settings" },
-]
 const current = computed(() => String(route.name || ''))
-const themeIcon = computed(() => icon(({ system: 'system', light: 'sun', dark: 'moon' })[layoutConfig.theme]))
-const themeLabel = computed(() => t("theme." + layoutConfig.theme))
 
-// A new route takes the focus to its view, as a page load would.
-watch(current, () => {
-  hideMobileMenu()
-  void nextTick(() => view.value?.focus({ preventScroll: true }))
-})
+// Any move closes the phone drawer; a new kind of page takes the focus to its
+// view, as a page load would.
+watch(() => route.fullPath, hideMobileMenu)
+watch(current, () => { void nextTick(() => view.value?.focus({ preventScroll: true })) })
 </script>
 
 <template>
@@ -47,60 +35,10 @@ watch(current, () => {
     <aside
       id="sidebar"
       aria-labelledby="nav_label"
-      class="fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-default bg-[var(--app-side)] transition-transform md:static md:translate-x-0"
+      class="fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-default bg-[var(--app-side)] transition-transform md:static md:w-64 md:translate-x-0"
       :class="layoutState.mobileMenuActive ? 'translate-x-0' : '-translate-x-full'"
     >
-      <div class="flex items-center gap-2 px-4 pt-4 pb-3">
-        <img
-          :src="logo"
-          alt=""
-          class="h-6 w-6"
-        >
-        <strong class="text-[0.95rem] tracking-tight text-highlighted">agentlink</strong>
-      </div>
-      <span
-        id="nav_label"
-        class="sr-only"
-      >{{ t("nav.label") }}</span>
-      <nav
-        aria-labelledby="nav_label"
-        class="flex flex-col gap-0.5 px-2"
-      >
-        <RouterLink
-          v-for="link in links"
-          :key="link.route"
-          :to="'/' + link.route"
-          :data-route="link.route"
-          :title="t(link.label)"
-          class="nav-link"
-          :class="{ active: current === link.route }"
-        >
-          <UIcon
-            :name="icon(link.icon)"
-            class="nav-icon size-[1.1rem] flex-none"
-          /><span class="nav-text">{{ t(link.label) }}</span>
-        </RouterLink>
-      </nav>
-      <ConversationList
-        v-if="current === 'inbox' && !isNarrow"
-        class="mt-4 min-h-0 flex-1"
-      />
-      <div
-        v-else
-        class="flex-1"
-      />
-      <div class="flex items-center justify-between gap-2 px-3 py-3">
-        <UButton
-          id="theme_toggle"
-          :icon="themeIcon"
-          color="neutral"
-          variant="ghost"
-          size="sm"
-          :aria-label="themeLabel"
-          :title="themeLabel"
-          @click="cycleTheme"
-        />
-      </div>
+      <ProjectSidebar />
     </aside>
     <section class="workspace flex min-w-0 flex-1 flex-col">
       <header
@@ -120,7 +58,7 @@ watch(current, () => {
           id="status"
           class="ml-auto truncate text-xs"
           :class="app.link.cls"
-          :hidden="current === 'inbox'"
+          :hidden="current === 'chat' || current === 'project'"
         >{{ app.link.text }}</span>
       </header>
       <main

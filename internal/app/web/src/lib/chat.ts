@@ -13,6 +13,8 @@ export function others(info: ChatInfo | null | undefined, self: string): string[
 export function chatName(info: ChatInfo | null | undefined, self: string): string {
   if (!info) return ''
   if (info.legacy && info.peer) return info.peer
+  // A project's own chat goes by its title, its first words.
+  if (info.mode === 'project' && info.title) return info.title
   const names = others(info, self)
   return names.length ? names.join(', ') : self
 }
@@ -92,9 +94,12 @@ export function localArea(area: string, settings: AppSettings | null): string {
   return area && Object.prototype.hasOwnProperty.call(projects, area) ? area : ''
 }
 
+// chatSessionList: the agent sessions on this computer a chat's messages reach,
+// those of its project and, in the legacy network, of its area.
 export function chatSessionList(info: ChatInfo | null, sessions: Session[] | null, settings: AppSettings | null): Session[] {
-  const area = localArea(info?.area || '', settings)
-  return (Array.isArray(sessions) ? sessions : []).filter((s) => (s.area || '') === area)
+  const project = info?.project || ''
+  const area = project === 'legacy' ? localArea(info?.area || '', settings) : ''
+  return (Array.isArray(sessions) ? sessions : []).filter((s) => (s.project || '') === project && (s.area || '') === area)
 }
 
 // --- delivery ticks ---
@@ -233,8 +238,8 @@ export function legacyPeerOld(info: ChatInfo): boolean {
   return (info.members || []).some((m) => !m.self && m.connected && !m.compatible)
 }
 
-// unread: the chat's last message came in after the read marker.
-export function isUnread(chat: ChatInfo, selected: string, reads: Record<string, number>): boolean {
-  return Boolean(chat.last_message && chat.last_message.direction === 'in' && chat.id !== selected &&
-    (chat.last_seq || 0) > (reads[chat.id] || 0))
+// unread: the chat's last message came in after the read cursor, and the chat
+// is not the one on screen.
+export function isUnread(chat: ChatInfo, open: boolean, read: number): boolean {
+  return Boolean(chat.last_message && chat.last_message.direction === 'in' && !open && (chat.last_seq || 0) > read)
 }

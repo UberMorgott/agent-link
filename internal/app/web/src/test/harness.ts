@@ -7,12 +7,12 @@ import { createHead } from '@unhead/vue/client'
 import { vi } from 'vitest'
 import { createMemoryHistory } from 'vue-router'
 import App from '@/App.vue'
-import { setNavigator, type Query } from '@/lib/nav'
+import { setNavigator, type Params, type Query } from '@/lib/nav'
 import { createAppRouter } from '@/router'
 
-export type Handler = (method: string, path: string, body: unknown) => unknown
-
 import { createBackend, handle, HttpError, type Backend } from './backend'
+
+export type Handler = (method: string, path: string, body: unknown) => unknown
 
 export { HttpError }
 
@@ -60,13 +60,13 @@ export function unmountAll() {
   for (const wrapper of mounted.splice(0)) wrapper.unmount()
 }
 
-// mountApp mounts the shell at path, e.g. "/inbox?chat=c1".
+// mountApp mounts the shell at path, e.g. "/p/<pid>/c/<chat>".
 export async function mountApp(path: string) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const router = createAppRouter(createMemoryHistory('/ui/'))
   setNavigator({
-    go: (route: string, query?: Query) => router.push({ name: route, query: query || {} }),
+    go: (route: string, query?: Query, params?: Params) => router.push({ name: route, query: query || {}, params: params || {} }),
     current: () => String(router.currentRoute.value.name || ''),
   })
   await router.push(path)

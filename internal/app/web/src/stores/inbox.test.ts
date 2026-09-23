@@ -9,7 +9,7 @@ const chat = (id: string, msg: ChatMessage): ChatInfo => ({ id, participants: ['
 
 describe('message toasts', () => {
   it('seed the history silently, then announce each new incoming message once', async () => {
-    fakeApi(() => ({}))
+    fakeApi((_method, path) => (path === 'projects' ? [] : {}))
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const { router } = await mountApp('/dashboard')
     const app = useAppStore()
@@ -21,10 +21,10 @@ describe('message toasts', () => {
     const next = [chat('c-new', message('new', 'карл & sons', 'in', long)), ...initial, chat('c-out', message('out', 'local', 'out', 'ignore'))]
     const toasts = () => Array.from(document.querySelectorAll<HTMLElement>('#message-toast-region .message-toast'))
 
-    inbox.processIncomingChats(initial)
+    inbox.processIncomingChats({ P: initial })
     await settle()
     expect(toasts()).toHaveLength(0)
-    inbox.processIncomingChats(next)
+    inbox.processIncomingChats({ P: next })
     await settle()
     expect(toasts()).toHaveLength(1)
     const toast = toasts()[0]!
@@ -38,8 +38,9 @@ describe('message toasts', () => {
     expect(vi.getTimerCount()).toBe(1)
     toast.querySelector<HTMLButtonElement>('.message-toast-main')!.click()
     await settle()
-    expect(router.currentRoute.value.name).toBe('inbox')
-    expect(router.currentRoute.value.query).toEqual({ chat: 'c-new', message: 'new' })
+    expect(router.currentRoute.value.name).toBe('chat')
+    expect(router.currentRoute.value.params).toEqual({ project: 'P', chat: 'c-new' })
+    expect(router.currentRoute.value.query).toEqual({ message: 'new' })
     expect(toasts()).toHaveLength(0)
     // The inbox's inputs schedule their autofocus with a zero delay; the
     // toast's own timer must be gone.
@@ -51,12 +52,13 @@ describe('message toasts', () => {
     expect(saved).not.toContain('out')
 
     // The chat on screen gets no toast.
+    inbox.project = 'P'
     inbox.selectedChat = 'c-old'
-    inbox.processIncomingChats([chat('c-old', message('old2', 'bob', 'in', 'seen here')), ...next])
+    inbox.processIncomingChats({ P: [chat('c-old', message('old2', 'bob', 'in', 'seen here')), ...next] })
     await settle()
     expect(toasts()).toHaveLength(0)
     // At most three at a time; each leaves on its own or by its close button.
-    inbox.processIncomingChats([...next, ...Array.from({ length: 4 }, (_, i) => chat('c' + i, message('bulk' + i, 'peer' + i, 'in', 'bulk ' + i)))])
+    inbox.processIncomingChats({ P: [...next, ...Array.from({ length: 4 }, (_, i) => chat('c' + i, message('bulk' + i, 'peer' + i, 'in', 'bulk ' + i)))] })
     await settle()
     expect(toasts()).toHaveLength(3)
     toasts()[0]!.querySelector<HTMLButtonElement>('.message-toast-close')!.click()

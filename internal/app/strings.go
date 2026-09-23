@@ -17,7 +17,6 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	// Navigation, page titles and the connection indicator.
 	"nav.dashboard":           "Обзор",
 	"nav.label":               "Разделы приложения",
-	"nav.inbox":               "Сообщения",
 	"nav.participants":        "Участники",
 	"nav.settings":            "Настройки",
 	"nav.menu":                "Меню",
@@ -25,7 +24,6 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"theme.light":             "Тема: светлая",
 	"theme.dark":              "Тема: тёмная",
 	"page.title.dashboard":    "agentlink — обзор",
-	"page.title.inbox":        "agentlink — сообщения",
 	"page.title.participants": "agentlink — участники",
 	"page.title.settings":     "agentlink — настройки",
 	"link.on_many":            "на связи {online} из {total}",
@@ -240,14 +238,8 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"error.pick_agent_unsupported": "Окно выбора программы есть только в Windows — поставьте агента так, чтобы он был в PATH.",
 	"error.pick_agent":             "Не удалось открыть окно выбора программы — подробности в файле agentlink.log.",
 	// Inbox page: the chat list.
-	"inbox.h1":               "Сообщения",
-	"inbox.list.label":       "Беседы",
-	"inbox.new":              "Новая беседа",
 	"inbox.archive.show":     "Архив",
 	"inbox.archive.hide":     "Все беседы",
-	"inbox.archive.title":    "Архив бесед",
-	"inbox.list.empty":       "Бесед пока нет — начните новую.",
-	"inbox.archive.empty":    "В архиве пусто. Закрытые беседы попадают сюда сами.",
 	"inbox.badge.legacy":     "без беседы",
 	"inbox.unread":           "Новое",
 	"inbox.you":              "вы",
@@ -258,8 +250,6 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"inbox.author.fyi":       "— вашему агенту для сведения",
 
 	// Inbox page: the open chat.
-	"inbox.select":               "Выберите беседу",
-	"inbox.select_hint":          "Выберите беседу слева или начните новую.",
 	"inbox.empty_conversation":   "В беседе пока нет сообщений.",
 	"inbox.back":                 "Назад",
 	"inbox.close":                "Закрыть и в архив",
@@ -328,11 +318,9 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"inbox.new.title":        "Новая беседа",
 	"inbox.new.participants": "С кем",
 	"inbox.new.hint":         "Все участники видят все сообщения. Состав потом не меняется — для другого состава начните новую беседу.",
-	"inbox.new.area":         "Тема проекта (необязательно)",
-	"inbox.new.area.hint":    "Тема выбирает папку проекта у агентов, например dev.",
 	"inbox.new.create":       "Начать беседу",
 	"inbox.new.dismiss":      "Отмена",
-	"inbox.new.no_members":   "Пока некого позвать — добавьте участника на странице «Участники».",
+	"inbox.new.no_members":   "Пока некого позвать — пригласите участников в проект.",
 
 	// projects: server (Track A)
 	"error.name":                      "Название проекта — от 1 до 80 символов, без управляющих символов.",
@@ -353,7 +341,22 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"error.project_binding":           "Запись одного из проектов в файле настроек повреждена — выйдите из проекта и присоединитесь снова по приглашению.",
 
 	// projects: UI (Track B)
-}
+	"page.title.welcome":              "agentlink — начало",
+	"page.title.project":              "agentlink — проект",
+	"page.title.chat":                 "agentlink — чат",
+	"projects.label":                  "Проекты",
+	"projects.connecting":             "Подключение…",
+	"projects.online":                 "на связи {online} из {total}",
+	"projects.fold":                   "Чаты проекта {name}",
+	"project.state.connecting":        "Подключаюсь к проекту — название появится, когда ответит кто-нибудь из участников.",
+	"project.state.needs_folder":      "Папка проекта не выбрана: переписываться можно, но агент не отвечает. Выберите папку в меню проекта — «Моя папка».",
+	"project.problem.unknown_project": "Участники не знают этот проект — возможно, приглашение устарело. Попросите новое.",
+	"project.problem.wrong_project":   "По адресу участника отвечает другой проект — проверьте адрес.",
+	"project.problem.auth":            "Приглашение не подходит к проекту участников — попросите новое.",
+	"project.problem.name_taken":      "Ваше имя уже занято в этом проекте — смените имя в настройках.",
+	"project.problem.removed":         "Вас удалили из проекта — попросите участников пригласить вас снова.",
+	"welcome.h1":                      "Проектов пока нет",
+	"welcome.hint":                    "У каждого проекта свои участники, чаты и папка. Создайте проект или присоединитесь по приглашению."}
 
 // stringsAttr renders uiStrings as JSON escaped for an HTML attribute value.
 func stringsAttr() string {

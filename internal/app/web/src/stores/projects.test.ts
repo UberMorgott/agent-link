@@ -100,7 +100,7 @@ describe('the projects store', () => {
 
   it('drops an older answer of the same list', async () => {
     let release: () => void = () => {}
-    let held = true
+    let held = false
     const { backend } = fakeBackend((_method, path) => {
       if (!held || path !== 'projects/' + SITE + '/chats') return undefined
       held = false
@@ -109,6 +109,7 @@ describe('the projects store', () => {
     })
     const projects = useProjectsStore()
     await projects.refreshList()
+    held = true
     const first = projects.refreshChats(SITE)
     backend.chats[SITE] = []
     await projects.refreshChats(SITE)

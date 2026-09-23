@@ -32,7 +32,8 @@ describe('participants', () => {
     expect(open.getAttribute('aria-label')).toContain('bob')
     open.click()
     await settle()
-    expect(router.currentRoute.value.name).toBe('inbox')
+    expect(router.currentRoute.value.name).toBe('project')
+    expect(router.currentRoute.value.params.project).toBe('legacy')
     expect(router.currentRoute.value.query.peer).toBe('bob')
   })
 

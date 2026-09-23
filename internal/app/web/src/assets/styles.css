@@ -82,6 +82,38 @@
   .chat-row .row-foot { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--app-muted); }
   .chat-row .row-foot > :first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chat-row.live .row-live { color: var(--app-on); }
+  .chat-row.compact { padding: 0.3rem 0.6rem; }
+  .chat-row.compact .row-who { font-weight: 400; font-size: 0.88rem; }
+  .chat-row.compact.fresh .row-who { font-weight: 600; }
+  .conversation-unread { flex: none; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--ui-primary); align-self: center; }
+
+  /* The project tree of the sidebar. */
+  .project-row { display: flex; align-items: center; gap: 0.1rem; border-radius: 0.6rem; }
+  .project-row:hover, .project-row.active { background: var(--app-soft); }
+  .project-row.active .project-name { font-weight: 600; color: var(--ui-text-highlighted); }
+  .project-fold {
+    flex: none; display: inline-flex; align-items: center; justify-content: center; width: 1.6rem; height: 2rem;
+    border: 0; background: transparent; color: var(--app-muted); cursor: pointer; border-radius: 0.5rem;
+  }
+  .project-open {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.4rem 0.4rem 0;
+    border: 0; background: transparent; color: var(--app-text); font: inherit; font-size: 0.92rem; text-align: left; cursor: pointer;
+  }
+  .project-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .project-dot { flex: none; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--app-muted); opacity: 0.5; }
+  .project-dot.on { background: var(--app-on); opacity: 1; }
+  .project-dot.off { background: var(--app-off); opacity: 1; }
+  .project-unread {
+    flex: none; min-width: 1.2rem; padding: 0 0.35rem; border-radius: 999px; text-align: center;
+    background: var(--ui-primary); color: var(--ui-bg); font-size: 0.7rem; font-weight: 600; line-height: 1.2rem;
+  }
+  .project-chats { display: flex; flex-direction: column; gap: 0.05rem; margin: 0.1rem 0 0.4rem 1.2rem; }
+  .project-chats .archived { opacity: 0.7; }
+  .project-action, .project-archive {
+    display: flex; align-items: center; gap: 0.5rem; width: 100%; padding: 0.3rem 0.6rem; border: 0; border-radius: 0.6rem;
+    background: transparent; color: var(--app-muted); font: inherit; font-size: 0.85rem; text-align: left; cursor: pointer;
+  }
+  .project-action:hover, .project-archive:hover { background: var(--app-soft); color: var(--app-text); }
 
   /* The open chat: one centered column. */
   .chat-column { width: 100%; max-width: 48rem; margin: 0 auto; padding: 0 1rem; }

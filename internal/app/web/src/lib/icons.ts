@@ -3,7 +3,6 @@
 // never fetches an icon at run time.
 export const icons: Record<string, string> = {
   dashboard: 'i-lucide-layout-grid',
-  inbox: 'i-lucide-message-square',
   participants: 'i-lucide-users',
   settings: 'i-lucide-settings',
   plus: 'i-lucide-plus',
@@ -14,6 +13,7 @@ export const icons: Record<string, string> = {
   menu: 'i-lucide-menu',
   expand: 'i-lucide-chevron-down',
   collapse: 'i-lucide-chevron-up',
+  fold: 'i-lucide-chevron-right',
   close: 'i-lucide-x',
   sun: 'i-lucide-sun',
   moon: 'i-lucide-moon',

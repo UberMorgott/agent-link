@@ -2,7 +2,8 @@ import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
 import { ApiError, CORE_SLICES, TOKEN_HEADER, api, reloadOnNewVersion, type CoreSlice } from '@/lib/api'
 import { runtime, t, fmt } from '@/lib/runtime'
-import type { AppSettings, ChatInfo, DashboardSummary, ParticipantView, Session, Status, UpdateStatus } from '@/types'
+import type { AppSettings, DashboardSummary, ParticipantView, Session, Status, UpdateStatus } from '@/types'
+import { useProjectsStore } from './projects'
 
 export interface ChangeEvent {
   revision?: number
@@ -19,10 +20,21 @@ export function slicesForTopics(topics: string[]): CoreSlice[] {
       slices.add('status'); slices.add('dashboard'); slices.add('participants')
     }
     if (topic === 'messages' || topic === 'worker') {
-      slices.add('dashboard'); slices.add('participants'); slices.add('chats')
+      slices.add('dashboard'); slices.add('participants')
     }
+    // The sessions list is shown filtered by project.
+    if (topic.startsWith('project:')) slices.add('sessions')
   }
   return [...slices]
+}
+
+// projectsForTopics names what of the projects one change event makes stale:
+// every project, the list, or single projects (with their chats).
+export function projectsForTopics(topics: string[]): { all: boolean; list: boolean; scoped: string[] } {
+  const all = topics.includes('all')
+  const list = all || topics.some((topic) => topic === 'projects' || topic === 'members' || topic === 'peer')
+  const scoped = [...new Set(topics.filter((topic) => topic.startsWith('project:')).map((topic) => topic.slice('project:'.length)))]
+  return { all, list, scoped: all ? [] : scoped.filter(Boolean) }
 }
 
 export function parseSSERecord(record: string): ChangeEvent | null {
@@ -56,10 +68,7 @@ export const useAppStore = defineStore('app', () => {
   const participants = shallowRef<ParticipantView[] | null>(null)
   const update = shallowRef<UpdateStatus | null>(null)
   const settings = shallowRef<AppSettings | null>(null)
-  const chats = shallowRef<ChatInfo[] | null>(null)
-  const chatArchive = shallowRef<ChatInfo[] | null>(null)
   const sessions = shallowRef<Session[] | null>(null)
-  const showArchive = ref(false)
 
   // The connection banner: a failure stays until every failing request recovers;
   // a refused token asks for a reload and never clears.
@@ -71,7 +80,7 @@ export const useAppStore = defineStore('app', () => {
   const link = computed(() => statusLine(status.value))
 
   function setSlice(name: CoreSlice, value: unknown) {
-    const target = { status, dashboard, participants, update, settings, chats, sessions }[name]
+    const target = { status, dashboard, participants, update, settings, sessions }[name]
     ;(target as { value: unknown }).value = value
   }
 
@@ -91,27 +100,29 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function refreshSlice(name: CoreSlice): Promise<void> {
-    if (name === 'chats') {
-      // The archive is read only while it is on screen; the main list always,
-      // since message notifications come from it.
-      const archive = showArchive.value ? api<ChatInfo[]>('GET', 'chats?archive=1') : null
-      try {
-        const [main, archived] = await Promise.all([api<ChatInfo[]>('GET', 'chats'), archive])
-        if (archived) chatArchive.value = archived
-        chats.value = main
-        clearConnectionProblem(name)
-      } catch (error) { showConnectionProblem(name, error as ApiError) }
-      return
-    }
     try {
       setSlice(name, await api('GET', name))
       clearConnectionProblem(name)
     } catch (error) { showConnectionProblem(name, error as ApiError) }
   }
 
+  // guarded runs one projects refresh under the connection banner.
+  async function guarded(name: string, run: () => Promise<void>) {
+    try {
+      await run()
+      clearConnectionProblem(name)
+    } catch (error) { showConnectionProblem(name, error as ApiError) }
+  }
+
   function applyChange(event: ChangeEvent) {
     const topics = Array.isArray(event.topics) ? event.topics : []
-    return Promise.all(slicesForTopics(topics).map(refreshSlice))
+    const projects = useProjectsStore()
+    const scope = projectsForTopics(topics)
+    const jobs: Promise<void>[] = slicesForTopics(topics).map(refreshSlice)
+    if (scope.all) jobs.push(guarded('projects', projects.refreshAll))
+    else if (scope.list) jobs.push(guarded('projects', projects.refreshList))
+    for (const pid of scope.scoped) jobs.push(guarded('project:' + pid, () => projects.refreshScoped(pid)))
+    return Promise.all(jobs)
   }
 
   let reconnectDelay = 500
@@ -165,7 +176,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   return {
-    status, dashboard, participants, update, settings, chats, chatArchive, sessions, showArchive,
+    status, dashboard, participants, update, settings, sessions,
     reloadRequired, banner, self, link,
     refreshSlice, applyChange, connectEvents, showConnectionProblem, clearConnectionProblem,
   }
