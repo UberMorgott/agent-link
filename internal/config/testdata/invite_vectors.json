@@ -1,0 +1,20 @@
+[
+  {
+    "pid_hex": "000102030405060708090a0b0c0d0e0f",
+    "secret_hex": "101112131415161718191a1b1c1d1e1f",
+    "pid": "AAAQEAYEAUDAOCAJBIFQYDIOB4",
+    "secret": "CAIREEYUCULBOGAZDINRYHI6D4",
+    "invite": "ALP1.AAAQEAYEAUDAOCAJBIFQYDIOB4.1.CAIREEYUCULBOGAZDINRYHI6D4.CRMJ",
+    "key_hex": "1bc9b0318ed0ab1246a4e46cad6eacdbbfb4229fe3c3ac85e0c9a95993db9277",
+    "tag_hex": "7d410472240a1df1"
+  },
+  {
+    "pid_hex": "f8f1eae3dcd5cec7c0b9b2aba49d968f",
+    "secret_hex": "254a6f94b9de03284d7297bce1062b50",
+    "pid": "7DY6VY642XHMPQFZWKV2JHMWR4",
+    "secret": "EVFG7FFZ3YBSQTLSS66OCBRLKA",
+    "invite": "ALP1.7DY6VY642XHMPQFZWKV2JHMWR4.1.EVFG7FFZ3YBSQTLSS66OCBRLKA.U5HK",
+    "key_hex": "7597173f2e67be4414be68ede6afce6f29e60248b362252b47d410f7b36959c8",
+    "tag_hex": "92d610b18d796b6f"
+  }
+]

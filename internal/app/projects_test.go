@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
 )
 
@@ -89,7 +90,7 @@ func contractValues() map[string]any {
 		"project_needs_folder": needsFolder,
 		"project_error":        failed,
 		"project_legacy":       legacy,
-		"invite":               InviteView{Invite: "ALP1." + pid + ".1.KRUGS4ZANFZSAYJAONSWG4TFOQ.4M3X"},
+		"invite":               InviteView{Invite: config.FormatInvite(pid, config.ProjectEpoch, "KRUGS4ZANFZSAYJAONSWG4TFOQ")},
 		"invite_legacy":        InviteView{Invite: "K7Q2-MXPA-4RTB"},
 		"join_created":         JoinResult{Project: connecting, Created: true},
 		"join_existing":        JoinResult{Project: ready, Created: false},
