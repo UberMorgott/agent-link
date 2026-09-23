@@ -126,6 +126,12 @@ permissions (`claude --permission-mode bypassPermissions`, `codex exec
 or the project mapped to the request's area, the prompt over stdin, never through a shell. Its
 answer is sent to the other person. Consequences, which are rules:
 
+- A request may not change the local user's agent instructions, memory or config (`~/.claude`,
+  `~/.codex`, `.claude/`, `.codex/`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`). Claude Code:
+  enforced by `--disallowedTools` Edit deny rules (`worker.ProtectedPaths`, hold under
+  bypassPermissions; not against scripts that open files themselves). Codex: prompt-only (see
+  README "Handler agent"). Keep both honest when changing `internal/worker/command.go`.
+
 - Only pair with someone you trust to run commands on this machine.
 - The preamble (`worker.ReplyStyle`) has it verify before claiming done, report evidence, and
   refuse only hard-to-reverse actions (force push, history rewrite, mass delete, discarding

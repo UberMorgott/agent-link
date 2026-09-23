@@ -223,8 +223,26 @@ agent's process tree and fails the job at once, without a retry; so does `Worker
 Switching the handler to "None" fails jobs that were still waiting, with the reply "no handler
 configured".
 
-- Claude Code: `claude -p --output-format stream-json --verbose --permission-mode bypassPermissions --session-id <new uuid>` (resume: the same flags with `--resume <uuid>` instead of `--session-id`) — `assistant` events' `tool_use` / `thinking` / `text` blocks become activity, the `result` event is the answer.
+- Claude Code: `claude -p --output-format stream-json --verbose --permission-mode bypassPermissions --disallowedTools <protected paths> --session-id <new uuid>` (resume: the same flags with `--resume <uuid>` instead of `--session-id`) — `assistant` events' `tool_use` / `thinking` / `text` blocks become activity, the `result` event is the answer.
 - Codex: `codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --color never --output-last-message <file> -` (resume: `codex exec resume --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --output-last-message <file> <thread_id> -`; the thread id comes from `thread.started`) — `item.started|updated|completed` events (`command_execution`, `reasoning`, `agent_message`, …) become activity, the last-message file is the answer, `turn.failed` / `error` is the failure reason.
+
+A network request may not change the local user's agent instructions, memory or config
+(`~/.claude/**`, `~/.claude.json`, `~/.codex/**`, any `.claude/` or `.codex/` folder, `CLAUDE.md`,
+`CLAUDE.local.md`, `AGENTS.md`, `AGENTS.override.md`). What is enforced and what is not:
+
+- Claude Code: enforced by `Edit(...)` deny rules in `--disallowedTools` (`worker.ProtectedPaths`).
+  [Deny rules block in every mode, including `bypassPermissions`](https://code.claude.com/docs/en/permission-modes);
+  they cover the Edit/Write tools and the file commands and redirects Claude Code recognizes in
+  Bash/PowerShell (`sed`, `tee`, `> file`, `Set-Content`, `Remove-Item`), but
+  [not a script or program that opens files itself](https://code.claude.com/docs/en/permissions#read-and-edit)
+  (python, node, git). The OS sandbox that would close that gap
+  [is not available on native Windows](https://code.claude.com/docs/en/sandboxing). The rules
+  also block edits to a project's own `.claude/` or `.codex/` folder.
+- Codex: prompt-only. Its path deny rules live in sandboxed
+  [permission profiles](https://learn.chatgpt.com/docs/permissions), which
+  `--dangerously-bypass-approvals-and-sandbox` turns off; with the Windows `unelevated` sandbox
+  Codex refuses to start a profile with deny rules at all (codex-cli 0.155.1).
+- Both agents are told to refuse such a request and say so in the reply.
 
 On the sending side an unanswered request is marked «нет вестей от собеседника N мин» when the
 peer has sent nothing about it for 5 minutes while connected (a request `queued` behind other

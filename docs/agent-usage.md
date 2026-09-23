@@ -178,8 +178,10 @@ agentlink hook install codex             # ~/.codex/hooks.json, then trust it wi
 If the other machine has a handler agent configured, your request is its **task**: `claude`
 (`--permission-mode bypassPermissions`) or `codex` (`--dangerously-bypass-approvals-and-sandbox`)
 runs it with the prompt on stdin, never through a shell, and may edit files and run commands
-(build, tests, git, gh) in its working folder or the project mapped to the area. It refuses
-only hard-to-reverse actions, verifies before claiming done, and its answer (what it did plus
+(build, tests, git, gh) in its working folder or the project mapped to the area. It may not
+change that user's agent instructions, memory or config (`~/.claude`, `~/.codex`, `.claude/`,
+`.codex/`, `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`): for `claude` this is enforced by deny
+rules, for `codex` it is only an instruction. It refuses hard-to-reverse actions, verifies before claiming done, and its answer (what it did plus
 evidence) is sent back automatically. With the handler set to
 "none" a human answers from the inbox page, so the reply may take a while.
 
