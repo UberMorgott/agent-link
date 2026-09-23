@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"testing"
 )
 
@@ -212,5 +213,104 @@ func TestProjectStandaloneChats(t *testing.T) {
 	}
 	if _, err := newTestNode(t, "x", testSecret, nil, t.TempDir(), listen(t), nil).NewProjectChat([]string{"b"}); !errors.Is(err, ErrNotProject) {
 		t.Fatalf("legacy: %v", err)
+	}
+}
+
+// Leaving sends a left tombstone that every member applies: the sessions
+// end, chats pinned to the old node show it left and queue nothing for it.
+// Joining again under the same name is a new node id, which the tombstone
+// does not block; a new chat pins the new id.
+func TestProjectLeaveAndRejoin(t *testing.T) {
+	p := newTestProject(t)
+	lnB := listen(t)
+	b := newProjectNode(t, "b", p, lnB, nil)
+	a := newProjectNode(t, "a", p, listen(t), map[string]net.Listener{"b": lnB})
+	c := newProjectNode(t, "c", p, listen(t), map[string]net.Listener{"b": lnB})
+	for _, n := range []*testNode{b, a, c} {
+		n.start(t)
+	}
+	eventually(t, "a, b, c meshed", meshed(a, b, c))
+	old, err := b.CreateChat([]string{"a", "c"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the chat", func() bool { _, ok := a.ChatOf(old.ID); return ok })
+	oldID := a.ID()
+
+	if err := a.Leave(); err != nil {
+		t.Fatal(err)
+	}
+	leftOn := func(n *testNode) bool {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		m := n.members["a"]
+		return m != nil && m.Removed && m.Left && m.ID == oldID && n.conns["a"] == nil
+	}
+	eventually(t, "b and c apply the tombstone", func() bool { return leftOn(b) && leftOn(c) })
+	a.stop()
+	for _, n := range []*testNode{b, c} {
+		if slices.ContainsFunc(n.Members(), func(m MemberInfo) bool { return m.Name == "a" }) {
+			t.Fatalf("%s still lists a", n.cfg.Node)
+		}
+	}
+	m, err := b.SendChat(ChatSend{ChatID: old.ID, Body: "still there?", Ask: []string{"a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msgs, _ := b.store.pending("a"); len(msgs) != 0 || deliveryOf(b, old.ID, m.ID, "a") != StateLeft {
+		t.Fatalf("queued %d for a left member, delivery %q", len(msgs), deliveryOf(b, old.ID, m.ID, "a"))
+	}
+	if _, err := b.Send("a", "plain", ""); !errors.Is(err, ErrUnknownPeer) {
+		t.Fatalf("plain send to a left member: %v", err)
+	}
+
+	// Re-join: a fresh data directory, a new node id, the same name.
+	a2 := newProjectNode(t, "a", p, listen(t), map[string]net.Listener{"b": lnB})
+	a2.start(t)
+	if a2.ID() == oldID {
+		t.Fatal("re-join kept the node id")
+	}
+	eventually(t, "a re-joined, meshed", meshed(a2, b, c))
+	for _, n := range []*testNode{b, c} {
+		if !slices.ContainsFunc(n.Members(), func(m MemberInfo) bool { return m.Name == "a" && m.Online }) {
+			t.Fatalf("%s does not list the re-joined a", n.cfg.Node)
+		}
+	}
+	if st := deliveryOf(b, old.ID, m.ID, "a"); st != StateLeft {
+		t.Fatalf("old chat delivery after re-join %q, want left", st)
+	}
+	next, err := b.CreateChat([]string{"a", "c"}, "")
+	if err != nil || next.ID == old.ID || next.ParticipantIDs[0] != a2.ID() {
+		t.Fatalf("new chat %+v, %v", next.Chat, err)
+	}
+	m2, err := b.SendChat(ChatSend{ChatID: next.ID, Body: "welcome back", Ask: []string{"a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a gets the new chat's message", func() bool { return slices.Contains(chatIDs(a2, next.ID), m2.ID) })
+	if _, ok := a2.ChatOf(old.ID); ok {
+		t.Fatal("the new incarnation got the old chat")
+	}
+	legacy := newTestNode(t, "x", testSecret, nil, t.TempDir(), listen(t), nil)
+	if err := legacy.Leave(); !errors.Is(err, ErrNotProject) {
+		t.Fatalf("legacy leave: %v", err)
+	}
+}
+
+// Each project caps its own membership table at maxMembers.
+func TestProjectMemberCap(t *testing.T) {
+	for range 2 {
+		n := newProjectNode(t, "a", newTestProject(t), listen(t), nil)
+		var recs []Member
+		for i := range maxMembers + 6 {
+			recs = append(recs, Member{Name: "m" + strconv.Itoa(i), ID: newID(), Ver: 1})
+		}
+		n.mergeMembers(recs)
+		n.mu.Lock()
+		alive := n.aliveLocked()
+		n.mu.Unlock()
+		if alive != maxMembers {
+			t.Fatalf("alive members %d, want %d", alive, maxMembers)
+		}
 	}
 }

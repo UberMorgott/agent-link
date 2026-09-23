@@ -36,6 +36,10 @@ type Member struct {
 	Addrs   []string `json:"addrs,omitempty"`
 	Ver     int64    `json:"ver"`
 	Removed bool     `json:"removed,omitempty"`
+	// Left marks a member's own tombstone (Removed too): it left the project
+	// (Leave). A later session under the name with another node id is a
+	// re-join, which the tombstone does not block.
+	Left bool `json:"left,omitempty"`
 	// Seen (unix seconds) and App are informational: the newest Seen wins and
 	// a change of them alone is not gossiped on its own.
 	Seen int64  `json:"seen,omitempty"`
@@ -167,6 +171,13 @@ func (n *Node) removedLocked(name string) bool {
 	return m != nil && m.Removed && name != n.cfg.Node
 }
 
+// rejoinLocked reports that name left the project (a left tombstone) and
+// id is another node: the member joined again, as a new node.
+func (n *Node) rejoinLocked(name, id string) bool {
+	m := n.members[name]
+	return m != nil && m.Removed && m.Left && validID(id) && id != m.ID && name != n.cfg.Node
+}
+
 // takenLocked reports that a live session holds name with a node id smaller
 // than id: that machine keeps the name.
 func (n *Node) takenLocked(name, id string) bool {
@@ -278,8 +289,11 @@ func (n *Node) mergeMembers(recs []Member) {
 			changed = n.mergeSelfLocked(&r) || changed
 			continue
 		}
-		if l != nil && l.ID != "" && l.ID != r.ID {
+		switch {
+		case l != nil && l.ID != "" && l.ID != r.ID:
 			gone[r.Name] = l.ID
+		case r.Removed && r.Left && r.ID != "":
+			gone[r.Name] = r.ID // it left: its queue is never sent
 		}
 		n.members[r.Name] = &r
 		changed = true
@@ -332,13 +346,16 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 	changed, infoChanged := false, false
 	oldID := ""
 	switch {
-	case l != nil && l.Removed:
+	case l != nil && l.Removed && !n.rejoinLocked(pc.peer, pc.id):
 		// The tombstone came between register and here: whoever set it already
 		// closes this session. A newer live record would undo the removal
 		// everywhere; only revive (a hand-added address) may do that.
 		n.mu.Unlock()
 		return
-	case l == nil:
+	case l == nil || l.Removed: // new, or a re-join after leaving
+		if l != nil {
+			oldID = l.ID
+		}
 		n.members[pc.peer] = &Member{Name: pc.peer, ID: pc.id, Addrs: addrs, Ver: nextVer(l), Seen: now, App: pc.app}
 		changed = true
 	case (pc.id != "" && pc.id != l.ID) || !containsAll(l.Addrs, addrs):
@@ -437,6 +454,55 @@ func (n *Node) RemoveMember(name string) error {
 		n.tellRemoved(pc)
 	}
 	n.membersChanged()
+	return nil
+}
+
+// Leave makes this project node leave its project: its own record becomes a
+// tombstone marked left, stored and sent to every live session, and no new
+// session is taken. Leave returns once the peers have hung up (they end the
+// session when they merge the tombstone) or after lingerTimeout; the caller
+// then stops the node. Joining again later is a new node (new data
+// directory, new node id), which the tombstone does not block.
+func (n *Node) Leave() error {
+	if n.cfg.Project == "" {
+		return ErrNotProject
+	}
+	self := n.cfg.Node
+	n.mu.Lock()
+	l := n.members[self]
+	r := &Member{Name: self, ID: n.id, Removed: true, Left: true, Ver: nextVer(l), Seen: time.Now().Unix(), App: n.appVersion}
+	if l != nil {
+		r.Addrs = l.Addrs
+	}
+	n.members[self] = r
+	n.left = true
+	snap := n.snapshotLocked()
+	var to []*peerConn
+	for _, pc := range n.conns {
+		to = append(to, pc)
+	}
+	n.mu.Unlock()
+	if !n.persistMembers() {
+		return errors.New("leave: members not saved")
+	}
+	for _, pc := range to {
+		if pc.has(CapMembers) {
+			_ = pc.write(frame{Type: frameMembers, Members: snap})
+		}
+		pc.closeAfterTelling()
+	}
+	n.log.Info("left the project")
+	n.changed("members")
+	deadline := time.Now().Add(lingerTimeout)
+	for time.Now().Before(deadline) {
+		n.mu.Lock()
+		open := len(n.conns)
+		n.mu.Unlock()
+		if open == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	return nil
 }
 

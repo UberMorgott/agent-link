@@ -112,7 +112,7 @@ func (n *Node) register(pc *peerConn) bool {
 	n.mu.Lock()
 	old := n.conns[pc.peer]
 	switch {
-	case n.removedLocked(pc.peer):
+	case n.left || (n.removedLocked(pc.peer) && !n.rejoinLocked(pc.peer, pc.id)):
 		n.mu.Unlock()
 		return false
 	case old != nil && old.id != "" && pc.id != "" && old.id != pc.id:

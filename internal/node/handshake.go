@@ -322,7 +322,9 @@ func (n *Node) acceptHandshake(w *wire) (peerHello, error) {
 		return peerHello{}, ErrSameName
 	}
 	n.mu.Lock()
-	known, removed := n.known[f.Node], n.removedLocked(f.Node)
+	// A member that left a project and joined it again is a new node id.
+	rejoin := n.rejoinLocked(f.Node, f.NodeID)
+	known, removed := n.known[f.Node] || rejoin, n.removedLocked(f.Node) && !rejoin
 	taken := n.takenLocked(f.Node, f.NodeID)
 	n.mu.Unlock()
 	if !config.ValidName(f.Node) || removed || (!n.open && !known) {

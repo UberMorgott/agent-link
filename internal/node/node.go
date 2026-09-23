@@ -85,6 +85,7 @@ type Node struct {
 	dialing map[string]bool      // members with a running dial loop
 	tried   map[string]time.Time // discovered addresses by when they were last dialed
 	meta    ProjectMeta          // a project node's shared meta (project.json)
+	left    bool                 // Leave ran: no new sessions
 	saveMu  sync.Mutex           // orders members.json and project.json writes
 
 	ensureMu sync.Mutex // serializes EnsureOpenChat

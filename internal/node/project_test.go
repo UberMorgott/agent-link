@@ -65,7 +65,7 @@ func newProjectNodeAt(t *testing.T, name string, p testProject, dir string, ln n
 	}
 	n.resendAfter, n.resendTick = 300*time.Millisecond, 50*time.Millisecond
 	n.backoffMin, n.backoffMax = 20*time.Millisecond, 200*time.Millisecond
-	n.handshakeTimeout = 3 * time.Second
+	n.handshakeTimeout, n.meshEvery = 3*time.Second, 50*time.Millisecond
 	return &testNode{Node: n, peerLn: ln}
 }
 

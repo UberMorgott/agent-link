@@ -273,7 +273,7 @@ func (n *Node) ownsTag(tag string) bool {
 }
 
 // heard dials the sender of a beacon of this network, unless it is this node,
-// a removed member, already connected, or was dialed at that address lately.
+// a removed member (unless it re-joined a project it left), already connected, or was dialed at that address lately.
 func (n *Node) heard(b beacon, ip net.IP) {
 	if b.T != beaconType || !n.ownsTag(b.Net) || b.ID == n.id || b.Node == n.cfg.Node ||
 		!config.ValidName(b.Node) || b.Port <= 0 || b.Port > 65535 || ip == nil {
@@ -285,7 +285,7 @@ func (n *Node) heard(b beacon, ip net.IP) {
 	addr := net.JoinHostPort(ip.String(), strconv.Itoa(b.Port))
 	now := time.Now()
 	n.mu.Lock()
-	skip := n.removedLocked(b.Node) || n.conns[b.Node] != nil || now.Sub(n.tried[addr]) < beaconRedial ||
+	skip := (n.removedLocked(b.Node) && !n.rejoinLocked(b.Node, b.ID)) || n.conns[b.Node] != nil || now.Sub(n.tried[addr]) < beaconRedial ||
 		(!n.open && !n.known[b.Node]) || (n.members[b.Node] == nil && n.aliveLocked() >= maxMembers)
 	if !skip {
 		n.tried[addr] = now
