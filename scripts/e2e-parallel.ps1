@@ -42,7 +42,7 @@ foreach ($name in $nodes.Keys) {
         node = $name; code = $code; peer_addr = $n.peerAddr; handler = $n.handler; work_dir = $work.FullName
         listen = $n.listen; api = $n.api
     }
-    if ($name -eq 'node-b') { $settings.handler_command = @($fake); $settings.max_jobs = 2 }
+    if ($name -eq 'node-b') { $settings.handler_command = @($fake); $settings.max_jobs = 2; $settings.auto_answer = $true }
     $n.config = Join-Path $dir 'config.json'
     $settings | ConvertTo-Json | Set-Content -Path $n.config
     $n.cli = Join-Path $dir 'cli.json'
@@ -74,8 +74,9 @@ try {
     $ids = [ordered]@{}
     foreach ($p in @("stream 10 $log long", "stall $log hung", "stream 3 $log short")) {
         $label = ($p -split ' ')[-1]
-        # One chat per request: a chat's session takes one turn at a time, separate chats run in parallel.
-        $chat = "$(& $cli chat new --config $nodes['node-a'].cli --with node-b)".Trim()
+        # One chat per conversation (members + area): a chat's session takes one turn at a time,
+        # so each request gets its own area to run in parallel.
+        $chat = "$(& $cli chat new --config $nodes['node-a'].cli --with node-b --area $label)".Trim()
         if ($LASTEXITCODE -ne 0) { throw "chat new $label failed" }
         $ids[$label] = "$(& $cli send --config $nodes['node-a'].cli --chat $chat --ask node-b --body $p)".Trim()
         if ($LASTEXITCODE -ne 0) { throw "send $label failed" }

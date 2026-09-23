@@ -350,8 +350,14 @@ const (
 
 // Recent lists inbound, queued and sent messages, newest first. Unanswered
 // outbound requests the peer has been silent about carry NoNewsMin.
-func (n *Node) Recent(limit int) ([]Entry, error) {
-	entries, err := n.store.recent(limit, false)
+func (n *Node) Recent(limit int) ([]Entry, error) { return n.entries(limit, false) }
+
+// Inbox is Recent with chat messages too (the control API's /inbox): every
+// message is in a chat now, so the app's history views list them as well.
+func (n *Node) Inbox(limit int) ([]Entry, error) { return n.entries(limit, true) }
+
+func (n *Node) entries(limit int, chats bool) ([]Entry, error) {
+	entries, err := n.store.recent(limit, chats)
 	if err != nil {
 		return nil, err
 	}

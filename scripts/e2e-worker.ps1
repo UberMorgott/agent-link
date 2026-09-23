@@ -50,6 +50,7 @@ foreach ($name in $nodes.Keys) {
         node = $name; code = $code; peer_addr = $n.peerAddr; handler = $n.handler; work_dir = $work.FullName
         listen = $n.listen; api = $n.api
     }
+    if ($name -eq 'node-b') { $settings.auto_answer = $true } # no live session there: the agent answers
     if ($name -eq 'node-b' -and -not $real) { $settings.handler_command = @($fake) }
     if ($name -eq 'node-b' -and $real -and $AgentPath) { $settings.agent_path = $AgentPath }
     $n.config = Join-Path $dir 'config.json'

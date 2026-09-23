@@ -103,6 +103,7 @@ foreach ($pair in @(@($a, $b), @($b, $a))) {
     }
 }
 $b.settings.handler = 'claude'
+$b.settings.auto_answer = $true
 # Updates by hand in this test, so the automatic check cannot race it.
 @{ handler_command = @($fake); auto_update = $false } | ConvertTo-Json | Set-Content -Path $b.config
 

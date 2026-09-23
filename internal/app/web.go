@@ -275,14 +275,15 @@ func (a *App) inbox(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, entries)
 }
 
-// recent loads local history, treating an unconfigured or stopped node as an
-// empty history so the UI can render its initial state without special cases.
+// recent loads local history, chat messages included, treating an
+// unconfigured or stopped node as an empty history so the UI can render its
+// initial state without special cases.
 func (a *App) recent(limit int) ([]node.Entry, error) {
 	n := a.node()
 	if n == nil {
 		return []node.Entry{}, nil
 	}
-	entries, err := n.Recent(limit)
+	entries, err := n.Inbox(limit)
 	if entries == nil {
 		entries = []node.Entry{}
 	}

@@ -81,7 +81,7 @@ foreach ($n in $a, $b) {
     $n.config = Join-Path $dir.FullName 'config.json'
     [ordered]@{
         node = $n.name; code = $code; peer_addr = "127.0.0.1:$($n.peerPort)"
-        handler = 'claude'; work_dir = $WorkDir; autostart = $false
+        handler = 'claude'; auto_answer = $true; work_dir = $WorkDir; autostart = $false
         listen = "127.0.0.1:$($n.port)"; api = $n.api; areas = @('demo')
     } | ConvertTo-Json | Set-Content -Path $n.config -Encoding utf8
 }

@@ -117,6 +117,7 @@ foreach ($pair in @(@($a, $b), @($b, $a))) {
     }
 }
 $b.settings.handler = 'claude'
+$b.settings.auto_answer = $true # «Автоответ агентом, если сессия не открыта»
 $b.settings.max_jobs = 1 # jobs run one after another, in order
 $b.settings.code = $code.ToLower()
 # The agent command is not editable in the UI; the only pre-seeded field is b's fake agent.
