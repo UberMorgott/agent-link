@@ -188,12 +188,20 @@ app update moved its versioned folder): the job then runs the new one and the ne
 dialog. The path is saved as `agent_path` in the config; it replaces only the program, the
 arguments below stay the same.
 
-When a request arrives (a message that is not a reply) and the handler is not "None", the app
-runs the agent in the working folder with the message as the prompt, up to `max_jobs` requests
-at a time (default 2; the rest wait and start in arrival order, answers may come back in any
-order), and sends the agent's final answer back as a reply. With "Никто, отвечаю сам" you read and
-answer in the inbox page, where each question is shown with its answer, its direction
-(«Исходящее»/«Входящее») and both node names.
+The primary answerer is a **live session**: a Claude Code or Codex session open in the
+«Рабочая папка» or a «Проекты» folder registers with the node through its hooks, reads the
+messages that are unread for its folder and answers in the chat (see
+[docs/agent-usage.md](docs/agent-usage.md#live-sessions-on-the-node)). The worker below is an
+optional fallback: **Автоответ агентом, если сессия не открыта** (`auto_answer`, **off by
+default**, also for configs from earlier versions: turn it on to keep automatic answers). With
+it on and a handler other than "None", a request (a message that asks this node) for an area
+with no live session registered runs the agent in the working folder (or the area's project)
+with the message as the prompt, up to `max_jobs` requests at a time (default 2; the rest wait
+and start in arrival order, answers may come back in any order), and sends the agent's final
+answer back as a reply. A request goes to the worker or to a session, never both. With it off,
+messages wait unread until a session opens (the sender sees «доставлено», then «прочитано»).
+Agents talking to each other without a person pause after 8 hops (a request past that is held:
+«пауза — нужен человек»).
 
 Jobs are durable. Each request is recorded in `data\jobs\<id>.json` before it is acknowledged
 and moves `queued` → `running` → `completed` | `failed` (with attempts, timestamps and the
@@ -275,12 +283,14 @@ go build -o bin/agentlink.exe ./cmd/agentlink
 ```powershell
 $env:AGENTLINK_SECRET = 'K7Q2-MXAB-CDEF'   # the same code on every machine (or a 16+ byte secret)
 agentlink serve --config node.json                         # the node (keep running)
-agentlink send  --config node.json --to node-b --body "hi" # prints the message id
+agentlink send  --config node.json --to node-b --body "hi" # into the one open chat with node-b; prints the message id
 agentlink send  --config node.json --body "hi"             # no --to: the only other member (several: error listing them)
 agentlink send  --config node.json --to area:dev --body "build is green"
 agentlink send  --config node.json --to node-b --body "done" --reply-to <id>
 agentlink wait  --config node.json --timeout 0             # blocks; JSON line per message
 agentlink inbox --config node.json --limit 20              # recent in/out, non-destructive
+agentlink chat unread --config node.json                   # unread messages of this node, oldest first
+agentlink chat ack --config node.json --ids <id,...>       # mark read: the authors get read receipts
 agentlink members --config node.json                       # member table, one JSON line each, this node first
 agentlink add    --config node.json --addr 203.0.113.7     # dial a member's address; it spreads to all members
 agentlink remove --config node.json --name node-c          # remove a member from the whole network
@@ -393,6 +403,12 @@ after you trust it once with `/hooks` in that folder.
 
 - Sent messages are written to `outbox/<peer>/` first and removed only when the peer ACKs, so an
   offline peer gets them on the next connection; unACKed messages are resent periodically.
+- One open chat per conversation (members + area): its id is a hash of both and a generation,
+  so every node picks the same chat; a person's close in the app moves the conversation to the
+  next generation everywhere, and a message that crossed the close is kept in the closed chat.
+- Read receipts (`kind: "receipt"`, capability `receipts-v1`) go back to the author through
+  the outbox when a session acks a message (or the worker takes it); the author shows
+  queued → delivered → read → answered per recipient. Unread state is on disk per node.
 - Inbound messages are persisted, and requests recorded as handler jobs, before the ACK; both
   are deduplicated by id, so resends are idempotent. Status updates and handler replies use ids
   derived from the request, so re-sending them after a crash is deduplicated too.
