@@ -106,8 +106,10 @@ A network is everyone holding the same code; every member sees every other membe
 
 The web UI is in Russian; every visible string lives in `internal/app/strings.go`, so a
 second language means a second map, not a page rewrite. It is a single-page app (Vue 3,
-PrimeVue, Tailwind) in `internal/app/web`: a slim sidebar (sections, and the chat list on
-«Сообщения»), one centered column per page, light/dark/system theme. Its build output
+Nuxt UI, Tailwind) in `internal/app/web`: a slim sidebar (sections, and the chat list on
+«Сообщения»), one centered column per page with Nuxt UI chat components for the messages,
+light/dark/system theme. It works offline: the Lucide icons are bundled into it and the fonts
+are the system's. Its build output
 `internal/app/web/dist` is committed and embedded in the binary, so `go build` needs no Node.
 
 Settings, including the code, live in `%APPDATA%\agentlink\config.json` (per user, never in a
@@ -288,7 +290,7 @@ the sources (Node 24):
 cd internal/app/web
 npm ci
 npm test            # vitest: chat, settings, participants, event stream, launcher
-npm run build       # vue-tsc typecheck, then vite build into dist/
+npm run build       # vite build into dist/, then the vue-tsc typecheck
 ```
 
 ## Usage
