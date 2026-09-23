@@ -49,63 +49,67 @@ searched>` instead of a guess. Relay the answer to your user in their language. 
 Claude/Codex handler gets the same rule as a preamble (`worker.ReplyStyle`); a human's
 question typed in the inbox page is answered briefly in that human's language.
 
-## Ask and get the answer
+## Ask and get the answer: chats first
+
+Talk to other members in **chats**. A chat is a conversation with a fixed set of members (2 or
+more; you are added): every message goes to all of them, everyone keeps the same history, and
+each member's handler agent keeps one session per chat, so follow-up questions keep their
+context.
 
 ```powershell
-agentlink members                                 # who is in the network: one JSON line each, this node first
-agentlink send  --to <node> --body "<question>"   # prints the message id
-agentlink inbox --limit 20                        # one JSON object per line
-agentlink wait  --timeout 0                       # blocks until a message arrives
+agentlink members                                              # who is in the network: one JSON line each, this node first
+agentlink chat new     --with nikita[,olga] [--area dev]       # prints the chat id
+agentlink send         --chat <id> --ask nikita --body "<question>"   # prints the message id
+agentlink wait         --chat <id> --timeout 0                 # blocks until this chat's next message
+agentlink chat history --chat <id> [--limit 50] [--before <seq>] [--after <seq>]
+agentlink send         --chat <id> --body "<info, no answer needed>"
+agentlink chat list    [--archive] [--legacy]
 ```
 
 0. The network can have many members (everyone with the same code). `members` lists them:
    `name`, `online`, `addrs`, `app` (version), `self: true` for this node. Pick the recipient
-   by `name` (the user says "спроси Никиту" → the member whose name matches). `--to` may be
-   omitted only when there is exactly one other member; with several, `send` fails with
-   `several peers known, name one: <names>` — pick one and send again.
-1. `send` prints the request id. Keep it: the answer refers to it as `reply_to`.
-2. Start `wait` as a **background command** (`run_in_background` in Claude Code). It blocks,
-   then exits 0 and prints one JSON line per message; the harness announces the completion and
-   the session reads the answer from that output. Exit 2 with no output means `--timeout`
-   expired (seconds or a Go duration, `0` waits forever); exit 1 is an error. `wait` marks what
-   it returns as delivered, so start it again after handling a batch.
-3. `inbox` is non-destructive and shows progress while the other side is still working: an
-   outbound entry carries the latest `job_status` and, once answered, the `answer` text.
-4. To answer a request that arrived here, send with `--reply-to <that message's id>`.
+   by `name` (the user says "спроси Никиту" → the member whose name matches).
+1. `chat new` once per topic, then `send --chat <id> --ask <name>` for every question. `send`
+   prints the message id; the answer refers to it as `reply_to`.
+2. Start `wait --chat <id>` as a **background command** (`run_in_background` in Claude Code).
+   It blocks, then exits 0 and prints one JSON line per message; the harness announces the
+   completion and the session reads the answer from that output. Exit 2 with no output means
+   `--timeout` expired (seconds or a Go duration, `0` waits forever); exit 1 is an error.
+   `wait` marks what it returns as delivered, so start it again after handling a batch.
+3. `chat history` is non-destructive: read it whenever you need earlier context or missed a
+   `wait`. `chat list` shows what each member's agent is doing now (`members[].jobs[]`).
+4. To answer a message that asks you, send `--chat <id> --reply-to <its id> --body ...`.
+5. When the topic is done, leave the chat open: only a person closes it, in the app (see below).
 
-## Status message or real answer
+`send --to <node> --body ...` (no `--chat`) is for a one-off question or a member on an old
+version without chats. To a member with chats it does the same as a chat: the message goes into
+the newest open chat of just you and that member (a new one when there is none), asks that
+member, and `send` prints the chat id on stderr (`chat <id>`; stdout stays the message id).
+`--to` may be omitted only when there is exactly one other member; with several, `send` fails
+with `several peers known, name one: <names>`. `area:NAME` and `--reply-to` sends stay plain
+messages. `agentlink inbox --limit 20` lists plain and chat messages (one JSON object per line;
+an outbound request carries the latest `job_status` and, once answered, the `answer` text).
+
+### Status message or real answer
 
 - `wait` returns requests and replies only. Handler progress (`kind: "status"`,
   `job_status: queued|running`, empty body) never wakes it.
 - A real reply has `reply_to` set to the request id and a body. If it came from a handler agent
   its `job_status` is `completed` (the body is the answer) or `failed` (the body is the error).
+  A request with one real answer is answered: a `failed` reply that comes before or after it
+  does not undo that.
 - In `inbox`, an outbound request with `job_status` `queued`/`running` and no `answer` is still
   being worked on; while `running` its `activity` says what the other agent does right now
   (`Read docs/index.md`, `Grep 'Worker' internal`, `thinking`).
-- `no_news_min` on an unanswered request means the peer has said nothing about it for that many
-  minutes (5+) or is disconnected. The request is not lost (it is resent until ACKed); decide
-  whether to wait or ask again. A hung agent on the other side fails by itself after 3 minutes
-  without output (reply body `agentlink: агент завис …`), a slow one after 10 minutes.
+- `no_news_min` on an unanswered plain request means the peer has said nothing about it for
+  that many minutes (5+) or is disconnected. The request is not lost (it is resent until ACKed);
+  decide whether to wait or ask again. An agent on the other side that prints nothing for
+  10 minutes fails by itself (reply body `agentlink: агент завис …`); one that keeps working is
+  stopped only after 60 minutes in total.
 - The other side answers up to 2 (1–4) requests at once, so several questions can be in flight;
   answers may arrive in any order — match them by `reply_to`.
 
-## Chats: multi-turn and group conversations
-
-A chat is a conversation with a fixed set of members (2 or more; you are added). Every
-message goes to all of them and everyone keeps the same history. Use a chat when the topic
-takes more than one question, or when several members must see it. Plain `send --to` keeps
-working (and is the only way to reach a member on an old version without chats).
-
-```powershell
-agentlink chat new     --with nikita,olga [--area dev]      # prints the chat id
-agentlink send         --chat <id> --ask nikita --body "<question>"   # prints the message id
-agentlink send         --chat <id> --body "<info, no answer needed>"
-agentlink wait         --chat <id> --timeout 0              # only this chat's messages
-agentlink chat history --chat <id> [--limit 50] [--before <seq>] [--after <seq>]
-agentlink chat list    [--archive] [--legacy]
-agentlink close        --chat <id>
-agentlink chat archive --chat <id> [--undo]
-```
+### Chat details
 
 - `chat new` fails with `participant is not connected with chat support: <names>` when a
   member is offline or on an old version: wait for it, or ask it with plain `send --to`.
@@ -120,20 +124,22 @@ agentlink chat archive --chat <id> [--undo]
   `wait`. Without `--chat`, `wait` returns chat messages too (they carry `chat_id`).
 - `chat history` prints one JSON line per message in this node's order (`seq`), oldest first:
   `from`, `body`, `created_at`, `responders`, `reply_to`, `kind` (`""` a message,
-  `chat_open`/`chat_close` who created/closed it). Read it whenever you need earlier context,
-  e.g. `--limit 20` for the latest 20, `--after <seq>` for what came since. Your own messages
-  carry `delivery` per member (`queued` until that member received it, then `sent`).
+  `chat_open`/`chat_close` who created/closed it). E.g. `--limit 20` for the latest 20,
+  `--after <seq>` for what came since. Your own messages carry `delivery` per member
+  (`queued` until that member received it, then `sent`).
 - `chat list` prints one JSON line per chat: `id`, `participants`, `closed`, `closed_by`,
   `archived`, `title`, `count`, `last_message`, `active`, and `members[]` with `connected`,
   `compatible` and `jobs[]` (what a member's agent is doing now: `job_status`, `activity`).
-  `--legacy` adds virtual chats built from plain `send --to` history (id `legacy-<request id>-<member>`).
-  `send --chat <legacy id>` continues one in the open chat of you and that member (a new chat when
-  there is none), or as a plain `send --to` when its version has no chats.
-- A chat stays open until a member closes it; nothing closes it automatically. `close` is
-  final for everyone (continue the topic in a new chat); an agent already working finishes and
-  its answer is still delivered. Close a chat when its topic is done.
-- Archive only hides a chat from the main list on this machine; nothing is deleted. Closed
-  chats are archived automatically; an open archived chat comes back with its next message.
+  `--legacy` adds plain `send --to` history from before chats as one virtual chat per member
+  (and area), in time order (id `legacy-<oldest request id>-<member>`). `send --chat <legacy id>`
+  continues it in the open chat of you and that member (a new chat when there is none), or as a
+  plain `send --to` when its version has no chats.
+- A chat stays open until a **person** closes it; nothing closes it automatically. Closing is
+  archiving: «Закрыть и в архив» in the app (or `agentlink close --chat <id>` from a session a
+  person drives) closes it for every member and moves it to the archive on every node. It is
+  final (continue the topic in a new chat); an agent already working finishes and its answer is
+  still delivered. `chat list --archive` lists the closed chats. A handler agent (a worker job,
+  `AGENTLINK_JOB_ID` set) cannot close chats: `close` refuses.
 
 ### Inside a job (you are the answering agent)
 
@@ -143,7 +149,7 @@ without `--chat` reads it. Do **not** send your final answer yourself: it is pos
 automatically. To involve another member, send `--ask <name>` with a complete question; the
 node counts such automatic hops from the original request and stops the chain after 4 hops, and
 each member's agent answers at most once per original request (a message past the limit is
-kept with `held: true` and waits for a human).
+kept with `held: true` and waits for a human). Never close the chat.
 
 ## Hearing about messages in a live session (hooks)
 
@@ -151,8 +157,10 @@ Nobody can type into a Claude Code or Codex session on another machine, but both
 `agentlink hook <claude|codex>` is such a hook: it reads the hook's JSON on stdin, lists the
 messages of this node's chats and inbox that this session was not shown yet, and prints them as
 extra context ("Пришло сообщение от X в чате <id> (участники: …)", the full body up to 4000
-characters, and the `agentlink send --chat <id>` / `--to <node> --reply-to <id>` command that
-answers). Enable it once per machine:
+characters, and the `agentlink send --chat <id> --reply-to <id>` / `--to <node> --reply-to <id>`
+command that answers). A message this node's handler agent already runs or queues is marked
+«Уже обрабатывает агент-обработчик этого узла»: do not duplicate it. If you answer it anyway with
+`--reply-to`, the node stops that agent's run and sends no failure for it. Enable it once per machine:
 
 ```powershell
 agentlink hook install claude            # ~/.claude/settings.json (--scope project: .claude/settings.json)

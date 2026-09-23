@@ -216,10 +216,13 @@ output file. One that died mid-run (a reboot, a crash) is resumed in its own ses
 (`claude --resume <id>`, `codex exec resume <id>`, same permissions) with a short "continue"
 prompt; without a session to resume it starts over once. Died a second time, the job fails with
 a reply. A completed job's run files are removed; a failed one keeps them for diagnosis. An
-agent error, the 10-minute timeout (counted from the attempt's start, across restarts), or 3
-minutes without any output from the agent («агент завис (нет активности 3 мин)») kills the
-agent's process tree and fails the job at once, without a retry; so does `Worker.Cancel`
-(the app's normal stop leaves agents running).
+agent error, 10 minutes without any output from the agent («агент завис (нет активности 10 мин)»),
+or the 60-minute cap on one attempt (counted from its start, across restarts) kills the agent's
+process tree and fails the job at once, without a retry; so does `Worker.Cancel` (the app's
+normal stop leaves agents running). A long turn that keeps printing is never cut at 10 minutes.
+A request answered on this node another way (a person in the inbox, or an interactive session
+that the hook told about it, replying with `--reply-to`) stops its job too: a queued one never
+runs, a running agent is killed, and the sender gets a `completed` status instead of a failure.
 Switching the handler to "None" fails jobs that were still waiting, with the reply "no handler
 configured".
 
