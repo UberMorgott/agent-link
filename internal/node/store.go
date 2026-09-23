@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 //	inbox/<id>.json          inbound record (message + delivered flag)
 //	outbox/<peer>/<id>.json  queued until the peer ACKs
 //	sent/<peer>/<id>.json    ACKed by the peer
+//	dropped/<peer>-<id>/     a project member's queue for a node id that is gone (never sent)
 //	areas.json               last areas each peer announced
 //	members.json             the membership table, tombstones included
 //	pake_seen.json           peer names that authenticated with the PAKE
@@ -66,6 +68,31 @@ func (s *store) enqueue(peer string, m Message) error {
 		return err
 	}
 	return writeJSON(filepath.Join(dir, m.ID+".json"), m)
+}
+
+// dropOutbox moves peer's queued messages to dropped/<peer>-<oldID>/: they
+// were for a node that left or re-joined as a new node, so they are kept but
+// never sent. A second queue for the same old id gets a time suffix.
+func (s *store) dropOutbox(peer, oldID string) error {
+	src := filepath.Join(s.dir, "outbox", peer)
+	if _, err := os.Stat(src); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	root := filepath.Join(s.dir, "dropped")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
+	}
+	dst := filepath.Join(root, peer+"-"+oldID)
+	if _, err := os.Stat(dst); err == nil {
+		dst += "-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	err := os.Rename(src, dst)
+	for try := 0; err != nil && try < 3; try++ {
+		// On Windows a file being read by the write loop blocks the move for a moment.
+		time.Sleep(20 * time.Millisecond)
+		err = os.Rename(src, dst)
+	}
+	return err
 }
 
 // pending returns the peer's queued messages, oldest first.

@@ -131,7 +131,7 @@ func (cs *chatStore) noteGenLocked(c Chat) {
 	if c.Closed() {
 		g++
 	}
-	k := chatKey(c.Area, c.Participants)
+	k := c.key()
 	cs.gens[k] = max(cs.gens[k], g)
 }
 
@@ -181,13 +181,14 @@ func compareSeq(a, b uint64) int {
 func (cs *chatStore) chatDir(id string) string { return filepath.Join(cs.dir, "chats", id) }
 
 // ensure stores c unless its chat is known. A known chat must have the same
-// participants and area. It reports whether c is new.
+// participants and area (and in a project the same pinned ids and mode). It reports whether c is new.
 func (cs *chatStore) ensure(c Chat) (bool, error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	if st := cs.chats[c.ID]; st != nil {
 		// An older peer sends no generation (0): the id already names it.
-		if !slices.Equal(st.chat.Participants, c.Participants) || st.chat.Area != c.Area || (c.Gen != 0 && st.chat.Gen != c.Gen) {
+		if !slices.Equal(st.chat.Participants, c.Participants) || st.chat.Area != c.Area || (c.Gen != 0 && st.chat.Gen != c.Gen) ||
+			st.chat.Project != c.Project || st.chat.Mode != c.Mode || !slices.Equal(st.chat.ParticipantIDs, c.ParticipantIDs) {
 			return false, errChatMismatch
 		}
 		return false, nil

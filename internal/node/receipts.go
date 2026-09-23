@@ -232,12 +232,14 @@ func (n *Node) sendReceipts(byAuthor map[string][]string, state string) {
 		}
 		for chatID, ids := range byChat {
 			c, ok := n.chats.get(chatID)
-			if !ok || !slices.Contains(c.Participants, author) {
+			i := slices.Index(c.Participants, author)
+			if !ok || i < 0 || !n.pinned(c, i) {
 				continue
 			}
 			slices.Sort(ids)
 			m := Message{ID: DerivedID(strings.Join(ids, ","), n.cfg.Node+"/receipt/"+state), From: n.cfg.Node, To: author,
-				ChatID: c.ID, Participants: c.Participants, Area: c.Area, ChatGen: c.Gen, Kind: KindReceipt, CreatedAt: now}
+				Kind: KindReceipt, CreatedAt: now}
+			c.stamp(&m)
 			for _, id := range ids {
 				m.Receipts = append(m.Receipts, Receipt{ID: id, State: state, At: now})
 			}

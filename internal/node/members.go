@@ -249,6 +249,7 @@ func (n *Node) aliveLocked() int {
 func (n *Node) mergeMembers(recs []Member) {
 	changed, seen := false, false
 	var drop []*peerConn
+	gone := map[string]string{} // name -> node id whose queue is dropped
 	n.mu.Lock()
 	for _, r := range recs {
 		if !config.ValidName(r.Name) || r.Ver <= 0 || (r.ID != "" && !validID(r.ID)) {
@@ -277,6 +278,9 @@ func (n *Node) mergeMembers(recs []Member) {
 			changed = n.mergeSelfLocked(&r) || changed
 			continue
 		}
+		if l != nil && l.ID != "" && l.ID != r.ID {
+			gone[r.Name] = l.ID
+		}
 		n.members[r.Name] = &r
 		changed = true
 		if r.Removed {
@@ -289,6 +293,9 @@ func (n *Node) mergeMembers(recs []Member) {
 		}
 	}
 	n.mu.Unlock()
+	for name, id := range gone {
+		n.incarnationGone(name, id)
+	}
 	// Every member that holds a session tells the removed one: the node that
 	// removed it may have had no session to it, or only one the removed node
 	// had not finished setting up.
@@ -323,6 +330,7 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 	n.mu.Lock()
 	l := n.members[pc.peer]
 	changed, infoChanged := false, false
+	oldID := ""
 	switch {
 	case l != nil && l.Removed:
 		// The tombstone came between register and here: whoever set it already
@@ -338,6 +346,9 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 		if pc.id != "" {
 			r.ID = pc.id
 		}
+		if l.ID != "" && r.ID != l.ID {
+			oldID = l.ID
+		}
 		if pc.app != "" {
 			r.App = pc.app
 		}
@@ -351,6 +362,9 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 		}
 	}
 	n.mu.Unlock()
+	if oldID != "" {
+		n.incarnationGone(pc.peer, oldID)
+	}
 	if changed {
 		n.membersChanged()
 		return
@@ -379,11 +393,18 @@ func (n *Node) revive(name, id string) {
 	n.mu.Lock()
 	l := n.members[name]
 	ok := l != nil && l.Removed && name != n.cfg.Node
+	oldID := ""
+	if ok && l.ID != "" && l.ID != id {
+		oldID = l.ID
+	}
 	if ok {
 		n.members[name] = &Member{Name: name, ID: id, Addrs: l.Addrs, Ver: nextVer(l), Seen: time.Now().Unix(), App: l.App}
 		n.known[name] = true
 	}
 	n.mu.Unlock()
+	if oldID != "" {
+		n.incarnationGone(name, oldID)
+	}
 	if ok {
 		n.log.Info("member added back", "peer", name)
 		n.membersChanged()
@@ -426,6 +447,21 @@ func (n *Node) tellRemoved(pc *peerConn) {
 		_ = pc.write(frame{Type: frameMembers, Members: n.snapshot()})
 	}
 	pc.closeAfterTelling()
+}
+
+// incarnationGone drops, in a project, what is queued for name while it was
+// the node oldID: the name now belongs to another node (a re-join), and a
+// new incarnation never inherits the queues of the old one.
+func (n *Node) incarnationGone(name, oldID string) {
+	if n.cfg.Project == "" {
+		return
+	}
+	if err := n.store.dropOutbox(name, oldID); err != nil {
+		n.log.Warn("drop queue of a gone member", "peer", name, "id", oldID, "err", err)
+		return
+	}
+	n.log.Info("queue of a gone member dropped", "peer", name, "id", oldID)
+	n.changed("messages")
 }
 
 // Members lists this node first, then every member that is not removed,

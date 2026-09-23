@@ -65,11 +65,54 @@ const ChatModeProject = "project"
 func (c Chat) Closed() bool { return c.CloseID != "" }
 
 // Keyed reports whether c is the chat of its conversation key and generation
-// (KeyedChatID), not a random-id chat of an older version.
-func (c Chat) Keyed() bool { return c.ID == KeyedChatID(c.Area, c.Participants, c.Gen) }
+// (KeyedChatID, ProjectChatID in a project), not a random-id chat of an older
+// version or a standalone project chat.
+func (c Chat) Keyed() bool {
+	if c.Project != "" {
+		return c.Mode == "" && len(c.ParticipantIDs) == len(c.Participants) &&
+			c.ID == ProjectChatID(c.Project, c.Participants, c.ParticipantIDs, c.Gen)
+	}
+	return c.ID == KeyedChatID(c.Area, c.Participants, c.Gen)
+}
+
+// key is c's conversation key: the pinned members in a project, else the
+// area and the participants.
+func (c Chat) key() string {
+	if c.Project != "" {
+		return projectChatKey(c.Project, c.Participants, c.ParticipantIDs)
+	}
+	return chatKey(c.Area, c.Participants)
+}
+
+// stamp puts c's envelope fields on m, a message of c.
+func (c Chat) stamp(m *Message) {
+	m.ChatID, m.Participants, m.Area, m.ChatGen = c.ID, c.Participants, c.Area, c.Gen
+	m.ParticipantIDs, m.ChatMode = c.ParticipantIDs, c.Mode
+}
 
 // chatKey is the conversation key K of an area and a sorted participant list.
 func chatKey(area string, parts []string) string { return area + "\x00" + strings.Join(parts, ",") }
+
+// projectChatKey is the conversation key of a project's keyed chat: the
+// project and its members as sorted name@nodeid entries, so a member who
+// re-joins with a new node id starts new conversations.
+func projectChatKey(pid string, parts, ids []string) string {
+	members := make([]string, len(parts))
+	for i, p := range parts {
+		if i < len(ids) {
+			members[i] = p + "@" + ids[i]
+		}
+	}
+	slices.Sort(members)
+	return pid + "\x00" + strings.Join(members, ",")
+}
+
+// ProjectChatID is KeyedChatID in a project: the id of generation gen of the
+// one chat of the participants, pinned to their node ids (ids, aligned with
+// the sorted parts). Ids of equal names differ between projects.
+func ProjectChatID(pid string, parts, ids []string, gen uint32) string {
+	return DerivedID("agentlink-chat-v3/"+projectChatKey(pid, parts, ids), strconv.FormatUint(uint64(gen), 10))
+}
 
 // KeyedChatID is the id of generation gen of the one chat of area and the
 // sorted participants (this node included): every node computes the same id,
@@ -233,15 +276,26 @@ func (n *Node) EnsureOpenChat(parts []string, area string) (Chat, error) {
 		len(slices.Compact(slices.Clone(parts))) != len(parts) {
 		return Chat{}, fmt.Errorf("%w: name at least one other member", ErrBadParticipants)
 	}
-	if area != "" && !config.ValidName(area) {
+	if area != "" && (!config.ValidName(area) || n.cfg.Project != "") {
 		return Chat{}, fmt.Errorf("invalid area %q", area)
 	}
 	n.ensureMu.Lock()
 	defer n.ensureMu.Unlock()
-	key := chatKey(area, parts)
+	proto := Chat{Participants: parts, Area: area, Project: n.cfg.Project}
+	if proto.Project != "" {
+		ids, err := n.pinIDs(parts)
+		if err != nil {
+			return Chat{}, err
+		}
+		proto.ParticipantIDs = ids
+	}
+	key := proto.key()
 	for {
 		gen := n.chats.gen(key)
 		id := KeyedChatID(area, parts, gen)
+		if proto.Project != "" {
+			id = ProjectChatID(proto.Project, parts, proto.ParticipantIDs, gen)
+		}
 		c, ok := n.chats.get(id)
 		if ok && !c.Closed() {
 			return c, nil
@@ -270,7 +324,8 @@ func (n *Node) EnsureOpenChat(parts []string, area string) (Chat, error) {
 		if len(missing) > 0 {
 			return Chat{}, fmt.Errorf("%w: %s", ErrNoChatSupport, strings.Join(missing, ", "))
 		}
-		c = Chat{ID: id, Participants: parts, Area: area, Gen: gen, CreatedAt: time.Now().UTC()}
+		c = proto
+		c.ID, c.Gen, c.CreatedAt = id, gen, time.Now().UTC()
 		if _, err := n.chats.ensure(c); err != nil {
 			return Chat{}, err
 		}
@@ -523,7 +578,8 @@ func (n *Node) sendChat(m Message) (Message, error) {
 	if err := n.postChat(c, m); err != nil {
 		return Message{}, err
 	}
-	m.From, m.Participants, m.Area, m.ChatGen = n.cfg.Node, c.Participants, c.Area, c.Gen
+	m.From = n.cfg.Node
+	c.stamp(&m)
 	return m, nil
 }
 
@@ -532,7 +588,8 @@ func (n *Node) sendChat(m Message) (Message, error) {
 // A person's message is also unread here: this node's own sessions learn what
 // their person told the others (ChatMessage.OwnHuman).
 func (n *Node) postChat(c Chat, m Message) error {
-	m.From, m.To, m.ChatID, m.Participants, m.Area, m.ChatGen = n.cfg.Node, "", c.ID, c.Participants, c.Area, c.Gen
+	m.From, m.To = n.cfg.Node, ""
+	c.stamp(&m)
 	if m.Kind == KindStatus {
 		n.chats.noteStatus(m)
 	} else if _, isNew, _, err := n.chats.put(m, m.AuthorKind == AuthorHuman); err != nil {
@@ -548,9 +605,11 @@ func (n *Node) postChat(c Chat, m Message) error {
 
 // fanout queues m for every participant but this node. With missingOnly only
 // peers that have no copy queued or ACKed get one (recovery after a crash).
+// In a project a participant whose member record no longer has the node id
+// the chat pins it to (it left, or re-joined as a new node) gets nothing.
 func (n *Node) fanout(c Chat, m Message, missingOnly bool) error {
-	for _, p := range c.Participants {
-		if p == n.cfg.Node || (missingOnly && n.store.delivery(p, m.ID) != "") {
+	for i, p := range c.Participants {
+		if p == n.cfg.Node || (missingOnly && n.store.delivery(p, m.ID) != "") || !n.pinned(c, i) {
 			continue
 		}
 		cp := m
@@ -570,8 +629,8 @@ func (n *Node) repairChats() error {
 			if r.Message.From != n.cfg.Node {
 				continue
 			}
-			for _, p := range s.chat.Participants {
-				if p == n.cfg.Node || n.store.delivery(p, r.Message.ID) != "" {
+			for i, p := range s.chat.Participants {
+				if p == n.cfg.Node || n.store.delivery(p, r.Message.ID) != "" || !n.pinned(s.chat, i) {
 					continue
 				}
 				cp := r.Message
@@ -585,9 +644,78 @@ func (n *Node) repairChats() error {
 	return nil
 }
 
+// pinIDs returns the node ids of parts (sorted, this node included) as the
+// member table has them now, for a new project chat: every participant must
+// be a live member with a node id.
+func (n *Node) pinIDs(parts []string) ([]string, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	ids := make([]string, len(parts))
+	for i, p := range parts {
+		if p == n.cfg.Node {
+			ids[i] = n.id
+			continue
+		}
+		m := n.members[p]
+		if m == nil || m.Removed || !validID(m.ID) {
+			return nil, fmt.Errorf("%w %q", ErrUnknownPeer, p)
+		}
+		ids[i] = m.ID
+	}
+	return ids, nil
+}
+
+// pinned reports whether participant i of c is still the node the chat was
+// made with: always outside projects; in a project, while the member record
+// of that name has the pinned node id and is not removed.
+func (n *Node) pinned(c Chat, i int) bool {
+	if c.Project == "" {
+		return true
+	}
+	if i >= len(c.ParticipantIDs) {
+		return false
+	}
+	if c.Participants[i] == n.cfg.Node {
+		return c.ParticipantIDs[i] == n.id
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	m := n.members[c.Participants[i]]
+	return m != nil && !m.Removed && m.ID == c.ParticipantIDs[i]
+}
+
+// validProjectEnvelope checks the project fields of a chat message from
+// peer, whose session authenticated node id peerID: every participant pinned
+// to a valid node id, the author to peerID and this node to its own id; no
+// area; a keyed chat's id must be its ProjectChatID. The legacy network takes
+// none of these fields.
+func (n *Node) validProjectEnvelope(peer, peerID string, m *Message) bool {
+	if n.cfg.Project == "" {
+		return len(m.ParticipantIDs) == 0 && m.ChatMode == ""
+	}
+	p, ids := m.Participants, m.ParticipantIDs
+	if m.Area != "" || len(ids) != len(p) {
+		return false
+	}
+	for i, id := range ids {
+		switch {
+		case !validID(id):
+			return false
+		case p[i] == peer && id != peerID:
+			return false
+		case p[i] == n.cfg.Node && id != n.id:
+			return false
+		}
+	}
+	return m.ChatMode == "" && m.ChatID == ProjectChatID(n.cfg.Project, p, ids, m.ChatGen)
+}
+
 // validChatEnvelope checks a chat message from peer: a known kind, the full
 // participant list with the author and this node, and responders among them.
-func (n *Node) validChatEnvelope(peer string, m *Message) bool {
+func (n *Node) validChatEnvelope(peer, peerID string, m *Message) bool {
+	if !n.validProjectEnvelope(peer, peerID, m) {
+		return false
+	}
 	switch m.Kind {
 	case "", KindStatus, KindChatOpen, KindChatClose, KindReceipt:
 	default:
@@ -618,11 +746,12 @@ func (n *Node) validChatEnvelope(peer string, m *Message) bool {
 
 // receiveChat stores an inbound chat message. It reports false when the
 // message is invalid and must be dropped.
-func (n *Node) receiveChat(peer string, m Message) bool {
-	if !n.validChatEnvelope(peer, &m) {
+func (n *Node) receiveChat(peer, peerID string, m Message) bool {
+	if !n.validChatEnvelope(peer, peerID, &m) {
 		return false
 	}
-	created, err := n.chats.ensure(Chat{ID: m.ChatID, Participants: m.Participants, Area: m.Area, Gen: m.ChatGen, CreatedAt: m.CreatedAt})
+	created, err := n.chats.ensure(Chat{ID: m.ChatID, Participants: m.Participants, Area: m.Area, Gen: m.ChatGen, CreatedAt: m.CreatedAt,
+		Project: n.cfg.Project, Mode: m.ChatMode, ParticipantIDs: m.ParticipantIDs})
 	if err != nil {
 		n.log.Warn("chat message rejected", "peer", peer, "chat", m.ChatID, "err", err)
 		return false
@@ -819,16 +948,18 @@ func (n *Node) chatMessage(c Chat, r chatRecord) ChatMessage {
 			return cm
 		}
 		replied := n.chats.repliedBy(r.Message.ID)
-		for _, p := range c.Participants {
+		for i, p := range c.Participants {
 			if p == n.cfg.Node {
 				continue
 			}
 			d := Delivery{Peer: p, Status: n.store.delivery(p, r.Message.ID), State: StateQueued}
-			if d.Status == "" {
-				d.Status = "queued"
-			}
-			if d.Status == "sent" {
+			switch {
+			case d.Status == "sent":
 				d.State = StateDelivered
+			case !n.pinned(c, i):
+				d.Status, d.State = "queued", StateLeft // never sent: the pinned node is gone
+			case d.Status == "":
+				d.Status = "queued"
 			}
 			if rc, ok := r.Receipts[p]; ok && stateRank(rc.State) > stateRank(d.State) {
 				d.State, d.At = rc.State, rc.At

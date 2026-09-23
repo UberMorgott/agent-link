@@ -42,6 +42,9 @@ const (
 	StateDelivered = "delivered" // the recipient node stored it (ACK)
 	StateRead      = "read"      // a session or the worker there acknowledged it
 	StateAnswered  = "answered"  // the recipient replied to it (reply_to)
+	// StateLeft: a project chat's recipient is no longer the node the chat
+	// pins (it left, or re-joined with a new node id); nothing goes to it.
+	StateLeft = "left"
 )
 
 // Receipt is one message's state at the reader node, on KindReceipt messages.
