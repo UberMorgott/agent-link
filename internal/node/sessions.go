@@ -153,6 +153,7 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	r := n.sess
 	r.mu.Lock()
 	s := r.sessions[req.SessionID]
+	fresh := s == nil || !s.live(now) || s.Wake != req.Wake || s.Area != area
 	if s == nil || !s.live(now) {
 		if len(r.sessions) >= maxSessions {
 			_ = r.saveLocked(now) // drops the dead ones
@@ -171,6 +172,9 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
+	if fresh {
+		n.presenceChanged()
+	}
 	n.changed("sessions")
 	return out, nil
 }
@@ -187,6 +191,7 @@ func (n *Node) EndSession(id string) error {
 	if !ok {
 		return fmt.Errorf("%w %s", ErrUnknownSession, id)
 	}
+	n.presenceChanged()
 	n.changed("sessions")
 	return err
 }

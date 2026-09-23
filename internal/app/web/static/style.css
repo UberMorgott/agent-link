@@ -253,6 +253,9 @@ pre { margin: 6px 0; white-space: pre-wrap; word-break: break-word; font: inheri
 .act-spin { width: 10px; height: 10px; border: 1.5px solid color-mix(in srgb, var(--who) 30%, transparent); border-top-color: var(--who); border-radius: 50%; animation: act-spin .9s linear infinite; }
 .act-row.queued .act-spin, .act-row.waiting .act-spin { border-style: dotted; border-color: var(--muted); animation: none; }
 .act-row.stale .act-spin { border-color: var(--danger); animation: none; }
+.act-row.presence { color: var(--muted); }
+.act-row.presence .act-spin { visibility: hidden; animation: none; }
+.act-row.presence .act-who { color: var(--muted); font-weight: 400; }
 .act-who { color: var(--text); font-weight: 560; }
 .act-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .act-time { font-variant-numeric: tabular-nums; }

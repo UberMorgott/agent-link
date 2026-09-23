@@ -84,6 +84,8 @@ type Node struct {
 	ensureMu sync.Mutex // serializes EnsureOpenChat
 	sess     *sessionRegistry
 	folders  folderMap
+	// autoAnswer: the worker answers requests no live session takes (presence).
+	autoAnswer bool
 
 	selfAddrs []string // this node's own peer addresses, set by Run
 

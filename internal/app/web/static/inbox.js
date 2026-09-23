@@ -565,6 +565,26 @@ function waitingLine(info) {
   return { name: self(), text: t(key), since: pending[0].created_at };
 }
 
+// presenceLines: for every recipient of the last own message that has it but
+// has not read it yet, what its node says of its session there — so the
+// sender knows whether it is read at once or waits. Offline: the tick says it.
+const PRESENCE_KEY = { rewake: "inbox.presence.rewake", "next-event": "inbox.presence.next_event" };
+function presenceLines(info) {
+  if (!info || info.closed || info.legacy) return [];
+  const last = [...messages].reverse().find((m) => m.direction === "out" && !m.kind);
+  if (!last) return [];
+  const out = [];
+  for (const d of last.delivery || []) {
+    if (tickState(d) !== "delivered") continue;
+    const member = (info.members || []).find((m) => !m.self && m.name === d.peer);
+    const p = member?.connected ? member.presence : null;
+    if (!p || (member.jobs || []).length) continue;
+    const key = PRESENCE_KEY[p.session] || (p.auto_answer ? "inbox.presence.worker" : "inbox.presence.none");
+    out.push({ name: d.peer, text: t(key) });
+  }
+  return out;
+}
+
 function activityRow(key) {
   let row = activityNodes.get(key);
   if (!row) {
@@ -608,6 +628,10 @@ function renderActivity(info) {
   }
   const waiting = waitingLine(info);
   if (waiting) place("\nwaiting", "waiting", waiting.name, waiting.text, waiting.since);
+  for (const line of presenceLines(info)) {
+    place("\npresence\n" + line.name, "presence", line.name, line.text, "");
+    activityNodes.get("\npresence\n" + line.name)._parts.who.textContent = line.name + ":";
+  }
   for (const key of [...activityNodes.keys()]) if (!seen.has(key)) activityNodes.delete(key);
   reconcile(activityDock, rows);
   activityDock.hidden = !rows.length;

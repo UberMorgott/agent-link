@@ -132,6 +132,9 @@ type ParticipantState struct {
 	// automatically (JobHeld, with HoldReason and HoldText as Activity), until
 	// it answers them. They do not make the chat active.
 	Held []JobActivity `json:"held,omitempty"`
+	// Presence is what the connected participant says of its session for the
+	// chat's area (PeerPresence); absent when unknown.
+	Presence *AreaPresence `json:"presence,omitempty"`
 }
 
 // ChatInfo describes a chat for the chat list and the chat page.
@@ -898,6 +901,9 @@ func (n *Node) chatInfo(s chatSnapshot, queued map[string]map[string]int) ChatIn
 			ps.Queued = queued[p][s.chat.ID]
 			for i := range ps.Jobs {
 				ps.Jobs[i].Stale = !ok
+			}
+			if pr, known := n.PeerPresence(p, s.chat.Area); known {
+				ps.Presence = &pr
 			}
 		}
 		info.Active = info.Active || len(ps.Jobs) > 0

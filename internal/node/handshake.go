@@ -81,6 +81,8 @@ type frame struct {
 	ID      string   `json:"id,omitempty"`
 	Members []Member `json:"members,omitempty"`
 	PAKE    string   `json:"pake,omitempty"` // hex CPace share (since v0.6)
+	// Presence: this node's sessions per shared area (presence frames, CapPresence).
+	Presence []AreaPresence `json:"presence,omitempty"`
 }
 
 // ProtocolVersion is announced in hello. It only grows; it never gates a
@@ -112,7 +114,7 @@ const (
 )
 
 // Capabilities is the list sent in hello.
-var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE, CapChat, CapReceipts}
+var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE, CapChat, CapReceipts, CapPresence}
 
 // handshakeFrames are the frame types readFrame knows; any other type is skipped.
 var handshakeFrames = map[string]bool{"hello": true, "auth": true, "ok": true}

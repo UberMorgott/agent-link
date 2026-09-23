@@ -1296,6 +1296,29 @@ if (!waitText().includes("inbox.activity.no_session")) throw new Error("no-sessi
 store.patch("sessions", [{ session_id: "s", provider: "claude", folder: "W:/work", area: "", wake: "rewake" }]);
 if (!elements.chat_activity.hidden) throw new Error("a rewake session needs no waiting line: " + waitText());
 
+// The peer's session, under an own message it has but has not read: one muted line.
+const bobPresence = (presence, connected = true, state = "delivered") => ({ info: { id: "c5", participants: ["bob", "local"], closed: false, archived: false, last_seq: 1,
+  members: [{ name: "bob", connected, compatible: true, queued: 0, presence }, { name: "local", self: true, connected: true, compatible: true, queued: 0 }] },
+  items: [{ id: "o1", seq: 1, from: "local", direction: "out", body: "q", created_at: iso(base), delivery: [{ peer: "bob", status: "sent", state }] }] });
+const presenceCases = [
+  [{ area: "", session: "rewake" }, "inbox.presence.rewake"],
+  [{ area: "", session: "next-event", auto_answer: true }, "inbox.presence.next_event"],
+  [{ area: "" }, "inbox.presence.none"],
+  [{ area: "", auto_answer: true }, "inbox.presence.worker"],
+];
+for (const [presence, key] of presenceCases) {
+  chats.c5 = bobPresence(presence);
+  await selectChat("c5", "");
+  const row = elements.chat_activity.children.find((r) => r.className.includes("presence"));
+  if (!row || !text(row).includes("bob:") || !text(row).includes(key) || elements.chat_activity.children.length !== 1) throw new Error("presence line " + key + ": " + waitText());
+}
+for (const c of [bobPresence({ area: "", session: "rewake" }, false, "queued"), bobPresence({ area: "", session: "rewake" }, true, "read"), bobPresence(undefined)]) {
+  chats.c5 = c;
+  await selectChat("c5", "");
+  if (elements.chat_activity.children.some((r) => r.className.includes("presence"))) throw new Error("presence line where none belongs: " + waitText());
+}
+await selectChat("c4", "");
+
 // Closing: the chat leaves the list at once and the view moves to the next chat.
 store.patch("chats", [chats.c4.info, { id: "c3", participants: ["bob", "local"], closed: false, last_seq: 0, members: [] }]);
 elements.chat_close.listeners.click();

@@ -456,6 +456,8 @@ func (a *App) startNode(ctx context.Context) error {
 	} else {
 		n.SetInboundHook(w.ChatsOnly)
 	}
+	// Peers show whether this node's worker answers when no session is open.
+	n.SetAutoAnswer(hasHandler)
 	// A request answered here by hand or by an interactive session stops its job.
 	n.SetLocalReplyHook(func(id string) { w.Answered(id) })
 	var lc net.ListenConfig

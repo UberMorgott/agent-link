@@ -28,8 +28,11 @@ type peerConn struct {
 	app    string   // program version the peer announced, if any
 	port   int      // peer port the peer announced, if any
 	pake   bool     // authenticated by the PAKE (sealed records); false: the legacy handshake
-	c      net.Conn
-	w      *wire
+	// presence is what the peer last said of its sessions, by area (guarded by
+	// Node.mu); nil until its first presence frame.
+	presence map[string]AreaPresence
+	c        net.Conn
+	w        *wire
 
 	wmu     sync.Mutex
 	leaving atomic.Bool // closeAfterTelling ran: frames are no longer sent or handled
@@ -169,6 +172,7 @@ func (n *Node) savePAKESeen() {
 func (n *Node) unregister(pc *peerConn) {
 	n.mu.Lock()
 	gone := n.conns[pc.peer] == pc
+	hadPresence := pc.presence != nil
 	if gone {
 		delete(n.conns, pc.peer)
 		n.offline[pc.peer] = time.Now()
@@ -178,6 +182,9 @@ func (n *Node) unregister(pc *peerConn) {
 	if gone {
 		n.touchSeen(pc.peer)
 		n.changed("peer")
+		if hadPresence {
+			n.changed("chats")
+		}
 	}
 }
 
@@ -236,6 +243,8 @@ func (n *Node) readLoop(pc *peerConn) {
 			beats = true
 		case f.Type == frameMembers:
 			n.mergeMembers(f.Members)
+		case f.Type == framePresence:
+			n.receivePresence(pc, f.Presence)
 		default:
 			n.log.Debug("unknown frame type ignored", "peer", pc.peer, "type", f.Type)
 		}
@@ -298,7 +307,20 @@ func (n *Node) writeLoop(pc *peerConn) {
 		return
 	}
 	sentAt := map[string]time.Time{}
+	var told []AreaPresence // the presence last sent
+	var toldAt time.Time
 	for {
+		// The presence is looked at on every pass (at least every resendTick),
+		// so a session that expires silently is noticed too.
+		if pc.has(CapPresence) && time.Since(toldAt) >= presenceGap {
+			if p := n.presenceFor(pc.areas); told == nil || !slices.Equal(p, told) {
+				if pc.write(frame{Type: framePresence, Presence: p}) != nil {
+					pc.close()
+					return
+				}
+				told, toldAt = p, time.Now()
+			}
+		}
 		msgs, err := n.store.pending(pc.peer)
 		if err != nil {
 			n.log.Error("read outbox", "peer", pc.peer, "err", err)
