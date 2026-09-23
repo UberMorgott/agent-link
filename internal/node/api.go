@@ -197,6 +197,9 @@ func (n *Node) handleInbox(w http.ResponseWriter, r *http.Request) {
 	writeJSONResponse(w, entries)
 }
 
+// ErrBadRequest wraps a chat API request that could not be read.
+var ErrBadRequest = errors.New("bad request")
+
 // ChatRoutes mounts the chat endpoints under prefix (e.g. "/ui/api") on mux,
 // for the control API and the web UI alike. fail answers an error; its code
 // is 404 for an unknown chat, 409 for a closed or read-only one, else 400.
@@ -221,7 +224,7 @@ func (n *Node) ChatRoutes(mux *http.ServeMux, prefix string, fail func(w http.Re
 	mux.HandleFunc("POST "+prefix+"/chats", func(w http.ResponseWriter, r *http.Request) {
 		var req CreateChatRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxFrame)).Decode(&req); err != nil {
-			failed(w, err)
+			failed(w, fmt.Errorf("%w: %w", ErrBadRequest, err))
 			return
 		}
 		info, err := n.CreateChat(req.Participants, strings.TrimSpace(req.Area))
@@ -242,7 +245,7 @@ func (n *Node) ChatRoutes(mux *http.ServeMux, prefix string, fail func(w http.Re
 			if s := r.URL.Query().Get(k); s != "" {
 				v, err := strconv.ParseUint(s, 10, 32)
 				if err != nil {
-					failed(w, fmt.Errorf("invalid %s", k))
+					failed(w, fmt.Errorf("%w: invalid %s", ErrBadRequest, k))
 					return
 				}
 				nums[i] = v
@@ -258,7 +261,7 @@ func (n *Node) ChatRoutes(mux *http.ServeMux, prefix string, fail func(w http.Re
 	mux.HandleFunc("POST "+prefix+"/chats/{id}/archive", func(w http.ResponseWriter, r *http.Request) {
 		var req ArchiveRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxFrame)).Decode(&req); err != nil {
-			failed(w, err)
+			failed(w, fmt.Errorf("%w: %w", ErrBadRequest, err))
 			return
 		}
 		info, err := n.ArchiveChat(r.PathValue("id"), req.Archived)

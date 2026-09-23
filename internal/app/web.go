@@ -56,7 +56,13 @@ func (a *App) URL(page string) string {
 //	GET  /ui/api/dashboard         DashboardSummary
 //	GET  /ui/api/participants      []ParticipantView
 //	GET  /ui/api/events            server-sent state-change events
-//	POST /ui/api/send              node.SendRequest -> node.Message
+//	POST /ui/api/send              node.SendRequest -> node.Message (chat_id + ask: into a chat)
+//	GET  /ui/api/chats?archive=1   []node.ChatInfo, pre-chat history included as legacy chats
+//	POST /ui/api/chats             node.CreateChatRequest -> node.ChatInfo
+//	GET  /ui/api/chats/{id}        node.ChatInfo
+//	GET  /ui/api/chats/{id}/messages?before=SEQ&after=SEQ&limit=50   []node.ChatMessage
+//	POST /ui/api/chats/{id}/close  -> node.ChatInfo
+//	POST /ui/api/chats/{id}/archive  node.ArchiveRequest -> node.ChatInfo
 //	POST /ui/api/members/add       {"addr"} -> keep and dial that address -> Status
 //	POST /ui/api/members/remove    {"name"} -> remove the member everywhere -> Status
 //	POST /ui/api/pick-folder       {"start"} -> native folder dialog -> pickResult
@@ -88,6 +94,8 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("GET /ui/api/participants", a.participants)
 	api.HandleFunc("GET /ui/api/events", a.eventsStream)
 	api.HandleFunc("POST /ui/api/send", a.send)
+	api.HandleFunc("/ui/api/chats", a.chats)
+	api.HandleFunc("/ui/api/chats/", a.chats)
 	api.HandleFunc("POST /ui/api/members/add", a.memberAction(func(r node.MemberRequest) error { return a.AddMember(r.Addr) }))
 	api.HandleFunc("POST /ui/api/members/remove", a.memberAction(func(r node.MemberRequest) error { return a.RemoveMember(r.Name) }))
 	api.HandleFunc("POST /ui/api/pick-folder", a.pickFolder)
@@ -328,7 +336,8 @@ func (a *App) send(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, msg("error.not_running", nil))
 		return
 	}
-	m, err := n.Send(strings.TrimSpace(req.To), req.Body, req.ReplyTo)
+	req.To, req.ChatID = strings.TrimSpace(req.To), strings.TrimSpace(req.ChatID)
+	m, err := n.SendRequest(req)
 	if errors.Is(err, node.ErrAmbiguousPeer) {
 		writeError(w, http.StatusBadRequest, msg("error.ambiguous_peer", map[string]string{"peers": strings.Join(n.Peers(), ", ")}))
 		return
@@ -338,6 +347,38 @@ func (a *App) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, m)
+}
+
+// chats serves the node's chat endpoints under /ui/api (node.ChatRoutes) with
+// the UI's own error sentences. The list includes pre-chat history.
+func (a *App) chats(w http.ResponseWriter, r *http.Request) {
+	n := a.node()
+	if n == nil {
+		if r.Method == http.MethodGet && r.URL.Path == "/ui/api/chats" {
+			writeJSON(w, []node.ChatInfo{})
+			return
+		}
+		writeError(w, http.StatusServiceUnavailable, msg("error.not_running", nil))
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/ui/api/chats" {
+		q := r.URL.Query()
+		q.Set("legacy", "1")
+		r.URL.RawQuery = q.Encode()
+	}
+	mux := http.NewServeMux()
+	n.ChatRoutes(mux, "/ui/api", func(w http.ResponseWriter, code int, err error) {
+		switch text := sendError(err); {
+		case errors.Is(err, node.ErrBadRequest):
+			writeError(w, code, msg("error.bad_request", nil))
+		case text == msg("error.send", nil):
+			a.log.Error("chat request", "path", r.URL.Path, "err", err)
+			writeError(w, http.StatusInternalServerError, msg("error.internal", nil))
+		default:
+			writeError(w, code, text)
+		}
+	})
+	mux.ServeHTTP(w, r)
 }
 
 // ErrPickCancelled means the user closed a Windows dialog without choosing.
@@ -515,6 +556,17 @@ func userError(err error) string {
 
 func sendError(err error) string {
 	switch {
+	case errors.Is(err, node.ErrUnknownChat):
+		return msg("error.unknown_chat", nil)
+	case errors.Is(err, node.ErrChatClosed):
+		return msg("error.chat_closed", nil)
+	case errors.Is(err, node.ErrLegacyChat):
+		return msg("error.chat_legacy", nil)
+	case errors.Is(err, node.ErrNoChatSupport):
+		_, peers, _ := strings.Cut(err.Error(), ": ")
+		return msg("error.chat_unsupported", map[string]string{"peers": peers})
+	case errors.Is(err, node.ErrBadParticipants):
+		return msg("error.chat_participants", nil)
 	case errors.Is(err, node.ErrEmptyBody):
 		return msg("error.empty_body", nil)
 	case errors.Is(err, node.ErrUnknownPeer):
