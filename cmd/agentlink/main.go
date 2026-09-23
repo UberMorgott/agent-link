@@ -50,6 +50,8 @@ const usage = `usage:
   agentlink members --config <path>                (one JSON line per member, this node first)
   agentlink add    --config <path> --addr <ip[:port]>   (dial a member's address; it spreads to all members)
   agentlink remove --config <path> --name <node>        (remove a member from the whole network)
+  agentlink hook <claude|codex> [--event auto]   (run by an agent's hooks: tells the session about new messages; never claims them)
+  agentlink hook install <claude|codex> [--scope user|project]   (add that hook to ~/.claude/settings.json or ~/.codex/hooks.json)
   agentlink update [--check]    (install the latest GitHub release next to this program; --check only reports)
   agentlink version
 Client commands (all but serve) may omit --config: they then use $AGENTLINK_API, else the desktop
@@ -81,6 +83,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	name, rest := args[0], args[1:]
+	if name == "hook" {
+		return runHook(rest, os.Stdin, stdout, stderr)
+	}
 	if name == "chat" {
 		if len(rest) == 0 {
 			_, _ = fmt.Fprintln(stderr, usage)
