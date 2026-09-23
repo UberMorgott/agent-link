@@ -128,4 +128,15 @@ func TestUIChatEndpoints(t *testing.T) {
 	if legacy != 1 {
 		t.Fatalf("list: %s", body)
 	}
+	// The composer of a legacy chat continues it in a real chat.
+	var legacyID string
+	for _, c := range chats {
+		if c.Legacy {
+			legacyID = c.ID
+		}
+	}
+	code, body = alice.do(t, http.MethodPost, "/ui/api/send", `{"chat_id":"`+legacyID+`","body":"go on","ask":["bob"]}`, hdr)
+	if next := decodeAs[node.Message](t, body); code != http.StatusOK || next.ChatID == "" || next.ChatID == chat.ID {
+		t.Fatalf("send to a legacy chat: %d %s", code, body)
+	}
 }

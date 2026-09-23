@@ -27,8 +27,8 @@ var (
 	// ErrBadParticipants: a chat needs at least one other known member, and
 	// only participants other than the author can be asked.
 	ErrBadParticipants = errors.New("invalid chat participants")
-	// ErrLegacyChat: a virtual chat built from pre-chat history is read-only.
-	ErrLegacyChat = errors.New("history from before chats is read-only")
+	// ErrLegacyChat: a virtual chat built from pre-chat history cannot be closed.
+	ErrLegacyChat = errors.New("history from before chats cannot be closed")
 )
 
 // Chat is one conversation with a fixed set of participants (sorted, this node
@@ -102,7 +102,8 @@ type ChatInfo struct {
 	Closed   bool `json:"closed"`
 	Archived bool `json:"archived"`
 	// Legacy marks a virtual chat built from history before chats: one
-	// request with its replies, with one peer. It is read-only.
+	// request with its replies, with one peer. Sending to it continues it in a
+	// real chat (continueLegacy); it cannot be closed.
 	Legacy bool   `json:"legacy,omitempty"`
 	Peer   string `json:"peer,omitempty"` // legacy only: the other side
 	Title  string `json:"title"`          // the first message, shortened
@@ -234,8 +235,12 @@ type ChatSend struct {
 	Parent string
 }
 
-// SendChat posts a message to a chat. Without Ask it only informs.
+// SendChat posts a message to a chat. Without Ask it only informs. A legacy
+// chat is continued (continueLegacy).
 func (n *Node) SendChat(s ChatSend) (Message, error) {
+	if _, peer, ok := parseLegacyChatID(s.ChatID); ok {
+		return n.continueLegacy(peer, s)
+	}
 	m := Message{ChatID: s.ChatID, Body: s.Body, ReplyTo: s.ReplyTo}
 	for _, a := range s.Ask {
 		for p := range strings.SplitSeq(a, ",") {
@@ -254,6 +259,39 @@ func (n *Node) SendChat(s ChatSend) (Message, error) {
 		}
 	}
 	return n.SendMessage(m)
+}
+
+// continueLegacy sends s, addressed to legacy chat s.ChatID with peer, as the
+// next message of that conversation: into the newest open chat of just this
+// node and peer with the same area, a new one when there is none. A peer
+// connected without chat support gets a plain message instead. The reply
+// reference is kept only for the plain message: a real chat does not hold the
+// legacy messages.
+func (n *Node) continueLegacy(peer string, s ChatSend) (Message, error) {
+	legacy, err := n.Chat(s.ChatID)
+	if err != nil {
+		return Message{}, err
+	}
+	if n.Connected(peer) && !n.PeerHas(peer, CapChat) {
+		return n.Send(peer, s.Body, s.ReplyTo)
+	}
+	var open *Chat
+	for _, cs := range n.chats.all() {
+		c := cs.chat
+		if !c.Closed() && c.Area == legacy.Area && slices.Equal(c.Participants, legacy.Participants) &&
+			(open == nil || c.CreatedAt.After(open.CreatedAt)) {
+			open = &c
+		}
+	}
+	if open == nil {
+		info, err := n.CreateChat([]string{peer}, legacy.Area)
+		if err != nil {
+			return Message{}, err
+		}
+		open = &info.Chat
+	}
+	s.ChatID, s.ReplyTo = open.ID, ""
+	return n.SendChat(s)
 }
 
 // sendChat is SendMessage for a chat message or status update.
@@ -695,18 +733,21 @@ func (n *Node) legacyChats() ([]legacyChat, error) {
 		slices.Sort(parts)
 		lc := legacyChat{root: g.root, peer: g.peer}
 		info := ChatInfo{ID: id, Participants: parts, CreatedAt: g.entries[0].CreatedAt, Legacy: true, Peer: g.peer}
-		var job *JobActivity
+		var job, ownJob *JobActivity // the peer's job on our request, ours on its request
 		for i, e := range g.entries {
 			m := e.Message
 			if info.Area == "" {
 				info.Area = m.Area
 			}
 			cm := ChatMessage{Seq: uint64(i + 1), Direction: e.Direction, Message: m}
+			busy := e.IsRequest() && e.Answer == "" && (e.JobStatus == JobQueued || e.JobStatus == JobRunning)
 			if e.Direction == "out" {
 				cm.Delivery = []Delivery{{Peer: g.peer, Status: e.Status}}
-				if e.IsRequest() && e.Answer == "" && (e.JobStatus == JobQueued || e.JobStatus == JobRunning) {
+				if busy {
 					job = &JobActivity{ReplyTo: e.ID, JobStatus: e.JobStatus, Activity: e.Activity, UpdatedAt: e.LastHeard}
 				}
+			} else if busy {
+				ownJob = &JobActivity{ReplyTo: e.ID, JobStatus: e.JobStatus, Activity: e.Activity, UpdatedAt: e.CreatedAt}
 			}
 			lc.msgs = append(lc.msgs, cm)
 		}
@@ -716,16 +757,21 @@ func (n *Node) legacyChats() ([]legacyChat, error) {
 		last := lc.msgs[len(lc.msgs)-1]
 		info.LastMessage, info.LastAt = &last, last.CreatedAt
 		info.Archived = archivedNow(n.chats, id, false, info.LastAt)
-		connected := n.Connected(g.peer)
-		peerState := ParticipantState{Name: g.peer, Connected: connected, Compatible: true}
+		_, caps, connected := n.PeerCaps(g.peer)
+		peerState := ParticipantState{Name: g.peer, Connected: connected, Compatible: !connected || slices.Contains(caps, CapChat)}
 		if job != nil {
 			job.Stale = !connected
 			peerState.Jobs = []JobActivity{*job}
 			info.Active = true
 		}
+		selfState := ParticipantState{Name: n.cfg.Node, Self: true, Connected: true, Compatible: true}
+		if ownJob != nil {
+			selfState.Jobs = []JobActivity{*ownJob}
+			info.Active = true
+		}
 		for _, p := range parts {
 			if p == n.cfg.Node {
-				info.Members = append(info.Members, ParticipantState{Name: p, Self: true, Connected: true, Compatible: true})
+				info.Members = append(info.Members, selfState)
 			} else {
 				info.Members = append(info.Members, peerState)
 			}

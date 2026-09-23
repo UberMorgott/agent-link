@@ -100,7 +100,8 @@ const MaxAutoDepth = 4
 // Entry is a message as listed by the inbox API. Status updates are not
 // listed; an outbound request instead carries the latest job status reported
 // for it (JobStatus), what the handler is doing while it runs (Activity) and
-// the reply body (Answer).
+// the reply body (Answer). An inbound request this node's own handler has not
+// answered yet carries that job's status and activity the same way.
 type Entry struct {
 	Direction string `json:"direction"` // "in" or "out"
 	Status    string `json:"status"`    // in: pending|delivered; out: queued|sent

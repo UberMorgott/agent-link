@@ -202,7 +202,7 @@ var ErrBadRequest = errors.New("bad request")
 
 // ChatRoutes mounts the chat endpoints under prefix (e.g. "/ui/api") on mux,
 // for the control API and the web UI alike. fail answers an error; its code
-// is 404 for an unknown chat, 409 for a closed or read-only one, else 400.
+// is 404 for an unknown chat, 409 for a closed one or closing a legacy one, else 400.
 func (n *Node) ChatRoutes(mux *http.ServeMux, prefix string, fail func(w http.ResponseWriter, code int, err error)) {
 	failed := func(w http.ResponseWriter, err error) {
 		code := http.StatusBadRequest

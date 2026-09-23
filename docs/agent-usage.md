@@ -126,7 +126,9 @@ agentlink chat archive --chat <id> [--undo]
 - `chat list` prints one JSON line per chat: `id`, `participants`, `closed`, `closed_by`,
   `archived`, `title`, `count`, `last_message`, `active`, and `members[]` with `connected`,
   `compatible` and `jobs[]` (what a member's agent is doing now: `job_status`, `activity`).
-  `--legacy` adds read-only virtual chats built from history before chats.
+  `--legacy` adds virtual chats built from plain `send --to` history (id `legacy-<request id>-<member>`).
+  `send --chat <legacy id>` continues one in the open chat of you and that member (a new chat when
+  there is none), or as a plain `send --to` when its version has no chats.
 - A chat stays open until a member closes it; nothing closes it automatically. `close` is
   final for everyone (continue the topic in a new chat); an agent already working finishes and
   its answer is still delivered. Close a chat when its topic is done.

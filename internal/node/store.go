@@ -191,6 +191,13 @@ func (s *store) recent(limit int) ([]Entry, error) {
 		out = append(out, Entry{Direction: "in", Status: status, Peer: m.From, Message: m})
 	}
 	s.mu.Unlock()
+	// own[peer/request id]: this node's latest status update and whether it
+	// replied, for an inbound request its own handler works on.
+	type ownProgress struct {
+		status  *Message
+		replied bool
+	}
+	own := map[string]*ownProgress{}
 	for _, box := range []struct{ dir, status string }{{"outbox", "queued"}, {"sent", "sent"}} {
 		peers, err := os.ReadDir(filepath.Join(s.dir, box.dir))
 		if err != nil {
@@ -207,6 +214,19 @@ func (s *store) recent(limit int) ([]Entry, error) {
 			for _, m := range msgs {
 				if m.ChatID != "" {
 					continue
+				}
+				if m.ReplyTo != "" {
+					key := p.Name() + "/" + m.ReplyTo
+					o := own[key]
+					if o == nil {
+						o = &ownProgress{}
+						own[key] = o
+					}
+					if m.Kind != KindStatus {
+						o.replied = true
+					} else if o.status == nil || m.CreatedAt.After(o.status.CreatedAt) {
+						o.status = &m
+					}
 				}
 				e := Entry{Direction: "out", Status: box.status, Peer: p.Name(), Message: m}
 				if m.IsRequest() {
@@ -228,6 +248,16 @@ func (s *store) recent(limit int) ([]Entry, error) {
 				}
 				out = append(out, e)
 			}
+		}
+	}
+	for i := range out {
+		e := &out[i]
+		if e.Direction != "in" || !e.IsRequest() {
+			continue
+		}
+		if o := own[e.Peer+"/"+e.ID]; o != nil && !o.replied && o.status != nil &&
+			(o.status.JobStatus == JobQueued || o.status.JobStatus == JobRunning) {
+			e.JobStatus, e.Activity = o.status.JobStatus, o.status.Activity
 		}
 	}
 	slices.SortFunc(out, func(a, b Entry) int { return b.CreatedAt.Compare(a.CreatedAt) })

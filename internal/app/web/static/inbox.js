@@ -500,16 +500,23 @@ function renderAsk(info) {
   askHint.hidden = chosen.size > 0;
 }
 
+// A legacy chat is writable too: the node continues it in a real chat with the
+// peer, or with a plain message when the peer's version has no chats.
 function renderComposer(info) {
-  const writable = info && !info.legacy && !info.closed;
+  const writable = info && !info.closed;
   sendForm.hidden = !writable;
-  chatNote.hidden = !info || writable;
+  chatNote.hidden = !info || (writable && !info.legacy);
   chatNoteAction.hidden = true;
   if (!info) return;
-  if (writable) { renderAsk(info); return; }
-  const invite = info.legacy ? [info.peer].filter(Boolean) : others(info);
-  chatNoteText.textContent = info.legacy ? t("inbox.legacy_note")
-    : fmt("inbox.closed_note", { name: authorName(info.closed_by || ""), when: info.closed_at ? when(info.closed_at) : "" });
+  if (writable) renderAsk(info);
+  if (info.legacy) {
+    const old = (info.members || []).some((m) => !m.self && m.connected && !m.compatible);
+    chatNoteText.textContent = fmt(old ? "inbox.legacy_note_old" : "inbox.legacy_note", { name: info.peer || "" });
+    return;
+  }
+  if (writable) return;
+  chatNoteText.textContent = fmt("inbox.closed_note", { name: authorName(info.closed_by || ""), when: info.closed_at ? when(info.closed_at) : "" });
+  const invite = others(info);
   if (invite.length) {
     chatNoteAction.hidden = false;
     chatNoteAction.textContent = fmt("inbox.new_with", { names: invite.join(", ") });
@@ -544,10 +551,18 @@ async function submitMessage() {
   try {
     const body = { chat_id: id, body: composer.value, ask: [...askSet(info)].sort() };
     if (replyTo.value) body.reply_to = replyTo.value;
-    await api("POST", "send", body);
+    const sent = await api("POST", "send", body);
     store.patch("drafts", Object.assign({}, store.get().drafts, { [id]: "" }));
     if (store.get().selectedChat === id) { composer.value = ""; setReply(null); }
     sendResult.textContent = t("inbox.sent");
+    // A legacy chat continues elsewhere: in a real chat, or in the plain
+    // message's own legacy chat.
+    const next = info.legacy ? sent.chat_id || "legacy-" + sent.id + "-" + info.peer : id;
+    if (next !== id) {
+      refreshSlice("chats");
+      if (store.get().selectedChat === id) navigate("inbox", { chat: next });
+      return;
+    }
     await loadChat(id, false);
   } catch (error) { sendResult.textContent = error.message; }
   finally { sending = false; sendButton.disabled = false; sendForm.removeAttribute("aria-busy"); }

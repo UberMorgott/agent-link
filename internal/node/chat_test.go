@@ -168,6 +168,9 @@ func TestChatStatusAndActivity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if got, _ := b.Chat(info.ID); !got.Active || !got.Members[1].Self || len(got.Members[1].Jobs) != 1 {
+		t.Fatalf("b's own view of its job: %+v", got)
+	}
 	eventually(t, "a shows b running", func() bool {
 		got, _ := a.Chat(info.ID)
 		jobs := got.Members[1].Jobs
@@ -377,8 +380,42 @@ func TestChatLegacyPeer(t *testing.T) {
 	if !gotLegacy {
 		t.Fatal("legacy message not delivered")
 	}
-	if chats, _ := a.Chats(false, true); len(chats) != 1 || !chats[0].Legacy || chats[0].Peer != "b" || chats[0].Count != 1 {
+	chats, _ := a.Chats(false, true)
+	if len(chats) != 1 || !chats[0].Legacy || chats[0].Peer != "b" || chats[0].Count != 1 || chats[0].Members[1].Compatible {
 		t.Fatalf("legacy history as chats: %+v", chats)
+	}
+	// Writing into it sends a plain message: b has no chats.
+	if m, err := a.SendChat(ChatSend{ChatID: chats[0].ID, Body: "plain again", Ask: []string{"b"}}); err != nil || m.ChatID != "" || m.To != "b" {
+		t.Fatalf("send to a legacy peer's legacy chat = %+v, %v", m, err)
+	}
+}
+
+// The side that answers a plain request sees its own agent working on it in
+// the legacy chat, until it replies.
+func TestLegacyChatShowsOwnJob(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	eventually(t, "connected", func() bool { return a.Connected("b") && b.Connected("a") })
+	q, err := a.Send("b", "question", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b got it", func() bool { e, _ := b.Recent(0); return len(e) == 1 })
+	if _, err := b.SendMessage(Message{ID: DerivedID(q.ID, "running"), To: "a", ReplyTo: q.ID, Kind: KindStatus, JobStatus: JobRunning, Activity: "thinking"}); err != nil {
+		t.Fatal(err)
+	}
+	id := legacyChatID(q.ID, "a")
+	info, err := b.Chat(id)
+	if err != nil || !info.Active || len(info.Members) != 2 || !info.Members[1].Self {
+		t.Fatalf("b's legacy chat %+v, %v", info, err)
+	}
+	if jobs := info.Members[1].Jobs; len(jobs) != 1 || jobs[0].ReplyTo != q.ID || jobs[0].JobStatus != JobRunning || jobs[0].Activity != "thinking" {
+		t.Fatalf("b's own job %+v", jobs)
+	}
+	if _, err := b.SendMessage(Message{ID: DerivedID(q.ID, "reply"), To: "a", ReplyTo: q.ID, Body: "done", JobStatus: JobCompleted}); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := b.Chat(id); info.Active || len(info.Members[1].Jobs) != 0 {
+		t.Fatalf("b's legacy chat after the reply %+v", info)
 	}
 }
 
@@ -400,8 +437,18 @@ func TestLegacyHistoryAsVirtualChats(t *testing.T) {
 	if err != nil || len(msgs) != 2 || msgs[0].ID != q1.ID || msgs[1].Direction != "in" {
 		t.Fatalf("legacy chat messages %+v %v", msgs, err)
 	}
-	if _, err := a.SendChat(ChatSend{ChatID: id, Body: "x"}); !errors.Is(err, ErrLegacyChat) {
-		t.Fatalf("send to legacy chat: %v", err)
+	// Writing into a legacy chat continues it in a real chat of a and b, the
+	// same one next time.
+	m, err := a.SendChat(ChatSend{ChatID: id, Body: "next question", ReplyTo: q1.ID, Ask: []string{"b"}})
+	if err != nil || m.ChatID == "" || m.ReplyTo != "" || !m.Asks("b") {
+		t.Fatalf("send to legacy chat = %+v, %v", m, err)
+	}
+	if again, err := a.SendChat(ChatSend{ChatID: id, Body: "more"}); err != nil || again.ChatID != m.ChatID {
+		t.Fatalf("second send to legacy chat = %+v, %v", again, err)
+	}
+	eventually(t, "b has the real chat", func() bool { return slices.Contains(chatIDs(b, m.ChatID), m.ID) })
+	if info, _ := b.Chat(m.ChatID); info.Legacy || !slices.Equal(info.Participants, []string{"a", "b"}) {
+		t.Fatalf("b sees %+v", info)
 	}
 	if _, err := a.ArchiveChat(legacyChatID(q2.ID, "b"), true); err != nil {
 		t.Fatal(err)
@@ -409,8 +456,8 @@ func TestLegacyHistoryAsVirtualChats(t *testing.T) {
 	if arch, _ := a.Chats(true, true); len(arch) != 1 || arch[0].ID != legacyChatID(q2.ID, "b") {
 		t.Fatalf("archived legacy chat: %+v", arch)
 	}
-	if chats, _ := a.Chats(false, false); len(chats) != 0 {
-		t.Fatal("legacy chats listed without legacy=1")
+	if chats, _ := a.Chats(false, false); len(chats) != 1 || chats[0].Legacy {
+		t.Fatalf("without legacy=1: %+v", chats)
 	}
 }
 
