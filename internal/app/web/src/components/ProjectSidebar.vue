@@ -68,6 +68,30 @@ const tree = computed(() => (projects.list || []).map((p) => ({
       >
       <strong class="text-[0.95rem] tracking-tight text-highlighted">agentlink</strong>
     </div>
+    <div class="flex flex-col gap-0.5 px-2 pb-2">
+      <button
+        id="new_project"
+        type="button"
+        class="nav-link w-full"
+        @click="projects.openDialog('create', '')"
+      >
+        <UIcon
+          :name="icon('plus')"
+          class="nav-icon size-[1.1rem] flex-none"
+        /><span class="nav-text">{{ t("projects.new") }}</span>
+      </button>
+      <button
+        id="join_project"
+        type="button"
+        class="nav-link w-full"
+        @click="projects.openDialog('join', '')"
+      >
+        <UIcon
+          :name="icon('join')"
+          class="nav-icon size-[1.1rem] flex-none"
+        /><span class="nav-text">{{ t("projects.join") }}</span>
+      </button>
+    </div>
     <section
       class="flex min-h-0 flex-1 flex-col"
       aria-labelledby="projects_label"
