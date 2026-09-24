@@ -98,7 +98,7 @@ foreach ($pair in @(@($a, $b), @($b, $a))) {
     $dir = New-Item -ItemType Directory -Force (Join-Path $data $n.name)
     $n.config = Join-Path $dir 'config.json'
     $n.settings = [ordered]@{
-        node = $n.name; code = $code; peer_addr = "127.0.0.1:$($peer.port)"; handler = 'none'
+        node = $n.name; peer_addr = "127.0.0.1:$($peer.port)"; handler = 'none'
         work_dir = $work.FullName; listen = "127.0.0.1:$($n.port)"
     }
 }
@@ -124,6 +124,11 @@ try {
     Start-Node $a
     Start-Node $b
     foreach ($n in $a, $b) { Invoke-Ui $n POST settings $n.settings | Out-Null }
+    # The settings page no longer takes a code: both join the legacy network by it.
+    foreach ($n in $a, $b) {
+        $r = Invoke-Ui $n POST projects/join @{ invite = $code }
+        if (-not $r.created -or -not $r.project.legacy) { throw "$($n.name): join failed: $($r | ConvertTo-Json -Compress)" }
+    }
     foreach ($n in $a, $b) { Wait-Until { (Invoke-Ui $n GET status).connected } "$($n.name) connected" | Out-Null }
     Wait-Until { -not (Test-Path $legacy) } 'the old agentlink-tray.exe removed' | Out-Null
     $st = Invoke-Ui $b GET update
