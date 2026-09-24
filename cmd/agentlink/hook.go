@@ -424,7 +424,7 @@ func (h *hookSession) accept(b hookBatch) {
 	}
 	maps.Copy(h.st.Active, b.chats)
 	h.st.Activity = "" // a new batch always shows
-	h.report("thinking", "читает сообщения", "")
+	h.report("read", "читает сообщения", "")
 }
 
 // formatBatch turns an unread page into the text for the model and the line

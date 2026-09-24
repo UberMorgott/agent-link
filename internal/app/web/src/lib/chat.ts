@@ -71,9 +71,14 @@ export function activityText(job: Job): string {
   const text = info?.text || job.activity || ''
   const typeKey = info?.type ? "inbox.activity.type." + info.type : ''
   const verb = typeKey && t(typeKey) !== typeKey ? t(typeKey) : ''
-  // A step that only names its type ("thinking") reads as the verb alone.
-  if (verb && text && text.toLowerCase() !== info!.type!.toLowerCase()) return verb + ' ' + text
-  return verb || text || t("inbox.activity.working")
+  // A step that only names its type ("thinking") reads as the verb alone; a
+  // text that already starts with the verb (session hooks send «думает»,
+  // «правит x.go») is shown as it is, never with the verb twice.
+  if (!verb || !text) return verb || text || t("inbox.activity.working")
+  const lower = text.toLowerCase(), v = verb.toLowerCase()
+  if (lower === info!.type!.toLowerCase()) return verb
+  if (lower === v || lower.startsWith(v + ' ')) return text
+  return verb + ' ' + text
 }
 
 export function workingLines(chat: ChatInfo, self: string): string[] {
