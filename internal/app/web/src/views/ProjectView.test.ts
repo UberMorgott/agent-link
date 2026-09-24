@@ -45,9 +45,6 @@ describe('a project page', () => {
     $('[data-project="' + SITE + '"] .project-new-chat')!.click()
     await settle()
     expect($('#new_chat_form')).not.toBeNull()
-    const bob = $('#new_chat_bob')!
-    bob.click()
-    await settle()
     $<HTMLButtonElement>('#new_chat_create')!.click()
     await settle()
     expect(calls).toContain('POST projects/' + SITE + '/chats')

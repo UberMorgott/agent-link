@@ -259,6 +259,8 @@ export const useInboxStore = defineStore('inbox', () => {
 
   // --- starting a chat ---
 
+  // showNewChat opens the picker of a project's members: those of preselect,
+  // or else everyone (D5); being in a chat never means being asked.
   function showNewChat(pid: string, preselect: string[] = []) {
     saveDraft(openKey())
     newChatOpen.value = true
@@ -266,7 +268,7 @@ export const useInboxStore = defineStore('inbox', () => {
     const people: NewChatPerson[] = (view?.members || []).filter((m) => !m.self).map((m) => ({ name: m.name, online: !!m.online }))
     for (const name of preselect) if (!people.some((m) => m.name === name)) people.push({ name, online: false })
     newChatPeople.value = people
-    newChatChosen.value = preselect.filter((name) => people.some((m) => m.name === name))
+    newChatChosen.value = preselect.length ? preselect.filter((name) => people.some((m) => m.name === name)) : people.map((m) => m.name)
     newChatResult.value = ''
     project.value = pid
     focusNewChat.value++

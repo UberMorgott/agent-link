@@ -3,7 +3,7 @@ import UButton from '@nuxt/ui/components/Button.vue'
 import UCheckbox from '@nuxt/ui/components/Checkbox.vue'
 import UModal from '@nuxt/ui/components/Modal.vue'
 import { whoColor } from '@/lib/chat'
-import { t } from '@/lib/runtime'
+import { fmt, t } from '@/lib/runtime'
 import { useInboxStore } from '@/stores/inbox'
 
 // Starting a chat in a project: whom it is with. The list is fixed once the
@@ -48,17 +48,25 @@ function toggle(name: string, on: boolean | 'indeterminate') {
               :id="'new_chat_' + person.name"
               :key="person.name"
               :label="person.name"
+              :description="t(person.online ? 'inbox.member.online' : 'inbox.member.away')"
               :model-value="inbox.newChatChosen.includes(person.name)"
               class="choice"
               :class="{ on: person.online }"
               :style="{ '--who': whoColor(person.name) }"
-              :ui="{ label: 'text-[var(--who)]' }"
+              :ui="{ label: 'text-[var(--who)]', description: person.online ? 'text-[var(--app-on)]' : '' }"
               @update:model-value="toggle(person.name, $event)"
             />
           </span>
         </div>
         <p
-          v-if="!inbox.newChatPeople.length"
+          v-if="inbox.newChatPeople.length"
+          id="new_chat_count"
+          class="hint"
+        >
+          {{ fmt("inbox.new.count", { n: inbox.newChatChosen.length, total: inbox.newChatPeople.length }) }}
+        </p>
+        <p
+          v-else
           id="new_chat_empty"
           class="hint"
         >

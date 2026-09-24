@@ -7,6 +7,7 @@ export const icons: Record<string, string> = {
   settings: 'i-lucide-settings',
   plus: 'i-lucide-plus',
   archive: 'i-lucide-archive',
+  finish: 'i-lucide-circle-check',
   back: 'i-lucide-chevron-left',
   info: 'i-lucide-info',
   send: 'i-lucide-arrow-up',

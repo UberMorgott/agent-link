@@ -230,9 +230,9 @@ function back() {
           <UButton
             v-if="canClose"
             id="chat_close"
-            :icon="icon('archive')"
-            :aria-label="t('inbox.close')"
-            :title="t('inbox.close')"
+            :icon="icon(info?.legacy ? 'archive' : 'finish')"
+            :aria-label="t(info?.legacy ? 'inbox.close.legacy' : 'inbox.close')"
+            :title="t(info?.legacy ? 'inbox.close.legacy' : 'inbox.close')"
             color="neutral"
             variant="ghost"
             size="sm"
