@@ -11,7 +11,8 @@
 // the "digest" field ("sha256:<hex>") GitHub computes on upload; without it
 // nothing is installed. Then the download from github.com, a SHA-256 compare
 // against that digest and the rename dance that works on a running Windows
-// executable.
+// executable. The changelog (notes.go) is the other API call, cached, and
+// asked for only when someone opens it.
 //
 // The download is verified before any file on disk is touched, and a failed
 // swap puts the old executable back. Nothing here writes to stdout or stderr.
@@ -285,12 +286,20 @@ func (r *Release) digest(ctx context.Context, name string) (string, error) {
 	return "", fmt.Errorf("release v%s has no %s for this platform", r.version, name)
 }
 
-// Apply fetches the asset's SHA-256 digest from the API, downloads the
-// release executable from github.com, verifies it and swaps it in for
-// exePath, which must be an agentlink executable. It returns the replaced
-// path. A rate limit, a missing or wrong digest aborts before anything on
-// disk is touched.
+// Progress reports a running download: done bytes of total (-1: unknown).
+type Progress func(done, total int64)
+
+// Apply is Install without progress reports.
 func (r *Release) Apply(ctx context.Context, exePath string) ([]string, error) {
+	return r.Install(ctx, exePath, nil)
+}
+
+// Install fetches the asset's SHA-256 digest from the API, downloads the
+// release executable from github.com (reporting to progress, when not nil),
+// verifies it and swaps it in for exePath, which must be an agentlink
+// executable. It returns the replaced path. A rate limit, a missing or wrong
+// digest aborts before anything on disk is touched.
+func (r *Release) Install(ctx context.Context, exePath string, progress Progress) ([]string, error) {
 	if base := filepath.Base(exePath); !strings.EqualFold(base, fileName(Program)) {
 		return nil, fmt.Errorf("%s is not the agentlink executable (%s)", base, fileName(Program))
 	}
@@ -303,7 +312,7 @@ func (r *Release) Apply(ctx context.Context, exePath string) ([]string, error) {
 	if err := requireHTTPS(dl); err != nil {
 		return nil, err
 	}
-	resp, err := httpGet(ctx, client, dl, "application/octet-stream", maxAssetSize)
+	resp, err := fetch(ctx, client, dl, "application/octet-stream", maxAssetSize, progress)
 	if err != nil {
 		return nil, fmt.Errorf("download %s: %w", name, err)
 	}
@@ -458,6 +467,12 @@ type response struct {
 // most limit bytes). client follows redirects, which is how a GitHub release
 // download resolves to its storage host; noRedirect does not.
 func httpGet(ctx context.Context, c *http.Client, u, accept string, limit int64) (*response, error) {
+	return fetch(ctx, c, u, accept, limit, nil)
+}
+
+// fetch is httpGet that reports the body of a 200 response to progress as
+// it arrives (when not nil).
+func fetch(ctx context.Context, c *http.Client, u, accept string, limit int64, progress Progress) (*response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -470,7 +485,13 @@ func httpGet(ctx context.Context, c *http.Client, u, accept string, limit int64)
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+	src := io.LimitReader(resp.Body, limit)
+	if progress != nil && resp.StatusCode == http.StatusOK {
+		total := resp.ContentLength // -1 when the server does not say
+		progress(0, total)
+		src = &counter{r: src, total: total, report: progress}
+	}
+	body, err := io.ReadAll(src)
 	if err != nil {
 		return nil, err
 	}
@@ -478,6 +499,23 @@ func httpGet(ctx context.Context, c *http.Client, u, accept string, limit int64)
 		return nil, fmt.Errorf("response from %s exceeds %d bytes", u, limit)
 	}
 	return &response{code: resp.StatusCode, header: resp.Header, body: body}, nil
+}
+
+// counter reports every read of r to report.
+type counter struct {
+	r      io.Reader
+	done   int64
+	total  int64
+	report Progress
+}
+
+func (c *counter) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if n > 0 {
+		c.done += int64(n)
+		c.report(c.done, c.total)
+	}
+	return n, err
 }
 
 // compareVer compares two "X.Y.Z[-pre][+build]" versions (a leading "v"
