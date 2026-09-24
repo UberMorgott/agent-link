@@ -322,3 +322,23 @@ func TestProjectsJoinFlow(t *testing.T) {
 	}
 	alice.wantError(t, http.MethodPost, "projects/"+p.ID+"/send", map[string]any{"chat_id": chat.ID, "body": "ещё"}, http.StatusConflict, "chat_closed")
 }
+
+// Joining the legacy network while an agent answers needs its working folder:
+// without one the join answers 400 work_dir, with dir it is saved.
+func TestJoinLegacyNeedsWorkDir(t *testing.T) {
+	h := projectsHarness(t, "alice", "")
+	h.app.mu.Lock()
+	h.app.s.Handler, h.app.s.HandlerCommand, h.app.s.WorkDir = "claude", []string{"claude"}, ""
+	h.app.mu.Unlock()
+	h.wantError(t, http.MethodPost, "projects/join", map[string]any{"invite": "K7Q2-MXPA-4RTB"}, http.StatusBadRequest, "work_dir")
+	h.wantError(t, http.MethodPost, "projects/join", map[string]any{"invite": "K7Q2-MXPA-4RTB", "dir": "relative"}, http.StatusBadRequest, "work_dir")
+	dir := t.TempDir()
+	var jr JoinResult
+	if code, raw := h.api(t, http.MethodPost, "projects/join", map[string]any{"invite": "K7Q2-MXPA-4RTB", "dir": dir}, &jr); code != http.StatusOK ||
+		!jr.Created || !jr.Project.Legacy || jr.Project.Dir != dir {
+		t.Fatalf("join with dir: %d %s", code, raw)
+	}
+	if got := h.app.Settings().WorkDir; got != dir {
+		t.Fatalf("work_dir %q, want %q", got, dir)
+	}
+}

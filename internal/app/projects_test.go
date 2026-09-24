@@ -28,9 +28,10 @@ var contractErrors = map[string]int{
 	"chat_participants": http.StatusBadRequest, "empty_body": http.StatusBadRequest, "bad_request": http.StatusBadRequest,
 	"too_many_projects": http.StatusConflict, "conflict_secret": http.StatusConflict, "legacy_exists": http.StatusConflict,
 	"legacy_rename": http.StatusConflict, "project_busy": http.StatusConflict, "legacy_invite_unavailable": http.StatusConflict,
-	"chat_legacy": http.StatusConflict, "chat_closed": http.StatusConflict,
+	"chat_legacy": http.StatusConflict, "chat_closed": http.StatusConflict, "work_dir": http.StatusBadRequest,
 	"project_needs_folder": http.StatusConflict, "folder_not_in_project": http.StatusConflict,
 	"not_found": http.StatusNotFound, "unknown_chat": http.StatusNotFound,
+	"internal": http.StatusInternalServerError,
 }
 
 // contractValues builds every DTO from a fixed state.
@@ -147,7 +148,7 @@ func TestContractFixtures(t *testing.T) {
 			t.Fatalf("%s: status %d", code, rec.Code)
 		}
 		var body apiError
-		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Code != code || body.Error == uiStrings["error.internal"] {
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Code != code || body.Error != uiStrings["error."+code] {
 			t.Fatalf("%s: body %s", code, rec.Body)
 		}
 		data, err := json.MarshalIndent(map[string]any{"status": status, "body": body}, "", "  ")

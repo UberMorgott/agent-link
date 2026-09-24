@@ -351,7 +351,7 @@ Participants are identified by **name** in the UI (unique inside a context);
 | --- | --- | --- | --- | --- |
 | GET | `projects` | – | `ProjectView[]` (projects by display name, legacy last) | – |
 | POST | `projects` | `{name, dir?, alias?}` | `ProjectView` | 400 `name`/`alias`/`dir`/`dir_taken`, 409 `too_many_projects` |
-| POST | `projects/join` | `{invite, addr?}` | `JoinResult` | 400 `invite`/`addr`, 409 `conflict_secret`/`too_many_projects`/`legacy_exists` |
+| POST | `projects/join` | `{invite, addr?, dir?}` | `JoinResult` | 400 `invite`/`addr`/`work_dir`, 409 `conflict_secret`/`too_many_projects`/`legacy_exists` |
 | GET | `projects/{pid}` | – | `ProjectView` | 404 `not_found` |
 | POST | `projects/{pid}/name` | `{name}` | `ProjectView` | 400 `name`, 404, 409 `legacy_rename` |
 | POST | `projects/{pid}/binding` | `{alias?, dir?}` (absent = keep; `""` clears) | `ProjectView` | 400 `alias`/`dir`/`dir_taken`, 404, 409 `project_busy` |
@@ -692,3 +692,18 @@ traversal, dynamic chat participants, converting the legacy network.
   button or «беседа» (`link.no_code`, `link.weak_code`, `tray.weak_code`,
   `error.chat_closed`, `error.unknown_chat`); `scripts/e2e-tray.ps1` still sets
   `settings.code`.
+
+### Integration (after Tracks A and B)
+
+- The frontend follows A14: every coded error reads as the page's `error.<code>`,
+  else the app's sentence (`500 internal` included); the legacy network's folder
+  dialog sends `dir` only (no alias field); `problem` may be `wrong_project`.
+- `projects/join` takes `dir?`: the legacy network's working folder. A code
+  joined while an agent answers and no working folder is set answers
+  `400 work_dir`; the join dialog then asks for the folder and sends it (a
+  relative `dir` is `400 work_dir`, an invite ignores it). Fixtures
+  `error_work_dir.json` and `error_internal.json` join the contract;
+  `error.chat_participants` now also covers unknown participants.
+- A project the page left is not read again on the app's late `project:<pid>`
+  events (no 404s); a chat started or finished by this member reads «вы начали
+  чат» / «вы завершили чат».

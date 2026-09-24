@@ -294,6 +294,10 @@ func (a *App) joinProject(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Invite string `json:"invite"`
 		Addr   string `json:"addr"`
+		// Dir is the legacy network's working folder, for a code joined while
+		// an agent answers (settings.Validate needs one then); an invite
+		// ignores it.
+		Dir string `json:"dir"`
 	}
 	if !decode(w, r, &req) {
 		return
@@ -307,13 +311,18 @@ func (a *App) joinProject(w http.ResponseWriter, r *http.Request) {
 		}
 		addr = norm
 	}
+	dir := strings.TrimSpace(req.Dir)
+	if dir != "" && !filepath.IsAbs(dir) {
+		writeCodedError(w, http.StatusBadRequest, "work_dir")
+		return
+	}
 	invite := strings.TrimSpace(req.Invite)
 	if inv, err := config.ParseInvite(invite); err == nil {
 		a.joinByInvite(w, r, inv, addr)
 		return
 	}
 	if code, ok := config.NormalizeCode(invite); ok {
-		a.joinLegacy(w, r, code, addr)
+		a.joinLegacy(w, r, code, addr, filepathClean(dir))
 		return
 	}
 	writeCodedError(w, http.StatusBadRequest, "invite")
@@ -354,7 +363,7 @@ func (a *App) joinByInvite(w http.ResponseWriter, r *http.Request, inv config.In
 
 // joinLegacy sets the legacy network's code when none is set and starts it;
 // the code already set opens it (created: false).
-func (a *App) joinLegacy(w http.ResponseWriter, r *http.Request, code, addr string) {
+func (a *App) joinLegacy(w http.ResponseWriter, r *http.Request, code, addr, dir string) {
 	a.mu.Lock()
 	created, err := false, error(nil)
 	switch {
@@ -364,7 +373,7 @@ func (a *App) joinLegacy(w http.ResponseWriter, r *http.Request, code, addr stri
 		writeCodedError(w, http.StatusConflict, "legacy_exists")
 		return
 	default:
-		created, err = true, a.startLegacyLocked(r.Context(), code, addr)
+		created, err = true, a.startLegacyLocked(r.Context(), code, addr, dir)
 	}
 	v, _ := a.projectViewLocked(LegacyProjectID)
 	a.mu.Unlock()
@@ -378,9 +387,12 @@ func (a *App) joinLegacy(w http.ResponseWriter, r *http.Request, code, addr stri
 	writeJSON(w, JoinResult{Project: v, Created: created})
 }
 
-func (a *App) startLegacyLocked(ctx context.Context, code, addr string) error {
+func (a *App) startLegacyLocked(ctx context.Context, code, addr, dir string) error {
 	s := a.s
 	s.Code = code
+	if dir != "" {
+		s.WorkDir = dir
+	}
 	if addr != "" {
 		s = s.WithPeer(addr)
 	}
