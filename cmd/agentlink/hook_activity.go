@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -54,6 +55,36 @@ func (h *hookSession) report(typ, text, phase string) {
 	}
 	if posted {
 		h.st.Activity, h.st.ActivityAt = text, now
+	}
+}
+
+// noteSent makes chatID, where session sid just wrote message msgID
+// (agentlink send inside the session), a chat the session reports its
+// activity to until its turn ends: everyone in the chat sees what the agent
+// that wrote does next. Only for a session its hooks registered here.
+func noteSent(env hookEnv, sid, chatID, msgID string) {
+	for _, client := range []string{hookClaude, hookCodex} {
+		path := hookStatePath(env.dir, client, sid)
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		unlock, err := lockFile(path + ".lock")
+		if err != nil {
+			return
+		}
+		defer unlock()
+		st := loadHookState(path)
+		if st.Ended || st.Unbound || st.Folder == "" {
+			return
+		}
+		if st.Active == nil {
+			st.Active = map[string]string{}
+		}
+		st.Active[chatID] = msgID
+		st.Activity, st.ActivityAt = "", time.Time{} // shows at once
+		(&hookSession{env: env, st: &st, sid: sid, folder: st.Folder}).report("thinking", "думает", "")
+		_ = saveHookState(path, st)
+		return
 	}
 }
 

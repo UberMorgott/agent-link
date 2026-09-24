@@ -207,8 +207,12 @@ it), so the node knows someone is there. All on the control API (loopback, no to
   `--session`, default `$CLAUDE_CODE_SESSION_ID` / `$CODEX_THREAD_ID`), following `reply_to`
   back, or a message assigned to it, goes to that session while it lives; anything else to the
   first session that `claim`s it. A claim holds until the ack (or the session ends).
-- `activity` shows the asker what the session does (like the worker's activity) for
+- `activity` shows every member what the session does (like the worker's activity) for
   `reply_to` (default: the chat's newest message from another member); `phase: "idle"` ends it.
+  It carries the session's short id (`activity_info.session`): several sessions of one node
+  show one line each, this node's own ones too («ваш агент (682d3b39) правит x.go»). The hook
+  reports it for the chats a session read messages of, and for a chat it wrote in with
+  `agentlink send` (on its own message), until its turn ends.
 
 ## Hearing about messages in a live session (hooks)
 

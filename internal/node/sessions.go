@@ -306,7 +306,8 @@ func (n *Node) SessionActivity(chatID string, req ActivityRequest) (Message, err
 	}
 	s.LastSeen = now
 	prev, had := r.last[req.SessionID]
-	a := ActivityState{ID: req.ID, Type: req.Type, Text: req.Text, Phase: req.Phase, StartedAt: now, Seq: uint64(now.UnixNano())}
+	a := ActivityState{ID: req.ID, Type: req.Type, Text: req.Text, Phase: req.Phase, StartedAt: now, Seq: uint64(now.UnixNano()),
+		Session: ShortSession(req.SessionID)}
 	if had && prev.ID == a.ID && prev.Type == a.Type && (prev.Text == a.Text || a.Phase == PhaseDone) {
 		a.StartedAt = prev.StartedAt
 	}
@@ -328,7 +329,9 @@ func (n *Node) SessionActivity(chatID string, req ActivityRequest) (Message, err
 	m := Message{ID: DerivedID(req.ReplyTo, n.cfg.Node+"/session/"+req.SessionID+"/"+strconv.FormatUint(a.Seq, 10)),
 		ChatID: c.ID, ReplyTo: req.ReplyTo, Kind: KindStatus, JobStatus: JobRunning, Activity: a.Text}
 	if a.Phase == PhaseIdle {
+		// The end names the session too: it ends that session's line only.
 		m.JobStatus, m.Activity = JobCompleted, ""
+		m.ActivityInfo = &ActivityState{Phase: PhaseIdle, Seq: a.Seq, Session: a.Session}
 		r.mu.Lock()
 		delete(r.last, req.SessionID)
 		r.mu.Unlock()
@@ -336,4 +339,13 @@ func (n *Node) SessionActivity(chatID string, req ActivityRequest) (Message, err
 		m.ActivityInfo = &a
 	}
 	return n.SendMessage(m)
+}
+
+// ShortSession is the short name of a session id its activity carries: its
+// first 8 characters.
+func ShortSession(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }

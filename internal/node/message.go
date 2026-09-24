@@ -86,6 +86,10 @@ type ActivityState struct {
 	Phase     string    `json:"phase,omitempty"` // PhaseRunning or PhaseDone
 	StartedAt time.Time `json:"started_at,omitzero"`
 	Seq       uint64    `json:"seq,omitempty"`
+	// Session names the live session reporting (a short id), so several
+	// sessions of one node show one line each; empty for the worker. Older
+	// peers ignore it and show one line per node and request.
+	Session string `json:"session,omitempty"`
 }
 
 // Job statuses carried in Message.JobStatus.

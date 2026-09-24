@@ -47,6 +47,8 @@ export interface ActivityInfo {
   text?: string
   phase?: string
   started_at?: string
+  // session: the reporting live session's short id (none for the worker).
+  session?: string
 }
 
 export interface Job {

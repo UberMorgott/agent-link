@@ -258,6 +258,75 @@ func TestAgentReplyAndSilenceEndActivity(t *testing.T) {
 	}
 }
 
+// Every live session of a node shows its own line, here and at the peers: two
+// sessions on one request are two jobs, one's end ends only its line, and the
+// agent's reply ends them all. A session's work on its own message (what it
+// wrote in the chat) shows too.
+func TestSessionActivityOneLinePerSession(t *testing.T) {
+	a, b, _ := trio(t)
+	info, err := a.CreateChat([]string{"b"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b knows the chat", func() bool { _, ok := b.ChatOf(info.ID); return ok })
+	dir := t.TempDir()
+	for _, id := range []string{"sess-one-1", "sess-two-2"} {
+		if _, err := b.RegisterSession(SessionRequest{SessionID: id, Provider: "claude", Folder: dir}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "do it", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the request", func() bool { return slices.Contains(chatIDs(b, info.ID), q.ID) })
+	report := func(sid, text, phase string) {
+		t.Helper()
+		if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: q.ID, Type: "edit", Text: text, Phase: phase}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sessions := func(n *testNode) []string {
+		got, _ := n.Chat(info.ID)
+		var out []string
+		for _, m := range got.Members {
+			for _, j := range m.Jobs {
+				if m.Name == "b" && j.ActivityInfo != nil {
+					out = append(out, j.ActivityInfo.Session+":"+j.ActivityInfo.Text)
+				}
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	report("sess-one-1", "правит a.go", "")
+	report("sess-two-2", "правит b.go", "")
+	both := []string{"sess-one:правит a.go", "sess-two:правит b.go"}
+	for _, n := range []*testNode{a, b} {
+		eventually(t, n.cfg.Node+" shows both sessions", func() bool { return slices.Equal(sessions(n), both) })
+	}
+	report("sess-one-1", "готово", PhaseIdle)
+	for _, n := range []*testNode{a, b} {
+		eventually(t, n.cfg.Node+" shows the other session only", func() bool { return slices.Equal(sessions(n), both[1:]) })
+	}
+	if _, err := b.SendChat(ChatSend{ChatID: info.ID, ReplyTo: q.ID, Body: "done", AuthorKind: AuthorAgent}); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []*testNode{a, b} {
+		eventually(t, n.cfg.Node+": the agent's reply ends every line", func() bool { return len(sessions(n)) == 0 })
+	}
+
+	// b's session wrote in the chat: its next steps show on its own message.
+	own, err := b.SendChat(ChatSend{ChatID: info.ID, Body: "and one more thing", AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: "sess-one-1", ReplyTo: own.ID, Type: "command", Text: "запускает go"}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a sees b's agent after it wrote", func() bool { return slices.Equal(sessions(a), []string{"sess-one:запускает go"}) })
+}
+
 func TestChatCloseRace(t *testing.T) {
 	a, b, c := trio(t)
 	info, err := a.CreateChat([]string{"b", "c"}, "")

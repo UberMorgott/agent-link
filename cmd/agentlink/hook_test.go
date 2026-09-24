@@ -336,6 +336,43 @@ func TestHookDeliversOnlyClaimedMessages(t *testing.T) {
 	}
 }
 
+// The chat shows what this node's own agent does too: a session that wrote in
+// a chat (agentlink send) or read a message of it (a reply, not only a request
+// to it) reports its activity there until its turn ends.
+func TestHookActivityOfTheWritingSession(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	noteSent(c.env, c.sid, "c9", "own1")
+	if st := c.state(hookClaude); st.Active["c9"] != "own1" {
+		t.Fatalf("active after send: %+v", st.Active)
+	}
+	c.run(hookClaude, evPreTool, `,"tool_name":"Edit","tool_input":{"file_path":"x.go"}`)
+	c.run(hookClaude, evStop)
+	if got := c.f.texts(); !slices.Equal(got, []string{"думает|", "правит x.go|", "готово|idle"}) {
+		t.Fatalf("activity %v", got)
+	}
+	for i, a := range c.f.activity {
+		if c.f.actChat[i] != "c9" || a.ReplyTo != "own1" || a.SessionID != c.sid {
+			t.Fatalf("activity %d: %s %+v", i, c.f.actChat[i], a)
+		}
+	}
+	// A session unknown to the hooks here (or ended) notes nothing.
+	noteSent(c.env, "someone-else", "c9", "own2")
+	c.run(hookClaude, evSessionEnd)
+	noteSent(c.env, c.sid, "c9", "own3")
+	if n := len(c.f.activity); n != 3 {
+		t.Fatalf("activity after an unknown or ended session's send: %v", c.f.texts())
+	}
+
+	// A reply that asks nothing still makes its chat show the reader's work.
+	c = newHookCase(t)
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "done, see PR 7", false))
+	c.run(hookClaude, evSessionStart)
+	if st := c.state(hookClaude); st.Active["c1"] != "m1" || !slices.Equal(c.f.texts(), []string{"читает сообщения|"}) {
+		t.Fatalf("reading a reply: active %v activity %v", st.Active, c.f.texts())
+	}
+}
+
 func TestHookOwnHumanIsInformation(t *testing.T) {
 	c := newHookCase(t)
 	m := chatMsg("c1", "me", "human", "I told everyone: ship on Friday", false)

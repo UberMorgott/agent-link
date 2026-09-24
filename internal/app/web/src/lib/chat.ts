@@ -112,8 +112,19 @@ export function liveJobs(jobs: Job[] | undefined, now: number): Job[] {
 
 export function workingLines(chat: ChatInfo, self: string): string[] {
   const out: string[] = []
-  for (const m of chat.members || []) for (const job of liveJobs(m.jobs, Date.now())) out.push(agentName(m.name, self) + ' ' + activityText(job))
+  for (const m of chat.members || []) {
+    const jobs = liveJobs(m.jobs, Date.now())
+    for (const job of jobs) out.push(jobAgent(m.name, self, job, jobs) + ' ' + activityText(job))
+  }
   return out
+}
+
+// jobAgent names the agent of a job: with its session when the member's live
+// jobs come from more than one session, so each session reads as its own line.
+export function jobAgent(name: string, self: string, job: Job, jobs: Job[]): string {
+  const sessions = new Set(jobs.map((j) => j.activity_info?.session || ''))
+  const session = job.activity_info?.session
+  return agentName(name, self) + (session && sessions.size > 1 ? ' (' + session + ')' : '')
 }
 
 export type MemberState = 'on' | 'old' | 'away'
@@ -253,12 +264,13 @@ export function presenceLines(info: ChatInfo | null, messages: ChatMessage[], no
 export function activityLines(info: ChatInfo | null, messages: ChatMessage[], self: string, sessions: Session[], settings: AppSettings | null, now = Date.now()): ActivityLine[] {
   const rows: ActivityLine[] = []
   for (const member of info?.members || []) {
-    for (const job of liveJobs(member.jobs, now)) {
+    const jobs = liveJobs(member.jobs, now)
+    for (const job of jobs) {
       const queued = job.job_status === 'queued'
       rows.push({
-        key: member.name + '\n' + job.reply_to,
+        key: member.name + '\n' + job.reply_to + '\n' + (job.activity_info?.session || ''),
         cls: job.stale ? 'stale' : queued ? 'queued' : 'running',
-        name: member.name, who: agentName(member.name, self), text: activityText(job), since: jobStart(job, messages),
+        name: member.name, who: jobAgent(member.name, self, job, jobs), text: activityText(job), since: jobStart(job, messages),
         heard: queued ? undefined : job.heard_at || job.updated_at,
       })
     }

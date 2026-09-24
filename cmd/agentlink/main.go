@@ -358,6 +358,11 @@ func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
 		return err
 	}
+	if m.ChatID != "" && r.SessionID != "" {
+		if p, err := settings.DefaultPath(); err == nil {
+			noteSent(hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks")}, r.SessionID, m.ChatID, m.ID)
+		}
+	}
 	if m.ChatID != "" && a.chat == "" {
 		// send --to continued the chat with that member; stdout stays the id alone.
 		fmt.Fprintln(os.Stderr, "chat "+m.ChatID)

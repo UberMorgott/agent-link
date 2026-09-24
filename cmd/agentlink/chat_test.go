@@ -180,6 +180,10 @@ func TestSendInsideJobUsesChatContext(t *testing.T) {
 func TestSendNamesItsSession(t *testing.T) {
 	f := newFakeAPI(t)
 	t.Setenv(envJobID, "")
+	dir := t.TempDir() // the hook state send notes the chat in
+	t.Setenv("AppData", dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir)
 	f.run("send", "--to", "b", "--body", "hi")
 	if f.send.SessionID != "" {
 		t.Fatalf("outside a session: %+v", f.send)

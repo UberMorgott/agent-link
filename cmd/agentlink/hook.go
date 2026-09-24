@@ -11,8 +11,10 @@ package main
 //     acknowledge them (POST /ack), so each is delivered once. Stop blocks
 //     only when there is something new.
 //   - The person at the session sees a short line (systemMessage).
-//   - While the session works on a batch it accepted, PreToolUse, UserPromptSubmit
-//     and Stop report what it does (POST /chats/{id}/activity).
+//   - While the session works on a batch it read, or after it wrote in a chat
+//     (agentlink send, noteSent), PreToolUse, UserPromptSubmit and Stop report
+//     what it does to those chats (POST /chats/{id}/activity), one line per
+//     session.
 //   - Claude Code also runs `agentlink hook claude --wait` in the background
 //     (asyncRewake): it waits for unread messages and wakes an idle session;
 //     see hook_wait.go. Codex has no such hook: it hears of messages at its
@@ -104,8 +106,8 @@ type hookState struct {
 	// LastEvent is the latest hook event (the waiter wakes only an idle session).
 	LastEvent   string    `json:"last_event,omitempty"`
 	LastEventAt time.Time `json:"last_event_at,omitzero"`
-	// Active: chats whose requests this session accepted and works on, with
-	// the request activity is reported for.
+	// Active: chats this session read a batch of or wrote in this turn, with
+	// the message activity is reported for.
 	Active map[string]string `json:"active,omitempty"`
 	// Activity is the last activity posted, for coalescing.
 	Activity   string    `json:"activity,omitempty"`
@@ -378,7 +380,8 @@ type hookBatch struct {
 	text   string   // for the model
 	notice string   // for the person
 	ids    []string // to acknowledge
-	// chats: chat id -> the request of it this session is to answer.
+	// chats: chat id -> the message of it this session works on (the newest
+	// delivered), which its activity is reported for.
 	chats map[string]string
 }
 
@@ -488,7 +491,9 @@ func formatBatch(page node.UnreadPage, folder, sid string, stop bool) hookBatch 
 		body.WriteString("\n")
 		body.WriteString(entry)
 		b.ids = append(b.ids, m.ID)
-		if m.ChatID != "" && m.AsksYou && !m.Paused && m.Assigned != "worker" {
+		// Every chat the session reads from shows what it does next (its
+		// person's own messages and what it must not answer excepted).
+		if m.ChatID != "" && !m.OwnHuman && !m.Paused && m.Assigned != "worker" {
 			b.chats[m.ChatID] = m.ID
 		}
 	}

@@ -57,3 +57,29 @@ describe('running jobs expire', () => {
     expect(row!.cls).toBe('running')
   })
 })
+
+describe('every agent of the chat, own ones too', () => {
+  const at = Date.parse('2026-09-24T15:00:00Z')
+  const heard = new Date(at - 5_000).toISOString()
+  const sjob = (session: string, text: string, reply = 'm1'): Job =>
+    ({ reply_to: reply, job_status: 'running', heard_at: heard, activity_info: { type: 'edit', text, session } }) as Job
+  beforeEach(() => {
+    runtime.strings = { 'inbox.author.own_agent': 'ваш агент', 'inbox.author.agent': 'агент {name}', 'inbox.activity.type.edit': 'правит' }
+  })
+
+  it('shows this node\'s own sessions, one line each, named by session only when there are several', () => {
+    const info = {
+      id: 'c1', participants: ['KPECTIK', 'me'], members: [
+        { name: 'KPECTIK', connected: true, compatible: true, jobs: [sjob('', 'правит a.go')] },
+        { name: 'me', self: true, connected: true, compatible: true, jobs: [sjob('682d3b39', 'правит x.go'), sjob('59e3bac2', 'правит y.go', 'm2')] },
+      ],
+    } as unknown as ChatInfo
+    const rows = activityLines(info, [], 'me', [], null, at)
+    expect(rows.map((r) => r.who + ' ' + r.text)).toEqual([
+      'агент KPECTIK правит a.go', 'ваш агент (682d3b39) правит x.go', 'ваш агент (59e3bac2) правит y.go',
+    ])
+    expect(new Set(rows.map((r) => r.key)).size).toBe(3)
+    const one = { ...info, members: [{ name: 'me', self: true, connected: true, compatible: true, jobs: [sjob('682d3b39', 'правит x.go')] }] } as unknown as ChatInfo
+    expect(activityLines(one, [], 'me', [], null, at).map((r) => r.who)).toEqual(['ваш агент'])
+  })
+})

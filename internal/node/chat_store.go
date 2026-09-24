@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -446,8 +447,30 @@ func (st *chatState) noteDone(m Message) {
 		return
 	}
 	st.done[key] = true
-	delete(st.jobs, key)
-	delete(st.heard, key)
+	st.dropJobs(key)
+}
+
+// jobKey keys a job's status: its author and request, and for a live
+// session's status the session (several sessions of one node may work on one
+// request, each with its own line).
+func jobKey(m Message) string {
+	k := m.From + "/" + m.ReplyTo
+	if m.ActivityInfo != nil && m.ActivityInfo.Session != "" {
+		k += "/" + m.ActivityInfo.Session
+	}
+	return k
+}
+
+// dropJobs removes the job of base (author/request) and every session's job
+// of it.
+func (st *chatState) dropJobs(base string) {
+	for key := range st.jobs {
+		if key == base || strings.HasPrefix(key, base+"/") {
+			delete(st.jobs, key)
+			delete(st.heard, key)
+		}
+	}
+	delete(st.heard, base)
 }
 
 // noteStatus keeps m as the latest status of its job unless the job already
@@ -459,17 +482,22 @@ func (cs *chatStore) noteStatus(m Message) bool {
 	if st == nil {
 		return false
 	}
-	key := m.From + "/" + m.ReplyTo
-	if st.done[key] {
+	base, key := m.From+"/"+m.ReplyTo, jobKey(m)
+	if st.done[base] || st.done[key] {
 		return false
 	}
 	old, had := st.jobs[key]
 	wasHeld := had && old.JobStatus == JobHeld
 	if m.JobStatus == JobCompleted || m.JobStatus == JobFailed {
-		// A job that ends without a reply of its own (answered another way).
+		// A job that ends without a reply of its own (answered another way);
+		// a session's end ends only that session's line.
 		st.done[key] = true
-		delete(st.jobs, key)
-		delete(st.heard, key)
+		if key == base {
+			st.dropJobs(base)
+		} else {
+			delete(st.jobs, key)
+			delete(st.heard, key)
+		}
 		if wasHeld {
 			cs.saveHeldLocked(st)
 		}

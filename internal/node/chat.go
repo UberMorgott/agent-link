@@ -1281,7 +1281,7 @@ func (n *Node) chatInfo(s chatSnapshot, queued map[string]map[string]int) ChatIn
 	now := time.Now()
 	for _, m := range s.jobs {
 		a := JobActivity{ReplyTo: m.ReplyTo, JobStatus: m.JobStatus, Activity: m.Activity, ActivityInfo: m.ActivityInfo, UpdatedAt: m.CreatedAt,
-			HeardAt: s.heard[m.From+"/"+m.ReplyTo]}
+			HeardAt: s.heard[jobKey(m)]}
 		if a.HeardAt.IsZero() {
 			a.HeardAt = m.CreatedAt
 		}
