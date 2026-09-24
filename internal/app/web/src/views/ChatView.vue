@@ -360,7 +360,8 @@ function back() {
                 class="ask-hint text-xs text-[var(--app-off)]"
               >{{ t("inbox.ask.none") }}</span>
             </div>
-            <!-- Enter starts a new line, Ctrl+Enter sends. -->
+            <!-- Enter sends, Shift+Enter starts a new line; an IME composition
+                 and a blank message never send (UChatPrompt guards both). -->
             <UChatPrompt
               id="body"
               v-model="inbox.composer"
@@ -371,7 +372,6 @@ function back() {
               :rows="1"
               :maxrows="10"
               :autofocus="false"
-              :submit-on-enter="false"
               :ui="{ root: 'rounded-3xl px-4', base: 'text-[15px]' }"
               @update:model-value="inbox.saveDraft(inbox.openKey())"
               @submit="inbox.submitMessage()"
@@ -399,7 +399,10 @@ function back() {
                 </p>
               </template>
               <template #footer>
-                <span />
+                <span
+                  id="composer_hint"
+                  class="composer-hint text-xs text-[var(--app-off)]"
+                >{{ t("inbox.body.hint") }}</span>
                 <UButton
                   id="send_button"
                   type="submit"

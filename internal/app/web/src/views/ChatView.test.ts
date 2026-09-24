@@ -257,6 +257,40 @@ describe('the open chat', () => {
     expect($<HTMLTextAreaElement>('#body')!.value).toBe('')
     expect($('#replying')).toBeNull()
   })
+
+  it('sends on Enter like a messenger, keeps Shift+Enter, IME and blank input from sending', async () => {
+    const { api, inbox } = await openInbox()
+    await inbox.selectChat(P, group, '')
+    await settle()
+    expect(text($('#composer_hint'))).toBe('inbox.body.hint')
+    const body = $<HTMLTextAreaElement>('#body')!
+    const press = (init: KeyboardEventInit) => {
+      const e = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init })
+      body.dispatchEvent(e)
+      return e
+    }
+    const sends = () => api.calls.filter((c) => c === 'POST projects/PROJ/send').length
+    body.value = '   '
+    body.dispatchEvent(new Event('input'))
+    await settle()
+    press({})
+    await settle()
+    expect(sends()).toBe(0)
+
+    body.value = 'hello'
+    body.dispatchEvent(new Event('input'))
+    await settle()
+    // Shift+Enter is left to the textarea (a new line); a composition in progress is not sent.
+    expect(press({ shiftKey: true }).defaultPrevented).toBe(false)
+    expect(press({ isComposing: true }).defaultPrevented).toBe(false)
+    await settle()
+    expect(sends()).toBe(0)
+
+    expect(press({}).defaultPrevented).toBe(true)
+    await settle()
+    expect(sends()).toBe(1)
+    expect(sent[0]).toMatchObject({ chat_id: group, body: 'hello' })
+  })
 })
 
 describe('the chat list and the ways into a chat', () => {
