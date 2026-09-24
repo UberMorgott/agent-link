@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/UberMorgott/agent-link/internal/config"
@@ -50,18 +51,20 @@ func (a *App) URL(page string) string {
 
 // Handler serves the web UI under /ui/ and the node's control API elsewhere.
 //
-//	GET  /ui/dashboard, /ui/inbox, /ui/participants, /ui/settings  application shell with the per-run token embedded
+//	GET  /ui/dashboard, /ui/inbox, /ui/participants, /ui/settings, /ui/welcome,
+//	     /ui/p/{pid}, /ui/p/{pid}/c/{chat}   application shell with the per-run token embedded
 //	GET  /ui/open                 public launcher that activates or adopts the dashboard tab
 //	GET  /ui/assets/..., /ui/icon.svg  the built UI's scripts, styles and icon (web/dist)
 //	GET  /ui/api/status            Status
-//	GET  /ui/api/settings          settings.Settings
-//	POST /ui/api/settings          settings.Settings -> save, restart node
+//	GET  /ui/api/settings          settings.Settings (no code, secret or project bindings)
+//	POST /ui/api/settings          settings.Settings -> save, restart every context; code and bindings are kept
 //	GET  /ui/api/inbox             []node.Entry
 //	GET  /ui/api/threads           []Thread (inbox entries paired by reply_to)
 //	GET  /ui/api/dashboard         DashboardSummary
 //	GET  /ui/api/participants      []ParticipantView
 //	GET  /ui/api/events            server-sent state-change events
-//	GET  /ui/api/sessions          []node.Session (this computer's live agent sessions)
+//	GET  /ui/api/sessions          []SessionView (this computer's live agent sessions, every project's)
+//	     /ui/api/projects...       the projects API (projects_api.go)
 //	POST /ui/api/send              node.SendRequest -> node.Message (chat_id + ask: into a chat)
 //	GET  /ui/api/chats?archive=1   []node.ChatInfo, pre-chat history included as legacy chats
 //	POST /ui/api/chats             node.CreateChatRequest -> node.ChatInfo
@@ -83,7 +86,7 @@ func (a *App) Handler() http.Handler {
 	ui := http.NewServeMux()
 	// The single-page app answers its own routes; a reload of any of them gets
 	// the same shell. Other /ui/ paths stay 404.
-	for _, path := range []string{"/ui/dashboard", "/ui/inbox", "/ui/participants", "/ui/settings"} {
+	for _, path := range []string{"/ui/dashboard", "/ui/inbox", "/ui/participants", "/ui/settings", "/ui/welcome", "/ui/p/{pid}", "/ui/p/{pid}/c/{chat}"} {
 		ui.HandleFunc("GET "+path, a.page("web/dist/index.html"))
 	}
 	ui.HandleFunc("GET /ui/open", a.page("web/dist/open.html"))
@@ -104,7 +107,8 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("GET /ui/api/dashboard", a.dashboard)
 	api.HandleFunc("GET /ui/api/participants", a.participants)
 	api.HandleFunc("GET /ui/api/events", a.eventsStream)
-	api.HandleFunc("GET /ui/api/sessions", a.sessions)
+	api.HandleFunc("GET /ui/api/sessions", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.allSessions()) })
+	a.projectRoutes(api)
 	api.HandleFunc("POST /ui/api/send", a.send)
 	api.HandleFunc("/ui/api/chats", a.chats)
 	api.HandleFunc("/ui/api/chats/", a.chats)
@@ -239,7 +243,7 @@ type saveResult struct {
 
 func (a *App) webSettings() settings.Settings {
 	s := a.Settings()
-	s.Secret, s.HandlerCommand, s.Bindings = "", nil, nil
+	s.Code, s.Secret, s.HandlerCommand, s.Bindings = "", "", nil, nil
 	s.Autostart, _ = a.Autostart() // reflect Windows after tray or Task Manager changes
 	return s
 }
@@ -310,19 +314,26 @@ func (a *App) inbox(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, entries)
 }
 
-// recent loads local history, chat messages included, treating an
-// unconfigured or stopped node as an empty history so the UI can render its
-// initial state without special cases.
+// recent loads local history of every context, chat messages included,
+// newest first, each entry naming its project. No context running is an
+// empty history, so the UI renders its initial state without special cases.
 func (a *App) recent(limit int) ([]node.Entry, error) {
-	n := a.node()
-	if n == nil {
-		return []node.Entry{}, nil
+	entries := []node.Entry{}
+	for _, c := range a.routeContexts() {
+		es, err := c.n.Inbox(limit)
+		if err != nil {
+			return entries, err
+		}
+		for _, e := range es {
+			e.Project = c.id
+			entries = append(entries, e)
+		}
 	}
-	entries, err := n.Inbox(limit)
-	if entries == nil {
-		entries = []node.Entry{}
+	slices.SortStableFunc(entries, func(x, y node.Entry) int { return y.CreatedAt.Compare(x.CreatedAt) })
+	if limit > 0 && len(entries) > limit {
+		entries = entries[:limit]
 	}
-	return entries, err
+	return entries, nil
 }
 
 // threads serves the inbox as questions paired with their answers.
@@ -359,17 +370,6 @@ func (a *App) participants(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, buildParticipants(a.Status(), entries))
-}
-
-// sessions lists this computer's live agent sessions, for the chat's
-// "waiting for the session" line; a stopped node has none.
-func (a *App) sessions(w http.ResponseWriter, _ *http.Request) {
-	n := a.node()
-	if n == nil {
-		writeJSON(w, []node.Session{})
-		return
-	}
-	writeJSON(w, n.Sessions())
 }
 
 func (a *App) send(w http.ResponseWriter, r *http.Request) {

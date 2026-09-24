@@ -266,9 +266,9 @@ func (a *App) Settings() settings.Settings {
 var ErrNotStarted = errors.New("settings saved, but the node did not start")
 
 // Apply validates and saves new settings, updates autostart and restarts the
-// node. HandlerCommand, an empty API, absent peers, discovery and auto_update
-// and, while no code is set, the legacy secret are kept from the current
-// settings. A code replaces the secret.
+// node. HandlerCommand, an empty API, absent peers, discovery and auto_update,
+// the legacy code and secret and the project bindings are kept from the
+// current settings.
 // When no AgentPath is set, or the set one has disappeared (an app update
 // moved its versioned folder), the agent is looked for again (Finder.Discover);
 // a hit off PATH is saved as AgentPath and returned.
@@ -302,12 +302,11 @@ func (a *App) apply(ctx context.Context, s settings.Settings) (found settings.Fo
 	// through the projects API.
 	s.Version, s.Bindings = settings.Version, a.s.Bindings
 	s = s.Normalize()
-	s.HandlerCommand, s.Secret = a.s.HandlerCommand, ""
+	// Nor the legacy network's code and secret: they change only by joining
+	// with a code and by leaving the legacy network.
+	s.HandlerCommand, s.Code, s.Secret = a.s.HandlerCommand, a.s.Code, a.s.Secret
 	if s.API == "" {
 		s.API = a.s.API
-	}
-	if s.Code == "" {
-		s.Secret = a.s.Secret
 	}
 	if s.AutoUpdate == nil {
 		s.AutoUpdate = a.s.AutoUpdate

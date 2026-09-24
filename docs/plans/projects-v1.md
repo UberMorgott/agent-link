@@ -640,3 +640,18 @@ traversal, dynamic chat participants, converting the legacy network.
   command (send included), never in the JSON body; `chat` subcommands and
   `wait` take `--project` too. The folder hooks send none: their folder
   routes them.
+- A14: a settings save always keeps `code` and `secret` (GET `settings` returns
+  neither); the Go tests' harness starts with a code. Unexpected failures of
+  the projects API answer `500 {error, code: "internal"}`. `problem` may also be
+  `wrong_project` (the §7.2 state rule names it). On `legacy`, `binding` sets
+  `work_dir` (the legacy context restarts) and refuses a non-empty `alias`
+  (`400 alias`); a join with a code may answer `400 work_dir` when a handler
+  needs a working folder. `POST projects/legacy/chats` makes a keyed chat
+  (`CreateChat`). Unknown or unreachable participants are `400
+  chat_participants`. A known invite (or code) changes nothing, not even
+  `addr`. `GET /ui/api/sessions` serves `SessionView[]`; history entries carry
+  `project` (`node.Entry.Project`). At Track B's request the sentences of
+  `link.no_code`, `link.weak_code`, `tray.weak_code`, `error.unknown_chat` and
+  `error.chat_closed` («Чат завершён…») changed, so `error_unknown_chat.json`
+  and `error_chat_closed.json` were regenerated (sentence only), and
+  `scripts/e2e-tray.ps1` joins the legacy network through `projects/join`.

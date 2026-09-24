@@ -22,7 +22,7 @@ func TestFolderHooksFollowSettings(t *testing.T) {
 	}
 	exe := filepath.Join(root, "bin", "agentlink.exe") // never run: only written into the hook entries
 	agent := fakeAgentFile(t)
-	h := newHarness(t, func(a *App) { a.HookExe, a.Agents = exe, settings.Finder{} })
+	h := newHarness(t, func(a *App) { a.HookExe, a.Agents, a.s.Code = exe, settings.Finder{}, "" })
 	apply := func(handler, workDir string) {
 		t.Helper()
 		agentPath := agent
@@ -106,7 +106,7 @@ func TestFolderHooksFollowSettings(t *testing.T) {
 
 func TestNoFolderHooksWithoutExe(t *testing.T) {
 	work := t.TempDir()
-	h := newHarness(t, func(a *App) { a.Agents = settings.Finder{} })
+	h := newHarness(t, func(a *App) { a.Agents, a.s.Code = settings.Finder{}, "" })
 	s := settings.Settings{Node: "alice", Handler: "claude", AgentPath: fakeAgentFile(t), WorkDir: work}
 	if _, err := h.app.Apply(t.Context(), s); err != nil {
 		t.Fatal(err)

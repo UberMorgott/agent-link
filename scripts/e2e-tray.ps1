@@ -99,7 +99,7 @@ if ($LASTEXITCODE -ne 0) { throw 'build fakeagent failed' }
 $realBefore = Get-RealState
 if (Test-Path $data) { Remove-Item -Recurse -Force $data }
 $work = New-Item -ItemType Directory -Force (Join-Path $data 'work')
-# The settings page's "Создать код" button: 6 letters/digits; b types it in lower case.
+# A legacy pairing code (6 letters/digits), joined through the join dialog; b types it in lower case.
 $code = -join ((1..6) | ForEach-Object { 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[(Get-Random -Maximum 32)] })
 $marker = "agentlink-e2e-$(Get-Random)"
 
@@ -109,17 +109,16 @@ foreach ($pair in @(@($a, $b), @($b, $a))) {
     $n, $peer = $pair
     $dir = New-Item -ItemType Directory -Force (Join-Path $data $n.name)
     $n.config = Join-Path $dir 'config.json'
-    # The minimal form: name, code, peer address, handler, folder; "Мой адрес" from
+    # The minimal form: name, peer address, handler, folder; "Мой адрес" from
     # "Дополнительно" only because both people share one machine.
     $n.settings = [ordered]@{
-        node = $n.name; code = $code; peer_addr = "${Address}:$($peer.port)"; handler = 'none'
+        node = $n.name; peer_addr = "${Address}:$($peer.port)"; handler = 'none'
         work_dir = $work.FullName; listen = "${Address}:$($n.port)"
     }
 }
 $b.settings.handler = 'claude'
 $b.settings.auto_answer = $true # «Автоответ агентом, если сессия не открыта»
 $b.settings.max_jobs = 1 # jobs run one after another, in order
-$b.settings.code = $code.ToLower()
 # The agent command is not editable in the UI; the only pre-seeded field is b's fake agent.
 @{ handler_command = @($fake) } | ConvertTo-Json | Set-Content -Path $b.config
 
@@ -134,6 +133,11 @@ try {
     if ($st.running -or $st.problem -ne 'link.no_code') { throw "unexpected status after a name-only save: $($st | ConvertTo-Json -Compress)" }
     Save-Settings $a
     Save-Settings $b
+    Write-Host '== join the legacy network by its code (the settings page no longer takes one)'
+    foreach ($j in @(@($a, $code), @($b, $code.ToLower()))) {
+        $r = Invoke-Ui $j[0] POST projects/join @{ invite = $j[1] }
+        if (-not $r.created -or -not $r.project.legacy) { throw "$($j[0].name): join failed: $($r | ConvertTo-Json -Compress)" }
+    }
     foreach ($n in $a, $b) {
         $st = Wait-Until { $s = Invoke-Ui $n GET status; if ($s.connected) { $s } } "$($n.name) connected"
         Write-Host "$($n.name): $($st | ConvertTo-Json -Compress)"

@@ -35,6 +35,9 @@ func newHarness(t *testing.T, setup ...func(*App)) *harness {
 	a.SetAutostart = func(on bool) error { h.autostart = append(h.autostart, on); return nil }
 	a.AutostartState = nil // the saved setting; never the real registry
 	a.Discovery = false    // tests find each other by address only
+	// The legacy network's code: the settings page no longer sets it, so the
+	// harness starts with one (a setup may clear it); a save keeps it.
+	a.s.Code = "ABC123"
 	for _, f := range setup {
 		f(a)
 	}
@@ -267,9 +270,9 @@ func TestSetAPIAddrPersists(t *testing.T) {
 
 func TestSaveRejectsInvalid(t *testing.T) {
 	h := newHarness(t)
-	bad := strings.Replace(validJSON(t), "abc123", "abc12", 1)
+	bad := strings.Replace(validJSON(t), "127.0.0.1:1", "127.0.0.1:99999", 1)
 	code, body := h.do(t, http.MethodPost, "/ui/api/settings", bad, h.tokenHdr())
-	if code != http.StatusBadRequest || !strings.Contains(body, uiStrings["error.code"]) {
+	if code != http.StatusBadRequest || !strings.Contains(body, uiStrings["error.peer_addr"]) {
 		t.Fatalf("save: %d %s", code, body)
 	}
 	if h.app.Configured() {
@@ -281,7 +284,7 @@ func TestSaveRejectsInvalid(t *testing.T) {
 // served back, kept by a request without the field, cleared by {}, and a bad
 // row is reported as one sentence.
 func TestSettingsProjectsRoundTrip(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness(t, func(a *App) { a.s.Code = "" }) // no node: no port
 	dir := t.TempDir()
 	dirJSON, _ := json.Marshal(dir)
 	body := `{"node":"alice","code":"","handler":"none","areas":["dev"],"projects":{" site ":{"dir":` + string(dirJSON) + `,"write":true}}}`
@@ -325,7 +328,7 @@ func TestSettingsProjectsRoundTrip(t *testing.T) {
 // The page's first save carries only a name: it must succeed. Without a code
 // the node waits for one; with a code and no peer it runs and waits to be dialed.
 func TestPartialSave(t *testing.T) {
-	h := newHarness(t)
+	h := newHarness(t, func(a *App) { a.s.Code = "" })
 	name := `{"node":"morgott","code":"","peer_addr":"","handler":"none","work_dir":"","listen":"","api":"","areas":[],"peer_name":"","autostart":false}`
 	code, body := h.do(t, http.MethodPost, "/ui/api/settings", name, h.tokenHdr())
 	if code != http.StatusOK || !strings.Contains(body, `"saved":true`) || strings.Contains(body, "error") {
@@ -334,10 +337,17 @@ func TestPartialSave(t *testing.T) {
 	if st := h.app.Status(); !st.Configured || st.Running || st.Problem != "link.no_code" || st.Error != "" {
 		t.Fatalf("status after name-only save %+v", st)
 	}
-	withCode := `{"node":"morgott","code":"k7Q2mX","listen":"127.0.0.1:0","handler":"none"}`
-	code, body = h.do(t, http.MethodPost, "/ui/api/settings", withCode, h.tokenHdr())
-	if code != http.StatusOK || strings.Contains(body, "error") {
-		t.Fatalf("name+code save: %d %s", code, body)
+	// The page no longer takes a code: it is joined like an invite.
+	withListen := `{"node":"morgott","code":"IGNORE","listen":"127.0.0.1:0","handler":"none"}`
+	if code, body = h.do(t, http.MethodPost, "/ui/api/settings", withListen, h.tokenHdr()); code != http.StatusOK || strings.Contains(body, "error") {
+		t.Fatalf("save with a listener: %d %s", code, body)
+	}
+	if st := h.app.Status(); st.Running || st.Problem != "link.no_code" {
+		t.Fatalf("a code on the settings page was taken: %+v", st)
+	}
+	if code, body = h.do(t, http.MethodPost, "/ui/api/projects/join", `{"invite":"k7Q2mX"}`, h.tokenHdr()); code != http.StatusOK ||
+		!strings.Contains(body, `,"created":true`) {
+		t.Fatalf("join with the code: %d %s", code, body)
 	}
 	if st := h.app.Status(); !st.Running || st.Problem != "link.no_peer" || st.Error != "" {
 		t.Fatalf("status after name+code save %+v", st)
@@ -351,13 +361,12 @@ func TestPartialSave(t *testing.T) {
 func TestSaveErrorsAreSentences(t *testing.T) {
 	h := newHarness(t)
 	cases := map[string]string{
-		`{"node":""}`:                               "error.node",
-		`{"node":"a b"}`:                            "error.node",
-		`{"node":"a","code":"12345!"}`:              "error.code",
-		`{"node":"a","peer_addr":"10.0.0.1:99999"}`: "error.peer_addr",
-		`{"node":"a","code":"K7Q2-MXPA-4RTB","handler":"claude","work_dir":""}`: "error.work_dir",
-		`{"node":"a","api":"0.0.0.0:7520"}`:                                     "error.api",
-		`not json`:                                                              "error.bad_request",
+		`{"node":""}`:    "error.node",
+		`{"node":"a b"}`: "error.node",
+		`{"node":"a","peer_addr":"10.0.0.1:99999"}`:     "error.peer_addr",
+		`{"node":"a","handler":"claude","work_dir":""}`: "error.work_dir",
+		`{"node":"a","api":"0.0.0.0:7520"}`:             "error.api",
+		`not json`:                                      "error.bad_request",
 	}
 	for body, key := range cases {
 		code, got := h.do(t, http.MethodPost, "/ui/api/settings", body, h.tokenHdr())
@@ -375,7 +384,7 @@ func TestSaveErrorsAreSentences(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = ln.Close() }()
-	busy := `{"node":"a","code":"ABC123","listen":"` + ln.Addr().String() + `"}`
+	busy := `{"node":"a","listen":"` + ln.Addr().String() + `"}`
 	_, got := h.do(t, http.MethodPost, "/ui/api/settings", busy, h.tokenHdr())
 	want := msg("error.listen", map[string]string{"addr": ln.Addr().String()})
 	if !strings.Contains(got, `"saved":true`) || !strings.Contains(got, want) || h.app.Status().Error != want {

@@ -207,6 +207,9 @@ type Entry struct {
 	// NoNewsMin is set on an unanswered outbound request the peer has been
 	// silent about for NoNewsAfter or longer: minutes since LastHeard.
 	NoNewsMin int `json:"no_news_min,omitempty"`
+	// Project names the entry's context where an app runs several (a project
+	// id, or "legacy"); a node leaves it empty.
+	Project string `json:"project,omitempty"`
 	Message
 }
 
