@@ -4,6 +4,7 @@ import UButton from '@nuxt/ui/components/Button.vue'
 import UModal from '@nuxt/ui/components/Modal.vue'
 import UProgress from '@nuxt/ui/components/Progress.vue'
 import { api } from '@/lib/api'
+import { renderMarkdown } from '@/lib/markdown'
 import { fmt, runtime, t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
 import type { Changelog, UpdateStatus } from '@/types'
@@ -153,7 +154,19 @@ async function install() {
                   class="ml-2 text-xs text-muted"
                 >{{ r.published.slice(0, 10) }}</span>
               </h4>
-              <pre class="max-h-64 overflow-y-auto font-sans text-xs whitespace-pre-wrap text-muted">{{ r.body || t('update.changelog.empty') }}</pre>
+              <!-- eslint-disable vue/no-v-html -- renderMarkdown escapes raw HTML -->
+              <div
+                v-if="r.body"
+                class="release-md max-h-64 overflow-y-auto text-xs text-muted"
+                v-html="renderMarkdown(r.body)"
+              />
+              <!-- eslint-enable vue/no-v-html -->
+              <p
+                v-else
+                class="text-xs text-muted"
+              >
+                {{ t('update.changelog.empty') }}
+              </p>
             </article>
           </template>
         </section>
