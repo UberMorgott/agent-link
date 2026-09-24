@@ -214,6 +214,28 @@ export interface UpdateStatus {
   busy?: boolean
   available?: boolean
   auto?: boolean
+  restarting?: boolean
+  retry_at?: string
+  // An install runs: bytes downloaded of size (absent: unknown) so far.
+  installing?: boolean
+  downloaded?: number
+  size?: number
+}
+
+// One published release in the changelog (GET update/changelog).
+export interface ReleaseNote {
+  version: string
+  name?: string
+  body: string
+  published?: string
+}
+
+export interface Changelog {
+  current: string
+  newer: boolean
+  releases: ReleaseNote[]
+  text?: string
+  failed?: boolean
 }
 
 export interface HookStatus {

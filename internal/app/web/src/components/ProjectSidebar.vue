@@ -5,6 +5,7 @@ import UButton from '@nuxt/ui/components/Button.vue'
 import UIcon from '@nuxt/ui/components/Icon.vue'
 import ChatRow from '@/components/ChatRow.vue'
 import ProjectMenu from '@/components/ProjectMenu.vue'
+import VersionBadge from '@/components/VersionBadge.vue'
 import { useLayout } from '@/layout/composables/layout'
 import { isUnread } from '@/lib/chat'
 import { icon } from '@/lib/icons'
@@ -67,6 +68,7 @@ const tree = computed(() => (projects.list || []).map((p) => ({
         class="h-6 w-6"
       >
       <strong class="text-[0.95rem] tracking-tight text-highlighted">agentlink</strong>
+      <VersionBadge />
     </div>
     <div class="flex flex-col gap-0.5 px-2 pb-2">
       <button
