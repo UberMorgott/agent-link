@@ -244,6 +244,7 @@ func (n *Node) handleWait(w http.ResponseWriter, r *http.Request) {
 	for {
 		changed := n.store.updates()
 		msgs, err := n.store.claimUndelivered(r.URL.Query().Get("chat"))
+		msgs = slices.DeleteFunc(msgs, n.handledHere)
 		if len(msgs) > 0 {
 			writeJSONResponse(w, msgs)
 			return
@@ -261,6 +262,18 @@ func (n *Node) handleWait(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// handledHere reports whether chat message m no longer needs a waiter: the
+// worker or a session on this node took it, or a session already read it.
+// Such a message is consumed without being returned, so a `wait` after the
+// worker answered a request never hands that stale request to an agent.
+func (n *Node) handledHere(m Message) bool {
+	if m.ChatID == "" {
+		return false
+	}
+	r, ok := n.chats.message(m.ID)
+	return ok && (r.Assigned != "" || (r.Unread && !r.ReadAt.IsZero()))
 }
 
 func (n *Node) handleInbox(w http.ResponseWriter, r *http.Request) {

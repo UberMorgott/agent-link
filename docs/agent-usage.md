@@ -107,6 +107,8 @@ agentlink wait         [--chat <id>] --timeout 0               # blocks until th
    the ones you handled. Unread is kept on disk until acked; the app's browser view never marks
    anything read. Or start `wait` as a **background command** (`run_in_background` in Claude
    Code): it exits 0 with one JSON line per new message, 2 on `--timeout`, 1 on an error.
+   It skips chat messages already handled on this node (taken by the worker or a session, or
+   read by a session).
 3. Answer with `send --reply-to <its id> --body ...`: the asker sees «ответил».
 4. Leave the chat open: only a person closes it, in the app. `agentlink close` does nothing but
    say so. After a close, the next message of the conversation opens a new chat.

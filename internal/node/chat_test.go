@@ -283,6 +283,34 @@ func TestChatArchiveIsClose(t *testing.T) {
 		t.Fatalf("archive changed the history: %v", ids)
 	}
 }
+
+// A request the worker took is not handed to a later `wait`: an agent that
+// sends and then waits for its answer gets the answer, not the stale request.
+func TestWaitSkipsRequestTheWorkerTook(t *testing.T) {
+	a, b, _ := trio(t)
+	info, err := a.CreateChat([]string{"b"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "list files", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the request", func() bool { return slices.Contains(chatIDs(b, info.ID), q.ID) })
+	if ok, _, err := b.ClaimRun(q); !ok || err != nil {
+		t.Fatalf("b's worker claims the request: %v %v", ok, err)
+	}
+	note, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "fyi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the note", func() bool { return slices.Contains(chatIDs(b, info.ID), note.ID) })
+	code, msgs := waitChat(t, b, info.ID, "2s")
+	if code != http.StatusOK || len(msgs) != 1 || msgs[0].ID != note.ID {
+		t.Fatalf("wait = %d %+v, want only the note %s", code, msgs, note.ID)
+	}
+}
+
 func TestClaimRunLimitsAutomaticChains(t *testing.T) {
 	a, b, c := trio(t)
 	info, err := a.CreateChat([]string{"b", "c"}, "")
