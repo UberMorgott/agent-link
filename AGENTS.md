@@ -184,9 +184,10 @@ qgate                                # quality gate; qgate -All when deps or bui
   with `scripts/release.ps1` (`-trimpath -ldflags "-s -w -X …/selfupdate.Version=<x.y.z>"`,
   `upx --best --lzma`, `upx -t`), never attach a plain `go build` output. A release holds exactly
   one file per released OS; today only `agentlink.exe` (windows/amd64). A
-  release is cut by pushing a `vX.Y.Z` tag: `.github/workflows/release.yml` vets, tests, runs
-  that script, attests provenance and publishes. `pwsh -File scripts/release.ps1 -Version <x.y.z>
-  -Publish` is the manual fallback. The asset name and the SHA-256 `digest` GitHub reports for it
+  release is cut locally: push the `vX.Y.Z` tag, then `pwsh -File scripts/release.ps1 -Version
+  <x.y.z> -Publish` builds it and publishes it with the notes of `scripts/release-notes.ps1`.
+  `.github/workflows/release.yml` (vet, test, that script, provenance attestation) runs only
+  when started by hand; a pushed tag triggers nothing. The asset name and the SHA-256 `digest` GitHub reports for it
   are what self-update reads (`internal/selfupdate.AssetName`); renaming it breaks every installed
   app's update.
 - Self-update never skips the SHA-256 digest check, never downgrades, and restarts the app through its

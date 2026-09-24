@@ -1,6 +1,7 @@
 # Builds the stripped, UPX-packed release executable into dist/ and, with
-# -Publish, creates the GitHub release or replaces its asset.
-# .github/workflows/release.yml runs this same script on a pushed v* tag.
+# -Publish, creates the GitHub release (notes from scripts/release-notes.ps1)
+# or replaces its asset. Releases are built and published locally with this
+# script; .github/workflows/release.yml runs it only when started by hand.
 #
 # A release has one file per platform; for now only Windows is released:
 #   windows/amd64  agentlink.exe   (internal/selfupdate.AssetName must match)
@@ -51,7 +52,9 @@ if ($Publish) {
     if ($LASTEXITCODE -eq 0) {
         gh release upload $tag @assets --clobber --repo UberMorgott/agent-link
     } else {
-        gh release create $tag @assets --repo UberMorgott/agent-link --title $tag --generate-notes
+        $notes = Join-Path $dist 'notes.md'
+        & (Join-Path $PSScriptRoot 'release-notes.ps1') -Tag $tag | Set-Content -Encoding utf8NoBOM $notes
+        gh release create $tag @assets --repo UberMorgott/agent-link --title $tag --notes-file $notes
     }
     if ($LASTEXITCODE) { throw "gh release failed for $tag" }
 }

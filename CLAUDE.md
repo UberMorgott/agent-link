@@ -25,6 +25,11 @@ gh issue create --repo UberMorgott/quality-gate --title "<what broke>" --body "<
 ## Releases
 
 Standing owner authorization: after every verified change, push `main` and cut the next patch
-release without asking — annotated tag `vX.Y.Z` (bump Z from the latest tag), `git push origin vX.Y.Z`;
-`.github/workflows/release.yml` builds and publishes it. Watch the run and confirm the
-`agentlink.exe` asset exists.
+release without asking — annotated tag `vX.Y.Z` (bump Z from the latest tag), `git push origin vX.Y.Z`,
+then build and publish locally from the repository root:
+`pwsh -File scripts/release.ps1 -Version X.Y.Z -Publish` (needs Go, `upx`, `gh`; builds the
+stripped UPX-packed `dist/agentlink.exe`, writes `dist/notes.md` with `scripts/release-notes.ps1`
+and runs `gh release create vX.Y.Z dist/agentlink.exe --title vX.Y.Z --notes-file dist/notes.md`).
+GitHub Actions is NOT used (quota exhausted): `.github/workflows/release.yml` runs only by hand,
+a pushed tag triggers nothing. Confirm with `gh release view vX.Y.Z` that the `agentlink.exe`
+asset exists.
