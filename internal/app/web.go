@@ -78,6 +78,7 @@ func (a *App) URL(page string) string {
 //	POST /ui/api/pick-agent        {"start"} -> native file dialog for a program -> pickResult
 //	POST /ui/api/find-agent        {"handler"} -> look for the agent again -> agentInfo
 //	GET  /ui/api/update            UpdateStatus
+//	GET  /ui/api/update/changelog  release notes newer than this build (else its own) -> Changelog
 //	POST /ui/api/update/check      ask GitHub for the latest release -> UpdateStatus
 //	POST /ui/api/update/apply      install the newer release, then restart -> UpdateStatus
 //	POST /ui/api/update/auto       {"auto"} -> save the auto-update switch -> UpdateStatus
@@ -119,6 +120,7 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /ui/api/pick-agent", a.pickAgent)
 	api.HandleFunc("POST /ui/api/find-agent", a.findAgent)
 	api.HandleFunc("GET /ui/api/update", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.UpdateStatus()) })
+	api.HandleFunc("GET /ui/api/update/changelog", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, a.Changelog(r.Context())) })
 	api.HandleFunc("POST /ui/api/update/check", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, a.CheckUpdate(r.Context())) })
 	api.HandleFunc("POST /ui/api/update/apply", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, a.InstallUpdate(r.Context())) })
 	api.HandleFunc("POST /ui/api/update/auto", a.setAutoUpdate)

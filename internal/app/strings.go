@@ -187,6 +187,18 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"update.error.ratelimit": "GitHub временно ограничил запросы, повторите после {time}.",
 	"update.error.restart":   "Обновление установлено, но agentlink не перезапустился — закройте его и запустите снова.",
 
+	// The version popup next to the logo.
+	"update.badge":            "Версия и обновления",
+	"update.dialog.title":     "Версия agentlink {version}",
+	"update.install":          "Обновить",
+	"update.progress":         "Скачано {done} из {total} МБ ({percent}%)",
+	"update.progress.bytes":   "Скачано {done} МБ",
+	"update.changelog.newer":  "Что нового",
+	"update.changelog.this":   "Изменения в этой версии",
+	"update.changelog.latest": "Последний выпуск",
+	"update.changelog.empty":  "Описания изменений нет.",
+	"update.changelog.error":  "Не удалось загрузить список изменений — подробности в файле agentlink.log.",
+
 	// Errors: each one sentence saying what to do.
 	"error.node":                   "Впишите ваше имя: буквы, цифры, «-» или «_», без пробелов.",
 	"error.code":                   "Код связи — 12 латинских букв и цифр вида XXXX-XXXX-XXXX (или старый код из 6): нажмите «Создать код» или впишите код, который вам дали.",

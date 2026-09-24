@@ -34,7 +34,7 @@ type fakeRelease struct {
 }
 
 func (r *fakeRelease) Version() string { return r.version }
-func (r *fakeRelease) Apply(context.Context, string) ([]string, error) {
+func (r *fakeRelease) Install(context.Context, string, selfupdate.Progress) ([]string, error) {
 	r.applied.Add(1)
 	return nil, r.err.get()
 }
@@ -262,5 +262,88 @@ func TestRunUpdatesInstallsWhenAuto(t *testing.T) {
 	cancel()
 	if !strings.Contains(u.app.UpdateStatus().Text, "0.5.0") {
 		t.Fatalf("text = %q", u.app.UpdateStatus().Text)
+	}
+}
+
+// The download reports progress through the "update" event, once per whole
+// percent, and UpdateStatus shows it while the install runs.
+func TestUpdateInstallProgress(t *testing.T) {
+	rel := &fakeRelease{version: "0.5.0"}
+	u := newUpdHarness(t, rel, true)
+	var seen []UpdateStatus
+	probe := &probeRelease{fakeRelease: rel, size: 1000, app: u.app, seen: &seen}
+	for done := int64(0); done <= 1000; done += 5 { // 201 reads
+		probe.steps = append(probe.steps, done)
+	}
+	u.app.Latest = func(context.Context, string) (Release, bool, error) { return probe, true, nil }
+	revision := func() uint64 {
+		u.app.events.mu.Lock()
+		defer u.app.events.mu.Unlock()
+		return u.app.events.revision
+	}
+	u.post(t, "update/check", "")
+	start := revision()
+	if st := u.post(t, "update/apply", ""); !st.Restarting || st.Installing || st.Downloaded != 0 || st.Size != 0 {
+		t.Fatalf("after install: %+v", st)
+	}
+	if n := revision() - start; n < 101 || n > 106 {
+		t.Fatalf("%d update events for 201 reads, want about one per percent", n)
+	}
+	first, last := seen[0], seen[len(seen)-1]
+	if !first.Installing || first.Downloaded != 0 || first.Size != 1000 || last.Downloaded != 1000 || last.Size != 1000 || !last.Busy {
+		t.Fatalf("progress first %+v last %+v", first, last)
+	}
+}
+
+// probeRelease reports steps and records the status after each.
+type probeRelease struct {
+	*fakeRelease
+	steps []int64
+	size  int64
+	app   *App
+	seen  *[]UpdateStatus
+}
+
+func (p *probeRelease) Install(ctx context.Context, exe string, progress selfupdate.Progress) ([]string, error) {
+	for _, done := range p.steps {
+		progress(done, p.size)
+		*p.seen = append(*p.seen, p.app.UpdateStatus())
+	}
+	return p.fakeRelease.Install(ctx, exe, progress)
+}
+
+func TestChangelogEndpoint(t *testing.T) {
+	u := newUpdHarness(t, nil, false)
+	get := func() Changelog {
+		t.Helper()
+		code, out := u.do(t, http.MethodGet, "/ui/api/update/changelog", "", u.tokenHdr())
+		var c Changelog
+		if code != http.StatusOK || json.Unmarshal([]byte(out), &c) != nil {
+			t.Fatalf("changelog: %d %s", code, out)
+		}
+		return c
+	}
+	notes := []selfupdate.Note{{Version: "0.6.0", Body: "six"}, {Version: "0.5.0", Body: "five"}}
+	var asked string
+	u.app.Notes = func(_ context.Context, current string) ([]selfupdate.Note, bool, error) {
+		asked = current
+		return notes, true, nil
+	}
+	if c := get(); asked != "0.4.0" || !c.Newer || c.Current != "0.4.0" || len(c.Releases) != 2 || c.Releases[0].Body != "six" || c.Failed {
+		t.Fatalf("changelog = %+v", c)
+	}
+	reset := time.Now().Add(15 * time.Minute)
+	u.app.Notes = func(context.Context, string) ([]selfupdate.Note, bool, error) {
+		return nil, false, &selfupdate.RateLimitError{Reset: reset}
+	}
+	want := msg("update.error.ratelimit", map[string]string{"time": reset.Local().Format("15:04")})
+	if c := get(); !c.Failed || c.Text != want || c.Releases == nil || len(c.Releases) != 0 {
+		t.Fatalf("rate-limited changelog = %+v", c)
+	}
+	u.app.Notes = func(context.Context, string) ([]selfupdate.Note, bool, error) {
+		return nil, false, errors.New("offline")
+	}
+	if c := get(); !c.Failed || c.Text != msg("update.changelog.error", nil) {
+		t.Fatalf("failed changelog = %+v", c)
 	}
 }

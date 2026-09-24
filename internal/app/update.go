@@ -16,7 +16,7 @@ import (
 // in production.
 type Release interface {
 	Version() string
-	Apply(ctx context.Context, exePath string) ([]string, error)
+	Install(ctx context.Context, exePath string, progress selfupdate.Progress) ([]string, error)
 }
 
 // UpdateStatus is the update section of the settings page and the tray menu.
@@ -36,6 +36,22 @@ type UpdateStatus struct {
 	// RetryAt: GitHub rate-limited the last step; it accepts requests again
 	// at this local time ("15:04").
 	RetryAt string `json:"retry_at,omitempty"`
+	// Installing: the newer release is being downloaded and swapped in;
+	// Downloaded bytes of Size (0: unknown) so far.
+	Installing bool  `json:"installing,omitempty"`
+	Downloaded int64 `json:"downloaded,omitempty"`
+	Size       int64 `json:"size,omitempty"`
+}
+
+// Changelog is the release notes the version popup shows: of every release
+// newer than Current (Newer), else of Current itself. Text and Failed say why
+// there are none when GitHub could not be asked.
+type Changelog struct {
+	Current  string            `json:"current"`
+	Newer    bool              `json:"newer"`
+	Releases []selfupdate.Note `json:"releases"`
+	Text     string            `json:"text,omitempty"`
+	Failed   bool              `json:"failed,omitempty"`
 }
 
 // Update check timing: the first check shortly after start, then every
@@ -45,6 +61,8 @@ const (
 	updateEvery = 6 * time.Hour
 	// rateLimitJitter spreads retries after a GitHub rate limit ends.
 	rateLimitJitter = 5 * time.Minute
+	// progressStep is how often a download of unknown size is reported.
+	progressStep = 256 << 10
 )
 
 type updater struct {
@@ -56,6 +74,9 @@ type updater struct {
 	failed  bool
 	retryAt time.Time   // GitHub's rate limit ends; zero when not limited
 	exeStat os.FileInfo // the executable as it was at start
+	// done of total bytes downloaded by the running install; shown is the
+	// last reported step, so the UI is told about each percent, not each read.
+	done, total, shown int64
 }
 
 func latestRelease(ctx context.Context, current string) (Release, bool, error) {
@@ -98,6 +119,9 @@ func (a *App) updateStatusLocked(auto bool) UpdateStatus {
 		Busy: a.upd.state != "", Restarting: a.upd.state == "restart", Auto: auto,
 		Enabled: a.updatesEnabled(), Text: a.upd.text, Failed: a.upd.failed,
 	}
+	if a.upd.state == "apply" {
+		st.Installing, st.Downloaded, st.Size = true, a.upd.done, max(a.upd.total, 0)
+	}
 	if !a.upd.retryAt.IsZero() {
 		st.RetryAt = a.upd.retryAt.Local().Format("15:04")
 	}
@@ -115,6 +139,7 @@ func (a *App) begin(state, text string) bool {
 		return false
 	}
 	a.upd.state, a.upd.text, a.upd.failed, a.upd.retryAt = state, text, false, time.Time{}
+	a.upd.done, a.upd.total, a.upd.shown = 0, 0, -1
 	a.upd.mu.Unlock()
 	a.events.publish("update")
 	return true
@@ -187,7 +212,7 @@ func (a *App) InstallUpdate(ctx context.Context) UpdateStatus {
 		a.log.Info("update: executable already replaced, restarting")
 	} else {
 		var paths []string
-		paths, err = rel.Apply(ctx, a.Exe)
+		paths, err = rel.Install(ctx, a.Exe, a.progress)
 		a.log.Info("update installed", "version", rel.Version(), "files", paths, "err", err)
 	}
 	a.upd.mu.Lock()
@@ -203,6 +228,44 @@ func (a *App) InstallUpdate(ctx context.Context) UpdateStatus {
 	a.events.publish("update")
 	go a.restart()
 	return a.UpdateStatus()
+}
+
+// progress records the running download and tells the UI (the "update"
+// event) at every whole percent, or every progressStep bytes of a download
+// of unknown size.
+func (a *App) progress(done, total int64) {
+	step := done / progressStep
+	if total > 0 {
+		step = done * 100 / total
+	}
+	a.upd.mu.Lock()
+	a.upd.done, a.upd.total = done, total
+	changed := step != a.upd.shown
+	a.upd.shown = step
+	a.upd.mu.Unlock()
+	if changed {
+		a.events.publish("update")
+	}
+}
+
+// Changelog returns the release notes for the version popup; GitHub is asked
+// at most once per selfupdate's cache period.
+func (a *App) Changelog(ctx context.Context) Changelog {
+	out := Changelog{Current: a.Version, Releases: []selfupdate.Note{}}
+	list, newer, err := a.Notes(ctx, a.Version)
+	if err != nil {
+		a.log.Warn("changelog", "err", err)
+		out.Failed, out.Text = true, msg("update.changelog.error", nil)
+		if rl, ok := errors.AsType[*selfupdate.RateLimitError](err); ok {
+			out.Text = msg("update.error.ratelimit", map[string]string{"time": rl.Reset.Local().Format("15:04")})
+		}
+		return out
+	}
+	if list != nil {
+		out.Releases = list
+	}
+	out.Newer = newer
+	return out
 }
 
 // restart starts the new executable and quits this app the normal way (the

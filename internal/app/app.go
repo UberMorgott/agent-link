@@ -60,12 +60,14 @@ type App struct {
 	// Version is this build's version (selfupdate.Version). Exe is set by
 	// SetExecutable. Relaunch starts the updated executable; nil disables
 	// updates. Latest finds the newest release and whether it is newer than
-	// the given version; replaceable in tests, like UpdateFirst and
-	// UpdateEvery (0: a minute after start, then every 6 hours).
+	// the given version and Notes the changelog for it; replaceable in tests,
+	// like UpdateFirst and UpdateEvery (0: a minute after start, then every
+	// 6 hours).
 	Version                  string
 	Exe                      string
 	Relaunch                 func() error
 	Latest                   func(ctx context.Context, current string) (Release, bool, error)
+	Notes                    func(ctx context.Context, current string) ([]selfupdate.Note, bool, error)
 	UpdateFirst, UpdateEvery time.Duration
 	// HookExe is the executable the folder hooks run (`HookExe hook claude`);
 	// an update replaces that file in place, so the path stays valid. Empty:
@@ -137,7 +139,7 @@ func New(path string, log *slog.Logger) (*App, error) {
 		SetAutostart: setAutostart, AutostartState: autostartEnabled,
 		Ifaces: settings.SystemIfaces, PickFolder: pickFolder, PickFile: pickFile,
 		Agents: settings.SystemFinder, zeroTier: true, Discovery: true,
-		Version: selfupdate.Version, Latest: latestRelease,
+		Version: selfupdate.Version, Latest: latestRelease, Notes: selfupdate.Changelog,
 		events: newEventBroadcaster(),
 	}, nil
 }
