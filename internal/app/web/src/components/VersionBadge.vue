@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UModal from '@nuxt/ui/components/Modal.vue'
 import UProgress from '@nuxt/ui/components/Progress.vue'
@@ -10,13 +10,36 @@ import { useAppStore } from '@/stores/app'
 import type { Changelog, UpdateStatus } from '@/types'
 
 // The build version next to the logo. It opens the update popup: a fresh
-// check, the notes of every newer release (else of this one), «Обновить» and
-// the download's progress. GitHub is asked by the app, never by the page.
+// check and the notes of every newer release (else of this one). A newer
+// release installs at once, with the download's progress; the restarted app
+// reloads the page (reloadOnNewVersion), which opens the popup again on the
+// new version's notes. GitHub is asked by the app, never by the page.
+
+// REOPEN_KEY marks this tab as waiting for an update: the page loaded after
+// the restart opens the popup again.
+const REOPEN_KEY = 'agentlink' + '.update.reopen' // split: not a string key
+
+function setReopen(on: boolean) {
+  try {
+    if (on) sessionStorage.setItem(REOPEN_KEY, '1')
+    else sessionStorage.removeItem(REOPEN_KEY)
+  } catch { /* storage may be unavailable */ }
+}
+
+function takeReopen(): boolean {
+  try {
+    const on = sessionStorage.getItem(REOPEN_KEY) !== null
+    sessionStorage.removeItem(REOPEN_KEY)
+    return on
+  } catch { return false }
+}
+
 const app = useAppStore()
 const open = ref(false)
 const checking = ref(false)
 const changelog = ref<Changelog | null>(null)
 const failure = ref('')
+const applying = ref(false)
 
 const upd = computed<UpdateStatus>(() => app.update || {})
 const current = computed(() => upd.value.current || runtime.version || 'dev')
@@ -51,16 +74,37 @@ async function show() {
     .catch((e: Error) => { changelog.value = { current: current.value, newer: false, releases: [], text: e.message, failed: true } })
   await Promise.all([check, notes])
   checking.value = false
-}
-
-async function install() {
-  failure.value = ''
-  try {
-    app.update = await api<UpdateStatus>('POST', 'update/apply')
-  } catch (e) {
-    failure.value = (e as Error).message
+  if (busy) {
+    if (upd.value.installing || upd.value.restarting) setReopen(true)
+  } else if (upd.value.available && !failure.value) {
+    await install()
   }
 }
+
+// install runs the download (its progress comes with the "update" events)
+// and the restart; the request answers once the new version is in place.
+async function install() {
+  failure.value = ''
+  applying.value = true
+  setReopen(true)
+  try {
+    const s = await api<UpdateStatus>('POST', 'update/apply')
+    app.update = s
+    if (!s.restarting) setReopen(false)
+  } catch (e) {
+    setReopen(false)
+    failure.value = (e as Error).message
+  } finally {
+    applying.value = false
+  }
+}
+
+const failed = computed(() => !!failure.value || (!!upd.value.failed && !checking.value))
+const canRetry = computed(() => failed.value && !checking.value && !applying.value && !upd.value.busy)
+
+onMounted(() => {
+  if (takeReopen()) void show()
+})
 </script>
 
 <template>
@@ -111,7 +155,7 @@ async function install() {
           <span class="text-muted">{{ progressText }}</span>
         </div>
         <div
-          v-else-if="upd.restarting"
+          v-else-if="upd.restarting || applying"
           id="update_restarting"
         >
           <UProgress
@@ -120,7 +164,7 @@ async function install() {
           />
         </div>
         <p
-          v-if="failure || (upd.failed && !checking)"
+          v-if="failed"
           id="update_error"
           class="text-error"
         >
@@ -173,13 +217,13 @@ async function install() {
       </div>
     </template>
     <template
-      v-if="upd.available && !checking"
+      v-if="canRetry"
       #footer
     >
       <UButton
-        id="update_install"
-        :label="t('update.install')"
-        @click="install"
+        id="update_retry"
+        :label="t('update.retry')"
+        @click="show"
       />
     </template>
   </UModal>

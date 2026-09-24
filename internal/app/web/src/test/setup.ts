@@ -5,6 +5,7 @@ import { unmountAll } from './harness'
 
 beforeEach(() => {
   localStorage.clear()
+  sessionStorage.clear()
   runtime.strings = {}
   runtime.version = ''
   runtime.token = 'test-token'

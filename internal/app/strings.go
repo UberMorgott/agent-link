@@ -215,7 +215,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	// The version popup next to the logo.
 	"update.badge":            "Версия и обновления",
 	"update.dialog.title":     "Версия agentlink {version}",
-	"update.install":          "Обновить",
+	"update.retry":            "Повторить",
 	"update.progress":         "Скачано {done} из {total} МБ ({percent}%)",
 	"update.progress.bytes":   "Скачано {done} МБ",
 	"update.changelog.newer":  "Что нового",
