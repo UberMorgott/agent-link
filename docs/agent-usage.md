@@ -240,7 +240,7 @@ agentlink hook install codex             # ~/.codex/hooks.json, then trust it wi
   it lets the session stop and leaves the rest unread. Codex gets `{}` otherwise.
 - **The person sees** a line in the session (`systemMessage`): «agent-link: 2 сообщения от
   KPECTIK — беру в работу» (or «к сведению», «отвечает агент-обработчик»).
-- **Waking an idle Claude Code session.** On `SessionStart` and `Stop` Claude Code also starts
+- **Waking an idle Claude Code session.** On `Stop` Claude Code also starts
   `agentlink hook claude --wait` in the background (`"asyncRewake": true`, `timeout` 86400 s;
   [command hook fields](https://code.claude.com/docs/en/hooks#command-hook-fields)). It polls
   the node every 2 s; when the session is idle (its last event was `Stop`) and unread messages
@@ -250,7 +250,11 @@ agentlink hook install codex             # ~/.codex/hooks.json, then trust it wi
   (`SessionEnd`, or its parent process gone) or shortly before its timeout. The line for the
   person comes with the session's next event. Codex has no such hook (a background hook
   "doesn't start a new turn", [hooks](https://learn.chatgpt.com/docs/hooks)): it hears of
-  messages at its next event; its session registers `wake: "next-event"`.
+  messages at its next event; its session registers `wake: "next-event"`. The waiter is not
+  installed on `SessionStart`: Claude Code in stream-json mode (the desktop app, the SDK,
+  `-p`) holds the session's start until every `SessionStart` hook ends, `asyncRewake` ones
+  included. A new session hears of messages at `SessionStart` itself and is woken after its
+  first turn. Updating agentlink rewrites the folder hooks of older versions on its next start.
 - **Activity.** Only for chats whose batch the session accepted (requests that ask it):
   `PreToolUse` posts what it does to `POST /chats/{id}/activity` — «читает <path>», «правит
   <path>» (relative to the folder, else the file name), «запускает <program>» (no arguments),

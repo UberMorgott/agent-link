@@ -58,8 +58,9 @@ func TestInstall(t *testing.T) {
 		if last.Command != "C:/Program Files/agentlink/agentlink.exe" || strings.Join(last.Args, " ") != "hook claude" || last.Timeout != timeout || last.AsyncRewake {
 			t.Fatalf("%s: %+v", ev, last)
 		}
-		// The background waiter: SessionStart and Stop only.
-		if wantWait := ev == SessionStart || ev == Stop; wantWait != (len(hs) == 2) {
+		// The background waiter: Stop only. On SessionStart it would hold the
+		// session's start (Claude Code waits for every SessionStart hook).
+		if wantWait := ev == Stop; wantWait != (len(hs) == 2) {
 			t.Fatalf("%s: handlers %+v", ev, hs)
 		} else if wantWait && (strings.Join(hs[1].Args, " ") != "hook claude --wait" || !hs[1].AsyncRewake || hs[1].Timeout != WaitTimeout) {
 			t.Fatalf("%s waiter: %+v", ev, hs[1])
@@ -80,7 +81,7 @@ func TestInstall(t *testing.T) {
 		t.Fatalf("moved: %v %v", changed, err)
 	}
 	data, _ = os.ReadFile(filepath.Clean(path))
-	if strings.Count(string(data), "agentlink.exe") != len(Events)+2 {
+	if strings.Count(string(data), "agentlink.exe") != len(Events)+1 {
 		t.Fatalf("duplicate entries:\n%s", data)
 	}
 
@@ -130,12 +131,13 @@ func TestInstall(t *testing.T) {
 	}
 }
 
-// An install of an older agentlink (four events, no waiter) is migrated in
-// place: every agentlink group is replaced, none is duplicated, other hooks stay.
+// An install of an older agentlink (four events; or a waiter on SessionStart,
+// which held the session's start) is migrated in place: every agentlink group
+// is replaced, none is duplicated, other hooks stay.
 func TestInstallMigratesOldEntries(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.local.json")
 	old := `{"hooks": {
-  "SessionStart": [{"hooks": [{"type": "command", "command": "C:/old/agentlink.exe", "args": ["hook", "claude"], "timeout": 10}]}],
+  "SessionStart": [{"hooks": [{"type": "command", "command": "C:/old/agentlink.exe", "args": ["hook", "claude"], "timeout": 10}, {"type": "command", "command": "C:/old/agentlink.exe", "args": ["hook", "claude", "--wait"], "asyncRewake": true, "timeout": 86400}]}],
   "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "C:/old/agentlink.exe", "args": ["hook", "claude"], "timeout": 10}]}],
   "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "C:/old/agentlink.exe", "args": ["hook", "claude"], "timeout": 10}]}],
   "Stop": [{"hooks": [{"type": "command", "command": "mine"}]}, {"hooks": [{"type": "command", "command": "C:/old/agentlink.exe", "args": ["hook", "claude"], "timeout": 10}]}]
@@ -151,7 +153,7 @@ func TestInstallMigratesOldEntries(t *testing.T) {
 	}
 	data, _ := os.ReadFile(filepath.Clean(path))
 	got := string(data)
-	if strings.Contains(got, "C:/old") || strings.Count(got, "C:/new/agentlink.exe") != len(Events)+2 ||
+	if strings.Contains(got, "C:/old") || strings.Count(got, "C:/new/agentlink.exe") != len(Events)+1 || strings.Count(got, `"--wait"`) != 1 ||
 		!strings.Contains(got, `"mine"`) || !strings.Contains(got, `"asyncRewake": true`) || !strings.Contains(got, SessionEnd) {
 		t.Fatalf("migrated:\n%s", got)
 	}

@@ -90,15 +90,18 @@ func Entry(client, exe string) Handler {
 }
 
 // Handlers are the handlers of event ev for client: the hook itself and, for
-// Claude Code on SessionStart and Stop, the background waiter that wakes an
-// idle session when a message arrives (armed again at every Stop).
+// Claude Code on Stop, the background waiter that wakes an idle session when a
+// message arrives (armed again at every Stop). Not on SessionStart: Claude
+// Code in stream-json mode (the desktop app, the SDK, -p) holds the session's
+// start until every SessionStart hook ends, asyncRewake ones included, so a
+// waiter there kept the session at "Starting session…" until its timeout.
 func Handlers(client, exe, ev string) []Handler {
 	h := Entry(client, exe)
 	if ev == SessionEnd {
 		h.Timeout = EndTimeout
 	}
 	out := []Handler{h}
-	if client == Claude && (ev == SessionStart || ev == Stop) {
+	if client == Claude && ev == Stop {
 		w := h
 		w.Args = append(slices.Clone(h.Args), WaitArg)
 		w.AsyncRewake, w.Timeout = true, WaitTimeout

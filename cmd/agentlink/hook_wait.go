@@ -1,7 +1,8 @@
 package main
 
 // agentlink hook claude --wait: Claude Code's background waiter. It is
-// installed as an asyncRewake hook on SessionStart and Stop: Claude Code runs
+// installed as an asyncRewake hook on Stop (not SessionStart: Claude Code
+// holds a session's start until its SessionStart hooks end): Claude Code runs
 // it in the background and, when it exits with code 2, wakes the session even
 // when it is idle and shows Claude its stderr
 // (https://code.claude.com/docs/en/hooks#command-hook-fields,
