@@ -636,3 +636,7 @@ traversal, dynamic chat participants, converting the legacy network.
   live session (survives an app restart, unlike an in-memory map). Owner lookup
   uses the new `Node.OwnsChat` (stored chats, and legacy virtual chats on the
   legacy node) and `Node.OwnsMessage` (chat messages and received plain ones).
+- A13: the CLI sends the selector as the `project` query parameter on every
+  command (send included), never in the JSON body; `chat` subcommands and
+  `wait` take `--project` too. The folder hooks send none: their folder
+  routes them.

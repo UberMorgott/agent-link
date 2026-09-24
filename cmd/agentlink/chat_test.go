@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,7 +90,7 @@ func TestChatCommands(t *testing.T) {
 		"POST /chats/c1/ack",
 		"POST /ack",
 		"GET /unread?after=0-x&limit=1",
-		"GET /wait?chat=c1&timeout=1s",
+		"GET /wait?" + url.Values{"chat": {"c1"}, "folder": {cwd(t)}, "timeout": {"1s"}}.Encode(),
 	}
 	if strings.Join(f.reqs, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests:\n%s\nwant:\n%s", strings.Join(f.reqs, "\n"), strings.Join(want, "\n"))
@@ -165,5 +166,46 @@ func TestSendInsideJobUsesChatContext(t *testing.T) {
 	f.run("send", "--chat", "other", "--body", "elsewhere")
 	if s := f.send; s.ChatID != "other" || s.Parent != "j1" {
 		t.Fatalf("send to another chat = %+v", s)
+	}
+}
+
+func cwd(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wd
+}
+
+// send, wait and chat name the project: --project, else the agent's own
+// ($AGENTLINK_PROJECT_ID); send also names its folder, as wait does.
+func TestProjectSelector(t *testing.T) {
+	f := newFakeAPI(t)
+	t.Setenv(envProjectID, "PENV")
+	f.run("send", "--to", "b", "--body", "hi")
+	if f.send.Folder != cwd(t) {
+		t.Fatalf("send folder %q", f.send.Folder)
+	}
+	f.run("wait", "--timeout", "1")
+	f.run("chat", "list", "--project", "legacy")
+	f.run("chat", "history", "--chat", "c1")
+	f.run("chat", "unread")
+	f.run("chat", "ack", "--ids", "m1")
+	f.run("chat", "new", "--with", "b")
+	t.Setenv(envProjectID, "")
+	f.run("chat", "list")
+	want := []string{
+		"POST /send?project=PENV",
+		"GET /wait?" + url.Values{"folder": {cwd(t)}, "project": {"PENV"}, "timeout": {"1s"}}.Encode(),
+		"GET /chats?project=legacy",
+		"GET /chats/c1/messages?limit=50&project=PENV",
+		"GET /unread?limit=50&project=PENV",
+		"POST /ack?project=PENV",
+		"POST /chats?project=PENV",
+		"GET /chats",
+	}
+	if strings.Join(f.reqs, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requests:\n%s\nwant:\n%s", strings.Join(f.reqs, "\n"), strings.Join(want, "\n"))
 	}
 }
