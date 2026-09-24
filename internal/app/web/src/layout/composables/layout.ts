@@ -1,44 +1,87 @@
 import { computed, reactive, ref, watch } from 'vue'
+import { DEFAULT_PRIMARY, DEFAULT_SURFACE, SHADES, primaryColors, primaryPalette, primaryShade, surfacePalette, surfaces } from '@/lib/palettes'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
+export interface UiState {
+  theme: ThemeMode
+  primary: string
+  surface: string
+}
+
 export const UI_STORAGE_KEY = 'agentlink' + '.ui'
 
+const defaults: UiState = { theme: 'system', primary: DEFAULT_PRIMARY, surface: DEFAULT_SURFACE }
 const systemDark = ref(false)
+// storageFailed is set while the browser refuses to keep the choice.
+export const storageFailed = ref(false)
 let systemQuery: MediaQueryList | undefined
 
-function readTheme(): ThemeMode {
+// readUiState reads the saved appearance; anything unknown falls back to the defaults.
+export function readUiState(storage: Pick<Storage, 'getItem'>): UiState {
   try {
-    const value = localStorage.getItem(UI_STORAGE_KEY)
+    const value = storage.getItem(UI_STORAGE_KEY)
     const stored: unknown = value ? JSON.parse(value) : null
-    const theme = stored && typeof stored === 'object' ? (stored as { theme?: unknown }).theme : null
-    return theme === 'light' || theme === 'dark' ? theme : 'system'
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return { ...defaults }
+    const { theme, primary, surface } = stored as Record<string, unknown>
+    return {
+      theme: theme === 'light' || theme === 'dark' ? theme : 'system',
+      primary: primaryColors.some((c) => c.name === primary) ? (primary as string) : defaults.primary,
+      surface: surfaces.some((s) => s.name === surface) ? (surface as string) : defaults.surface,
+    }
   } catch {
-    return 'system'
+    return { ...defaults }
   }
 }
 
-export const layoutConfig = reactive<{ theme: ThemeMode }>({ theme: 'system' })
+export const layoutConfig = reactive<UiState>({ ...defaults })
 export const layoutState = reactive({ mobileMenuActive: false })
 
 const isDarkTheme = computed(() => layoutConfig.theme === 'dark' || (layoutConfig.theme === 'system' && systemDark.value))
 
 // Nuxt UI's theme and Tailwind's dark: variant key on the "dark" class of
 // <html>; color-scheme gives native controls and scrollbars the same mode.
+// The chosen scales go over Nuxt UI's colour variables as inline properties of
+// <html> (CSSOM, so the style-src nonce does not apply), and --ui-primary
+// names the shade that keeps accent text readable (lib/palettes.ts).
 function applyTheme() {
   const root = document.documentElement
-  root.classList.toggle('dark', isDarkTheme.value)
-  root.style.colorScheme = isDarkTheme.value ? 'dark' : 'light'
+  const dark = isDarkTheme.value
+  root.classList.toggle('dark', dark)
+  root.style.colorScheme = dark ? 'dark' : 'light'
+  const surface = surfacePalette(layoutConfig.surface)
+  const primary = primaryPalette(layoutConfig.primary, layoutConfig.surface)
+  for (const shade of SHADES) {
+    root.style.setProperty(`--ui-color-neutral-${shade}`, surface[shade])
+    root.style.setProperty(`--ui-color-primary-${shade}`, primary[shade])
+  }
+  root.style.setProperty('--ui-primary', `var(--ui-color-primary-${primaryShade(layoutConfig.primary, layoutConfig.surface, dark)})`)
 }
 
 watch(layoutConfig, (value) => {
   applyTheme()
-  try { localStorage.setItem(UI_STORAGE_KEY, JSON.stringify(value)) } catch { /* storage unavailable */ }
+  try {
+    localStorage.setItem(UI_STORAGE_KEY, JSON.stringify(value))
+    storageFailed.value = false
+  } catch {
+    storageFailed.value = true
+  }
 }, { flush: 'sync' })
 
-// applyUiState reads the saved theme and follows the system while it is "system".
+function savedUiState(): UiState {
+  try {
+    return readUiState(localStorage)
+  } catch {
+    storageFailed.value = true
+    return { ...defaults }
+  }
+}
+
+// applyUiState reads the saved appearance and follows the system while the
+// theme is "system". main.ts calls it before the app mounts, so the first
+// paint already has the chosen colours.
 export function applyUiState() {
-  layoutConfig.theme = readTheme()
+  Object.assign(layoutConfig, savedUiState())
   watchNarrow()
   if (!systemQuery && typeof window.matchMedia === 'function') {
     systemQuery = window.matchMedia('(prefers-color-scheme: dark)')
@@ -64,14 +107,8 @@ export function watchNarrow() {
   narrowQuery.addEventListener('change', () => { isNarrow.value = narrowQuery!.matches })
 }
 
-const THEME_ORDER: ThemeMode[] = ['system', 'light', 'dark']
-
 export function useLayout() {
-  // cycleTheme steps system → light → dark → system.
-  const cycleTheme = () => {
-    layoutConfig.theme = THEME_ORDER[(THEME_ORDER.indexOf(layoutConfig.theme) + 1) % THEME_ORDER.length]!
-  }
   const toggleMenu = () => { layoutState.mobileMenuActive = !layoutState.mobileMenuActive }
   const hideMobileMenu = () => { layoutState.mobileMenuActive = false }
-  return { layoutConfig, layoutState, isDarkTheme, cycleTheme, toggleMenu, hideMobileMenu }
+  return { layoutConfig, layoutState, isDarkTheme, storageFailed, toggleMenu, hideMobileMenu }
 }

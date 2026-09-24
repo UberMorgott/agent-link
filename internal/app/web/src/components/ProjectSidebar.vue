@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import UButton from '@nuxt/ui/components/Button.vue'
 import UIcon from '@nuxt/ui/components/Icon.vue'
 import ChatRow from '@/components/ChatRow.vue'
 import ProjectMenu from '@/components/ProjectMenu.vue'
 import VersionBadge from '@/components/VersionBadge.vue'
-import { useLayout } from '@/layout/composables/layout'
+import AppConfigurator from '@/layout/AppConfigurator.vue'
 import { isUnread } from '@/lib/chat'
 import { icon } from '@/lib/icons'
 import { openProject } from '@/lib/nav'
@@ -16,15 +15,12 @@ import { useProjectsStore } from '@/stores/projects'
 import type { ProjectView } from '@/types'
 
 // The sidebar: the projects as a tree (each with its chats), then the app's
-// own pages and the theme.
+// own pages and the appearance panel.
 const projects = useProjectsStore()
 const inbox = useInboxStore()
 const route = useRoute()
-const { layoutConfig, cycleTheme } = useLayout()
 
 const current = computed(() => String(route.name || ''))
-const themeIcon = computed(() => icon(({ system: 'system', light: 'sun', dark: 'moon' })[layoutConfig.theme]))
-const themeLabel = computed(() => t("theme." + layoutConfig.theme))
 // The app icon from public/, served next to the page.
 const logo = `${import.meta.env.BASE_URL}icon.svg`
 
@@ -227,16 +223,7 @@ const tree = computed(() => (projects.list || []).map((p) => ({
       </RouterLink>
     </nav>
     <div class="flex items-center justify-between gap-2 px-3 py-3">
-      <UButton
-        id="theme_toggle"
-        :icon="themeIcon"
-        color="neutral"
-        variant="ghost"
-        size="sm"
-        :aria-label="themeLabel"
-        :title="themeLabel"
-        @click="cycleTheme"
-      />
+      <AppConfigurator />
     </div>
   </div>
 </template>

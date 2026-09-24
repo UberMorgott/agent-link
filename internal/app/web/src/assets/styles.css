@@ -4,9 +4,10 @@
    not come back into the next build. */
 @source not "../../dist";
 
-/* Calm tokens for the shell, mapped onto Nuxt UI's theme variables (emerald
-   primary, neutral gray; vite.config.ts). The dark values follow the "dark"
-   class on <html> (src/layout/composables/layout.ts). */
+/* Calm tokens for the shell, mapped onto Nuxt UI's theme variables. The accent
+   and background scales are the user's (src/layout/composables/layout.ts sets
+   them on <html>, emerald and neutral by default); the dark values follow the
+   "dark" class on <html>. */
 :root {
   --app-bg: var(--ui-bg);
   --app-side: var(--ui-bg-muted);
@@ -14,7 +15,8 @@
   --app-soft: var(--ui-bg-elevated);
   --app-text: var(--ui-text);
   --app-muted: var(--ui-text-muted);
-  --app-on: var(--ui-color-primary-600);
+  /* Online and read marks stay green whatever accent the user picks. */
+  --app-on: var(--ui-color-success-600);
   --app-off: #b45309;
   --app-danger: var(--ui-error);
   /* Six stable colours for names in a chat (lib/chat.ts whoIndex). */
@@ -28,7 +30,7 @@
 
 :root.dark {
   --app-side: var(--ui-color-neutral-950);
-  --app-on: var(--ui-color-primary-400);
+  --app-on: var(--ui-color-success-400);
   --app-off: #f59e0b;
   --who-1: #7fb2dc;
   --who-2: #d494c7;
@@ -163,6 +165,14 @@
   @keyframes act-pulse { 50% { opacity: 0.3; } }
 
   .choice { color: var(--who); }
+
+  /* The appearance panel (layout/AppConfigurator.vue): round colour swatches. */
+  .config-swatch {
+    width: 1.25rem; height: 1.25rem; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-text-highlighted) 12%, transparent);
+  }
+  .config-swatch:hover { transform: scale(1.08); }
+  .config-swatch.active { outline: 2px solid var(--ui-primary); outline-offset: 2px; }
 
   /* Release notes rendered from Markdown (lib/markdown.ts). */
   .release-md { line-height: 1.55; overflow-wrap: anywhere; }

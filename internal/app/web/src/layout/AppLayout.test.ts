@@ -3,7 +3,7 @@ import { SITE } from '@/test/backend'
 import { fakeBackend, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
 import { useProjectsStore } from '@/stores/projects'
-import { useLayout } from './composables/layout'
+import { UI_STORAGE_KEY, useLayout } from './composables/layout'
 
 const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T>(sel)
 const $$ = <T extends Element = HTMLElement>(sel: string) => Array.from(document.querySelectorAll<T>(sel))
@@ -74,6 +74,28 @@ describe('the application shell', () => {
     tree[2]!.querySelector<HTMLButtonElement>('.project-fold')!.click()
     await settle()
     expect(tree[2]!.querySelectorAll('.chat-row')).toHaveLength(1)
+  })
+
+  it('picks the theme, accent and background in the appearance panel', async () => {
+    await open('/dashboard')
+    expect($('#theme_panel')).toBeNull()
+    $<HTMLButtonElement>('#theme_config')!.click()
+    await settle()
+    expect($$('#theme_mode button').map((b) => b.dataset.mode)).toEqual(['light', 'dark', 'system'])
+    expect($$('#theme_primary button')).toHaveLength(11)
+    expect($$('#theme_surface button')).toHaveLength(5)
+    for (const b of $$('#theme_panel button')) expect(labelled(b) || !!b.textContent!.trim(), b.outerHTML).toBe(true)
+    $<HTMLButtonElement>('#theme_mode [data-mode="dark"]')!.click()
+    $<HTMLButtonElement>('#theme_primary [data-color="rose"]')!.click()
+    $<HTMLButtonElement>('#theme_surface [data-surface="zinc"]')!.click()
+    await settle()
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+    expect(document.documentElement.style.getPropertyValue('--ui-color-primary-500')).toBe('#f43f5e')
+    expect($('#theme_primary [data-color="rose"]')!.getAttribute('aria-pressed')).toBe('true')
+    expect($('#theme_surface [data-surface="zinc"]')!.getAttribute('aria-pressed')).toBe('true')
+    expect($('#theme_mode [data-mode="dark"]')!.getAttribute('aria-pressed')).toBe('true')
+    expect($('#theme_saved')!.textContent).toContain('theme.saved')
+    expect(JSON.parse(localStorage.getItem(UI_STORAGE_KEY)!)).toEqual({ theme: 'dark', primary: 'rose', surface: 'zinc' })
   })
 
   it('closes the phone drawer when a project dialog opens from it', async () => {

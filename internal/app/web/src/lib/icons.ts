@@ -29,6 +29,7 @@ export const icons: Record<string, string> = {
   sun: 'i-lucide-sun',
   moon: 'i-lucide-moon',
   system: 'i-lucide-monitor',
+  palette: 'i-lucide-palette',
   // Chat marks: delivery ticks and who wrote a message.
   queued: 'i-lucide-clock',
   delivered: 'i-lucide-check',
