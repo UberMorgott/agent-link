@@ -241,7 +241,7 @@ func TestHookSessionLifecycle(t *testing.T) {
 		c := newHookCase(t)
 		c.run(client, evSessionStart)
 		s, ok := c.f.sessions[c.sid]
-		wantWake := map[string]string{hookClaude: node.WakeRewake, hookCodex: node.WakeNextEvent}[client]
+		wantWake := map[string]string{hookClaude: node.WakeRewake, hookCodex: node.WakeQueue}[client]
 		if !ok || s.Provider != client || s.Wake != wantWake || !strings.EqualFold(s.Folder, c.folder) || s.TTLSec == 0 {
 			t.Fatalf("%s: registered %+v %v", client, s, ok)
 		}
@@ -260,6 +260,45 @@ func TestHookSessionLifecycle(t *testing.T) {
 		if !slices.Contains(c.f.ended, c.sid) || !c.state(client).Ended {
 			t.Fatalf("%s: not ended: %v %+v", client, c.f.ended, c.state(client))
 		}
+	}
+}
+
+// A Codex session tells the node when it becomes idle (a Stop that lets it
+// stop) and busy again, at once, so the node wakes only an idle session.
+func TestHookCodexReportsIdle(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	c := newHookCase(t)
+	idle := func() bool {
+		c.f.mu.Lock()
+		defer c.f.mu.Unlock()
+		return c.f.sessions[c.sid].Idle
+	}
+	c.run(hookCodex, evSessionStart)
+	if s := c.f.sessions[c.sid]; s.Idle || s.Wake != node.WakeQueue || s.CodexHome != home {
+		t.Fatalf("registered %+v", s)
+	}
+	c.run(hookCodex, evStop)
+	if !idle() || !c.state(hookCodex).Idle {
+		t.Fatal("a quiet Stop did not report idle")
+	}
+	c.run(hookCodex, evPrompt)
+	if idle() {
+		t.Fatal("a prompt did not report busy")
+	}
+	// A Stop that blocks (something new) keeps the session busy.
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "hi", true))
+	if out := parseOut(t, c.run(hookCodex, evStop)); out.Decision != "block" {
+		t.Fatalf("stop %+v", out)
+	}
+	if idle() {
+		t.Fatal("a blocking Stop reported idle")
+	}
+	// Claude Code never reports idle (its waiter wakes it).
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evStop)
+	if s := c.f.sessions[c.sid]; s.Idle || s.Wake != node.WakeRewake || s.CodexHome != "" {
+		t.Fatalf("claude %+v", s)
 	}
 }
 

@@ -184,7 +184,7 @@ it), so the node knows someone is there. All on the control API (loopback, no to
 
 | Call | Body / query | Answer |
 | --- | --- | --- |
-| `POST /sessions` | `{"session_id","provider","folder","wake":"rewake"\|"next-event","ttl_sec"}` | the `Session` (`area`, `primary`, `registered_at`, `last_seen`); again = heartbeat |
+| `POST /sessions` | `{"session_id","provider","folder","wake":"rewake"\|"queue"\|"next-event","ttl_sec","idle","codex_home"}` | the `Session` (`area`, `primary`, `registered_at`, `last_seen`; `wake` is `next-event` while a `queue` one cannot be woken, `asked_wake` what it asked for); again = heartbeat |
 | `GET /sessions` | | live sessions, oldest first |
 | `DELETE /sessions/{id}` | | 204 |
 | `GET /unread` | `folder`, `after`, `limit` (1–1000, default 50), `session` | `{"messages":[…],"total":N,"next":cursor}` |
@@ -229,7 +229,7 @@ agentlink hook install codex             # ~/.codex/hooks.json, then trust it wi
 ```
 
 - **Session.** `SessionStart` registers the session (`POST /sessions`: `provider`, its `cwd` as
-  `folder`, `wake: "rewake"` for Claude Code, `"next-event"` for Codex); every later event is a
+  `folder`, `wake: "rewake"` for Claude Code, `"queue"` for Codex, see below); every later event is a
   heartbeat (at most once a minute); `SessionEnd` deregisters it. A folder that is none of this
   node's is refused by the node: the hook then does nothing in that session.
 - **Delivery.** On `SessionStart`, `UserPromptSubmit`, `PostToolUse` and `Stop` the hook reads
@@ -262,12 +262,24 @@ agentlink hook install codex             # ~/.codex/hooks.json, then trust it wi
   at a time; it heartbeats the idle session every 5 minutes and ends with the session
   (`SessionEnd`, or its parent process gone) or shortly before its timeout. The line for the
   person comes with the session's next event. Codex has no such hook (a background hook
-  "doesn't start a new turn", [hooks](https://learn.chatgpt.com/docs/hooks)): it hears of
-  messages at its next event; its session registers `wake: "next-event"`. The waiter is not
+  "doesn't start a new turn", [hooks](https://learn.chatgpt.com/docs/hooks)); see the next
+  item. The waiter is not
   installed on `SessionStart`: Claude Code in stream-json mode (the desktop app, the SDK,
   `-p`) holds the session's start until every `SessionStart` hook ends, `asyncRewake` ones
   included. A new session hears of messages at `SessionStart` itself and is woken after its
   first turn. Updating agentlink rewrites the folder hooks of older versions on its next start.
+- **Waking an idle Codex session.** A Codex session registers `wake: "queue"` with its
+  `CODEX_HOME` (`codex_home`) and tells the node when a `Stop` lets it stop (`idle: true`) and
+  when its next event comes (`idle: false`). While the node finds a codex 0.149 or later (on
+  `PATH`, the npm package's native `codex.exe`, a standalone install, or the copy the desktop
+  app runs from `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>`), it checks every 2 s: an idle live session with unread
+  messages it may take gets one `codex queue --thread <session_id> --message "agent-link: N
+  новых сообщений — прочитай их"` per idle period. A Codex app-server that holds that thread
+  loaded and idle (the CLI, the desktop app sharing that `CODEX_HOME`) starts a turn with it
+  within about 10 s, and `UserPromptSubmit` delivers the batch as always. A thread nobody has
+  open keeps the prompt until it is opened. Without such a codex, or for 10 minutes after a
+  failed `codex queue` (logged), the node gives the session `wake: "next-event"`: it hears of
+  messages at its next event.
 - **Activity.** Only for chats whose batch the session accepted (requests that ask it):
   `PreToolUse` posts what it does to `POST /chats/{id}/activity` — «читает <path>», «правит
   <path>» (relative to the folder, else the file name), «запускает <program>» (no arguments),

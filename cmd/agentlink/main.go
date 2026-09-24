@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UberMorgott/agent-link/internal/codexqueue"
 	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
 	"github.com/UberMorgott/agent-link/internal/selfupdate"
@@ -248,6 +249,7 @@ func serve(cfg config.Config) error {
 		return err
 	}
 	n.SetAppVersion(selfupdate.Version)
+	n.SetSessionWaker(codexqueue.New())
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	var lc net.ListenConfig

@@ -122,6 +122,9 @@ func (a *App) newNodeOf(pid string, cfg config.Config, key []byte) (*node.Node, 
 		return nil, err
 	}
 	n.SetAppVersion(a.Version)
+	if a.Waker != nil {
+		n.SetSessionWaker(a.Waker)
+	}
 	topic := projectTopic(pid)
 	n.SetChangeHook(func(t string) { a.events.publish(t, topic) })
 	return n, nil

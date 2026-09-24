@@ -325,6 +325,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"inbox.info.no_sessions":       "Открытых сессий нет.",
 	"inbox.session.rewake":         "будит сессию сразу",
 	"inbox.session.next_event":     "увидит при следующем действии",
+	"inbox.session.queue":          "простаивающая сессия будет разбужена",
 	"inbox.member.old_short":       "старая версия",
 	"inbox.reply_to":               "ответ на сообщение от {name}: {text}",
 
@@ -340,6 +341,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"inbox.activity.since_title":     "взял сообщение от {start}",
 	"inbox.presence.rewake":          "сессия открыта — прочитает сразу",
 	"inbox.presence.next_event":      "сессия открыта — прочитает на следующем шаге агента",
+	"inbox.presence.queue":           "сессия открыта — будет разбужена и прочитает",
 	"inbox.presence.none":            "сессия не открыта — сообщение ждёт",
 	"inbox.presence.worker":          "ответит агент-обработчик",
 	"inbox.activity.type.thinking":   "думает",

@@ -29,6 +29,9 @@ const (
 	WakeRewake = "rewake"
 	// WakeNextEvent: the session sees new messages at its next hook event.
 	WakeNextEvent = "next-event"
+	// WakeQueue: the node wakes the idle session by queueing a message for it
+	// in its agent (Codex: `codex queue`, see wake.go); its hooks deliver.
+	WakeQueue = "queue"
 )
 
 // Session registry limits.
@@ -51,6 +54,12 @@ type SessionRequest struct {
 	Wake      string `json:"wake,omitempty"`
 	// TTLSec overrides SessionTTL for this session (at most MaxSessionTTL).
 	TTLSec int `json:"ttl_sec,omitempty"`
+	// Idle: the session ended its turn and waits for its person (WakeQueue
+	// wakes only an idle session).
+	Idle bool `json:"idle,omitempty"`
+	// CodexHome is the session's CODEX_HOME ("": Codex's default), where
+	// WakeQueue queues its message.
+	CodexHome string `json:"codex_home,omitempty"`
 }
 
 // Session is one registered live session.
@@ -65,6 +74,13 @@ type Session struct {
 	LastSeen     time.Time `json:"last_seen"`
 	// Primary: the oldest live session of its area, the one that answers.
 	Primary bool `json:"primary"`
+	// Asked is the wake mode the session asked for; Wake is what the node
+	// gives it (WakeQueue only while it can queue, else WakeNextEvent).
+	Asked     string `json:"asked_wake,omitempty"`
+	Idle      bool   `json:"idle,omitempty"`
+	CodexHome string `json:"codex_home,omitempty"`
+	// Woken: the node queued a wake in this idle period (once per period).
+	Woken bool `json:"woken,omitempty"`
 }
 
 func (s Session) live(now time.Time) bool {
@@ -140,13 +156,19 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 		return Session{}, fmt.Errorf("%w: folder must be an absolute path", ErrBadRequest)
 	case req.TTLSec < 0 || time.Duration(req.TTLSec)*time.Second > MaxSessionTTL:
 		return Session{}, fmt.Errorf("%w: ttl_sec out of range", ErrBadRequest)
+	case len(req.CodexHome) > 1024 || (req.CodexHome != "" && !filepath.IsAbs(req.CodexHome)):
+		return Session{}, fmt.Errorf("%w: codex_home must be an absolute path", ErrBadRequest)
 	}
 	switch req.Wake {
 	case "":
 		req.Wake = WakeNextEvent
-	case WakeRewake, WakeNextEvent:
+	case WakeRewake, WakeNextEvent, WakeQueue:
 	default:
-		return Session{}, fmt.Errorf("%w: wake must be %q or %q", ErrBadRequest, WakeRewake, WakeNextEvent)
+		return Session{}, fmt.Errorf("%w: wake must be %q, %q or %q", ErrBadRequest, WakeRewake, WakeNextEvent, WakeQueue)
+	}
+	asked := req.Wake
+	if asked == WakeQueue && !n.canQueue() {
+		req.Wake = WakeNextEvent
 	}
 	area, ok := n.FolderArea(req.Folder)
 	switch {
@@ -176,6 +198,9 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 		r.sessions[req.SessionID] = s
 	}
 	s.Provider, s.Folder, s.Area, s.Wake, s.TTLSec, s.LastSeen = req.Provider, filepath.Clean(req.Folder), area, req.Wake, ttl, now
+	// A new idle period (or none) may be woken again.
+	s.Woken = s.Woken && s.Idle && req.Idle
+	s.Asked, s.Idle, s.CodexHome = asked, req.Idle, req.CodexHome
 	err := r.saveLocked(now)
 	out := r.withPrimaryLocked(*s, now)
 	r.mu.Unlock()

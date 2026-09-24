@@ -23,6 +23,7 @@ import (
 	"fyne.io/systray"
 
 	"github.com/UberMorgott/agent-link/internal/app"
+	"github.com/UberMorgott/agent-link/internal/codexqueue"
 	"github.com/UberMorgott/agent-link/internal/selfupdate"
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
@@ -81,6 +82,7 @@ func runApp(args []string) error {
 		return err
 	}
 	a.Worker.IdleTimeout = *idle
+	a.Waker = codexqueue.New()
 	if *apiAddr != "" {
 		if err := a.SetAPIAddr(*apiAddr); err != nil {
 			return err

@@ -29,7 +29,8 @@ const (
 type AreaPresence struct {
 	Area string `json:"area"`
 	// Session is the wake mode of the live session that reads the area's
-	// messages (WakeRewake when any does, else WakeNextEvent); empty: none.
+	// messages (WakeRewake when any does, else WakeQueue when any does, else
+	// WakeNextEvent); empty: none.
 	Session string `json:"session,omitempty"`
 	// AutoAnswer: the worker answers requests while no session is live.
 	AutoAnswer bool `json:"auto_answer,omitempty"`
@@ -61,11 +62,14 @@ func (n *Node) presenceFor(peerAreas []string) []AreaPresence {
 			if s.Area != want || !s.live(now) {
 				continue
 			}
-			if s.Wake == WakeRewake {
+			switch {
+			case s.Wake == WakeRewake:
 				p.Session = WakeRewake
-				break
+			case s.Wake == WakeQueue && p.Session != WakeRewake:
+				p.Session = WakeQueue
+			case p.Session == "":
+				p.Session = WakeNextEvent
 			}
-			p.Session = WakeNextEvent
 		}
 		out = append(out, p)
 	}
@@ -80,7 +84,7 @@ func (n *Node) receivePresence(pc *peerConn, list []AreaPresence) {
 	got := make(map[string]AreaPresence, len(list))
 	for _, p := range list {
 		switch p.Session {
-		case "", WakeRewake, WakeNextEvent:
+		case "", WakeRewake, WakeNextEvent, WakeQueue:
 		default:
 			continue
 		}

@@ -17,8 +17,9 @@ package main
 //     session.
 //   - Claude Code also runs `agentlink hook claude --wait` in the background
 //     (asyncRewake): it waits for unread messages and wakes an idle session;
-//     see hook_wait.go. Codex has no such hook: it hears of messages at its
-//     next event.
+//     see hook_wait.go. Codex has no such hook: its session tells the node
+//     when it is idle, and the node wakes it with `codex queue` (node.WakeQueue;
+//     without a usable codex it hears of messages at its next event).
 //
 // A hook never breaks or stalls its session: every failure (node down, bad
 // input) ends quietly with exit 0.
@@ -103,6 +104,9 @@ type hookState struct {
 	Registered time.Time `json:"registered,omitzero"`
 	Unbound    bool      `json:"unbound,omitempty"`
 	Ended      bool      `json:"ended,omitempty"` // SessionEnd ran: the waiter stops
+	// Idle: the node was told the session ended its turn (Codex: the node
+	// wakes an idle session, see node.WakeQueue).
+	Idle bool `json:"idle,omitempty"`
 	// LastEvent is the latest hook event (the waiter wakes only an idle session).
 	LastEvent   string    `json:"last_event,omitempty"`
 	LastEventAt time.Time `json:"last_event_at,omitzero"`
@@ -267,7 +271,9 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	now := env.clock()
 	st.LastEvent, st.LastEventAt = event, now
 	defer func() { _ = saveHookState(path, st) }()
-	if !heartbeat(env, &st, client, in.SessionID, folder, event == evSessionStart) {
+	// Every event but Stop is part of a turn: the session is not idle. A Stop
+	// tells the node it is only once it lets the session stop (below).
+	if !heartbeat(env, &st, client, in.SessionID, folder, event == evSessionStart, event == evStop && st.Idle) {
 		quiet()
 		return nil
 	}
@@ -289,6 +295,7 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		case b.empty():
 			st.Blocks = 0
 			h.idle()
+			heartbeat(env, &st, client, in.SessionID, folder, false, true)
 			if notice := takeNotice(&st); notice != "" {
 				writeHookJSON(stdout, notice, nil)
 			} else {
@@ -297,7 +304,8 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 			return nil
 		case in.StopHookActive && st.Blocks >= hookMaxStopBlocks:
 			h.idle() // the turn ends all the same: its activity too
-			quiet()  // let it end; the waiter or the next event delivers the rest
+			heartbeat(env, &st, client, in.SessionID, folder, false, true)
+			quiet() // let it end; the waiter, the node's wake or the next event delivers the rest
 			return nil
 		}
 		st.Blocks++
@@ -336,24 +344,29 @@ func hookFolder(cwd string) string {
 }
 
 // heartbeat registers the session (again) when due: at SessionStart, when its
-// folder changed, or hookHeartbeat after the last time. It reports whether the
-// session is registered for a folder of this node; false also when the node is
-// down.
-func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force bool) bool {
+// folder changed, when a Codex session became idle or busy (idle), or
+// hookHeartbeat after the last time. It reports whether the session is
+// registered for a folder of this node; false also when the node is down.
+//
+// A Codex session asks for node.WakeQueue: the node wakes it when idle
+// (`codex queue` in the session's CODEX_HOME), else it reads at its next event.
+func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force, idle bool) bool {
 	now := env.clock()
-	if !force && st.Folder == folder && now.Sub(st.Registered) < hookHeartbeat {
+	if client != hookCodex {
+		idle = false
+	}
+	if !force && st.Folder == folder && st.Idle == idle && now.Sub(st.Registered) < hookHeartbeat {
 		return !st.Unbound
 	}
-	wake, ttl := node.WakeNextEvent, hookTTLCodex
-	if client == hookClaude {
-		wake, ttl = node.WakeRewake, hookTTLClaude
+	req := node.SessionRequest{SessionID: sid, Provider: client, Folder: folder, Wake: node.WakeRewake, TTLSec: hookTTLClaude}
+	if client == hookCodex {
+		req.Wake, req.TTLSec, req.Idle, req.CodexHome = node.WakeQueue, hookTTLCodex, idle, codexHome()
 	}
-	req := node.SessionRequest{SessionID: sid, Provider: client, Folder: folder, Wake: wake, TTLSec: ttl}
 	err := hookCall(env.api, http.MethodPost, "/sessions", nil, req, nil, hookHTTPTimeout)
 	var se *statusError
 	switch {
 	case err == nil:
-		st.Folder, st.Registered, st.Unbound, st.Ended = folder, now, false, false
+		st.Folder, st.Registered, st.Unbound, st.Ended, st.Idle = folder, now, false, false, idle
 		return true
 	case errors.As(err, &se) && se.code == http.StatusBadRequest:
 		st.Folder, st.Registered, st.Unbound = folder, now, true // not a folder of this node
@@ -361,6 +374,18 @@ func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force boo
 	default:
 		return false // node down: try again at the next event
 	}
+}
+
+// codexHome is the session's CODEX_HOME, absolute, or "" for Codex's default.
+func codexHome() string {
+	h := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	if h == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(h); err == nil {
+		return abs
+	}
+	return ""
 }
 
 // endSession ends the session's activity, deregisters it and marks its state

@@ -93,6 +93,10 @@ type Node struct {
 	folders  folderMap
 	// autoAnswer: the worker answers requests no live session takes (presence).
 	autoAnswer bool
+	// waker wakes idle WakeQueue sessions (wake.go) every wakeEvery (0:
+	// wakePoll); nil: none.
+	waker     SessionWaker
+	wakeEvery time.Duration
 
 	selfAddrs []string // this node's own peer addresses, set by Run
 
@@ -329,6 +333,9 @@ func (n *Node) Run(ctx context.Context, peerLn net.Listener) {
 	n.runMu.Unlock()
 	n.wg.Go(func() { n.acceptLoop(ctx, peerLn) })
 	n.wg.Go(func() { n.meshLoop(ctx) }) // also dials the configured peers
+	if n.waker != nil {
+		n.wg.Go(func() { n.wakeLoop(ctx) })
+	}
 	if n.netTag != "" && n.hub == nil { // under a Hub, its socket carries the beacons
 		n.wg.Go(func() { n.discoveryLoop(ctx) })
 	}

@@ -235,7 +235,7 @@ export function waitingLine(info: ChatInfo | null, messages: ChatMessage[], self
   const pending = messages.filter((m) => m.unread && m.direction === 'in' && !m.kind)
   if (!pending.length) return null
   let key = ''
-  if (sessions.length && sessions.every((s) => s.wake !== 'rewake')) key = "inbox.activity.waiting_session"
+  if (sessions.length && sessions.every((s) => s.wake !== 'rewake' && s.wake !== 'queue')) key = "inbox.activity.waiting_session"
   else if (!sessions.length && !settings?.auto_answer) key = "inbox.activity.no_session"
   if (!key) return null
   return { name: self, text: t(key), since: pending[0]!.created_at }
@@ -244,7 +244,7 @@ export function waitingLine(info: ChatInfo | null, messages: ChatMessage[], self
 // presenceLines: for every recipient of the last own message that has it but
 // has not read it yet, what its node says of its session there — so the
 // sender knows whether it is read at once or waits. Offline: the tick says it.
-const PRESENCE_KEY: Record<string, string> = { rewake: "inbox.presence.rewake", 'next-event': "inbox.presence.next_event" }
+const PRESENCE_KEY: Record<string, string> = { rewake: "inbox.presence.rewake", queue: "inbox.presence.queue", 'next-event': "inbox.presence.next_event" }
 export function presenceLines(info: ChatInfo | null, messages: ChatMessage[], now = Date.now()): { name: string; text: string }[] {
   if (!info || info.closed || info.legacy) return []
   const last = [...messages].reverse().find((m) => m.direction === 'out' && !m.kind)

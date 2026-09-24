@@ -61,7 +61,7 @@ const invitable = computed(() => (projects.byID(pid.value)?.members || [])
   .filter((m) => !m.self && !(info.value?.participants || []).includes(m.name))
   .map((m) => ({ name: m.name, online: !!m.online })))
 const sessions = computed(() => chatSessionList(info.value, app.sessions, app.settings).map((s) =>
-  [s.provider || '', s.folder || '', t(s.wake === 'rewake' ? "inbox.session.rewake" : "inbox.session.next_event")].filter(Boolean).join(' · ')))
+  [s.provider || '', s.folder || '', t(s.wake === 'rewake' ? "inbox.session.rewake" : s.wake === 'queue' ? "inbox.session.queue" : "inbox.session.next_event")].filter(Boolean).join(' · ')))
 // Closing is the only way into the archive (a legacy chat's peer archives it too).
 const canClose = computed(() => !!info.value && !info.value.closed && !info.value.archived)
 

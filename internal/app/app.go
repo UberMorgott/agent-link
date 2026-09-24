@@ -40,6 +40,9 @@ type App struct {
 	// Worker tunes the job queue (timeouts, activity pacing); MaxJobs comes
 	// from the settings.
 	Worker worker.Options
+	// Waker wakes idle Codex sessions (codexqueue); nil: they read their
+	// messages at their next event.
+	Waker node.SessionWaker
 	// QuitFunc ends the program; Quit calls it. Nil makes quitting unavailable.
 	QuitFunc func()
 	// Ifaces lists network interfaces for ZeroTier detection; replaceable in tests.

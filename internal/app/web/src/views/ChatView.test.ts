@@ -343,11 +343,16 @@ describe('the chat list and the ways into a chat', () => {
     app.sessions = [{ session_id: 's', provider: 'claude', folder: 'W:/work', area: '', wake: 'rewake' }]
     await settle()
     expect($('#chat_activity')).toBeNull()
+    app.sessions = [{ session_id: 's', provider: 'codex', folder: 'W:/work', area: '', wake: 'queue' }]
+    await settle()
+    expect($('#chat_activity')).toBeNull()
+    expect(text($('#chat_sessions'))).toContain('inbox.session.queue')
 
     // The peer's session, under an own message it has but has not read: one muted line.
     const cases: [Presence, string][] = [
       [{ area: '', session: 'rewake' }, 'inbox.presence.rewake'],
       [{ area: '', session: 'next-event', auto_answer: true }, 'inbox.presence.next_event'],
+      [{ area: '', session: 'queue' }, 'inbox.presence.queue'],
       [{ area: '' }, 'inbox.presence.none'],
       [{ area: '', auto_answer: true }, 'inbox.presence.worker'],
     ]
