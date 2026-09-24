@@ -25,6 +25,10 @@ const (
 	// the author of the messages, to peers with CapReceipts only. It is never
 	// stored as a chat message and never wakes anything.
 	KindReceipt = "receipt"
+	// KindChatMembers changes who takes part in a standalone project chat: its
+	// envelope carries the new Participants and a higher ChatRev. Only the
+	// chat's owner sends it, to peers with CapChatMembers, the removed ones too.
+	KindChatMembers = "chat_members"
 )
 
 // Author kinds carried in Message.AuthorKind: who wrote a message. A person
@@ -169,6 +173,10 @@ type Message struct {
 	// ChatMode is the chat's Mode (ChatModeProject for a standalone project
 	// chat), on every envelope of it.
 	ChatMode string `json:"chat_mode,omitempty"`
+	// ChatOwner and ChatRev are a standalone project chat's Owner and Rev, on
+	// every envelope of it; older peers send neither.
+	ChatOwner string `json:"chat_owner,omitempty"`
+	ChatRev   uint32 `json:"chat_rev,omitempty"`
 	// Receipts are the read receipts of a KindReceipt message.
 	Receipts []Receipt `json:"receipts,omitempty"`
 }

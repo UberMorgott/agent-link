@@ -265,12 +265,13 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
       const names = (Array.isArray(req.participants) ? req.participants : []).map(String)
       // Unknown participants (not members of the project) are refused as well.
       const members = new Set(p.members.map((m) => m.name))
-      if (!names.some((n) => n !== SELF) || names.some((n) => !members.has(n) && n !== SELF)) throw apiError('chat_participants')
+      // A project chat may start with this node alone; the legacy network's needs another.
+      if ((p.legacy && !names.some((n) => n !== SELF)) || names.some((n) => !members.has(n) && n !== SELF)) throw apiError('chat_participants')
       const participants = [...new Set([SELF, ...names])].sort()
       const online = new Set(p.members.filter((m) => m.online || m.self).map((m) => m.name))
       const at = new Date().toISOString()
       const info: ChatInfo = {
-        id: newID(), project: pid, mode: p.legacy ? undefined : 'project', participants, title: '', closed: false, archived: false,
+        id: newID(), project: pid, mode: p.legacy ? undefined : 'project', owner: p.legacy ? undefined : SELF, participants, title: '', closed: false, archived: false,
         count: 0, last_seq: 0, last_at: at,
         members: participants.map((name) => ({ name, self: name === SELF, connected: online.has(name), compatible: true, queued: 0 })),
       }
@@ -282,6 +283,23 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     const info = findChat(b, pid, rest[1]!)
     if (rest.length === 2 && method === 'GET') return info
     if (rest[2] === 'messages' && method === 'GET') return messagesPage(b.messages[info.id] || [], query)
+    if (rest[2] === 'members' && method === 'POST') {
+      if (info.mode !== 'project') throw apiError('chat_participants')
+      if (info.owner !== SELF) throw apiError('chat_owner')
+      if (info.closed) throw apiError('chat_closed')
+      const members = new Set(p.members.map((m) => m.name))
+      const add = (Array.isArray(req.add) ? req.add : []).map(String)
+      const remove = (Array.isArray(req.remove) ? req.remove : []).map(String)
+      if (remove.includes(SELF) || add.some((n) => !members.has(n))) throw apiError('chat_participants')
+      const participants = [...new Set([...(info.participants || []).filter((n) => !remove.includes(n)), ...add])].sort()
+      const online = new Set(p.members.filter((m) => m.online || m.self).map((m) => m.name))
+      Object.assign(info, {
+        participants,
+        members: participants.map((name) => ({ name, self: name === SELF, connected: online.has(name), compatible: true, queued: 0 })),
+      })
+      b.changed(['project:' + pid])
+      return info
+    }
     if (rest[2] === 'close' && method === 'POST') {
       Object.assign(info, { closed: true, archived: true, closed_by: SELF, closed_at: new Date().toISOString() })
       b.changed(['project:' + pid])

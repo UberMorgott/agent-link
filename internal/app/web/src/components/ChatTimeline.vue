@@ -39,6 +39,13 @@ const bubbles = computed<Bubble[]>(() => {
   const msgs = inbox.messages
   const byID = new Map(msgs.map((m) => [m.id, m]))
   return msgs.map((m, i) => {
+    if (m.kind === 'chat_members') {
+      const names = { names: (m.participants || []).join(', ') }
+      return {
+        m, event: true, out: false, cont: false, cls: 'msg-event', who: '', icon: '', fyi: '', quote: '', note: '', tick: null, canReply: false,
+        author: m.from === self ? fmt("inbox.event.members_self", names) : fmt("inbox.event.members", { ...names, name: authorName(m.from, self) }),
+      }
+    }
     if (m.kind === 'chat_open' || m.kind === 'chat_close') {
       return {
         m, event: true, out: false, cont: false, cls: 'msg-event', who: '', icon: '', fyi: '', quote: '', note: '', tick: null, canReply: false,

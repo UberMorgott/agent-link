@@ -279,7 +279,7 @@ func (s *store) recent(limit int, chats bool) ([]Entry, error) {
 				return nil, err
 			}
 			for _, m := range msgs {
-				if m.ChatID != "" && (!chats || m.Kind == KindChatOpen || m.Kind == KindChatClose || m.Kind == KindReceipt) {
+				if m.ChatID != "" && (!chats || m.Kind == KindChatOpen || m.Kind == KindChatClose || m.Kind == KindChatMembers || m.Kind == KindReceipt) {
 					continue
 				}
 				if m.ReplyTo != "" {

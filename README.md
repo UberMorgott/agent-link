@@ -86,8 +86,11 @@ name and chats; nothing crosses between projects. Every member binds its **own**
   status «у участника не выбрана папка проекта», and agent sessions cannot register. A folder change
   or a leave waits until the agent has finished that project's requests («Агент ещё выполняет
   запросы…»); a folder change forgets the agent sessions of the old folder.
-- **Chats**: **＋ Новый чат** picks the participants (every member preselected, at least one other);
-  who must answer is still chosen per message. **Завершить чат** ends it for everyone; a finished
+- **Chats**: **＋ Новый чат** picks the participants (every member preselected; none is fine — a
+  chat of you alone); who must answer is still chosen per message. The chat's owner (who started
+  it) invites project members later and removes them in the chat details (ⓘ): an offline member
+  gets the chat when it connects, from then on (not older messages); a removed one keeps its copy
+  in the archive and gets nothing more. Every member needs this version for that. **Завершить чат** ends it for everyone; a finished
   chat goes to the archive and a new chat continues the topic.
 - **Leave** tells the members, stops the project and moves its data to
   `data\projects\.left\<id>-<time>` (never deleted). Joining again later is a new member identity.

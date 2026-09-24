@@ -21,7 +21,41 @@ async function open(path: string) {
 }
 
 describe('the new chat picker', () => {
-  it('lists every member with their state, all chosen; needs one other; the list is sent as is', async () => {
+  it('starts a project chat with nobody else; its owner invites and removes members later', async () => {
+    const { backend, calls } = await open('/p/' + SITE)
+    $<HTMLButtonElement>('#project_new_chat')!.click()
+    await settle()
+    for (const box of $$('#new_chat_members [role="checkbox"]')) box.click()
+    await settle()
+    expect(ticked()).toEqual([])
+    const create = $<HTMLButtonElement>('#new_chat_create')!
+    expect(create.disabled).toBe(false)
+    create.click()
+    await settle()
+    const made = backend.chats[SITE]![0]!
+    expect(made.participants).toEqual(['alice'])
+    expect(made.owner).toBe('alice')
+
+    const inbox = useInboxStore()
+    inbox.infoOpen = true
+    await settle()
+    expect($$('#chat_invite button').map((b) => b.id)).toEqual(['chat_invite_bob', 'chat_invite_carol'])
+    // carol is away: she is invited all the same.
+    $<HTMLButtonElement>('#chat_invite_carol')!.click()
+    await settle()
+    expect(calls).toContain('POST projects/' + SITE + '/chats/' + made.id + '/members')
+    expect(made.participants).toEqual(['alice', 'carol'])
+    expect($$('#chat_invite button').map((b) => b.id)).toEqual(['chat_invite_bob'])
+
+    const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(true)
+    $<HTMLButtonElement>('#chat_remove_carol')!.click()
+    await settle()
+    expect(confirm).toHaveBeenCalledWith('inbox.members.remove_confirm')
+    expect(made.participants).toEqual(['alice'])
+    expect($('#chat_remove_alice')).toBeNull()
+  })
+
+  it('lists every member with their state, all chosen; the list is sent as is', async () => {
     const { backend } = await open('/p/' + SITE)
     $<HTMLButtonElement>('#project_new_chat')!.click()
     await settle()
@@ -35,7 +69,6 @@ describe('the new chat picker', () => {
     for (const box of people) box.click()
     await settle()
     expect(ticked()).toEqual([])
-    expect($<HTMLButtonElement>('#new_chat_create')!.disabled).toBe(true)
     $<HTMLButtonElement>('#new_chat_carol')!.click()
     await settle()
     $<HTMLButtonElement>('#new_chat_create')!.click()

@@ -187,6 +187,14 @@ func TestProjectsAPI(t *testing.T) {
 	h.wantError(t, http.MethodGet, "projects/"+site.ID+"/chats/"+unknown, nil, http.StatusNotFound, "unknown_chat")
 	h.wantError(t, http.MethodGet, "projects/"+site.ID+"/chats/"+unknown+"/messages", nil, http.StatusNotFound, "unknown_chat")
 	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/chats/"+unknown+"/close", nil, http.StatusNotFound, "unknown_chat")
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/chats/"+unknown+"/members", map[string]any{"add": []string{"bob"}}, http.StatusNotFound, "unknown_chat")
+	// A chat of this node alone; bob is no member to invite.
+	var solo ChatInfoView
+	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/chats", map[string]any{"participants": []string{}}, &solo); code != http.StatusOK ||
+		len(solo.Participants) != 1 || solo.Owner != solo.Participants[0] || solo.Archived {
+		t.Fatalf("solo chat: %d %s", code, raw)
+	}
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/chats/"+solo.ID+"/members", map[string]any{"add": []string{"bob"}}, http.StatusBadRequest, "chat_participants")
 	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/send", map[string]any{"body": "hi"}, http.StatusNotFound, "unknown_chat")
 	h.wantError(t, http.MethodGet, "projects/"+strings.Repeat("A", 26)+"/chats", nil, http.StatusNotFound, "not_found")
 	if code, raw := h.api(t, http.MethodGet, "sessions", nil, nil); code != http.StatusOK || strings.TrimSpace(raw) != "[]" {

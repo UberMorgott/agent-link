@@ -7,7 +7,7 @@ import { ref, shallowRef, watch } from 'vue'
 import { api, chatPath, projectPath } from '@/lib/api'
 import { authorLabel, others, preview } from '@/lib/chat'
 import { currentRoute, openChat, openProject } from '@/lib/nav'
-import { browser, t } from '@/lib/runtime'
+import { browser, fmt, t } from '@/lib/runtime'
 import { NARROW_QUERY } from '@/layout/composables/layout'
 import { useAppStore } from './app'
 import { useProjectsStore } from './projects'
@@ -300,6 +300,28 @@ export const useInboxStore = defineStore('inbox', () => {
     else showNewChat(pid, [peer])
   }
 
+  // --- members of a project chat: its owner invites and removes them ---
+
+  const membersBusy = ref(false)
+
+  async function setMembers(add: string[], remove: string[] = []) {
+    const info = chat.value
+    const pid = project.value
+    if (!info || membersBusy.value) return
+    membersBusy.value = true
+    subtitleError.value = ''
+    try {
+      chat.value = await api<ChatInfo>('POST', chatPath(pid, info.id, 'members'), { add, remove })
+      void projects.refreshChats(pid)
+    } catch (error) { subtitleError.value = (error as Error).message }
+    finally { membersBusy.value = false }
+  }
+
+  function confirmRemove(name: string) {
+    if (!browser.confirm(fmt("inbox.members.remove_confirm", { name }))) return
+    return setMembers([], [name])
+  }
+
   // --- closing: the chat leaves the list at once and the view moves on ---
 
   async function closeChat() {
@@ -413,6 +435,6 @@ export const useInboxStore = defineStore('inbox', () => {
     subtitleError, sending, closing, infoOpen, focusComposer, askState, reads, toasts,
     newChatOpen, newChatPeople, newChatChosen, newChatResult, newChatBusy, focusNewChat,
     askFor, setAsk, loadChat, loadOlder, saveDraft, setReply, selectChat, submitMessage, showNewChat, hideNewChat,
-    createChat, openPeer, closeChat, confirmClose, processIncomingChats, dismissToast, openToast, readOf, openKey,
+    createChat, openPeer, closeChat, confirmClose, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, openKey,
   }
 })

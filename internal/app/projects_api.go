@@ -43,6 +43,7 @@ func (a *App) projectRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST "+p+"/{pid}/chats/{id}/close", a.projectChat(func(n *node.Node, _ *http.Request, id string) (any, error) {
 		return n.CloseChat(id)
 	}))
+	api.HandleFunc("POST "+p+"/{pid}/chats/{id}/members", a.projectChat(chatMembers))
 	api.HandleFunc("POST "+p+"/{pid}/send", a.projectSend)
 }
 
@@ -691,6 +692,19 @@ func chatMessages(n *node.Node, r *http.Request, id string) (any, error) {
 	return n.ChatMessages(id, nums[0], nums[1], int(min(nums[2], 1000)))
 }
 
+// chatMembers adds and removes participants of a standalone project chat:
+// body {"add": [names], "remove": [names]}.
+func chatMembers(n *node.Node, r *http.Request, id string) (any, error) {
+	var req struct {
+		Add    []string `json:"add"`
+		Remove []string `json:"remove"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxBody)).Decode(&req); err != nil {
+		return nil, node.ErrBadRequest
+	}
+	return n.SetChatMembers(id, req.Add, req.Remove)
+}
+
 // projectSend sends into a chat of project pid, as a person: chat_id is
 // required, and it and reply_to must be the project's.
 func (a *App) projectSend(w http.ResponseWriter, r *http.Request) {
@@ -737,6 +751,8 @@ func (a *App) chatFailed(w http.ResponseWriter, err error) {
 		writeCodedError(w, http.StatusBadRequest, "chat_participants")
 	case errors.Is(err, node.ErrBadRequest):
 		writeCodedError(w, http.StatusBadRequest, "bad_request")
+	case errors.Is(err, node.ErrNotChatOwner):
+		writeCodedError(w, http.StatusForbidden, "chat_owner")
 	default:
 		a.log.Error("chat request", "err", err)
 		writeCodedError(w, http.StatusInternalServerError, "internal")

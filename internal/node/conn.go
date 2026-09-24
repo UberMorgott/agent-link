@@ -282,7 +282,7 @@ func (n *Node) receive(pc *peerConn, m *Message) bool {
 			n.log.Warn("rejected chat message", "peer", pc.peer, "id", m.ID, "chat", m.ChatID)
 			return pc.write(frame{Type: "ack", ID: m.ID}) == nil // dropped: resending cannot help
 		}
-		if m.Kind == KindChatOpen || m.Kind == KindChatClose || m.Kind == KindReceipt {
+		if m.Kind == KindChatOpen || m.Kind == KindChatClose || m.Kind == KindChatMembers || m.Kind == KindReceipt {
 			return pc.write(frame{Type: "ack", ID: m.ID}) == nil
 		}
 	}
@@ -339,8 +339,8 @@ func (n *Node) writeLoop(pc *peerConn) {
 			if m.ChatID != "" && !pc.has(CapChat) {
 				continue // waits for the peer to take part in chats again
 			}
-			if m.Kind == KindReceipt && !pc.has(CapReceipts) {
-				_ = n.store.ack(pc.peer, m.ID) // it cannot read receipts: drop them
+			if (m.Kind == KindReceipt && !pc.has(CapReceipts)) || (m.Kind == KindChatMembers && !pc.has(CapChatMembers)) {
+				_ = n.store.ack(pc.peer, m.ID) // it cannot read them: drop them
 				continue
 			}
 			if t, ok := sentAt[m.ID]; ok && time.Since(t) < n.resendAfter {

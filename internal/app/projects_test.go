@@ -30,7 +30,7 @@ var contractErrors = map[string]int{
 	"legacy_rename": http.StatusConflict, "project_busy": http.StatusConflict, "legacy_invite_unavailable": http.StatusConflict,
 	"chat_legacy": http.StatusConflict, "chat_closed": http.StatusConflict, "work_dir": http.StatusBadRequest,
 	"project_needs_folder": http.StatusConflict, "folder_not_in_project": http.StatusConflict,
-	"not_found": http.StatusNotFound, "unknown_chat": http.StatusNotFound,
+	"not_found": http.StatusNotFound, "unknown_chat": http.StatusNotFound, "chat_owner": http.StatusForbidden,
 	"internal": http.StatusInternalServerError,
 }
 
@@ -66,7 +66,7 @@ func contractValues() map[string]any {
 	out := node.ChatMessage{Seq: 1, Direction: "out", Delivery: []node.Delivery{{Peer: "bob", Status: "sent", State: "answered", At: at.Add(2 * time.Minute)}}, Message: msg}
 	in := node.ChatMessage{Seq: 2, Direction: "in", Message: reply}
 	info := node.ChatInfo{
-		ID: msg.ChatID, Participants: parts, CreatedAt: at, Project: pid, Mode: node.ChatModeProject, ParticipantIDs: ids,
+		ID: msg.ChatID, Participants: parts, CreatedAt: at, Project: pid, Mode: node.ChatModeProject, ParticipantIDs: ids, Owner: "alice",
 		Title: "Посмотри вёрстку главной", Count: 2, LastSeq: 2, LastMessage: &in, LastAt: reply.CreatedAt,
 		Members: []node.ParticipantState{
 			{Name: "alice", Self: true, Connected: true, Compatible: true},

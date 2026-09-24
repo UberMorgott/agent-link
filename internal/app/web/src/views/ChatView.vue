@@ -50,8 +50,16 @@ const chips = computed(() => (info.value?.members || []).map((member) => {
   if (!member.self) notes.push(t(state === 'old' ? "inbox.member.old" : state === 'on' ? "inbox.member.online" : "inbox.member.away"))
   if (member.queued) notes.push(fmt("inbox.member.queued", { n: member.queued }))
   for (const job of member.held || []) notes.push(job.activity || t("inbox.hold.unknown"))
-  return { name: member.self ? member.name + ' (' + t("inbox.you") + ')' : member.name, state, who: whoColor(member.name), note: notes.join(' · ') }
+  return { key: member.name, self: !!member.self, name: member.self ? member.name + ' (' + t("inbox.you") + ')' : member.name, state, who: whoColor(member.name), note: notes.join(' · ') }
 }))
+// The owner of an open project chat invites project members to it and removes them.
+const canManage = computed(() => {
+  const i = info.value
+  return !!i && i.mode === 'project' && !!self.value && i.owner === self.value && !i.closed && !i.removed
+})
+const invitable = computed(() => (projects.byID(pid.value)?.members || [])
+  .filter((m) => !m.self && !(info.value?.participants || []).includes(m.name))
+  .map((m) => ({ name: m.name, online: !!m.online })))
 const sessions = computed(() => chatSessionList(info.value, app.sessions, app.settings).map((s) =>
   [s.provider || '', s.folder || '', t(s.wake === 'rewake' ? "inbox.session.rewake" : "inbox.session.next_event")].filter(Boolean).join(' · ')))
 // Closing is the only way into the archive (a legacy chat's peer archives it too).
@@ -76,7 +84,7 @@ function since(iso: string) {
 
 // A legacy chat is writable too: the node continues it in a real chat with the
 // peer, or with a plain message when the peer's version has no chats.
-const writable = computed(() => !!info.value && !info.value.closed)
+const writable = computed(() => !!info.value && !info.value.closed && !info.value.removed)
 const askNames = computed(() => others(info.value, self.value))
 const asked = computed<string[]>({
   get: () => (info.value ? inbox.askFor(info.value) : []),
@@ -87,6 +95,7 @@ const replying = computed(() => (inbox.replyTo ? fmt("inbox.replying", { text: a
 const note = computed(() => {
   const i = info.value
   if (!i || (writable.value && !i.legacy)) return null
+  if (i.removed && !i.closed) return { text: t("inbox.removed_note"), invite: [] as string[] }
   if (i.legacy) {
     let text = fmt(legacyPeerOld(i) ? "inbox.legacy_note_old" : "inbox.legacy_note", { name: i.peer || '' })
     if (i.archived && i.closed_by) {
@@ -195,17 +204,59 @@ function back() {
                   <li
                     v-for="chip in chips"
                     :key="chip.name"
-                    class="member-chip flex flex-col text-sm"
+                    class="member-chip flex items-start gap-2 text-sm"
                     :class="chip.state"
                     :style="{ '--who': chip.who }"
                   >
-                    <strong class="text-[var(--who)]">{{ chip.name }}</strong>
-                    <span
-                      v-if="chip.note"
-                      class="member-note text-xs text-muted"
-                    >{{ chip.note }}</span>
+                    <span class="flex min-w-0 flex-1 flex-col">
+                      <strong class="text-[var(--who)]">{{ chip.name }}</strong>
+                      <span
+                        v-if="chip.note"
+                        class="member-note text-xs text-muted"
+                      >{{ chip.note }}</span>
+                    </span>
+                    <UButton
+                      v-if="canManage && !chip.self"
+                      :id="'chat_remove_' + chip.key"
+                      :icon="icon('close')"
+                      :aria-label="t('inbox.members.remove') + ': ' + chip.key"
+                      :title="t('inbox.members.remove')"
+                      color="neutral"
+                      variant="ghost"
+                      size="xs"
+                      :disabled="inbox.membersBusy"
+                      @click="inbox.confirmRemove(chip.key)"
+                    />
                   </li>
                 </ul>
+                <template v-if="canManage && invitable.length">
+                  <h3>{{ t("inbox.members.add") }}</h3>
+                  <ul
+                    id="chat_invite"
+                    class="flex flex-col gap-1.5"
+                    :aria-label="t('inbox.members.add')"
+                  >
+                    <li
+                      v-for="person in invitable"
+                      :key="person.name"
+                      class="flex items-center gap-2 text-sm"
+                      :style="{ '--who': whoColor(person.name) }"
+                    >
+                      <span class="flex min-w-0 flex-1 flex-col">
+                        <strong class="text-[var(--who)]">{{ person.name }}</strong>
+                        <span class="text-xs text-muted">{{ t(person.online ? 'inbox.member.online' : 'inbox.member.away') }}</span>
+                      </span>
+                      <UButton
+                        :id="'chat_invite_' + person.name"
+                        :label="t('inbox.members.add_button')"
+                        size="xs"
+                        variant="soft"
+                        :disabled="inbox.membersBusy"
+                        @click="inbox.setMembers([person.name])"
+                      />
+                    </li>
+                  </ul>
+                </template>
                 <h3>{{ t("inbox.info.sessions") }}</h3>
                 <ul
                   id="chat_sessions"

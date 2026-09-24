@@ -186,9 +186,12 @@ func (cs *chatStore) ensure(c Chat) (bool, error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	if st := cs.chats[c.ID]; st != nil {
-		// An older peer sends no generation (0): the id already names it.
-		if !slices.Equal(st.chat.Participants, c.Participants) || st.chat.Area != c.Area || (c.Gen != 0 && st.chat.Gen != c.Gen) ||
-			st.chat.Project != c.Project || st.chat.Mode != c.Mode || !slices.Equal(st.chat.ParticipantIDs, c.ParticipantIDs) {
+		// An older peer sends no generation (0): the id already names it. A
+		// standalone project chat's members change (setMembers), so a peer may
+		// send another revision's list.
+		same := slices.Equal(st.chat.Participants, c.Participants) && slices.Equal(st.chat.ParticipantIDs, c.ParticipantIDs)
+		if (!same && c.Mode != ChatModeProject) || st.chat.Area != c.Area || (c.Gen != 0 && st.chat.Gen != c.Gen) ||
+			st.chat.Project != c.Project || st.chat.Mode != c.Mode {
 			return false, errChatMismatch
 		}
 		return false, nil
@@ -196,7 +199,7 @@ func (cs *chatStore) ensure(c Chat) (bool, error) {
 	if c.Gen != 0 && !c.Keyed() {
 		return false, errChatMismatch // a generation belongs to a keyed chat only (never a standalone one)
 	}
-	c.CloseID, c.ClosedBy, c.ClosedAt = "", "", time.Time{}
+	c.CloseID, c.ClosedBy, c.ClosedAt, c.Joined = "", "", time.Time{}, nil
 	if err := os.MkdirAll(filepath.Join(cs.chatDir(c.ID), "messages"), 0o700); err != nil {
 		return false, err
 	}
@@ -208,6 +211,41 @@ func (cs *chatStore) ensure(c Chat) (bool, error) {
 	cs.chats[c.ID] = st
 	cs.noteGenLocked(c)
 	return true, nil
+}
+
+// setMembers stores c's participants, pinned ids, owner and revision on its
+// known chat. A participant it adds joins after the chat's last message
+// (Chat.Joined). It returns the stored chat.
+func (cs *chatStore) setMembers(c Chat) (Chat, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	st := cs.chats[c.ID]
+	if st == nil {
+		return Chat{}, fmt.Errorf("%w %s", ErrUnknownChat, c.ID)
+	}
+	next := st.chat
+	next.Participants, next.ParticipantIDs, next.Owner, next.Rev = c.Participants, c.ParticipantIDs, c.Owner, c.Rev
+	next.Joined = map[string]uint64{}
+	var last uint64
+	if len(st.msgs) > 0 {
+		last = st.msgs[len(st.msgs)-1].Seq
+	}
+	for _, p := range next.Participants {
+		switch {
+		case !slices.Contains(st.chat.Participants, p):
+			next.Joined[p] = last
+		case st.chat.Joined[p] > 0:
+			next.Joined[p] = st.chat.Joined[p]
+		}
+	}
+	if len(next.Joined) == 0 {
+		next.Joined = nil
+	}
+	if err := writeJSON(filepath.Join(cs.chatDir(c.ID), "chat.json"), next); err != nil {
+		return Chat{}, err
+	}
+	st.chat = next
+	return next, nil
 }
 
 func (cs *chatStore) get(id string) (Chat, bool) {

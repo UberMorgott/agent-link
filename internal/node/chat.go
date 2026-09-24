@@ -32,7 +32,13 @@ var (
 	// ErrLegacyChat: a virtual chat built from pre-chat history cannot take
 	// messages of its own (sending to it continues it in a real chat).
 	ErrLegacyChat = errors.New("history from before chats")
+	// ErrNotChatOwner: only a chat's owner changes its participants.
+	ErrNotChatOwner = errors.New("only the chat's owner changes its participants")
 )
+
+// CapChatMembers: applies KindChatMembers, so a standalone project chat's
+// participants may change. A connected participant without it blocks a change.
+const CapChatMembers = "chat-members-v1"
 
 // Chat is one conversation with a fixed set of participants (sorted, this node
 // included). Changing who takes part takes a new chat. Area is fixed at
@@ -57,6 +63,15 @@ type Chat struct {
 	// ParticipantIDs pins each of Participants (same order) to a node id in
 	// project chats.
 	ParticipantIDs []string `json:"participant_ids,omitempty"`
+	// Owner is who made a standalone project chat: only it changes the
+	// participants (SetChatMembers), each change a higher Rev. "" for chats
+	// made before members could change: the open message's author then.
+	Owner string `json:"owner,omitempty"`
+	Rev   uint32 `json:"rev,omitempty"`
+	// Joined is, per participant added after the chat began, this node's last
+	// Seq before it joined: it never gets (nor is shown as owed) older
+	// messages. Local only.
+	Joined map[string]uint64 `json:"joined,omitempty"`
 }
 
 // ChatModeProject marks a standalone project chat (Chat.Mode, Message.ChatMode).
@@ -89,7 +104,12 @@ func (c Chat) key() string {
 func (c Chat) stamp(m *Message) {
 	m.ChatID, m.Participants, m.Area, m.ChatGen = c.ID, c.Participants, c.Area, c.Gen
 	m.ParticipantIDs, m.ChatMode = c.ParticipantIDs, c.Mode
+	m.ChatOwner, m.ChatRev = c.Owner, c.Rev
 }
+
+// owes reports whether participant p of c is due message seq: not when p
+// joined after it.
+func (c Chat) owes(p string, seq uint64) bool { return seq > c.Joined[p] }
 
 // chatKey is the conversation key K of an area and a sorted participant list.
 func chatKey(area string, parts []string) string { return area + "\x00" + strings.Join(parts, ",") }
@@ -197,6 +217,9 @@ type ChatInfo struct {
 	Chat
 	Closed   bool `json:"closed"`
 	Archived bool `json:"archived"`
+	// Removed: the owner took this node out of the standalone project chat;
+	// it is archived here and takes no messages.
+	Removed bool `json:"removed,omitempty"`
 	// Legacy marks a virtual chat built from history before chats: one
 	// request with its replies, with one peer. Sending to it continues it in a
 	// real chat (continueLegacy); closing it archives it on both sides (on
@@ -235,7 +258,18 @@ func parseLegacyChatID(id string) (root, peer string, ok bool) {
 
 // normalizeParticipants sorts and dedupes names and adds this node.
 func (n *Node) normalizeParticipants(names []string) ([]string, error) {
-	out := []string{n.cfg.Node}
+	out := slices.Concat([]string{n.cfg.Node}, splitNames(names))
+	slices.Sort(out)
+	out = slices.Compact(out)
+	if len(out) < 2 {
+		return nil, fmt.Errorf("%w: name at least one other member", ErrBadParticipants)
+	}
+	return out, nil
+}
+
+// splitNames returns the names in names, also comma-separated, trimmed.
+func splitNames(names []string) []string {
+	var out []string
 	for _, s := range names {
 		for p := range strings.SplitSeq(s, ",") {
 			if p = strings.TrimSpace(p); p != "" {
@@ -243,12 +277,7 @@ func (n *Node) normalizeParticipants(names []string) ([]string, error) {
 			}
 		}
 	}
-	slices.Sort(out)
-	out = slices.Compact(out)
-	if len(out) < 2 {
-		return nil, fmt.Errorf("%w: name at least one other member", ErrBadParticipants)
-	}
-	return out, nil
+	return out
 }
 
 // CreateChat is EnsureOpenChat for the members in with (names, also
@@ -340,17 +369,18 @@ func (n *Node) EnsureOpenChat(parts []string, area string) (Chat, error) {
 }
 
 // NewProjectChat starts a standalone chat of this project node with the
-// members in with (names, also comma-separated): a new chat every time, even
-// for the same participants (Mode ChatModeProject), pinned to their node ids.
-// Once finished (closed) it never reopens; talking on takes a new one.
+// members in with (names, also comma-separated; none for a chat of this node
+// alone, whose members come later by SetChatMembers): a new chat every time,
+// even for the same participants (Mode ChatModeProject), pinned to their node
+// ids and owned by this node. Once finished (closed) it never reopens;
+// talking on takes a new one.
 func (n *Node) NewProjectChat(with []string) (ChatInfo, error) {
 	if n.cfg.Project == "" {
 		return ChatInfo{}, ErrNotProject
 	}
-	parts, err := n.normalizeParticipants(with)
-	if err != nil {
-		return ChatInfo{}, err
-	}
+	parts := slices.Concat([]string{n.cfg.Node}, splitNames(with))
+	slices.Sort(parts)
+	parts = slices.Compact(parts)
 	for _, p := range parts {
 		if p != n.cfg.Node && n.Connected(p) && !n.PeerHas(p, CapChat) {
 			return ChatInfo{}, fmt.Errorf("%w: %s", ErrNoChatSupport, p)
@@ -361,7 +391,7 @@ func (n *Node) NewProjectChat(with []string) (ChatInfo, error) {
 		return ChatInfo{}, err
 	}
 	c := Chat{ID: DerivedID("agentlink-chat-v3/"+n.cfg.Project, n.id+"/"+newID()), Participants: parts,
-		CreatedAt: time.Now().UTC(), Project: n.cfg.Project, Mode: ChatModeProject, ParticipantIDs: ids}
+		CreatedAt: time.Now().UTC(), Project: n.cfg.Project, Mode: ChatModeProject, ParticipantIDs: ids, Owner: n.cfg.Node}
 	if _, err := n.chats.ensure(c); err != nil {
 		return ChatInfo{}, err
 	}
@@ -373,13 +403,101 @@ func (n *Node) NewProjectChat(with []string) (ChatInfo, error) {
 	return n.Chat(c.ID)
 }
 
+// chatOwner is who owns c: Owner, or for a chat made before owners the author
+// of its open message.
+func (n *Node) chatOwner(c Chat) string {
+	if c.Owner != "" || c.Mode != ChatModeProject {
+		return c.Owner
+	}
+	r, _ := n.chats.message(DerivedID(c.ID, "open"))
+	return r.Message.From
+}
+
+// SetChatMembers changes who takes part in standalone project chat id: it adds
+// the members in add and removes those in remove (names, also comma-separated).
+// Only the chat's owner may, and it cannot remove itself. An added member must
+// be a project member with a node id, online or not: it gets the change and
+// the chat's messages from then on (not the older ones) when it connects. A
+// removed one is told, gets nothing more and keeps its copy as archived. A
+// connected participant without CapChatMembers blocks the change.
+func (n *Node) SetChatMembers(id string, add, remove []string) (ChatInfo, error) {
+	c, ok := n.chats.get(id)
+	switch {
+	case !ok:
+		return ChatInfo{}, fmt.Errorf("%w %s", ErrUnknownChat, id)
+	case c.Mode != ChatModeProject:
+		return ChatInfo{}, fmt.Errorf("%w: only a project chat's participants change", ErrBadParticipants)
+	case c.Closed():
+		return ChatInfo{}, fmt.Errorf("%w %s", ErrChatClosed, id)
+	case n.chatOwner(c) != n.cfg.Node:
+		return ChatInfo{}, ErrNotChatOwner
+	}
+	drop := splitNames(remove)
+	if slices.Contains(drop, n.cfg.Node) {
+		return ChatInfo{}, fmt.Errorf("%w: the owner cannot remove itself", ErrBadParticipants)
+	}
+	parts := slices.Concat(slices.DeleteFunc(slices.Clone(c.Participants), func(p string) bool { return slices.Contains(drop, p) }), splitNames(add))
+	slices.Sort(parts)
+	parts = slices.Compact(parts)
+	if slices.Equal(parts, c.Participants) {
+		return n.Chat(id)
+	}
+	var added, removed []string
+	for _, p := range parts {
+		if !slices.Contains(c.Participants, p) {
+			added = append(added, p)
+		}
+	}
+	for _, p := range c.Participants {
+		if !slices.Contains(parts, p) {
+			removed = append(removed, p)
+		}
+	}
+	for _, p := range slices.Concat(parts, removed) {
+		if p != n.cfg.Node && n.Connected(p) && (!n.PeerHas(p, CapChat) || !n.PeerHas(p, CapChatMembers)) {
+			return ChatInfo{}, fmt.Errorf("%w: %s", ErrNoChatSupport, p)
+		}
+	}
+	newIDs, err := n.pinIDs(added)
+	if err != nil {
+		return ChatInfo{}, err
+	}
+	ids := make([]string, len(parts))
+	for i, p := range parts {
+		if j := slices.Index(c.Participants, p); j >= 0 && j < len(c.ParticipantIDs) {
+			ids[i] = c.ParticipantIDs[j] // a member keeps the node it was pinned to
+		} else {
+			ids[i] = newIDs[slices.Index(added, p)]
+		}
+	}
+	c.Participants, c.ParticipantIDs, c.Owner, c.Rev = parts, ids, n.cfg.Node, c.Rev+1
+	if c, err = n.chats.setMembers(c); err != nil {
+		return ChatInfo{}, err
+	}
+	m := Message{ID: newID(), Kind: KindChatMembers, AuthorKind: AuthorHuman, CreatedAt: time.Now().UTC()}
+	if err := n.postChat(c, m); err != nil {
+		return ChatInfo{}, err
+	}
+	m.From = n.cfg.Node
+	c.stamp(&m)
+	for _, p := range removed { // tells them they are out
+		cp := m
+		cp.To = p
+		if err := n.enqueue(p, cp); err != nil {
+			return ChatInfo{}, err
+		}
+	}
+	n.changed("chats")
+	return n.Chat(id)
+}
+
 // openChatOf returns the open chat of c's conversation: c itself when it is
 // an open keyed chat, else the open generation of its key (a closed chat, a
 // random-id chat of v0.5). A standalone project chat is its own conversation:
 // once closed, ErrChatClosed.
 func (n *Node) openChatOf(c Chat) (Chat, error) {
 	if c.Mode == ChatModeProject {
-		if c.Closed() {
+		if c.Closed() || !slices.Contains(c.Participants, n.cfg.Node) {
 			return Chat{}, fmt.Errorf("%w %s", ErrChatClosed, c.ID)
 		}
 		return c, nil
@@ -404,7 +522,7 @@ func (n *Node) CloseChat(id string) (ChatInfo, error) {
 	if !ok {
 		return ChatInfo{}, fmt.Errorf("%w %s", ErrUnknownChat, id)
 	}
-	if !c.Closed() {
+	if !c.Closed() && slices.Contains(c.Participants, n.cfg.Node) { // a removed member has nothing to close
 		m := Message{ID: DerivedID(c.ID, "close/"+n.cfg.Node), Kind: KindChatClose, AuthorKind: AuthorHuman, CreatedAt: time.Now().UTC()}
 		if err := n.postChat(c, m); err != nil {
 			return ChatInfo{}, err
@@ -594,7 +712,7 @@ func (n *Node) sendChat(m Message) (Message, error) {
 	if !ok {
 		return Message{}, fmt.Errorf("%w %s", ErrUnknownChat, m.ChatID)
 	}
-	if c.Closed() && m.Kind == "" && m.JobStatus == "" {
+	if (c.Closed() && m.Kind == "" && m.JobStatus == "") || !slices.Contains(c.Participants, n.cfg.Node) {
 		return Message{}, ErrChatClosed
 	}
 	if m.Kind == KindStatus {
@@ -672,7 +790,7 @@ func (n *Node) repairChats() error {
 				continue
 			}
 			for i, p := range s.chat.Participants {
-				if p == n.cfg.Node || n.store.delivery(p, r.Message.ID) != "" || !n.pinned(s.chat, i) {
+				if p == n.cfg.Node || !s.chat.owes(p, r.Seq) || n.store.delivery(p, r.Message.ID) != "" || !n.pinned(s.chat, i) {
 					continue
 				}
 				cp := r.Message
@@ -774,8 +892,15 @@ func (n *Node) validChatEnvelope(peer, peerID string, m *Message) bool {
 	if !n.validProjectEnvelope(peer, peerID, m) {
 		return false
 	}
+	// A change of members may leave out this node (it was removed) and leave
+	// its owner alone.
+	members := m.Kind == KindChatMembers
 	switch m.Kind {
 	case "", KindStatus, KindChatOpen, KindChatClose, KindReceipt:
+	case KindChatMembers:
+		if m.ChatMode != ChatModeProject {
+			return false
+		}
 	default:
 		return false
 	}
@@ -785,8 +910,9 @@ func (n *Node) validChatEnvelope(peer, peerID string, m *Message) bool {
 		m.AuthorKind = "" // a newer kind: shown as unknown
 	}
 	p := m.Participants
-	if !validID(m.ChatID) || len(p) < 2 || !slices.IsSorted(p) || len(slices.Compact(slices.Clone(p))) != len(p) ||
-		!slices.Contains(p, peer) || !slices.Contains(p, n.cfg.Node) || (m.Area != "" && !config.ValidName(m.Area)) {
+	if !validID(m.ChatID) || (len(p) < 2 && !members) || !slices.IsSorted(p) || len(slices.Compact(slices.Clone(p))) != len(p) ||
+		!slices.Contains(p, peer) || (!slices.Contains(p, n.cfg.Node) && !members) || (m.Area != "" && !config.ValidName(m.Area)) ||
+		(m.ChatOwner != "" && !config.ValidName(m.ChatOwner)) {
 		return false
 	}
 	for _, r := range m.Responders {
@@ -808,10 +934,17 @@ func (n *Node) receiveChat(peer, peerID string, m Message) bool {
 	if !n.validChatEnvelope(peer, peerID, &m) {
 		return false
 	}
+	if _, known := n.chats.get(m.ChatID); !known && !slices.Contains(m.Participants, n.cfg.Node) {
+		return false // removed from a chat it never had
+	}
 	created, err := n.chats.ensure(Chat{ID: m.ChatID, Participants: m.Participants, Area: m.Area, Gen: m.ChatGen, CreatedAt: m.CreatedAt,
-		Project: n.cfg.Project, Mode: m.ChatMode, ParticipantIDs: m.ParticipantIDs})
+		Project: n.cfg.Project, Mode: m.ChatMode, ParticipantIDs: m.ParticipantIDs, Owner: m.ChatOwner, Rev: m.ChatRev})
 	if err != nil {
 		n.log.Warn("chat message rejected", "peer", peer, "chat", m.ChatID, "err", err)
+		return false
+	}
+	moved, ok := n.receiveMembers(peer, m, created)
+	if !ok {
 		return false
 	}
 	closed := false
@@ -833,10 +966,37 @@ func (n *Node) receiveChat(peer, peerID string, m Message) bool {
 			n.changed("messages")
 		}
 	}
-	if created || closed {
+	if created || closed || moved {
 		n.changed("chats")
 	}
 	return true
+}
+
+// receiveMembers applies the participants of m, from peer, to a known
+// standalone project chat when they are a newer revision from its owner (a
+// peer that has not heard of a change yet sends an older list, which does not
+// count). It reports whether they changed and false when m must be dropped: a
+// change of members from someone else, or a message of a chat this node was
+// removed from.
+func (n *Node) receiveMembers(peer string, m Message, created bool) (changed, ok bool) {
+	if m.ChatMode != ChatModeProject {
+		return false, true
+	}
+	c, _ := n.chats.get(m.ChatID)
+	owner := n.chatOwner(c)
+	if m.Kind == KindChatMembers && peer != owner {
+		return false, false
+	}
+	if !created && m.ChatRev > c.Rev && peer == owner {
+		c.Participants, c.ParticipantIDs, c.Rev, c.Owner = m.Participants, m.ParticipantIDs, m.ChatRev, owner
+		var err error
+		if c, err = n.chats.setMembers(c); err != nil {
+			n.log.Error("chat members", "chat", c.ID, "err", err)
+			return false, false
+		}
+		changed = true
+	}
+	return changed, m.Kind == KindChatMembers || slices.Contains(c.Participants, n.cfg.Node)
 }
 
 // WorkerOwner is the Assigned value of a request the worker answers.
@@ -1031,7 +1191,7 @@ func (n *Node) chatMessage(c Chat, r chatRecord) ChatMessage {
 		}
 		replied := n.chats.repliedBy(r.Message.ID)
 		for i, p := range c.Participants {
-			if p == n.cfg.Node {
+			if p == n.cfg.Node || !c.owes(p, r.Seq) {
 				continue
 			}
 			d := Delivery{Peer: p, Status: n.store.delivery(p, r.Message.ID), State: StateQueued}
@@ -1103,6 +1263,11 @@ func (n *Node) chatInfo(s chatSnapshot, queued map[string]map[string]int) ChatIn
 	// keyed chat (openChatOf). A standalone project chat is archived only
 	// once finished (closed).
 	info.Archived = info.Closed || (!info.Keyed && s.chat.Mode != ChatModeProject)
+	if s.chat.Mode == ChatModeProject {
+		info.Owner = n.chatOwner(s.chat)
+		info.Removed = !slices.Contains(s.chat.Participants, n.cfg.Node)
+		info.Archived = info.Archived || info.Removed
+	}
 	jobs, held := map[string][]JobActivity{}, map[string][]JobActivity{}
 	for _, m := range s.jobs {
 		a := JobActivity{ReplyTo: m.ReplyTo, JobStatus: m.JobStatus, Activity: m.Activity, ActivityInfo: m.ActivityInfo, UpdatedAt: m.CreatedAt}

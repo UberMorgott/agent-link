@@ -100,6 +100,7 @@ export interface ChatMessage {
   own_human?: boolean
   unread?: boolean
   chat_id?: string
+  participants?: string[] // on a chat_members message: the chat's new participants
 }
 
 export interface ChatInfo {
@@ -107,6 +108,8 @@ export interface ChatInfo {
   project?: string // project id or "legacy"
   mode?: 'project' // a standalone chat of a project
   participants?: string[]
+  owner?: string // project chat: who made it, the only one who changes its participants
+  removed?: boolean // project chat: the owner took this node out
   count?: number
   title?: string
   closed?: boolean

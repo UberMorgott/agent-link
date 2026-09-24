@@ -2,13 +2,19 @@
 import UButton from '@nuxt/ui/components/Button.vue'
 import UCheckbox from '@nuxt/ui/components/Checkbox.vue'
 import UModal from '@nuxt/ui/components/Modal.vue'
+import { computed } from 'vue'
 import { whoColor } from '@/lib/chat'
 import { fmt, t } from '@/lib/runtime'
 import { useInboxStore } from '@/stores/inbox'
+import { useProjectsStore } from '@/stores/projects'
 
-// Starting a chat in a project: whom it is with. The list is fixed once the
-// chat is made; who must answer is chosen per message in the composer.
+// Starting a chat in a project: whom it is with. A project chat may start with
+// nobody else, its owner invites and removes people later (chat details); a
+// chat of the legacy network needs another member. Who must answer is chosen
+// per message in the composer.
 const inbox = useInboxStore()
+const projects = useProjectsStore()
+const needsPeople = computed(() => !!projects.byID(inbox.project)?.legacy)
 
 function toggle(name: string, on: boolean | 'indeterminate') {
   const rest = inbox.newChatChosen.filter((n) => n !== name)
@@ -95,7 +101,7 @@ function toggle(name: string, on: boolean | 'indeterminate') {
         type="submit"
         form="new_chat_form"
         :label="t('inbox.new.create')"
-        :disabled="!inbox.newChatChosen.length || inbox.newChatBusy"
+        :disabled="(needsPeople && !inbox.newChatChosen.length) || inbox.newChatBusy"
       />
     </template>
   </UModal>
