@@ -67,7 +67,10 @@ describe('version badge', () => {
     const versions = [...document.querySelectorAll<HTMLElement>('.release-note')].map((e) => e.dataset.version)
     expect(versions).toEqual(['0.6.1', '0.6.0'])
     expect($('#update_changelog')!.textContent).toContain('update.changelog.newer')
-    expect($('#update_changelog')!.textContent).toContain('* fix the tray')
+    // The notes are Markdown: a list and a heading, not the raw text.
+    expect($('.release-note[data-version="0.6.1"] li')!.textContent).toBe('fix the tray')
+    expect($('.release-note[data-version="0.6.0"] h2')!.textContent).toBe("What's Changed")
+    expect($('#update_changelog')!.textContent).not.toContain('* fix the tray')
     expect($('#update_install')).not.toBeNull()
     expect($('#version_badge_dot')).not.toBeNull()
   })
