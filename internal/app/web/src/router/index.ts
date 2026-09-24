@@ -12,7 +12,10 @@ import WelcomeView from '@/views/WelcomeView.vue'
 // else the welcome screen (docs/plans/projects-v1.md D10).
 async function landing() {
   const projects = useProjectsStore()
-  if (!projects.list) await projects.refreshList().catch(() => {})
+  if (!projects.list) {
+    await projects.refreshList().catch(() => {})
+    await projects.listSettled()
+  }
   const pid = projects.landing()
   return pid ? { name: 'project', params: { project: pid } } : { name: 'welcome' }
 }

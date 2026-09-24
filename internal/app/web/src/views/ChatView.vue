@@ -22,7 +22,6 @@ const app = useAppStore()
 const inbox = useInboxStore()
 const projects = useProjectsStore()
 const route = useRoute()
-const newChatForm = ref<HTMLFormElement | null>(null)
 
 const pid = computed(() => String(route.params.project || ''))
 
@@ -34,15 +33,12 @@ watch(() => route.fullPath, () => {
   void inbox.selectChat(pid.value, String(route.params.chat || ''), typeof message === 'string' ? message : '')
 }, { immediate: true })
 
-const info = computed(() => (inbox.newChatOpen ? null : inbox.chat))
+const info = computed(() => inbox.chat)
 const self = computed(() => app.self)
 
 // --- header ---
 
-const title = computed(() => {
-  if (inbox.newChatOpen) return t("inbox.new.title")
-  return chatName(info.value, self.value)
-})
+const title = computed(() => chatName(info.value, self.value))
 // The subtitle: who is reachable right now, and the chat's project area.
 const presence = computed(() => (info.value?.members || []).filter((m) => !m.self).map((member) => {
   const state = memberState(member)
@@ -111,12 +107,9 @@ function toggle(names: string[], name: string, on: boolean | 'indeterminate'): s
 }
 
 watch(() => inbox.focusComposer, () => nextTick(() => document.getElementById('body')?.focus()))
-watch(() => inbox.focusNewChat, () => nextTick(() => {
-  newChatForm.value?.querySelector<HTMLElement>('#new_chat_members [role="checkbox"]')?.focus()
-}))
+
 
 function back() {
-  inbox.hideNewChat()
   openProject(pid.value)
 }
 </script>
@@ -248,221 +241,148 @@ function back() {
           />
         </header>
 
-        <form
-          v-if="inbox.newChatOpen"
-          id="new_chat_form"
-          ref="newChatForm"
-          class="new-chat chat-column flex flex-col gap-4 py-6"
-          :aria-busy="inbox.newChatBusy ? 'true' : undefined"
-          @submit.prevent="inbox.createChat"
-        >
-          <p class="hint">
-            {{ t("inbox.new.hint") }}
-          </p>
-          <div
-            class="new-chat-group flex flex-col gap-2"
-            role="group"
-            aria-labelledby="new_chat_people"
+        <ChatTimeline />
+        <div class="chat-column flex flex-none flex-col gap-2 pb-4">
+          <ul
+            v-if="activity.length"
+            id="chat_activity"
+            class="chat-activity flex flex-col gap-1 px-1"
+            :aria-label="t('inbox.activity.label')"
           >
-            <span
-              id="new_chat_people"
-              class="field-label text-sm font-medium"
-            >{{ t("inbox.new.participants") }}</span>
-            <span
-              id="new_chat_members"
-              class="ask-choices flex flex-wrap gap-x-4 gap-y-2"
+            <li
+              v-for="row in activity"
+              :key="row.key"
+              class="act-row"
+              :class="row.cls"
+              :style="{ '--who': whoColor(row.name) }"
             >
-              <UCheckbox
-                v-for="person in inbox.newChatPeople"
-                :id="'new_chat_' + person.name"
-                :key="person.name"
-                :label="person.name"
-                :model-value="inbox.newChatChosen.includes(person.name)"
-                class="choice"
-                :class="{ on: person.online }"
-                :style="{ '--who': whoColor(person.name) }"
-                :ui="{ label: 'text-[var(--who)]' }"
-                @update:model-value="inbox.newChatChosen = toggle(inbox.newChatChosen, person.name, $event)"
+              <span
+                class="act-spin"
+                aria-hidden="true"
               />
-            </span>
-          </div>
-          <p
-            v-if="!inbox.newChatPeople.length"
-            id="new_chat_empty"
-            class="hint"
+              <strong class="act-who">{{ row.who }}</strong>
+              <span
+                class="act-text"
+                :title="row.text"
+              >{{ row.text }}</span>
+              <span class="act-time">{{ since(row.since) }}</span>
+            </li>
+          </ul>
+          <form
+            v-if="writable"
+            id="send"
+            class="composer flex flex-col gap-2"
+            :aria-busy="inbox.sending ? 'true' : undefined"
+            @submit.prevent="inbox.submitMessage"
           >
-            {{ t("inbox.new.no_members") }}
-          </p>
-
-          <div class="new-chat-actions flex items-center justify-end gap-2">
-            <p
-              id="new_chat_result"
-              role="status"
-              class="mr-auto text-sm text-error"
+            <div
+              v-if="askNames.length >= 2"
+              id="ask_row"
+              class="ask-row flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm"
+              role="group"
+              aria-labelledby="ask_label"
             >
-              {{ inbox.newChatResult }}
-            </p>
-            <UButton
-              id="new_chat_dismiss"
-              type="button"
-              :label="t('inbox.new.dismiss')"
-              color="neutral"
-              variant="ghost"
-              @click="inbox.hideNewChat"
-            />
-            <UButton
-              id="new_chat_create"
-              type="submit"
-              :label="t('inbox.new.create')"
-              :disabled="!inbox.newChatPeople.length || inbox.newChatBusy"
-            />
-          </div>
-        </form>
-
-        <template v-else>
-          <ChatTimeline />
-          <div class="chat-column flex flex-none flex-col gap-2 pb-4">
-            <ul
-              v-if="activity.length"
-              id="chat_activity"
-              class="chat-activity flex flex-col gap-1 px-1"
-              :aria-label="t('inbox.activity.label')"
-            >
-              <li
-                v-for="row in activity"
-                :key="row.key"
-                class="act-row"
-                :class="row.cls"
-                :style="{ '--who': whoColor(row.name) }"
+              <span
+                id="ask_label"
+                class="field-label text-muted"
+              >{{ t("inbox.ask.label") }}</span>
+              <span
+                id="ask_choices"
+                class="ask-choices flex flex-wrap gap-x-4 gap-y-1"
               >
-                <span
-                  class="act-spin"
-                  aria-hidden="true"
+                <UCheckbox
+                  v-for="name in askNames"
+                  :id="'ask_' + name"
+                  :key="name"
+                  :label="name"
+                  :model-value="asked.includes(name)"
+                  size="sm"
+                  class="choice"
+                  :style="{ '--who': whoColor(name) }"
+                  :ui="{ label: 'text-[var(--who)]' }"
+                  @update:model-value="asked = toggle(asked, name, $event)"
                 />
-                <strong class="act-who">{{ row.who }}</strong>
-                <span
-                  class="act-text"
-                  :title="row.text"
-                >{{ row.text }}</span>
-                <span class="act-time">{{ since(row.since) }}</span>
-              </li>
-            </ul>
-            <form
-              v-if="writable"
-              id="send"
-              class="composer flex flex-col gap-2"
-              :aria-busy="inbox.sending ? 'true' : undefined"
-              @submit.prevent="inbox.submitMessage"
+              </span>
+              <span
+                v-if="!asked.length"
+                id="ask_hint"
+                class="ask-hint text-xs text-[var(--app-off)]"
+              >{{ t("inbox.ask.none") }}</span>
+            </div>
+            <!-- Enter starts a new line, Ctrl+Enter sends. -->
+            <UChatPrompt
+              id="body"
+              v-model="inbox.composer"
+              as="div"
+              name="body"
+              :aria-label="t('inbox.body.label')"
+              :placeholder="t('inbox.body.placeholder')"
+              :rows="1"
+              :maxrows="10"
+              :autofocus="false"
+              :submit-on-enter="false"
+              :ui="{ root: 'rounded-3xl px-4', base: 'text-[15px]' }"
+              @update:model-value="inbox.saveDraft(inbox.selectedChat)"
+              @submit="inbox.submitMessage()"
             >
-              <div
-                v-if="askNames.length >= 2"
-                id="ask_row"
-                class="ask-row flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm"
-                role="group"
-                aria-labelledby="ask_label"
+              <template
+                v-if="inbox.replyTo"
+                #header
               >
-                <span
-                  id="ask_label"
-                  class="field-label text-muted"
-                >{{ t("inbox.ask.label") }}</span>
-                <span
-                  id="ask_choices"
-                  class="ask-choices flex flex-wrap gap-x-4 gap-y-1"
+                <p
+                  id="replying"
+                  class="replying flex w-full items-center gap-2 pt-1 text-xs text-muted"
                 >
-                  <UCheckbox
-                    v-for="name in askNames"
-                    :id="'ask_' + name"
-                    :key="name"
-                    :label="name"
-                    :model-value="asked.includes(name)"
-                    size="sm"
-                    class="choice"
-                    :style="{ '--who': whoColor(name) }"
-                    :ui="{ label: 'text-[var(--who)]' }"
-                    @update:model-value="asked = toggle(asked, name, $event)"
-                  />
-                </span>
-                <span
-                  v-if="!asked.length"
-                  id="ask_hint"
-                  class="ask-hint text-xs text-[var(--app-off)]"
-                >{{ t("inbox.ask.none") }}</span>
-              </div>
-              <!-- Enter starts a new line, Ctrl+Enter sends. -->
-              <UChatPrompt
-                id="body"
-                v-model="inbox.composer"
-                as="div"
-                name="body"
-                :aria-label="t('inbox.body.label')"
-                :placeholder="t('inbox.body.placeholder')"
-                :rows="1"
-                :maxrows="10"
-                :autofocus="false"
-                :submit-on-enter="false"
-                :ui="{ root: 'rounded-3xl px-4', base: 'text-[15px]' }"
-                @update:model-value="inbox.saveDraft(inbox.selectedChat)"
-                @submit="inbox.submitMessage()"
-              >
-                <template
-                  v-if="inbox.replyTo"
-                  #header
-                >
-                  <p
-                    id="replying"
-                    class="replying flex w-full items-center gap-2 pt-1 text-xs text-muted"
+                  <span
+                    id="replying_text"
+                    class="min-w-0 flex-1 truncate"
+                  >{{ replying }}</span>
+                  <button
+                    id="cancel_reply"
+                    type="button"
+                    class="cursor-pointer hover:underline"
+                    @click="inbox.setReply(null)"
                   >
-                    <span
-                      id="replying_text"
-                      class="min-w-0 flex-1 truncate"
-                    >{{ replying }}</span>
-                    <button
-                      id="cancel_reply"
-                      type="button"
-                      class="cursor-pointer hover:underline"
-                      @click="inbox.setReply(null)"
-                    >
-                      {{ t("inbox.cancel_reply") }}
-                    </button>
-                  </p>
-                </template>
-                <template #footer>
-                  <span />
-                  <UButton
-                    id="send_button"
-                    type="submit"
-                    :icon="icon('send')"
-                    :aria-label="t('inbox.send')"
-                    :disabled="inbox.sending"
-                    class="rounded-full"
-                  />
-                </template>
-              </UChatPrompt>
-              <p
-                id="inbox_result"
-                class="composer-result px-1 text-xs text-error"
-                role="status"
-              >
-                {{ inbox.sendResult }}
-              </p>
-            </form>
+                    {{ t("inbox.cancel_reply") }}
+                  </button>
+                </p>
+              </template>
+              <template #footer>
+                <span />
+                <UButton
+                  id="send_button"
+                  type="submit"
+                  :icon="icon('send')"
+                  :aria-label="t('inbox.send')"
+                  :disabled="inbox.sending"
+                  class="rounded-full"
+                />
+              </template>
+            </UChatPrompt>
             <p
-              v-if="note"
-              id="chat_note"
-              class="chat-note flex flex-wrap items-center gap-2 rounded-xl bg-elevated px-4 py-3 text-sm"
+              id="inbox_result"
+              class="composer-result px-1 text-xs text-error"
+              role="status"
             >
-              <span id="chat_note_text">{{ note.text }}</span>
-              <UButton
-                v-if="note.invite.length"
-                id="chat_note_action"
-                :label="fmt('inbox.new_with', { names: note.invite.join(', ') })"
-                size="sm"
-                variant="link"
-                @click="inbox.showNewChat(pid, note.invite)"
-              />
+              {{ inbox.sendResult }}
             </p>
-          </div>
-        </template>
+          </form>
+          <p
+            v-if="note"
+            id="chat_note"
+            class="chat-note flex flex-wrap items-center gap-2 rounded-xl bg-elevated px-4 py-3 text-sm"
+          >
+            <span id="chat_note_text">{{ note.text }}</span>
+            <UButton
+              v-if="note.invite.length"
+              id="chat_note_action"
+              :label="fmt('inbox.new_with', { names: note.invite.join(', ') })"
+              size="sm"
+              variant="link"
+              @click="inbox.showNewChat(pid, note.invite)"
+            />
+          </p>
+        </div>
       </section>
     </div>
   </section>

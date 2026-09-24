@@ -1,5 +1,8 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
+/* The built page is committed next to the sources; its old class names must
+   not come back into the next build. */
+@source not "../../dist";
 
 /* Calm tokens for the shell, mapped onto Nuxt UI's theme variables (emerald
    primary, neutral gray; vite.config.ts). The dark values follow the "dark"

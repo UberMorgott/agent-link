@@ -125,6 +125,18 @@ const tree = computed(() => (projects.list || []).map((p) => ({
             v-if="item.open"
             class="project-chats"
           >
+            <li>
+              <button
+                type="button"
+                class="project-action project-new-chat"
+                @click="inbox.showNewChat(item.p.id)"
+              >
+                <UIcon
+                  :name="icon('plus')"
+                  class="size-3.5"
+                />{{ t("inbox.new.title") }}
+              </button>
+            </li>
             <li
               v-for="c in item.chats"
               :key="c.id"

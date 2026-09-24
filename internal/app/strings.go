@@ -315,10 +315,10 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"inbox.cancel_reply":     "Отменить ответ",
 
 	// Inbox page: starting a chat.
-	"inbox.new.title":        "Новая беседа",
+	"inbox.new.title":        "Новый чат",
 	"inbox.new.participants": "С кем",
-	"inbox.new.hint":         "Все участники видят все сообщения. Состав потом не меняется — для другого состава начните новую беседу.",
-	"inbox.new.create":       "Начать беседу",
+	"inbox.new.hint":         "Все участники видят все сообщения. Состав потом не меняется — для другого состава начните новый чат.",
+	"inbox.new.create":       "Начать чат",
 	"inbox.new.dismiss":      "Отмена",
 	"inbox.new.no_members":   "Пока некого позвать — пригласите участников в проект.",
 
@@ -355,8 +355,10 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"project.problem.auth":            "Приглашение не подходит к проекту участников — попросите новое.",
 	"project.problem.name_taken":      "Ваше имя уже занято в этом проекте — смените имя в настройках.",
 	"project.problem.removed":         "Вас удалили из проекта — попросите участников пригласить вас снова.",
+	"project.empty":                   "Начните разговор в {name}",
 	"welcome.h1":                      "Проектов пока нет",
-	"welcome.hint":                    "У каждого проекта свои участники, чаты и папка. Создайте проект или присоединитесь по приглашению."}
+	"welcome.hint":                    "У каждого проекта свои участники, чаты и папка. Создайте проект или присоединитесь по приглашению.",
+}
 
 // stringsAttr renders uiStrings as JSON escaped for an HTML attribute value.
 func stringsAttr() string {

@@ -391,7 +391,7 @@ export const useInboxStore = defineStore('inbox', () => {
   function onChats() {
     const lists = projects.chats
     seedReads()
-    processIncomingChats(lists)
+    if (projects.loaded) processIncomingChats(lists)
     // The open chat reloads when its own project's list changed.
     const pid = project.value
     const id = selectedChat.value
@@ -403,7 +403,7 @@ export const useInboxStore = defineStore('inbox', () => {
   watch(() => projects.chats, onChats)
   watch(() => app.status, () => {
     seedReads()
-    processIncomingChats(projects.chats)
+    if (projects.loaded) processIncomingChats(projects.chats)
   })
 
   return {

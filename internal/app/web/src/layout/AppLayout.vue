@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
 import MessageToasts from '@/components/MessageToasts.vue'
+import NewChatPicker from '@/components/NewChatPicker.vue'
 import ProjectSidebar from '@/components/ProjectSidebar.vue'
 import { icon } from '@/lib/icons'
 import { browser, t } from '@/lib/runtime'
@@ -93,5 +94,6 @@ watch(current, () => { void nextTick(() => view.value?.focus({ preventScroll: tr
       </div>
       <MessageToasts />
     </div>
+    <NewChatPicker />
   </div>
 </template>

@@ -45,9 +45,12 @@ export const useProjectsStore = defineStore('projects', () => {
 
   const chatTickets = new Map<string, number>()
   let listTicket = 0
+  let latestList: Promise<void> | null = null
 
   const currentProject = computed(() => byID(current.value))
   const hasLegacy = computed(() => (list.value || []).some((p) => p.legacy))
+  // loaded: the list and every project's chats have arrived.
+  const loaded = computed(() => !!list.value && list.value.every((p) => Object.hasOwn(chats.value, p.id)))
 
   function byID(pid: string): ProjectView | null {
     return (list.value || []).find((p) => p.id === pid) || null
@@ -72,7 +75,21 @@ export const useProjectsStore = defineStore('projects', () => {
 
   // --- reading ---
 
-  async function loadList() {
+  function loadList(): Promise<void> {
+    latestList = readList()
+    return latestList
+  }
+
+  // listSettled waits for the newest list request, whichever caller made it.
+  async function listSettled() {
+    let seen: Promise<void> | null = null
+    while (latestList && latestList !== seen) {
+      seen = latestList
+      await seen.catch(() => {})
+    }
+  }
+
+  async function readList() {
     const ticket = ++listTicket
     const items = await api<ProjectView[]>('GET', 'projects')
     if (ticket !== listTicket) return
@@ -242,9 +259,9 @@ export const useProjectsStore = defineStore('projects', () => {
   watch(list, joinProgress)
 
   return {
-    list, chats, archives, archiveOpen, current, currentProject, hasLegacy, invite, inviteFor,
+    list, chats, archives, archiveOpen, current, currentProject, hasLegacy, loaded, invite, inviteFor,
     joinStep, joinProject, joinCreated,
-    byID, upsert, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped, toggleArchive,
+    byID, upsert, listSettled, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped, toggleArchive,
     open, landing, create, rename, bind, addMember, leave, createChat, revealInvite, hideInvite,
     joinReset, join, joinProgress, joinCancel,
   }
