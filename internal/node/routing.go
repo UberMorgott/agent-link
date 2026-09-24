@@ -11,16 +11,27 @@ import (
 // sessions in one folder all poll Unread, and a reply one of them asked for
 // must not land in the others as a task. A message is for:
 //
-//   - the session assigned to answer it (Ack) or that claimed it (Claim);
-//   - else the session that wrote the message it answers, following reply_to
-//     back through this node's chat store (chatRecord.Session, recorded by
-//     agentlink send inside the session; or a message assigned to a session);
+//   - the session that claimed it (Claim) and has not acknowledged it within
+//     claimTTL, or the session assigned to answer it (Ack);
+//   - else the chat's session (chat affinity): the one behind the chat's
+//     newest message a session of this node wrote (chatRecord.Session,
+//     recorded by agentlink send inside the session) or was assigned. A
+//     session that never took part in a chat does not get its messages while
+//     one that did lives;
 //   - else no session in particular: the first session to Claim it takes it.
 //
 // Only live sessions count: a message for a session that is gone is anyone's.
 
-// maxRouteHops bounds the walk up a reply_to chain.
-const maxRouteHops = 16
+// claimTTL is how long a claim holds without an ack: the hook acks right
+// after it delivers, so a claim older than that was never delivered and the
+// message goes back to its route.
+const claimTTL = time.Minute
+
+// sessionClaim is one session's claim of an unread message (Claim).
+type sessionClaim struct {
+	session string
+	at      time.Time
+}
 
 // ClaimRequest is the body of POST /claim.
 type ClaimRequest struct {
@@ -46,8 +57,8 @@ func (r *sessionRegistry) liveIDs(now time.Time) map[string]bool {
 // session in particular. rec is its chat record (nil for a plain message).
 // The caller holds n.sess.claimMu.
 func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string {
-	if s := n.sess.claims[id]; live[s] {
-		return s
+	if c, ok := n.sess.claims[id]; ok && live[c.session] && time.Since(c.at) < claimTTL {
+		return c.session
 	}
 	if rec == nil {
 		return ""
@@ -55,24 +66,7 @@ func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string 
 	if s := assignedSession(*rec); live[s] {
 		return s
 	}
-	parent := rec.Message.ReplyTo
-	for range maxRouteHops {
-		if parent == "" {
-			break
-		}
-		p, ok := n.chats.message(parent)
-		if !ok {
-			break
-		}
-		if p.Message.From == n.cfg.Node && live[p.Session] {
-			return p.Session
-		}
-		if s := assignedSession(p); live[s] {
-			return s
-		}
-		parent = p.Message.ReplyTo
-	}
-	return ""
+	return n.chats.affinity(rec.Message.ChatID, n.cfg.Node, live)
 }
 
 // assignedSession is the session a record is assigned to ("session:<id>").
@@ -117,7 +111,7 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 			continue
 		}
 		if to == "" || to == req.SessionID {
-			r.claims[id] = req.SessionID
+			r.claims[id] = sessionClaim{session: req.SessionID, at: time.Now()}
 			granted = append(granted, id)
 		}
 	}

@@ -83,12 +83,12 @@ type sessionRegistry struct {
 	// an unread message id to the session that took it for delivery (Claim).
 	// Taken before mu and the chat store's lock, never inside them.
 	claimMu sync.Mutex
-	claims  map[string]string
+	claims  map[string]sessionClaim
 }
 
 func openSessions(dir string) (*sessionRegistry, error) {
 	r := &sessionRegistry{path: filepath.Join(dir, "sessions.json"), sessions: map[string]*Session{}, last: map[string]ActivityState{},
-		claims: map[string]string{}}
+		claims: map[string]sessionClaim{}}
 	var list []Session
 	if err := readJSON(r.path, &list); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err

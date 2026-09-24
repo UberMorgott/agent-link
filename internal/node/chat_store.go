@@ -570,6 +570,27 @@ func (cs *chatStore) message(id string) (chatRecord, bool) {
 	return st.msgs[st.index[id]], true
 }
 
+// affinity is the live session chat id's messages go to (routeOf): the one
+// behind its newest message a session of this node (self) wrote or was
+// assigned; "" when none of them is live.
+func (cs *chatStore) affinity(id, self string, live map[string]bool) string {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	st := cs.chats[id]
+	if st == nil {
+		return ""
+	}
+	for _, r := range slices.Backward(st.msgs) {
+		if r.Message.From == self && live[r.Session] {
+			return r.Session
+		}
+		if s := assignedSession(r); live[s] {
+			return s
+		}
+	}
+	return ""
+}
+
 // chatSnapshot is a copy of one chat's state.
 type chatSnapshot struct {
 	chat  Chat

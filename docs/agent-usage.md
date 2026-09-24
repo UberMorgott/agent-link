@@ -203,10 +203,12 @@ it), so the node knows someone is there. All on the control API (loopback, no to
   (`assigned: "session:<id>"`); `assigned: "worker"` means the worker took it first: do not
   answer it too.
 - One unread message goes to one session. `unread` with `session` lists only what that session
-  may take: a reply to a message the session sent (`agentlink send` inside a session names it:
-  `--session`, default `$CLAUDE_CODE_SESSION_ID` / `$CODEX_THREAD_ID`), following `reply_to`
-  back, or a message assigned to it, goes to that session while it lives; anything else to the
-  first session that `claim`s it. A claim holds until the ack (or the session ends).
+  may take. Chat affinity: every message of a chat (new roots and replies alike) goes to the
+  live session behind the chat's newest message a session here sent (`agentlink send` inside a
+  session names it: `--session`, default `$CLAUDE_CODE_SESSION_ID` / `$CODEX_THREAD_ID`) or was
+  assigned; a session that never took part in the chat does not get it. A chat with no such
+  live session goes to the first session that `claim`s it. A claim holds until the ack, the
+  session ends, or 1 minute passes unacked (then the message goes back to its route).
 - `activity` shows every member what the session does (like the worker's activity) for
   `reply_to` (default: the chat's newest message from another member); `phase: "idle"` ends it.
   It carries the session's short id (`activity_info.session`): several sessions of one node
