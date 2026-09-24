@@ -19,10 +19,13 @@ import (
 // context's node, picked by the selector `project` (query parameter or JSON
 // field: a project id or LegacyProjectID), else by the chat or message it
 // names (ids are project-scoped), else by its folder (the deepest bound
-// project folder that holds it), else the legacy network. An explicit
+// project folder that holds it; `cwd`, the caller's working folder, is a
+// routing hint only), else the legacy network, else the only project when the
+// request names no folder at all. An explicit
 // selector never falls back: an unknown one is 404, and the context must hold
-// every chat and message the request names (409). Lists without a selector
-// (chats, sessions) cover every context and name each item's project.
+// every chat and message the request names (409). A request no context takes
+// is 400 naming the known projects. Lists without a selector (chats,
+// sessions) cover every context and name each item's project.
 
 // routeCtx is one running context as the router sees it.
 type routeCtx struct {
@@ -41,7 +44,6 @@ func (e *routeError) write(w http.ResponseWriter) { http.Error(w, e.text, e.stat
 
 var (
 	errAmbiguousOwner = &routeError{http.StatusConflict, "ambiguous: the id is in more than one project; name the project"}
-	errNoContext      = &routeError{http.StatusBadRequest, "folder is not in a project"}
 	errNotInProject   = &routeError{http.StatusConflict, "the chat or message is not in that project"}
 	errNeedsFolder    = &routeError{http.StatusConflict, "project_needs_folder: " + node.ErrNeedsFolder.Error()}
 	errFolderOutside  = &routeError{http.StatusConflict, "folder_not_in_project: the folder is not inside the project's folder"}
@@ -69,6 +71,21 @@ type selector struct {
 	chat    string   // chat id: its owner
 	ids     []string // message ids in rule order (reply_to, then parent): their owner
 	folder  string
+	cwd     string // the caller's working folder: picks a project, filters nothing
+}
+
+// noContext is the error of a request no context takes: it names the
+// selector that would, with the known projects.
+func noContext(ctxs []routeCtx) *routeError {
+	ids := make([]string, 0, len(ctxs))
+	for _, c := range ctxs {
+		ids = append(ids, c.id)
+	}
+	hint := "no project is joined yet"
+	if len(ids) > 0 {
+		hint = "pass --project <id>; known: " + strings.Join(ids, ", ")
+	}
+	return &routeError{http.StatusBadRequest, "folder is not in a project: " + hint}
 }
 
 // route picks the context of sel.
@@ -102,10 +119,13 @@ func route(ctxs []routeCtx, sel selector) (routeCtx, *routeError) {
 			return c, err
 		}
 	}
-	if sel.folder != "" {
+	for _, folder := range []string{sel.folder, sel.cwd} {
+		if folder == "" {
+			continue
+		}
 		best := -1
 		for i, c := range ctxs {
-			if c.dir != "" && within(c.dir, sel.folder) && (best < 0 || len(filepath.Clean(c.dir)) > len(filepath.Clean(ctxs[best].dir))) {
+			if c.dir != "" && within(c.dir, folder) && (best < 0 || len(filepath.Clean(c.dir)) > len(filepath.Clean(ctxs[best].dir))) {
 				best = i
 			}
 		}
@@ -116,7 +136,12 @@ func route(ctxs []routeCtx, sel selector) (routeCtx, *routeError) {
 	if len(ctxs) > 0 && ctxs[0].id == LegacyProjectID {
 		return ctxs[0], nil
 	}
-	return routeCtx{}, errNoContext
+	// Without the legacy network a request that names no folder at all is the
+	// only project's; a folder outside it is refused rather than guessed.
+	if len(ctxs) == 1 && sel.folder == "" && sel.cwd == "" {
+		return ctxs[0], nil
+	}
+	return routeCtx{}, noContext(ctxs)
 }
 
 // owner is the one context for which has holds; ok is false for none.
@@ -184,7 +209,7 @@ func (a *App) controlAPI() http.Handler {
 	})
 	mux.HandleFunc("GET /unread", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		a.forward(w, r, selector{project: q.Get("project"), folder: q.Get("folder")}, true)
+		a.forward(w, r, selector{project: q.Get("project"), folder: q.Get("folder"), cwd: q.Get("cwd")}, true)
 	})
 	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -226,9 +251,11 @@ func (a *App) controlAPI() http.Handler {
 		mux.HandleFunc(p, byChat)
 	}
 	mux.HandleFunc("GET /chats", a.controlChats)
-	// The rest names only a project: that context, else the legacy network.
+	// The rest names only a project: that context, else the one of the
+	// caller's folder, else the legacy network (route).
 	byProject := func(w http.ResponseWriter, r *http.Request) {
-		a.forward(w, r, selector{project: r.URL.Query().Get("project")}, false)
+		q := r.URL.Query()
+		a.forward(w, r, selector{project: q.Get("project"), cwd: q.Get("cwd")}, false)
 	}
 	for _, p := range []string{"POST /chats", "GET /inbox", "GET /members", "POST /members", "POST /members/remove"} {
 		mux.HandleFunc(p, byProject)

@@ -38,6 +38,8 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 			_ = json.NewEncoder(w).Encode(node.ChatInfo{ID: "c1"})
 		case strings.HasSuffix(r.URL.Path, "/ack"):
 			_ = json.NewEncoder(w).Encode([]node.AckResult{{ID: "m1", Found: true}, {ID: "m2", Found: true}})
+		case r.URL.Path == "/wait" && r.URL.Query().Get("timeout") == "2s":
+			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == "/unread":
 			_ = json.NewEncoder(w).Encode(node.UnreadPage{Messages: []node.UnreadMessage{{Cursor: "1-m1"}}, Total: 3, Next: "1-m1"})
 		case strings.HasSuffix(r.URL.Path, "/messages"):
@@ -84,12 +86,12 @@ func TestChatCommands(t *testing.T) {
 	}
 	f.run("wait", "--chat", "c1", "--timeout", "1")
 	want := []string{
-		"POST /chats",
+		"POST /chats?" + url.Values{"cwd": {cwd(t)}}.Encode(),
 		"GET /chats?archive=1",
 		"GET /chats/c1/messages?after=3&limit=5",
 		"POST /chats/c1/ack",
 		"POST /ack",
-		"GET /unread?after=0-x&limit=1",
+		"GET /unread?" + url.Values{"after": {"0-x"}, "cwd": {cwd(t)}, "limit": {"1"}}.Encode(),
 		"GET /wait?" + url.Values{"chat": {"c1"}, "folder": {cwd(t)}, "timeout": {"1s"}}.Encode(),
 	}
 	if strings.Join(f.reqs, "\n") != strings.Join(want, "\n") {
@@ -144,7 +146,7 @@ func TestClientWithoutConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	runNoConfig("members")
-	if last := f.reqs[len(f.reqs)-1]; last != "GET /members" {
+	if last := f.reqs[len(f.reqs)-1]; last != "GET /members?"+(url.Values{"cwd": {cwd(t)}}).Encode() {
 		t.Fatalf("members via settings: last request %q", last)
 	}
 }
@@ -207,5 +209,29 @@ func TestProjectSelector(t *testing.T) {
 	}
 	if strings.Join(f.reqs, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests:\n%s\nwant:\n%s", strings.Join(f.reqs, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// inbox and the member commands name the project too, else their folder; a
+// wait that times out says so on stderr.
+func TestMembersProjectAndWaitTimeout(t *testing.T) {
+	f := newFakeAPI(t)
+	f.run("members", "--project", "P1")
+	f.run("inbox", "--limit", "5")
+	f.run("add", "--addr", "10.0.0.1", "--project", "P1")
+	f.run("remove", "--name", "b", "--project", "P1")
+	want := []string{
+		"GET /members?project=P1",
+		"GET /inbox?" + url.Values{"cwd": {cwd(t)}, "limit": {"5"}}.Encode(),
+		"POST /members?project=P1",
+		"POST /members/remove?project=P1",
+	}
+	if strings.Join(f.reqs, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requests:\n%s\nwant:\n%s", strings.Join(f.reqs, "\n"), strings.Join(want, "\n"))
+	}
+	var out, errw bytes.Buffer
+	if code := run([]string{"wait", "--timeout", "2", "--config", f.cfg}, &out, &errw); code != exitTimeout ||
+		out.Len() != 0 || !strings.Contains(errw.String(), "no message within 2s") {
+		t.Fatalf("wait timeout: code %d, stdout %q, stderr %q", code, out.String(), errw.String())
 	}
 }

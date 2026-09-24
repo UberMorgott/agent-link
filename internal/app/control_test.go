@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -228,6 +230,38 @@ func TestControlAPINoContext(t *testing.T) {
 	}
 	if code, body := call(t, srv, http.MethodGet, "/unread?folder="+p.Dir, ""); code != http.StatusOK {
 		t.Fatalf("unread in the project folder: %d %s", code, body)
+	}
+	// The caller's folder picks the project; without any folder the only
+	// project answers; a folder outside it is refused naming the project.
+	sub := filepath.Join(p.Dir, "sub")
+	for path, want := range map[string]int{
+		"/members?cwd=" + url.QueryEscape(sub):         http.StatusOK,
+		"/inbox?cwd=" + url.QueryEscape(p.Dir):         http.StatusOK,
+		"/unread?cwd=" + url.QueryEscape(p.Dir):        http.StatusOK,
+		"/members":                                     http.StatusOK,
+		"/members?cwd=" + url.QueryEscape(t.TempDir()): http.StatusBadRequest,
+		"/unread?cwd=" + url.QueryEscape(t.TempDir()):  http.StatusBadRequest,
+	} {
+		code, body := call(t, srv, http.MethodGet, path, "")
+		if code != want || (code == http.StatusBadRequest && !strings.Contains(body, "pass --project <id>; known: "+p.ID)) {
+			t.Errorf("GET %s: %d %s, want %d", path, code, body, want)
+		}
+	}
+}
+
+// Without the legacy network and with several projects a request that names
+// none is refused with the known projects.
+func TestControlAPINoContextSeveral(t *testing.T) {
+	p, q := newBinding(t, t.TempDir()), newBinding(t, t.TempDir())
+	a := startApp(t, settings.Settings{Bindings: []settings.ProjectBinding{p, q}})
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+	if code, body := call(t, srv, http.MethodGet, "/members", ""); code != http.StatusBadRequest ||
+		!strings.Contains(body, p.ID) || !strings.Contains(body, q.ID) {
+		t.Fatalf("members naming no project: %d %s", code, body)
+	}
+	if code, body := call(t, srv, http.MethodGet, "/members?cwd="+url.QueryEscape(q.Dir), ""); code != http.StatusOK {
+		t.Fatalf("members in q's folder: %d %s", code, body)
 	}
 }
 

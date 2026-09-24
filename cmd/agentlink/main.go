@@ -49,10 +49,10 @@ const usage = `usage:
   agentlink chat unread  --config <path> [--folder <path>] [--limit 50] [--after <cursor>] [--project <id>]   (unread messages for this node, oldest first, one JSON line each; a last line {"next":...} when more follow)
   agentlink chat ack     --config <path> [--chat <id>] --ids <id,...> [--session <id>] [--project <id>]   (mark read: the authors get read receipts)
   agentlink close   (no longer here: only people close chats, in the app)
-  agentlink inbox --config <path> [--limit 50]
-  agentlink members --config <path>                (one JSON line per member, this node first)
-  agentlink add    --config <path> --addr <ip[:port]>   (dial a member's address; it spreads to all members)
-  agentlink remove --config <path> --name <node>        (remove a member from the whole network)
+  agentlink inbox --config <path> [--limit 50] [--project <id>]
+  agentlink members --config <path> [--project <id>]   (one JSON line per member, this node first)
+  agentlink add    --config <path> --addr <ip[:port]> [--project <id>]   (dial a member's address; it spreads to all members)
+  agentlink remove --config <path> --name <node> [--project <id>]   (remove a member from the whole network)
   agentlink hook <claude|codex> [--event auto]   (run by an agent's hooks: tells the session about new messages; never claims them)
   agentlink hook install <claude|codex> [--scope user|project]   (add that hook to ~/.claude/settings.json or ~/.codex/hooks.json)
   agentlink update [--check]    (install the latest GitHub release next to this program; --check only reports)
@@ -60,7 +60,7 @@ const usage = `usage:
 Client commands (all but serve) may omit --config: they then use $AGENTLINK_API, else the desktop
 app's settings (api, default 127.0.0.1:7520). --project (default $AGENTLINK_PROJECT_ID, set for a
 project's agents) picks the project; without it the chat or message named, else this folder's
-project, else the network from before projects.`
+project, else the network from before projects, else the only project; failing that the error\nnames the known projects. wait exits 2 on timeout with a note on stderr.`
 
 // exitTimeout is returned by wait when no message arrived in time.
 const exitTimeout = 2
@@ -118,7 +118,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	cfgPath := fs.String("config", "", "config file")
 	project := new(string)
 	switch name {
-	case "send", "wait", "chat new", "chat list", "chat history", "chat unread", "chat ack":
+	case "send", "wait", "chat new", "chat list", "chat history", "chat unread", "chat ack", "inbox", "members", "add", "remove":
 		project = fs.String("project", "", "project id (or legacy); default $"+envProjectID+", else the chat's or this folder's project")
 	}
 	// proj is the project selector: --project, else the agent's own project.
@@ -140,7 +140,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "wait":
 		timeout := fs.String("timeout", "0", "seconds or Go duration; 0 waits forever")
 		chat := fs.String("chat", "", "only messages of this chat; others stay for a later wait")
-		cmd = func(c config.Config) (int, error) { return wait(c, *timeout, *chat, proj(), stdout) }
+		cmd = func(c config.Config) (int, error) { return wait(c, *timeout, *chat, proj(), stdout, stderr) }
 	case "close":
 		_ = fs.String("chat", "", "chat id")
 		cmd = func(config.Config) (int, error) {
@@ -175,18 +175,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	case "inbox":
 		limit := fs.Int("limit", 50, "maximum entries")
-		cmd = func(c config.Config) (int, error) { return 0, inbox(c, *limit, stdout) }
+		cmd = func(c config.Config) (int, error) { return 0, inbox(c, *limit, proj(), stdout) }
 	case "members":
-		cmd = func(c config.Config) (int, error) { return 0, members(c, "", nil, stdout) }
+		cmd = func(c config.Config) (int, error) { return 0, members(c, "", nil, proj(), stdout) }
 	case "add":
 		addr := fs.String("addr", "", "IP or host of a member, port optional")
 		cmd = func(c config.Config) (int, error) {
-			return 0, members(c, "/members", &node.MemberRequest{Addr: *addr}, stdout)
+			return 0, members(c, "/members", &node.MemberRequest{Addr: *addr}, proj(), stdout)
 		}
 	case "remove":
 		name := fs.String("name", "", "node name of the member")
 		cmd = func(c config.Config) (int, error) {
-			return 0, members(c, "/members/remove", &node.MemberRequest{Name: *name}, stdout)
+			return 0, members(c, "/members/remove", &node.MemberRequest{Name: *name}, proj(), stdout)
 		}
 	default:
 		_, _ = fmt.Fprintln(stderr, usage)
@@ -285,6 +285,18 @@ func withProject(q url.Values, project string) url.Values {
 	return q
 }
 
+// inFolder is withProject for a request that names no chat or message: without
+// a project the working folder is the app's hint for one (the "cwd" query).
+func inFolder(q url.Values, project string) url.Values {
+	q = withProject(q, project)
+	if project == "" {
+		if wd, err := os.Getwd(); err == nil {
+			q.Set("cwd", wd)
+		}
+	}
+	return q
+}
+
 type sendArgs struct{ to, body, replyTo, chat, ask, area, project string }
 
 func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
@@ -328,7 +340,7 @@ func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 	return err
 }
 
-func wait(cfg config.Config, timeout, chat, project string, stdout io.Writer) (int, error) {
+func wait(cfg config.Config, timeout, chat, project string, stdout, stderr io.Writer) (int, error) {
 	d, err := parseTimeout(timeout)
 	if err != nil {
 		return 1, err
@@ -346,6 +358,8 @@ func wait(cfg config.Config, timeout, chat, project string, stdout io.Writer) (i
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNoContent {
+		// stdout stays empty; the exit code and this line tell a timeout from an error.
+		_, _ = fmt.Fprintf(stderr, "agentlink: no message within %s\n", d)
 		return exitTimeout, nil
 	}
 	if err := checkStatus(resp, http.StatusOK); err != nil {
@@ -354,8 +368,8 @@ func wait(cfg config.Config, timeout, chat, project string, stdout io.Writer) (i
 	return 0, printLines[node.Message](resp.Body, stdout)
 }
 
-func inbox(cfg config.Config, limit int, stdout io.Writer) error {
-	resp, err := apiDo(http.MethodGet, apiURL(cfg, "/inbox", url.Values{"limit": {strconv.Itoa(limit)}}), nil)
+func inbox(cfg config.Config, limit int, project string, stdout io.Writer) error {
+	resp, err := apiDo(http.MethodGet, apiURL(cfg, "/inbox", inFolder(url.Values{"limit": {strconv.Itoa(limit)}}, project)), nil)
 	if err != nil {
 		return err
 	}
@@ -371,7 +385,7 @@ func chatNew(cfg config.Config, with, area, project string, stdout io.Writer) er
 		return errors.New("--with is required")
 	}
 	var info node.ChatInfo
-	if err := apiJSON(http.MethodPost, apiURL(cfg, "/chats", withProject(nil, project)), node.CreateChatRequest{Participants: []string{with}, Area: area}, &info); err != nil {
+	if err := apiJSON(http.MethodPost, apiURL(cfg, "/chats", inFolder(nil, project)), node.CreateChatRequest{Participants: []string{with}, Area: area}, &info); err != nil {
 		return err
 	}
 	_, err := fmt.Fprintln(stdout, info.ID)
@@ -417,7 +431,7 @@ func chatHistory(cfg config.Config, chat string, limit int, before, after uint64
 // chatUnread prints this node's unread messages, one JSON line each, and a
 // last line {"next": cursor, "total": n} when more pages follow.
 func chatUnread(cfg config.Config, folder, after string, limit int, project string, stdout io.Writer) error {
-	q := withProject(url.Values{"limit": {strconv.Itoa(limit)}}, project)
+	q := inFolder(url.Values{"limit": {strconv.Itoa(limit)}}, project)
 	if folder != "" {
 		abs, err := filepath.Abs(folder)
 		if err != nil {
@@ -485,11 +499,11 @@ func apiJSON(method, u string, req, out any) error {
 }
 
 // members lists the member table, after posting req to path when req is set.
-func members(cfg config.Config, path string, req *node.MemberRequest, stdout io.Writer) error {
+func members(cfg config.Config, path string, req *node.MemberRequest, project string, stdout io.Writer) error {
 	var resp *http.Response
 	var err error
 	if req == nil {
-		resp, err = apiDo(http.MethodGet, apiURL(cfg, "/members", nil), nil)
+		resp, err = apiDo(http.MethodGet, apiURL(cfg, "/members", inFolder(nil, project)), nil)
 	} else {
 		if req.Addr == "" && req.Name == "" {
 			return errors.New("--addr or --name is required")
@@ -498,7 +512,7 @@ func members(cfg config.Config, path string, req *node.MemberRequest, stdout io.
 		if merr != nil {
 			return merr
 		}
-		resp, err = apiDo(http.MethodPost, apiURL(cfg, path, nil), body)
+		resp, err = apiDo(http.MethodPost, apiURL(cfg, path, inFolder(nil, project)), body)
 	}
 	if err != nil {
 		return err
