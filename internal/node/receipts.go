@@ -113,6 +113,13 @@ type UnreadPage struct {
 // messages for a session there (FolderArea, localArea); ErrFolderUnbound for
 // a folder that is none of this node's.
 func (n *Node) Unread(folder, after string, limit int) (UnreadPage, error) {
+	return n.UnreadFor(folder, "", after, limit)
+}
+
+// UnreadFor is Unread for one live session: a non-empty session keeps only
+// the messages it may take (routeOf: the ones for it and the ones for no
+// session in particular), never those another live session is to get.
+func (n *Node) UnreadFor(folder, session, after string, limit int) (UnreadPage, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -127,9 +134,25 @@ func (n *Node) Unread(folder, after string, limit int) (UnreadPage, error) {
 		}
 		area = a
 	}
+	var live map[string]bool
+	if session != "" {
+		n.sess.claimMu.Lock()
+		defer n.sess.claimMu.Unlock()
+		live = n.sess.liveIDs(time.Now())
+	}
+	mine := func(id string, rec *chatRecord) bool {
+		if session == "" {
+			return true
+		}
+		to := n.routeOf(id, rec, live)
+		return to == "" || to == session
+	}
 	var all []UnreadMessage
 	for _, u := range n.chats.unread() {
 		if filter && n.localArea(u.chat.Area) != area {
+			continue
+		}
+		if !mine(u.rec.Message.ID, &u.rec) {
 			continue
 		}
 		um := UnreadMessage{ChatMessage: n.chatMessage(u.chat, u.rec), ReceivedAt: u.rec.ReceivedAt}
@@ -139,6 +162,9 @@ func (n *Node) Unread(folder, after string, limit int) (UnreadPage, error) {
 	}
 	for _, r := range n.store.unreadPlain() {
 		if filter && n.localArea(r.Message.Area) != area {
+			continue
+		}
+		if !mine(r.Message.ID, nil) {
 			continue
 		}
 		all = append(all, UnreadMessage{Direction: "in", Unread: true, Message: r.Message,
@@ -227,6 +253,11 @@ func (n *Node) Ack(chat string, req AckRequest) ([]AckResult, error) {
 		}
 		out = append(out, res)
 	}
+	n.sess.claimMu.Lock()
+	for _, id := range req.IDs {
+		delete(n.sess.claims, id) // read now: nobody's to deliver any more
+	}
+	n.sess.claimMu.Unlock()
 	n.sendReceipts(receipts, StateRead)
 	if changed {
 		n.changed("messages")

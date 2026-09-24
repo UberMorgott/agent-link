@@ -33,6 +33,9 @@ type SendRequest struct {
 	Area       string   `json:"area,omitempty"`
 	Folder     string   `json:"folder,omitempty"`
 	AuthorKind string   `json:"author_kind,omitempty"`
+	// SessionID is the live session of this node that sends (agentlink send
+	// inside it): replies to the message are delivered to it (routeOf).
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // SendRequest sends req like POST /send: every path goes to the one open chat
@@ -51,6 +54,11 @@ type SendRequest struct {
 // (Parent) is reported to the local reply hook: the request is answered here.
 func (n *Node) SendRequest(req SendRequest) (Message, error) {
 	m, err := n.sendRequest(req)
+	if err == nil && m.ChatID != "" && validSessionID(req.SessionID) {
+		if serr := n.chats.setSession(m.ID, req.SessionID); serr != nil {
+			n.log.Warn("record sending session", "id", m.ID, "err", serr)
+		}
+	}
 	if err == nil && req.ReplyTo != "" && req.Parent != req.ReplyTo && n.onLocalReply != nil {
 		n.onLocalReply(req.ReplyTo)
 	}
@@ -145,6 +153,8 @@ type CreateChatRequest struct {
 //	POST /chats/{id}/activity ActivityRequest -> Message (a live session's status update)
 //	POST /ack                AckRequest -> []AckResult, chat and plain messages
 //	GET  /unread?folder=PATH&after=CURSOR&limit=50   200 UnreadPage
+//	     &session=ID         only what that session may take (UnreadFor)
+//	POST /claim              ClaimRequest -> []string (ids granted to the session for delivery)
 //	POST /sessions           SessionRequest -> Session (register or heartbeat)
 //	GET  /sessions           200 []Session (live ones)
 //	DELETE /sessions/{id}    204
@@ -410,8 +420,15 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 			}
 			limit = v
 		}
-		page, err := n.Unread(q.Get("folder"), q.Get("after"), limit)
+		page, err := n.UnreadFor(q.Get("folder"), q.Get("session"), q.Get("after"), limit)
 		reply(w, page, err)
+	})
+	mux.HandleFunc("POST /claim", func(w http.ResponseWriter, r *http.Request) {
+		var req ClaimRequest
+		if decode(w, r, &req) {
+			ids, err := n.Claim(req)
+			reply(w, ids, err)
+		}
 	})
 	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
 		var req SessionRequest

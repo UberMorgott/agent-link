@@ -220,6 +220,15 @@ func (a *App) controlAPI() http.Handler {
 			a.forward(w, r, selector{project: pick(r, body.Project), folder: body.Folder}, true)
 		}
 	})
+	mux.HandleFunc("POST /claim", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Project string `json:"project"`
+			Folder  string `json:"folder"`
+		}
+		if peekJSON(w, r, &body) {
+			a.forward(w, r, selector{project: pick(r, body.Project), folder: body.Folder}, true)
+		}
+	})
 	mux.HandleFunc("GET /sessions", a.controlSessions)
 	mux.HandleFunc("DELETE /sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")

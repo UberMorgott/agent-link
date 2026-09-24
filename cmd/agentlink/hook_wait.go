@@ -88,7 +88,7 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 				lastBeat = time.Now()
 			}
 		}
-		if !waiterBusy(st, env.clock(), o.busyFor) && pendingUnread(env, folder) {
+		if !waiterBusy(st, env.clock(), o.busyFor) && pendingUnread(env, folder, in.SessionID) {
 			if code, done := wakeWith(client, in.SessionID, folder, path, stderr, env, o.busyFor); done {
 				return code
 			}
@@ -107,10 +107,11 @@ func waiterBusy(st hookState, now time.Time, busyFor time.Duration) bool {
 	return false
 }
 
-// pendingUnread reports whether unread messages wait for folder.
-func pendingUnread(env hookEnv, folder string) bool {
+// pendingUnread reports whether unread messages for session wait in folder
+// (not those for another session of the folder).
+func pendingUnread(env hookEnv, folder, session string) bool {
 	var page node.UnreadPage
-	q := url.Values{"folder": {folder}, "limit": {"1"}}
+	q := url.Values{"folder": {folder}, "session": {session}, "limit": {"1"}}
 	return hookCall(env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout) == nil && page.Total > 0
 }
 

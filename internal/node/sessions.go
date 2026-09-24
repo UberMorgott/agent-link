@@ -78,10 +78,17 @@ type sessionRegistry struct {
 	sessions map[string]*Session
 	// last is the latest activity each session reported, for elapsed times.
 	last map[string]ActivityState
+
+	// claimMu serializes Claim and the session filter of Unread; claims maps
+	// an unread message id to the session that took it for delivery (Claim).
+	// Taken before mu and the chat store's lock, never inside them.
+	claimMu sync.Mutex
+	claims  map[string]string
 }
 
 func openSessions(dir string) (*sessionRegistry, error) {
-	r := &sessionRegistry{path: filepath.Join(dir, "sessions.json"), sessions: map[string]*Session{}, last: map[string]ActivityState{}}
+	r := &sessionRegistry{path: filepath.Join(dir, "sessions.json"), sessions: map[string]*Session{}, last: map[string]ActivityState{},
+		claims: map[string]string{}}
 	var list []Session
 	if err := readJSON(r.path, &list); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err

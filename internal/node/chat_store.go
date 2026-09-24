@@ -65,6 +65,10 @@ type chatRecord struct {
 	// Assigned is who on this node answers a request that asks it: "worker" or
 	// "session:<id>", set once (ClaimRun, Ack).
 	Assigned string `json:"assigned,omitempty"`
+	// Session is the live session of this node that wrote this node's own
+	// message (agentlink send inside it): replies to the message go to it.
+	// Local only, never sent.
+	Session string `json:"session,omitempty"`
 	// Receipts: on this node's own messages, the latest receipt per recipient.
 	Receipts map[string]Receipt `json:"receipts,omitempty"`
 }
@@ -346,6 +350,20 @@ func (cs *chatStore) markRead(id, owner, self string) (chatRecord, bool, error) 
 		return changed
 	})
 	return r, wasUnread, err
+}
+
+// setSession records the live session that wrote this node's message id.
+func (cs *chatStore) setSession(id, session string) error {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	_, _, err := cs.updateLocked(id, func(r *chatRecord) bool {
+		if r.Session == session {
+			return false
+		}
+		r.Session = session
+		return true
+	})
+	return err
 }
 
 // claim assigns request id to owner unless someone is assigned already or a

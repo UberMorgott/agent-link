@@ -33,10 +33,17 @@ type fakeNode struct {
 	actChat  []string
 	gets     int // GET /unread calls
 	api      string
+	// claims: with claimOn, POST /claim grants a message to the first session
+	// that claims it (id -> session); without, /claim is 404 like an older node.
+	claimOn bool
+	claims  map[string]string
+	// unreadSession: the session the last GET /unread asked for.
+	unreadSession string
 }
 
 func newFakeNode(t *testing.T, folder string) *fakeNode {
-	f := &fakeNode{folder: folder, sessions: map[string]node.SessionRequest{}, acked: map[string]string{}, worker: map[string]bool{}}
+	f := &fakeNode{folder: folder, sessions: map[string]node.SessionRequest{}, acked: map[string]string{}, worker: map[string]bool{},
+		claims: map[string]string{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	f.api = strings.TrimPrefix(srv.URL, "http://")
@@ -65,6 +72,7 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/unread":
 		f.gets++
 		q := r.URL.Query()
+		f.unreadSession = q.Get("session")
 		if !strings.EqualFold(filepath.Clean(q.Get("folder")), filepath.Clean(f.folder)) {
 			http.Error(w, "folder is not the working folder", http.StatusBadRequest)
 			return
@@ -100,6 +108,17 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 			res = append(res, node.AckResult{ID: id, Found: true, WasUnread: !was, Assigned: a})
 		}
 		_ = json.NewEncoder(w).Encode(res)
+	case r.Method == http.MethodPost && r.URL.Path == "/claim" && f.claimOn:
+		var req node.ClaimRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		granted := []string{}
+		for _, id := range req.IDs {
+			if s := f.claims[id]; s == "" || s == req.SessionID {
+				f.claims[id] = req.SessionID
+				granted = append(granted, id)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(granted)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/activity"):
 		var req node.ActivityRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -291,6 +310,29 @@ func TestHookDeliversUnreadOnceAndAcks(t *testing.T) {
 	if !strings.Contains(v.HookSpecificOutput.AdditionalContext, "one more") || !strings.Contains(v.HookSpecificOutput.AdditionalContext, "К сведению") ||
 		v.SystemMessage != "agent-link: 1 сообщение от bob — к сведению" {
 		t.Fatalf("prompt: %+v", v)
+	}
+}
+
+// Two sessions of one folder poll the same unread messages: a message goes to
+// the one session the node grants it (POST /claim), never to both. The
+// CodeDungeon case: a reply another session asked for was injected into an
+// unrelated session too, which acted on it.
+func TestHookDeliversOnlyClaimedMessages(t *testing.T) {
+	c := newHookCase(t)
+	c.f.claimOn = true
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "PR is fine, merge it", false))
+	c.f.claims["m1"] = "s-asker" // the session that asked (or that won the race)
+	c.run(hookClaude, evSessionStart)
+	if out := c.run(hookClaude, evPostTool, `,"tool_name":"Read"`); out != "" {
+		t.Fatalf("an unrelated session got the reply: %s", out)
+	}
+	if c.f.unreadSession != c.sid || len(c.f.acked) != 0 {
+		t.Fatalf("unread asked for %q; acked %v", c.f.unreadSession, c.f.acked)
+	}
+	c.sid = "s-asker"
+	v := parseOut(t, c.run(hookClaude, evSessionStart))
+	if !strings.Contains(v.HookSpecificOutput.AdditionalContext, "PR is fine") || c.f.acked["m1"] != "s-asker" {
+		t.Fatalf("the asking session: %+v, acked %v", v, c.f.acked)
 	}
 }
 

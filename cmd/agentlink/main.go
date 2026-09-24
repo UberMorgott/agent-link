@@ -134,8 +134,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		chat := fs.String("chat", "", "chat id; default $"+envChatID+" when --to is empty")
 		ask := fs.String("ask", "", "chat participants who must answer, comma-separated; none: the message only informs")
 		area := fs.String("area", "", "project (area) of the conversation; default: this folder's project")
+		session := fs.String("session", "", "the sending agent session's id, which gets the replies; default: the agent's own ($"+envClaudeSession+", $"+envCodexThread+")")
 		cmd = func(c config.Config) (int, error) {
-			return 0, send(c, sendArgs{to: *to, body: *body, replyTo: *replyTo, chat: *chat, ask: *ask, area: *area, project: proj()}, stdout)
+			return 0, send(c, sendArgs{to: *to, body: *body, replyTo: *replyTo, chat: *chat, ask: *ask, area: *area, project: proj(), session: *session}, stdout)
 		}
 	case "wait":
 		timeout := fs.String("timeout", "0", "seconds or Go duration; 0 waits forever")
@@ -297,7 +298,29 @@ func inFolder(q url.Values, project string) url.Values {
 	return q
 }
 
-type sendArgs struct{ to, body, replyTo, chat, ask, area, project string }
+type sendArgs struct{ to, body, replyTo, chat, ask, area, project, session string }
+
+// Environment of the agent sessions agentlink send runs in: the session's id,
+// so replies go back to that session.
+const (
+	envClaudeSession = "CLAUDE_CODE_SESSION_ID"
+	envCodexThread   = "CODEX_THREAD_ID"
+)
+
+// agentSession is the id of the agent session this command runs in, and its
+// hook client; empty outside one and inside a worker's job (not a session).
+func agentSession() (id, client string) {
+	if os.Getenv(envJobID) != "" {
+		return "", ""
+	}
+	if id := os.Getenv(envClaudeSession); id != "" {
+		return id, hookClaude
+	}
+	if id := os.Getenv(envCodexThread); id != "" {
+		return id, hookCodex
+	}
+	return "", ""
+}
 
 func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 	if a.body == "" {
@@ -306,7 +329,10 @@ func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 	if a.chat == "" && a.to == "" {
 		a.chat = os.Getenv(envChatID)
 	}
-	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat, Area: a.area}
+	if a.session == "" {
+		a.session, _ = agentSession()
+	}
+	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat, Area: a.area, SessionID: a.session}
 	if wd, err := os.Getwd(); err == nil {
 		r.Folder = wd // the node picks the project of this folder
 	}

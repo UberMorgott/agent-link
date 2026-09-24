@@ -199,6 +199,16 @@ func TestControlAPIRoutes(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(body, `"project":"`+p.ID+`"`) {
 		t.Fatalf("GET /sessions: %d %s", code, body)
 	}
+	// Claims go to the context of the session's folder, like its unread.
+	claim := func(folder string) (int, string) {
+		return call(t, srv, http.MethodPost, "/claim", jsonOf(t, node.ClaimRequest{IDs: []string{fromBob.ID}, SessionID: "s1", Folder: folder}))
+	}
+	if code, body := claim(p.Dir); code != http.StatusOK || strings.TrimSpace(body) != "[]" { // acked above: nothing to claim
+		t.Fatalf("claim in the project folder: %d %s", code, body)
+	}
+	if code, body := claim(""); code != http.StatusOK {
+		t.Fatalf("claim without a folder: %d %s", code, body)
+	}
 	if code, _ := call(t, srv, http.MethodDelete, "/sessions/s1", ""); code != http.StatusNoContent {
 		t.Fatalf("end session: %d", code)
 	}

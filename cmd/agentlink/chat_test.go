@@ -25,6 +25,9 @@ type fakeAPI struct {
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
+	// Tests may run inside an agent session: never pick up (or touch) its id.
+	t.Setenv(envClaudeSession, "")
+	t.Setenv(envCodexThread, "")
 	f := &fakeAPI{t: t}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.reqs = append(f.reqs, r.Method+" "+r.URL.RequestURI())
@@ -168,6 +171,38 @@ func TestSendInsideJobUsesChatContext(t *testing.T) {
 	f.run("send", "--chat", "other", "--body", "elsewhere")
 	if s := f.send; s.ChatID != "other" || s.Parent != "j1" {
 		t.Fatalf("send to another chat = %+v", s)
+	}
+}
+
+// A send inside an agent session names the session, so the reply goes back
+// to it and to no other session of the folder; --session overrides it, and a
+// worker's job (no session) names none.
+func TestSendNamesItsSession(t *testing.T) {
+	f := newFakeAPI(t)
+	t.Setenv(envJobID, "")
+	f.run("send", "--to", "b", "--body", "hi")
+	if f.send.SessionID != "" {
+		t.Fatalf("outside a session: %+v", f.send)
+	}
+	t.Setenv(envClaudeSession, "sess-claude")
+	f.run("send", "--to", "b", "--body", "hi")
+	if f.send.SessionID != "sess-claude" {
+		t.Fatalf("claude session: %+v", f.send)
+	}
+	f.run("send", "--to", "b", "--body", "hi", "--session", "explicit")
+	if f.send.SessionID != "explicit" {
+		t.Fatalf("--session: %+v", f.send)
+	}
+	t.Setenv(envClaudeSession, "")
+	t.Setenv(envCodexThread, "thread-1")
+	f.run("send", "--to", "b", "--body", "hi")
+	if f.send.SessionID != "thread-1" {
+		t.Fatalf("codex thread: %+v", f.send)
+	}
+	t.Setenv(envJobID, "j1")
+	f.run("send", "--to", "b", "--body", "hi")
+	if f.send.SessionID != "" {
+		t.Fatalf("inside a job: %+v", f.send)
 	}
 }
 

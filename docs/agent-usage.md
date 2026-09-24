@@ -187,7 +187,8 @@ it), so the node knows someone is there. All on the control API (loopback, no to
 | `POST /sessions` | `{"session_id","provider","folder","wake":"rewake"\|"next-event","ttl_sec"}` | the `Session` (`area`, `primary`, `registered_at`, `last_seen`); again = heartbeat |
 | `GET /sessions` | | live sessions, oldest first |
 | `DELETE /sessions/{id}` | | 204 |
-| `GET /unread` | `folder`, `after`, `limit` (1–1000, default 50) | `{"messages":[…],"total":N,"next":cursor}` |
+| `GET /unread` | `folder`, `after`, `limit` (1–1000, default 50), `session` | `{"messages":[…],"total":N,"next":cursor}` |
+| `POST /claim` | `{"ids":[…],"session_id","folder"}` | `[id,…]`: the ids granted to that session for delivery |
 | `POST /chats/{id}/ack`, `POST /ack` | `{"ids":[…],"session_id"}` | `[{"id","found","was_unread","assigned"}]` |
 | `POST /chats/{id}/activity` | `{"session_id","reply_to","id","type","text","phase":"running"\|"done"\|"idle"}` | the status message sent |
 
@@ -201,6 +202,11 @@ it), so the node knows someone is there. All on the control API (loopback, no to
 - `ack` with a `session_id` assigns a request that asks this node to that session
   (`assigned: "session:<id>"`); `assigned: "worker"` means the worker took it first: do not
   answer it too.
+- One unread message goes to one session. `unread` with `session` lists only what that session
+  may take: a reply to a message the session sent (`agentlink send` inside a session names it:
+  `--session`, default `$CLAUDE_CODE_SESSION_ID` / `$CODEX_THREAD_ID`), following `reply_to`
+  back, or a message assigned to it, goes to that session while it lives; anything else to the
+  first session that `claim`s it. A claim holds until the ack (or the session ends).
 - `activity` shows the asker what the session does (like the worker's activity) for
   `reply_to` (default: the chat's newest message from another member); `phase: "idle"` ends it.
 
@@ -221,7 +227,8 @@ agentlink hook install codex             # ~/.codex/hooks.json, then trust it wi
   heartbeat (at most once a minute); `SessionEnd` deregisters it. A folder that is none of this
   node's is refused by the node: the hook then does nothing in that session.
 - **Delivery.** On `SessionStart`, `UserPromptSubmit`, `PostToolUse` and `Stop` the hook reads
-  `GET /unread?folder=<cwd>` (every age, oldest first) and gives the model one batch as context
+  `GET /unread?folder=<cwd>&session=<id>` (every age, oldest first), claims them (`POST /claim`:
+  other sessions of the folder never get the same message) and gives the model one batch as context
   (`hookSpecificOutput.additionalContext`): per message the sender and whether a person or an
   agent wrote it (`author_kind`), the chat id and members, the id, the full text (a body over
   2500 characters is cut, with `agentlink chat history --chat <id>` for the rest) and the answer

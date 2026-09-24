@@ -384,15 +384,53 @@ type hookBatch struct {
 
 func (b hookBatch) empty() bool { return len(b.ids) == 0 }
 
-// collect reads the unread messages of the session's folder and formats what
-// fits one hook output. The rest stays unread for the next event.
+// collect reads the unread messages of the session's folder that are for this
+// session, claims them and formats what fits one hook output. The rest stays
+// unread for the next event.
 func (h *hookSession) collect(stop bool) (hookBatch, error) {
 	var page node.UnreadPage
-	q := url.Values{"folder": {h.folder}, "limit": {fmt.Sprint(hookPageSize)}}
+	q := url.Values{"folder": {h.folder}, "session": {h.sid}, "limit": {fmt.Sprint(hookPageSize)}}
 	if err := hookCall(h.env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout); err != nil {
 		return hookBatch{}, err
 	}
+	page, err := h.claim(page)
+	if err != nil {
+		return hookBatch{}, err
+	}
 	return formatBatch(page, h.folder, h.sid, stop), nil
+}
+
+// claim keeps the messages of page the node grants this session (POST
+// /claim): every session of the folder polls the same unread messages, and
+// one message goes to one session only, the one it is for (a reply to the
+// session's own message) or else the first to claim it. A node without
+// /claim (404) grants all, as before.
+func (h *hookSession) claim(page node.UnreadPage) (node.UnreadPage, error) {
+	if len(page.Messages) == 0 {
+		return page, nil
+	}
+	req := node.ClaimRequest{SessionID: h.sid, Folder: h.folder}
+	for _, m := range page.Messages {
+		req.IDs = append(req.IDs, m.ID)
+	}
+	var granted []string
+	err := hookCall(h.env.api, http.MethodPost, "/claim", nil, req, &granted, hookHTTPTimeout)
+	var se *statusError
+	switch {
+	case errors.As(err, &se) && (se.code == http.StatusNotFound || se.code == http.StatusMethodNotAllowed):
+		return page, nil
+	case err != nil:
+		return node.UnreadPage{}, err
+	}
+	out := page
+	out.Messages = nil
+	for _, m := range page.Messages {
+		if slices.Contains(granted, m.ID) {
+			out.Messages = append(out.Messages, m)
+		}
+	}
+	out.Total -= len(page.Messages) - len(out.Messages)
+	return out, nil
 }
 
 // accept acknowledges a delivered batch (after it was written out), marks its
