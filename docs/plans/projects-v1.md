@@ -628,3 +628,11 @@ traversal, dynamic chat participants, converting the legacy network.
   A project whose node fails to open is logged and left out; the others run.
   `Status.Running` means any context runs; `link.no_code` shows only without
   bindings.
+- A12: control API errors stay plain text (the CLI prints them); the two new
+  409s start with their code (`project_needs_folder: …`,
+  `folder_not_in_project: …`). The folder check applies to `POST /sessions`,
+  `GET /wait` and `GET /unread` only; `send` uses `folder` just to pick the
+  context. `DELETE /sessions/{id}` goes to the context whose registry holds the
+  live session (survives an app restart, unlike an in-memory map). Owner lookup
+  uses the new `Node.OwnsChat` (stored chats, and legacy virtual chats on the
+  legacy node) and `Node.OwnsMessage` (chat messages and received plain ones).

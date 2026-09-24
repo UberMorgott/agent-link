@@ -39,7 +39,9 @@ func startApp(t *testing.T, s settings.Settings, setup ...func(*App)) *App {
 	if s.Handler == "" {
 		s.Handler = worker.HandlerNone
 	}
-	s.Listen = "127.0.0.1:0"
+	if s.Listen == "" {
+		s.Listen = "127.0.0.1:0"
+	}
 	if err := settings.Save(path, s); err != nil {
 		t.Fatal(err)
 	}

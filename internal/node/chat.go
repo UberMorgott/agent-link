@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -884,6 +885,30 @@ func (n *Node) ClaimRun(m Message) (run bool, hold string, err error) {
 
 // ChatOf returns a chat's description; ok is false for an unknown chat.
 func (n *Node) ChatOf(id string) (Chat, bool) { return n.chats.get(id) }
+
+// OwnsChat reports whether chat id is this node's: a stored chat, or on the
+// legacy network a virtual chat of pre-chat history. The app routes control
+// API calls by it (chat ids are project-scoped).
+func (n *Node) OwnsChat(id string) bool {
+	if _, ok := n.chats.get(id); ok {
+		return true
+	}
+	_, _, legacy := parseLegacyChatID(id)
+	return legacy && n.cfg.Project == ""
+}
+
+// OwnsMessage reports whether this node stores message id: a chat message,
+// or a plain message it received.
+func (n *Node) OwnsMessage(id string) bool {
+	if !validID(id) {
+		return false
+	}
+	if _, ok := n.chats.message(id); ok {
+		return true
+	}
+	_, err := os.Stat(n.store.inboxPath(id))
+	return err == nil
+}
 
 // Chat describes one chat, a legacy one too.
 func (n *Node) Chat(id string) (ChatInfo, error) {

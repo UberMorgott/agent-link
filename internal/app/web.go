@@ -136,13 +136,13 @@ func (a *App) Handler() http.Handler {
 	root.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/dashboard", http.StatusFound)
 	})
+	control := a.controlAPI()
 	root.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		n := a.node()
-		if n == nil {
-			http.Error(w, "node is not running: open the settings page and save a pairing code", http.StatusServiceUnavailable)
+		if len(a.routeContexts()) == 0 {
+			http.Error(w, "node is not running: create or join a project in the app", http.StatusServiceUnavailable)
 			return
 		}
-		n.APIHandler().ServeHTTP(w, r)
+		control.ServeHTTP(w, r)
 	})
 	return loopbackHost(root)
 }
