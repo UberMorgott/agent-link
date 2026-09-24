@@ -120,7 +120,7 @@ watch(source, () => {
           v-if="!inbox.messages.length"
           class="empty py-10 text-center text-sm text-muted"
         >
-          {{ t(inbox.selectedChat ? "inbox.empty_conversation" : "inbox.select_hint") }}
+          {{ t("inbox.empty_conversation") }}
         </p>
         <div
           v-else-if="inbox.hasOlder"

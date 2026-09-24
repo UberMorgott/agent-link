@@ -655,3 +655,40 @@ traversal, dynamic chat participants, converting the legacy network.
   `error.chat_closed` («Чат завершён…») changed, so `error_unknown_chat.json`
   and `error_chat_closed.json` were regenerated (sentence only), and
   `scripts/e2e-tray.ps1` joins the legacy network through `projects/join`.
+
+### Implementation deviations (Track B)
+
+- B1: vitest reads the contract fixtures through `web/src/test/backend.ts`
+  (`import.meta.glob('../../../testdata/projects/*.json')`), a stateful fake of
+  the §7.2 endpoints that the view tests share; error fixtures become
+  `{error, code}` answers. `ApiError` carries `code`.
+- Obsolete string keys go in the commit that stops using them
+  (`TestUIStringsCoverPages`), not all in B7: the inbox/nav keys of §8 plus
+  `page.title.inbox`, `inbox.new`, `inbox.new.area*`, `inbox.archive.title/empty`
+  in B2; `settings.code.*` in B7.
+- B3: the new-chat form became a modal (`NewChatPicker.vue`) already in B3, so
+  «Новый чат» works from the project page and the sidebar; B4 adds the D5
+  behaviour (everyone preselected, online state, count, ≥1).
+- A project chat (`mode: "project"`) is named by its title in lists and the
+  header, not by its participants (several chats may share the same people).
+- D10: `/ui/inbox` opens the last used project, else the first one, else the
+  welcome screen.
+- D11: read cursors live in `localStorage` `agentlink.reads.v2:<node>` keyed
+  `<pid>:<chat>`; the first time a project's chats arrive its history counts as
+  read (marker key `<pid>:`). The sidebar badge counts unread chats.
+- Join: a legacy code (or a project already here) opens directly, without the
+  folder step. After a join that created the project the dialog cannot be
+  dismissed by Esc/overlay: «Отмена» leaves, «Не ждать» closes it and keeps the
+  project connecting, «Готово» binds the folder/alias given.
+- Leave is confirmed in a modal (it shows the 409 `project_busy` sentence), not
+  with the browser's confirm.
+- Settings: the «Прежняя сеть» card (only with a legacy key) holds the working
+  folder, the area folders («Папки тем») and «Общие темы» (moved out of
+  «Дополнительно»). The page no longer sends `code`, so A14 (the server keeps
+  `code`/`secret`) must land before B7.
+- `styles.css` excludes the committed `dist/` from Tailwind's source scan: old
+  built class names made rebuilds differ from run to run.
+- Left for Track A (done in A14): server sentences that still name the removed Settings
+  button or «беседа» (`link.no_code`, `link.weak_code`, `tray.weak_code`,
+  `error.chat_closed`, `error.unknown_chat`); `scripts/e2e-tray.ps1` still sets
+  `settings.code`.

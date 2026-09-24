@@ -4,11 +4,14 @@ import { browser, runtime } from '@/lib/runtime'
 import { fakeApi, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore } from '@/stores/inbox'
+import { useProjectsStore } from '@/stores/projects'
 import type { ChatInfo, ChatMessage, Presence } from '@/types'
 
 const base = 1700000000000
 const iso = (ms: number) => new Date(ms).toISOString()
 const group = 'c1 &'
+const P = 'PROJ'
+const prefix = 'projects/' + P + '/'
 
 interface Fixture { info: ChatInfo; items: ChatMessage[] }
 
@@ -66,6 +69,9 @@ const sent: unknown[] = []
 
 function serve() {
   return fakeApi((method, path, body) => {
+    if (path === 'projects') return [{ id: P, legacy: false, name: 'Сайт', alias: '', display: 'Сайт', dir: 'W:/work', state: 'ready', problem: '', online: 2, total: 2, can_rename: true, has_invite: true, busy: false, members: [{ name: 'local', self: true, online: true }, { name: 'bob', online: true }, { name: 'карл & sons', online: true }, { name: 'alice', online: false }] }]
+    if (!path.startsWith(prefix)) throw new Error('unexpected call ' + method + ' ' + path)
+    path = path.slice(prefix.length)
     if (method === 'POST' && path.endsWith('/close')) {
       const chat = chats[decodeURIComponent(path.split('/')[1]!)]!
       chat.info = { ...chat.info, closed: true, archived: true }
@@ -112,22 +118,24 @@ afterEach(() => { releaseSend?.() })
 
 async function openInbox() {
   const api = serve()
-  const mounted = await mountApp('/inbox')
+  const mounted = await mountApp('/p/' + P + '/c/c3')
   const app = useAppStore()
-  app.status = { node: 'local', members: [{ name: 'local', self: true, online: true }, { name: 'bob', online: true }, { name: 'карл & sons', online: true }] }
+  app.status = { node: 'local' }
   app.settings = { areas: ['dev'] }
+  const projects = useProjectsStore()
+  await projects.refreshAll()
   await settle()
-  return { ...mounted, api, app, inbox: useInboxStore() }
+  return { ...mounted, api, app, projects, inbox: useInboxStore() }
 }
 
 describe('the open chat', () => {
   it('renders ticks, authors, members, whom to ask and live activity', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const { api, inbox } = await openInbox()
-    await inbox.selectChat(group, 'm204')
+    await inbox.selectChat(P, group, 'm204')
     await settle()
-    expect(api.calls).toContain('GET chats/c1%20%26')
-    expect(api.calls).toContain('GET chats/c1%20%26/messages?limit=200')
+    expect(api.calls).toContain('GET projects/PROJ/chats/c1%20%26')
+    expect(api.calls).toContain('GET projects/PROJ/chats/c1%20%26/messages?limit=200')
     const items = timeline()
     expect(items).toHaveLength(201)
     expect(items[0]!.className).toContain('msg-older')
@@ -191,7 +199,7 @@ describe('the open chat', () => {
 
   it('keeps bubbles, focus, draft, caret and scroll across refreshes, then loads older and sends once', async () => {
     const { api, inbox } = await openInbox()
-    await inbox.selectChat(group, '')
+    await inbox.selectChat(P, group, '')
     await settle()
     const list = $('#messages')!
     const kept = timeline()[11]!
@@ -240,7 +248,7 @@ describe('the open chat', () => {
     form.dispatchEvent(new Event('submit', { cancelable: true }))
     form.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle()
-    expect(api.calls.filter((c) => c === 'POST send')).toHaveLength(1)
+    expect(api.calls.filter((c) => c === 'POST projects/PROJ/send')).toHaveLength(1)
     expect($<HTMLButtonElement>('#send_button')!.disabled).toBe(true)
     expect(sent[0]).toEqual({ chat_id: group, body: 'first\nsecond', ask: ['bob'], reply_to: 'm203' })
     releaseSend!()
@@ -253,45 +261,41 @@ describe('the open chat', () => {
 
 describe('the chat list and the ways into a chat', () => {
   it('marks unread and live chats, opens chats by row, peer link and close', async () => {
-    const { router, app, inbox } = await openInbox()
-    await inbox.selectChat(group, '')
+    const { router, app, projects, inbox } = await openInbox()
+    await inbox.selectChat(P, group, '')
     await settle()
     const second = { ...chats.c2!.info, last_seq: 3, last_message: { id: 'a1', seq: 3, from: 'alice', direction: 'in', body: 'old from alice', created_at: iso(base) } }
-    app.chats = [chats[group]!.info, second]
+    projects.chats = { [P]: [chats[group]!.info, second] }
     await settle()
-    app.chats = [chats[group]!.info, { ...second, last_seq: 4, last_message: { id: 'a2', seq: 4, from: 'alice', direction: 'in', body: 'latest from alice', created_at: iso(base) } }]
+    projects.chats = { [P]: [chats[group]!.info, { ...second, last_seq: 4, last_message: { id: 'a2', seq: 4, from: 'alice', direction: 'in', body: 'latest from alice', created_at: iso(base) } }] }
     await settle()
-    const rows = $$('#conversation_list > li')
+    const rows = $$('#project_tree [data-project="PROJ"] .chat-row')
     expect(text(rows[0]!)).toContain('правит app.go')
-    expect(rows[0]!.querySelector('button')!.className).toContain('live')
+    expect(rows[0]!.className).toContain('live')
     expect(text(rows[0]!)).not.toContain('inbox.unread')
-    expect(text(rows[1]!)).toContain('latest from alice')
+    expect(rows[1]!.className).toContain('fresh')
     expect(text(rows[1]!)).toContain('inbox.unread')
-    const alice = rows[1]!.querySelector('button')!
+    const alice = rows[1]!
     expect(alice.tagName).toBe('BUTTON')
     expect(alice.tabIndex).toBeGreaterThanOrEqual(0)
     alice.click()
     await settle()
-    expect(router.currentRoute.value.query.chat).toBe('c2')
+    expect(router.currentRoute.value.params.chat).toBe('c2')
 
     // A closed chat is readable but has no composer.
     expect($('#send')).toBeNull()
     expect($('#chat_note')).not.toBeNull()
     expect($('#chat_close')).toBeNull()
-    // A peer without an open chat gets the new-chat form; one with a chat, that chat.
-    await router.push('/inbox?peer=alice')
+    // A peer link opens the open chat with that peer.
+    projects.chats = { [P]: [chats.c3!.info, ...projects.chats[P]!] }
+    await router.push('/p/PROJ?peer=bob')
     await settle()
-    expect($('#new_chat_form')).not.toBeNull()
-    expect(ticked('#new_chat_members')).toEqual(['new_chat_alice'])
-    app.chats = [chats.c3!.info, ...app.chats!]
-    await router.push('/inbox?peer=bob')
-    await settle()
-    expect(router.currentRoute.value.query.chat).toBe('c3')
+    expect(router.currentRoute.value.params.chat).toBe('c3')
 
     // A chat of two: nobody to choose; an unread message the local agent has
     // not taken says why it waits.
     app.sessions = [{ session_id: 's', provider: 'claude', folder: 'W:/work', area: '', wake: 'next-event' }]
-    await inbox.selectChat('c4', '')
+    await inbox.selectChat(P, 'c4', '')
     inbox.infoOpen = true
     await settle()
     expect($('#ask_row')).toBeNull()
@@ -314,7 +318,7 @@ describe('the chat list and the ways into a chat', () => {
     ]
     for (const [presence, key] of cases) {
       chats.c5 = bobPresence(presence)
-      await inbox.selectChat('c5', '')
+      await inbox.selectChat(P, 'c5', '')
       await settle()
       const lines = $$('#chat_activity > li')
       expect(lines, key).toHaveLength(1)
@@ -324,38 +328,35 @@ describe('the chat list and the ways into a chat', () => {
     }
     for (const fixture of [bobPresence({ area: '', session: 'rewake' }, false, 'queued'), bobPresence({ area: '', session: 'rewake' }, true, 'read'), bobPresence(undefined)]) {
       chats.c5 = fixture
-      await inbox.selectChat('c5', '')
+      await inbox.selectChat(P, 'c5', '')
       await settle()
       expect($$('#chat_activity > li.presence')).toHaveLength(0)
     }
 
     // Closing: the chat leaves the list at once and the view moves to the next chat.
-    await router.push('/inbox?chat=c4')
+    await router.push('/p/PROJ/c/c4')
     await settle()
-    app.chats = [chats.c4!.info, chats.c3!.info]
+    projects.chats = { [P]: [chats.c4!.info, chats.c3!.info] }
     await settle()
     const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(true)
     $<HTMLButtonElement>('#chat_close')!.click()
     await settle()
     expect(confirm).toHaveBeenCalledWith('inbox.close.confirm')
-    expect(useAppStore().chats!.some((c) => c.id === 'c4')).toBe(false)
+    expect(projects.chats[P]!.some((c) => c.id === 'c4')).toBe(false)
     expect($('[data-chat="c4"]')).toBeNull()
-    expect(router.currentRoute.value.query.chat).toBe('c3')
+    expect(router.currentRoute.value.params.chat).toBe('c3')
   })
 })
 
 describe('the shell of the inbox', () => {
-  it('labels the new chat area and the "who answers" groups', async () => {
+  it('labels the new chat people and the "who answers" groups', async () => {
     const { inbox } = await openInbox()
-    await inbox.selectChat(group, '')
+    await inbox.selectChat(P, group, '')
     await settle()
     const ask = $('#ask_choices')!.closest('[role="group"]')!
     expect(document.getElementById(ask.getAttribute('aria-labelledby')!)).not.toBeNull()
-    inbox.showNewChat([])
+    inbox.showNewChat(P, [])
     await settle()
-    const area = $('#new_chat_area')!
-    expect(area.closest('label')).not.toBeNull()
-    expect(area.closest('label')!.className).not.toContain('sr-only')
     const people = $('#new_chat_members')!.closest('[role="group"]')!
     expect(document.getElementById(people.getAttribute('aria-labelledby')!)).not.toBeNull()
   })

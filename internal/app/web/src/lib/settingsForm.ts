@@ -1,14 +1,12 @@
-// The settings form as data: what a save sends, and when the project rows are
-// complete enough to send.
+// The settings form as data: what a save sends, and when the area folder rows
+// are complete enough to send. The legacy network's code is not the page's:
+// it goes by joining and leaving (docs/plans/projects-v1.md §8).
 import type { AppSettings, Project } from '@/types'
 
 export const DEFAULT_API = '127.0.0.1:7520'
-// Letters and digits without 0/O and 1/I: 32 symbols, so a byte & 31 is uniform.
-export const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
 export interface SettingsFields {
   node: string
-  code: string
   handler: string
   agent_path: string
   work_dir: string
@@ -55,7 +53,6 @@ export function settingsBody(f: SettingsFields, rows: ProjectsBody, saved: AppSe
   const maxJobs = f.max_jobs.trim()
   return {
     node: f.node.trim(),
-    code: f.code.trim(),
     handler: f.handler,
     agent_path: f.agent_path,
     work_dir: f.work_dir.trim(),
@@ -72,9 +69,3 @@ export function settingsBody(f: SettingsFields, rows: ProjectsBody, saved: AppSe
   }
 }
 
-// newCode is 12 random symbols, 60 bits, shown as XXXX-XXXX-XXXX.
-export function newCode(random: (bytes: Uint8Array<ArrayBuffer>) => Uint8Array<ArrayBuffer> = (b) => crypto.getRandomValues(b)): string {
-  const bytes = random(new Uint8Array(12))
-  const s = Array.from(bytes, (b) => CODE_ALPHABET[b & 31]).join('')
-  return s.slice(0, 4) + '-' + s.slice(4, 8) + '-' + s.slice(8)
-}

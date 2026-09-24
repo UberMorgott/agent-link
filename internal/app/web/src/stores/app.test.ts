@@ -2,7 +2,7 @@ import { flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { browser, runtime } from '@/lib/runtime'
-import { parseSSERecord, slicesForTopics, statusLine, useAppStore } from './app'
+import { parseSSERecord, projectsForTopics, slicesForTopics, statusLine, useAppStore } from './app'
 
 // eventStream is a response whose body yields the pushed chunks, one read each.
 function eventStream(headers: Record<string, string> = {}, status = 200) {
@@ -40,10 +40,17 @@ describe('event parsing', () => {
   })
 
   it('maps topics onto the slices they make stale', () => {
-    expect(slicesForTopics(['all']).sort()).toEqual(['chats', 'dashboard', 'participants', 'sessions', 'settings', 'status', 'update'])
-    expect(slicesForTopics(['chats'])).toEqual(['chats'])
+    expect(slicesForTopics(['all']).sort()).toEqual(['dashboard', 'participants', 'sessions', 'settings', 'status', 'update'])
     expect(slicesForTopics(['peer']).sort()).toEqual(['dashboard', 'participants', 'status'])
-    expect(slicesForTopics(['messages']).sort()).toEqual(['chats', 'dashboard', 'participants'])
+    expect(slicesForTopics(['messages']).sort()).toEqual(['dashboard', 'participants'])
+    expect(slicesForTopics(['project:legacy'])).toEqual(['sessions'])
+  })
+
+  it('maps topics onto the projects they make stale', () => {
+    expect(projectsForTopics(['all'])).toEqual({ all: true, list: true, scoped: [] })
+    expect(projectsForTopics(['projects'])).toEqual({ all: false, list: true, scoped: [] })
+    expect(projectsForTopics(['members', 'project:P1', 'project:legacy', 'project:P1'])).toEqual({ all: false, list: true, scoped: ['P1', 'legacy'] })
+    expect(projectsForTopics(['messages'])).toEqual({ all: false, list: false, scoped: [] })
   })
 
   it('renders the link indicator', () => {
@@ -72,11 +79,11 @@ describe('reactive push', () => {
     stream.send(change(['all']))
     await flushPromises()
     const initial = calls.slice(1).map((c) => c.url).sort()
-    expect(initial).toEqual(['chats', 'dashboard', 'participants', 'sessions', 'settings', 'status', 'update'].map((n) => '/ui/api/' + n).sort())
+    expect(initial).toEqual(['dashboard', 'participants', 'projects', 'sessions', 'settings', 'status', 'update'].map((n) => '/ui/api/' + n).sort())
     calls.length = 0
-    stream.send(change(['chats']))
+    stream.send(change(['projects']))
     await flushPromises()
-    expect(calls.map((c) => c.url)).toEqual(['/ui/api/chats'])
+    expect(calls.map((c) => c.url)).toEqual(['/ui/api/projects'])
     // Nothing reads data on a timer.
     expect(timer).not.toHaveBeenCalled()
   })

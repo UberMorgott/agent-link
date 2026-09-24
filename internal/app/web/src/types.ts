@@ -104,7 +104,10 @@ export interface ChatMessage {
 
 export interface ChatInfo {
   id: string
+  project?: string // project id or "legacy"
+  mode?: 'project' // a standalone chat of a project
   participants?: string[]
+  count?: number
   title?: string
   closed?: boolean
   archived?: boolean
@@ -125,6 +128,57 @@ export interface Session {
   folder?: string
   area?: string
   wake?: string
+  project?: string // project id or "legacy"
+}
+
+// --- projects (docs/plans/projects-v1.md §7) ---
+
+export type ProjectState = 'connecting' | 'needs_folder' | 'ready' | 'error'
+
+export interface MemberInfo {
+  name: string
+  self?: boolean
+  online: boolean
+  addrs?: string[]
+  seen?: string
+  app?: string
+  proto?: number
+  legacy?: boolean
+  old_auth?: boolean
+}
+
+export interface ProjectView {
+  id: string // project id or "legacy"
+  legacy: boolean
+  name: string // shared name; "" while connecting
+  alias: string
+  display: string // alias || name || ""
+  dir: string
+  state: ProjectState
+  problem: string // "" or unknown_project | auth | name_taken | removed
+  online: number
+  total: number
+  members: MemberInfo[] // self first
+  can_rename: boolean
+  has_invite: boolean
+  busy: boolean
+}
+
+export interface InviteView { invite: string }
+
+export interface JoinResult {
+  project: ProjectView
+  created: boolean // false: the project was here already
+}
+
+// SentMessage is the answer of a send: the envelope as the node keeps it.
+export interface SentMessage {
+  id: string
+  from: string
+  body: string
+  created_at: string
+  chat_id?: string
+  participants?: string[]
 }
 
 export interface Project {
@@ -133,7 +187,6 @@ export interface Project {
 
 export interface AppSettings {
   node?: string
-  code?: string
   handler?: string
   agent_path?: string
   work_dir?: string

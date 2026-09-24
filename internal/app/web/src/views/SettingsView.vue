@@ -8,15 +8,18 @@ import { icon } from '@/lib/icons'
 import { api } from '@/lib/api'
 import { browser, fmt, t } from '@/lib/runtime'
 import {
-  effectiveAPI, newCode, projectsBody, projectsKey, settingsBody, type ProjectRow, type SettingsFields,
+  effectiveAPI, projectsBody, projectsKey, settingsBody, type ProjectRow, type SettingsFields,
 } from '@/lib/settingsForm'
 import { useAppStore } from '@/stores/app'
+import { useProjectsStore } from '@/stores/projects'
 import type { AppSettings, HookStatus, SaveResult, UpdateStatus } from '@/types'
 
 const app = useAppStore()
+// The working folder and the area folders belong to the legacy network only.
+const projects = useProjectsStore()
 
 const form = reactive<SettingsFields>({
-  node: '', code: '', handler: 'none', agent_path: '', work_dir: '', listen: '', api: '', areas: '',
+  node: '', handler: 'none', agent_path: '', work_dir: '', listen: '', api: '', areas: '',
   discovery: true, max_jobs: '', autostart: false, auto_answer: false,
 })
 const rows = ref<ProjectRow[]>([])
@@ -53,7 +56,6 @@ function showSettings(s: AppSettings | null) {
   // Unsaved edits win over a repaint; the next save brings them together.
   if (!s || saving || edits !== settled) return
   form.node = s.node || ''
-  form.code = s.code || ''
   form.work_dir = s.work_dir || ''
   form.listen = s.listen || ''
   form.api = s.api || ''
@@ -65,7 +67,7 @@ function showSettings(s: AppSettings | null) {
   form.auto_answer = !!s.auto_answer
   form.discovery = s.discovery !== false
   form.max_jobs = s.max_jobs ? String(s.max_jobs) : ''
-  if (s.listen || s.api || s.discovery === false || s.max_jobs || (s.areas || []).length) advancedOpen.value = true
+  if (s.listen || s.api || s.discovery === false || s.max_jobs) advancedOpen.value = true
   workDirKey.value = "settings.work_dir.current"
   const projects = s.projects || {}
   // Rebuilding equal rows would only take the focus away from them.
@@ -236,22 +238,6 @@ async function pickAgent() {
   }
 }
 
-// --- the pairing code ---
-
-function generate() {
-  form.code = newCode()
-  return editedAndSave(t("settings.code.generated"))
-}
-
-async function copyCode() {
-  try {
-    await navigator.clipboard.writeText(form.code.toUpperCase())
-    result.value = t("settings.code.copied")
-  } catch {
-    document.querySelector<HTMLInputElement>('#code')?.select()
-    result.value = t("settings.code.copy_manual")
-  }
-}
 
 // --- read-only lines ---
 
@@ -350,39 +336,6 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
           <p class="hint">
             {{ t("settings.node.hint") }}
           </p>
-          <label class="field"><span>{{ t("settings.code.label") }}</span>
-            <span class="flex flex-wrap gap-2">
-              <UInput
-                id="code"
-                v-model="form.code"
-                name="code"
-                maxlength="16"
-                autocomplete="off"
-                spellcheck="false"
-                class="code flex-1"
-                :ui="{ base: 'font-mono uppercase' }"
-              />
-              <UButton
-                id="generate"
-                type="button"
-                :label="t('settings.code.generate')"
-                color="neutral"
-                variant="outline"
-                @click="generate"
-              />
-              <UButton
-                id="copy"
-                type="button"
-                :label="t('settings.code.copy')"
-                color="neutral"
-                variant="outline"
-                @click="copyCode"
-              />
-            </span>
-          </label>
-          <p class="hint">
-            {{ t("settings.code.hint") }}
-          </p>
         </section>
 
         <section
@@ -467,6 +420,27 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
           <h2 id="settings_application_title">
             {{ t("settings.application.title") }}
           </h2>
+          <USwitch
+            id="autostart"
+            v-model="form.autostart"
+            name="autostart"
+            :label="t('settings.autostart.label')"
+            class="check"
+          />
+        </section>
+
+        <section
+          v-if="projects.hasLegacy"
+          class="settings-card settings-legacy flex flex-col gap-2"
+          data-settings-card="legacy"
+          aria-labelledby="settings_legacy_title"
+        >
+          <h2 id="settings_legacy_title">
+            {{ t("settings.legacy.title") }}
+          </h2>
+          <p class="hint">
+            {{ t("settings.legacy.hint") }}
+          </p>
           <label class="field"><span>{{ t("settings.work_dir.label") }}</span>
             <span class="flex gap-2">
               <UInput
@@ -512,23 +486,12 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
           <p class="hint">
             {{ t("settings.work_dir.hint") }}
           </p>
-          <USwitch
-            id="autostart"
-            v-model="form.autostart"
-            name="autostart"
-            :label="t('settings.autostart.label')"
-            class="check"
-          />
-        </section>
-
-        <section
-          class="settings-card settings-projects flex flex-col gap-2"
-          data-settings-card="projects"
-          aria-labelledby="settings_projects_title"
-        >
-          <h2 id="settings_projects_title">
+          <h3
+            id="settings_projects_title"
+            class="mt-4"
+          >
             {{ t("settings.projects.title") }}
-          </h2>
+          </h3>
           <p class="hint">
             {{ t("settings.projects.hint") }}
           </p>
@@ -599,6 +562,14 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
             variant="ghost"
             @click="addProject"
           />
+          <label class="field mt-4"><span>{{ t("settings.areas.label") }}</span><UInput
+            v-model="form.areas"
+            name="areas"
+            autocomplete="off"
+          /></label>
+          <p class="hint">
+            {{ t("settings.areas.hint") }}
+          </p>
         </section>
 
         <section
@@ -702,14 +673,6 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
                 /></label>
                 <p class="hint">
                   {{ t("settings.api.hint") }}
-                </p>
-                <label class="field"><span>{{ t("settings.areas.label") }}</span><UInput
-                  v-model="form.areas"
-                  name="areas"
-                  autocomplete="off"
-                /></label>
-                <p class="hint">
-                  {{ t("settings.areas.hint") }}
                 </p>
                 <USwitch
                   id="discovery"
