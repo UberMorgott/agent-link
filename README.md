@@ -19,7 +19,10 @@ icon that runs the node, a settings page and an inbox page in your browser, and 
 that answers requests for you. Started with a command (`agentlink.exe members`, `update`, …) it is
 the CLI below. It is a console program so terminals wait for commands and get their output and
 exit code; the desktop app leaves its console at once (started from a terminal, it starts itself
-detached and hands the terminal back).
+detached and hands the terminal back). Started from inside a packaged (MSIX) app, such as a
+terminal of Claude's desktop app, whose AppData virtualization would hide its settings from
+other instances, it starts itself again outside through WMI and exits (`-unsandboxed` marks
+that relaunch).
 
 ### Install
 
@@ -309,8 +312,21 @@ and answers with what it did and the evidence. It refuses only hard-to-reverse a
 push, history rewrite, mass delete). Only pair with someone you trust to run commands on this
 machine.
 
-`docs/agent-usage.md` is the short version for a coding agent that wants to use the link itself:
-how to find the config path, ask the other machine a question and read the answer.
+`docs/agent-usage.md` is the reference for a coding agent that wants to use the link itself:
+which project a command reaches, how to ask in a chat and read the answer, and what the hooks do.
+
+### Agent skill
+
+`skills/agent-link/SKILL.md` teaches a coding agent the current CLI (projects, chats, `--project`,
+`--chat`, `--ask`, hooks, routing, common errors). Install it for Claude Code by copying the folder
+into your skills:
+
+```powershell
+Copy-Item -Recurse -Force skills\agent-link "$env:USERPROFILE\.claude\skills\"
+```
+
+Other agents (Codex): copy it wherever your agent loads skills, or point `AGENTS.md` at it.
+`agentlink hook install` does not install the skill; copy it again after an update.
 
 ## CLI
 
@@ -418,11 +434,12 @@ Quit or with `scripts/demo-local.ps1 -Stop`.
 
 ## Waking a Claude Code session
 
-Run `wait` as a background shell command. When a message arrives the command exits, the
-harness reports the completion, and the agent reads the JSON lines from its output:
+With the hooks below a live session is woken by itself. Without them, run `wait` as a background
+shell command. When a message arrives the command exits, the harness reports the completion, and
+the agent reads the JSON lines from its output:
 
 ```text
-agentlink wait --config C:\agentlink\node.json --timeout 0   (run_in_background)
+agentlink wait --timeout 0   (run_in_background; --config <node.json> for a node started with serve)
 ```
 
 After handling the messages (and replying with `send --reply-to`), start `wait` again.
@@ -445,8 +462,11 @@ is delivered once and the sender sees «прочитано». The person at the 
 «agent-link: 2 сообщения от KPECTIK — беру в работу». While the session works on them, what it
 does («читает src/x.go», «правит …», «запускает go») shows in the sender's chat. Claude Code
 also gets a background waiter (`asyncRewake`) that wakes an idle session when a message arrives;
-Codex has no such hook and reads new messages at its next event. The hook stays silent when the
-node is not running and does nothing inside a handler job. Details:
+an idle Codex session is woken by the node with `codex queue --thread <id>` (codex 0.149 or
+later found on this machine), else it reads new messages at its next event. One message goes to
+one session: a chat's messages go to the live session that last sent in it, so replies reach the
+asking session. The hook stays silent when the node is not running and does nothing inside a
+handler job or a headless run (`claude -p`, `codex exec`). Details:
 [docs/agent-usage.md](docs/agent-usage.md#hearing-about-messages-in-a-live-session-hooks).
 
 The desktop app does this by itself for the folders it knows: the agent chosen in «Кто отвечает»

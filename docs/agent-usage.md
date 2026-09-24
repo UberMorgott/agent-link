@@ -2,7 +2,8 @@
 
 How an agent on one machine asks the agent on another member's machine a question and gets the answer.
 Everything goes through the `agentlink` CLI against the node that is already running on this
-machine (the tray app or `agentlink serve`).
+machine (the tray app or `agentlink serve`). The compact version for an agent's skills folder is
+[`skills/agent-link/SKILL.md`](../skills/agent-link/SKILL.md).
 
 ## Finding the node (no config needed)
 
@@ -48,7 +49,8 @@ to a project. Chat and message ids belong to exactly one project. A command pick
    not in a project`.
 
 `chat list` without a project lists every project's chats, each with its `project`; so does
-`GET /sessions`. `members`, `inbox` and `chat new` without a project reach the legacy network.
+`GET /sessions`. `members`, `inbox`, `chat new` and `chat unread` without a project send the
+current folder as a hint: its project, else the legacy network.
 
 A project without a bound folder has no agent sessions: `POST /sessions`, `wait` and
 `chat unread` for it answer `409 project_needs_folder: …`; a `folder` outside the project's
@@ -288,8 +290,11 @@ agentlink hook install codex             # ~/.codex/hooks.json, then trust it wi
   text is not posted again within 20 s, nothing within 0.3 s of the last post.
 - State per session: `%APPDATA%\agentlink\hooks\<client>-<session_id>.json` (+ `.lock`,
   `.wait`), removed after 14 days unused. Node not running, bad input, an agent the worker runs
-  for a job (`AGENTLINK_JOB_ID` set): exit 0 without output (Codex `Stop`: `{}`), each request
-  at most 1.5 s, so the session is never stalled.
+  for a job (`AGENTLINK_JOB_ID` set), a headless run (`claude -p`: Claude Code sets
+  `CLAUDE_CODE_SESSION_ATTENDED=0`; else the agent's command line, `-p`/`--print` or
+  `codex exec`): exit 0 without output (Codex `Stop`: `{}`), each request at most 1.5 s, so the
+  session is never stalled. A headless run registers nothing and takes no messages; the node
+  grants claims only to a registered live session.
 - `install` is idempotent: it keeps the file's other settings and key order, adds one entry per
   event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SessionEnd`;
   `SessionEnd` with a 3 s timeout) or replaces the entries of an older version, and saves the
