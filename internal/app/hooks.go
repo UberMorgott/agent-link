@@ -121,6 +121,9 @@ func (a *App) projectDirs() []string {
 	for _, p := range a.s.Projects {
 		dirs = append(dirs, p.Dir)
 	}
+	for _, b := range a.s.Bindings {
+		dirs = append(dirs, b.Dir) // "" (no folder) is skipped
+	}
 	return dirs
 }
 

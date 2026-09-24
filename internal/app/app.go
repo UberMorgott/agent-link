@@ -8,7 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
+	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -79,9 +80,14 @@ type App struct {
 	mu         sync.Mutex
 	s          settings.Settings
 	configured bool
-	n          *node.Node
-	stop       context.CancelFunc
-	wg         sync.WaitGroup
+	// hub runs every context (contexts.go); nil until one is started.
+	hub        *node.Hub
+	hubCtx     context.Context
+	hubStop    context.CancelFunc
+	slots      *worker.Slots // job slots shared by every worker
+	legacy     *appContext   // the legacy network, nil without a code
+	n          *node.Node    // legacy.n
+	projects   map[string]*appContext
 	startErr   error
 	listen     string // this side's address to give the others, of the last start
 	zeroTier   bool
@@ -198,7 +204,7 @@ func (a *App) Status() Status {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	st := Status{
-		Configured: a.configured, Running: a.n != nil,
+		Configured: a.configured, Running: a.n != nil || len(a.projects) > 0,
 		Node: a.s.Node, Handler: a.s.Handler,
 		Listen: a.listen, ZeroTier: a.zeroTier,
 	}
@@ -229,7 +235,9 @@ func (a *App) Status() Status {
 	case a.startErr != nil:
 		st.Error = userError(a.startErr)
 	case a.s.Key() == nil:
-		st.Problem = "link.no_code"
+		if len(a.s.Bindings) == 0 {
+			st.Problem = "link.no_code"
+		}
 	case a.n != nil && errors.Is(a.n.Problem(), node.ErrAuth):
 		st.Problem = "link.bad_code"
 	case a.n != nil && errors.Is(a.n.Problem(), node.ErrSameName):
@@ -401,90 +409,77 @@ func (a *App) startLocked(ctx context.Context) error {
 	return a.startErr
 }
 
-// startNode runs the node, unless there is no code yet: then nothing can
-// authenticate and Status asks for one. The node outlives ctx (often an HTTP
-// request): only its values are kept, stopLocked ends the run.
+// startNode runs every context on the Hub: the legacy network while a code
+// exists, and each project binding. With neither nothing runs and Status asks
+// for a code. The contexts outlive ctx (often an HTTP request): only its
+// values are kept, stopLocked ends the run. A project that fails to open is
+// logged and left out; the others run.
 func (a *App) startNode(ctx context.Context) error {
 	var ifaces []settings.Iface
 	if a.Ifaces != nil {
 		ifaces = a.Ifaces()
 	}
 	a.listen, a.zeroTier = a.s.AdvertiseAddr(ifaces)
+	a.sweepProjectsLocked()
 	key := a.s.Key()
-	if key == nil {
-		a.log.Info("node not started: no pairing code")
+	if key == nil && len(a.s.Bindings) == 0 {
+		a.log.Info("node not started: no pairing code and no project")
 		return nil
 	}
-	cfg := a.s.NodeConfig(a.path, a.s.BindAddr())
-	cfg.Discovery = cfg.Discovery && a.Discovery
-	n, err := node.New(cfg, key, a.log)
-	if err != nil {
+	if err := a.startHubLocked(ctx); err != nil {
 		return err
 	}
-	n.SetAppVersion(a.Version)
-	n.SetChangeHook(func(topic string) { a.events.publish(topic) })
-	// Sessions bind to areas by folder: a project folder is its area's, the
-	// working folder the one of direct messages.
-	projects := map[string]string{}
-	for area, p := range a.s.Projects {
-		projects[area] = p.Dir
+	var ctxs []*appContext
+	if key != nil {
+		c, err := a.newLegacyContext(key)
+		if err != nil {
+			a.stopLocked()
+			return err
+		}
+		ctxs = append(ctxs, c)
 	}
-	n.SetFolders(a.s.WorkDir, projects)
-	// The job store always opens: with no handler, jobs left from an earlier
-	// handler fail with a reply, and new requests stay manual.
-	opt := a.Worker
-	opt.MaxJobs = a.s.MaxJobs
-	opt.OnChange = func() { a.events.publish("worker") }
-	// Chat requests run in per-chat agent sessions and answer the whole chat.
-	opt.Chats, opt.Self = n, cfg.Node
-	// Agents reach this node's API through $AGENTLINK_API.
-	opt.API = cfg.API
-	// The handler answers only with auto-answer on, and then only requests no
-	// live session takes (node.LiveSession); otherwise messages wait unread.
-	cmd, hasHandler := a.s.Command()
-	hasHandler = hasHandler && a.s.AutoAnswerOn()
-	if hasHandler {
-		opt.Agent = a.agentCommand(cmd, a.s.Handler, a.s.AgentPath != "" && len(a.s.HandlerCommand) == 0)
-		// Requests addressed to an area with a project run there (see Settings.Projects).
-		opt.Project = a.s.Project
+	for _, b := range a.s.Bindings {
+		c, err := a.newProjectContext(b)
+		if err != nil {
+			a.log.Error("project start", "project", b.ID, "err", err)
+			continue
+		}
+		ctxs = append(ctxs, c)
 	}
-	w, err := worker.New(nil, n.SendMessage, cfg.DataDir, a.s.WorkDir, opt, a.log)
-	if err != nil {
-		return err
+	// Two phases over the whole app (§3.5): every worker holds the slots of
+	// the jobs still running from before, and only then may new jobs start.
+	for _, c := range ctxs {
+		a.reattach(c)
 	}
-	// Without a handler (or with auto-answer off) the hook only holds chat
-	// requests past the chain limit; the rest waits unread for a session.
-	if hasHandler {
-		n.SetInboundHook(w.Accept)
-	} else {
-		n.SetInboundHook(w.ChatsOnly)
+	a.slots.Open()
+	for _, c := range ctxs {
+		//nolint:contextcheck // contexts outlive ctx (often an HTTP request): they run under the Hub's own
+		if err := a.runContextLocked(c); err != nil {
+			a.log.Error("context start", "project", c.pid, "err", err)
+		}
 	}
-	// Peers show whether this node's worker answers when no session is open.
-	n.SetAutoAnswer(hasHandler)
-	// A request answered here by hand or by an interactive session stops its job.
-	n.SetLocalReplyHook(func(id string) { w.Answered(id) })
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", cfg.Listen)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	a.wg.Go(func() { w.Run(ctx) })
-	a.wg.Go(func() { n.Run(ctx, ln) })
-	a.n, a.stop = n, cancel
-	a.log.Info("node started", "node", cfg.Node, "listen", ln.Addr(), "handler", a.s.Handler)
+	a.log.Info("node started", "node", a.s.Node, "legacy", key != nil, "projects", len(a.projects), "handler", a.s.Handler)
 	return nil
 }
 
+// stopLocked stops every context and the Hub and waits for them.
 func (a *App) stopLocked() {
-	if a.stop != nil {
-		a.stop()
-		a.wg.Wait()
+	if a.hub != nil {
+		a.hubStop()
+		a.hub.Wait()
+		for _, c := range append([]*appContext{a.legacy}, slices.Collect(maps.Values(a.projects))...) {
+			if c != nil && c.cancel != nil {
+				c.cancel()
+				<-c.done
+			}
+		}
 		a.log.Info("node stopped")
 	}
-	a.n, a.stop = nil, nil
+	a.hub, a.hubCtx, a.hubStop, a.slots = nil, nil, nil, nil
+	a.legacy, a.n, a.projects = nil, nil, nil
 }
 
+// node returns the legacy network's node, or nil.
 func (a *App) node() *node.Node {
 	a.mu.Lock()
 	defer a.mu.Unlock()

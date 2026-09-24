@@ -620,3 +620,11 @@ traversal, dynamic chat participants, converting the legacy network.
   keeps `MaxJobs` slot goroutines; the shared `Slots` bound them all. `Run`
   releases the slots of reattached jobs it never reached. `Quiesce` answers
   `worker.ErrBusy`; `Busy` counts queued and running jobs.
+- A11: the runtime operations the web API needs (`LeaveProject`, the folder
+  change, adding a context later) land here as `App` methods; A14 adds only
+  their HTTP layer, create and join. The `project:<pid>` event topics are wired
+  here, where the node and worker hooks are made. The Hub starts only once a
+  context exists (a code or a binding), so an app with neither binds no port.
+  A project whose node fails to open is logged and left out; the others run.
+  `Status.Running` means any context runs; `link.no_code` shows only without
+  bindings.
