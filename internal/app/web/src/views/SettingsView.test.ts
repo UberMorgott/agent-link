@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { browser } from '@/lib/runtime'
 import { fakeApi, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
-import type { AppSettings, SaveResult } from '@/types'
+import { useProjectsStore } from '@/stores/projects'
+import { fixture } from '@/test/backend'
+import type { AppSettings, ProjectView, SaveResult } from '@/types'
 
 const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T>(sel)
 const $$ = <T extends Element = HTMLElement>(sel: string) => Array.from(document.querySelectorAll<T>(sel))
@@ -17,10 +19,12 @@ async function edit(input: HTMLInputElement, value: string) {
 
 const field = (name: string) => $<HTMLInputElement>('#form [name="' + name + '"]')!
 
-async function openSettings(saved: AppSettings, answer: (body: AppSettings) => SaveResult) {
+async function openSettings(saved: AppSettings, answer: (body: AppSettings) => SaveResult, legacy = true) {
   const sent: AppSettings[] = []
   let picked = 'E:\\docs'
   const api = fakeApi((method, path, body) => {
+    if (path === 'projects') return legacy ? [fixture<ProjectView>('project_legacy')] : []
+    if (path === 'projects/legacy/chats') return []
     if (path === 'settings' && method === 'POST') { sent.push(body as AppSettings); return answer(body as AppSettings) }
     if (path === 'pick-folder') return { path: picked }
     if (path === 'agent') return { text: '' }
@@ -28,6 +32,7 @@ async function openSettings(saved: AppSettings, answer: (body: AppSettings) => S
     throw new Error('unexpected call ' + method + ' ' + path)
   })
   await mountApp('/settings')
+  await useProjectsStore().refreshAll()
   useAppStore().settings = saved
   await settle()
   return { api, sent, pick: (path: string) => { picked = path } }
@@ -96,7 +101,7 @@ describe('settings', () => {
     await edit(field('areas'), 'dev')
     expect(sent).toHaveLength(1)
     // The answer is applied as it is; nothing is read again.
-    expect(api.calls.filter((c) => c.startsWith('GET ') && c !== 'GET hooks')).toEqual([])
+    expect(api.calls.filter((c) => c.startsWith('GET ') && c !== 'GET hooks' && !c.startsWith('GET projects'))).toEqual([])
     expect(app.settings?.node).toBe('saved')
     expect(app.status?.node).toBe('saved')
     expect(app.dashboard?.total_messages).toBe(7)
@@ -113,5 +118,17 @@ describe('settings', () => {
     answer = { saved: true, settings: { node: 'saved', api: '127.0.0.1:7599', areas: [] } }
     await edit(field('api'), '127.0.0.1:7599')
     expect(reload).toHaveBeenCalledTimes(1)
+  })
+
+  it('have no pairing code, and show the legacy folders only with a legacy network', async () => {
+    const { sent } = await openSettings({ node: 'n', work_dir: 'E:\\work', areas: ['dev'] }, (body) => ({ saved: true, settings: body }), false)
+    for (const gone of ['#code', '#generate', '#copy', '[data-settings-card="legacy"]', '#work_dir', '[name="areas"]']) expect($(gone), gone).toBeNull()
+    expect(document.body.textContent).not.toContain('settings.code')
+    await edit(field('node'), 'm')
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).not.toHaveProperty('code')
+    // The legacy fields travel unchanged.
+    expect(sent[0]!.work_dir).toBe('E:\\work')
+    expect(sent[0]!.areas).toEqual(['dev'])
   })
 })

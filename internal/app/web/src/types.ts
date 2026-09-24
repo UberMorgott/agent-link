@@ -187,7 +187,6 @@ export interface Project {
 
 export interface AppSettings {
   node?: string
-  code?: string
   handler?: string
   agent_path?: string
   work_dir?: string

@@ -322,7 +322,7 @@ function back() {
               :autofocus="false"
               :submit-on-enter="false"
               :ui="{ root: 'rounded-3xl px-4', base: 'text-[15px]' }"
-              @update:model-value="inbox.saveDraft(inbox.selectedChat)"
+              @update:model-value="inbox.saveDraft(inbox.openKey())"
               @submit="inbox.submitMessage()"
             >
               <template

@@ -103,7 +103,7 @@ describe('the application shell', () => {
     for (const id of ['participants', 'participant_addr', 'add_participant', 'participants_result']) expect($('#' + id), id).not.toBeNull()
     first.wrapper.unmount()
     await open('/settings')
-    for (const card of ['identity', 'handler', 'application', 'projects', 'updates', 'advanced']) {
+    for (const card of ['identity', 'handler', 'application', 'legacy', 'updates', 'advanced']) {
       expect($('[data-settings-card="' + card + '"]'), card).not.toBeNull()
     }
     expect($('#settings_result')).not.toBeNull()
