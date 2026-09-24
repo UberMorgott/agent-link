@@ -28,12 +28,15 @@ func startHub(t *testing.T) *Hub {
 	return h
 }
 
-// onHub runs tn on h (tn.peerLn must be h's listener).
+// onHub runs tn on h (tn.peerLn must be h's listener) until the test ends. It
+// stops tn before tn's data directory goes: that TempDir cleanup was
+// registered after startHub's, so it would run first, while tn still writes.
 func onHub(t *testing.T, h *Hub, tn *testNode) *testNode {
 	t.Helper()
 	if err := h.Add(tn.Node); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { h.Remove(tn.cfg.Project) })
 	eventually(t, tn.cfg.Node+" running on the hub", tn.running)
 	return tn
 }
