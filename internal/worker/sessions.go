@@ -64,17 +64,22 @@ const (
 	chatContext    = 50   // messages shown to the agent, the latest ones
 	chatBodyRunes  = 2000 // one message's text is cut after this
 	envAPI         = "AGENTLINK_API"
+	envProjectID   = "AGENTLINK_PROJECT_ID"
 	envChatID      = "AGENTLINK_CHAT_ID"
 	envJobID       = "AGENTLINK_JOB_ID"
 	chatHistoryCmd = "agentlink chat history"
 )
 
 // agentEnv is the environment added to a job's agent: the node's API (so the
-// agentlink CLI needs no --config) and, for a chat job, the chat and request.
+// agentlink CLI needs no --config), the project of a project context and, for
+// a chat job, the chat and request.
 func (w *Worker) agentEnv(chatID, jobID string) []string {
 	var env []string
 	if w.opt.API != "" {
 		env = append(env, envAPI+"="+w.opt.API)
+	}
+	if w.opt.ProjectID != "" {
+		env = append(env, envProjectID+"="+w.opt.ProjectID)
 	}
 	if chatID != "" {
 		env = append(env, envChatID+"="+chatID, envJobID+"="+jobID)

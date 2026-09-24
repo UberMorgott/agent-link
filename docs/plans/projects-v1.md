@@ -599,3 +599,24 @@ traversal, dynamic chat participants, converting the legacy network.
   until the node has stopped; `Hub.Wait` closes the Hub to further `Add`.
   `Hub.Start(ctx)`/`Wait()` replace a blocking run; the app calls `Add` after
   `Start`.
+- A6: the outbox of a member whose record moves to another node id (or who
+  left) is moved to `dropped/` only in project contexts; the legacy network
+  keeps today's behaviour. A delivery to such a member is served as
+  `{status: "queued", state: "left"}` (the §7.1 `status` has no other value).
+  Until a new session's member record is stored, the live session's node id
+  pins it (follow-up `fix(node)` commit): a chat created right after connect
+  otherwise failed with "unknown node".
+- A8: a left tombstone is `removed` and `left`; `Leave` waits for the peers to
+  hang up (at most the 2 s linger) before the caller stops the node. A left
+  node that is not running tells nobody; the others keep it as an offline
+  member until it re-joins.
+- A9: `Node.HoldWithoutFolder` holds chat requests only (plain requests have no
+  held status; in a project an agent's `send` goes to a chat anyway).
+  `RegisterSession` and `Unread` return `node.ErrNeedsFolder` in the `none`
+  folder mode, for A12's `409 project_needs_folder`.
+- A10: `Worker.Reattach(ctx)` takes a context (it may kill a leftover process);
+  `Run` still calls it and only the first call acts, so a worker without shared
+  slots behaves as before (it gets its own open pool of `MaxJobs`). Each worker
+  keeps `MaxJobs` slot goroutines; the shared `Slots` bound them all. `Run`
+  releases the slots of reattached jobs it never reached. `Quiesce` answers
+  `worker.ErrBusy`; `Busy` counts queued and running jobs.

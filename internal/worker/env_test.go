@@ -10,7 +10,7 @@ import (
 )
 
 // A job's agent gets the node's API, so its agentlink CLI needs no --config,
-// and a chat job also its chat and request.
+// a project context's job its project, and a chat job also its chat and request.
 func TestAgentEnv(t *testing.T) {
 	w := &Worker{opt: Options{API: "127.0.0.1:7520"}}
 	if got := w.agentEnv("", "j1"); !slices.Equal(got, []string{"AGENTLINK_API=127.0.0.1:7520"}) {
@@ -22,6 +22,12 @@ func TestAgentEnv(t *testing.T) {
 	}
 	if got := (&Worker{}).agentEnv("", "j1"); len(got) != 0 {
 		t.Fatalf("no api, no chat: env = %q", got)
+	}
+	// A project context's agent also gets its project.
+	w.opt.ProjectID = "PID"
+	want = []string{"AGENTLINK_API=127.0.0.1:7520", "AGENTLINK_PROJECT_ID=PID", "AGENTLINK_CHAT_ID=c1", "AGENTLINK_JOB_ID=j1"}
+	if got := w.agentEnv("c1", "j1"); !slices.Equal(got, want) {
+		t.Fatalf("project chat job env = %q", got)
 	}
 }
 

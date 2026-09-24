@@ -107,6 +107,12 @@ type Options struct {
 	// API is the node's local control API address, passed to the agent as
 	// $AGENTLINK_API so its agentlink CLI works without --config.
 	API string
+	// ProjectID is the project of a project context's worker, passed to the
+	// agent as $AGENTLINK_PROJECT_ID so its agentlink CLI picks that context.
+	ProjectID string
+	// Slots, when set, is the pool of job slots shared with the app's other
+	// workers (see Slots); nil gives the worker its own open pool of MaxJobs.
+	Slots *Slots
 }
 
 func (o Options) withDefaults() Options {
@@ -163,11 +169,18 @@ type Worker struct {
 	log         *slog.Logger
 	kick        chan struct{}
 
+	slots *Slots
+
 	mu   sync.Mutex
 	jobs map[string]*Job
 	seq  int64
-	// reattach holds running jobs left by a previous app, claimed before queued ones.
-	reattach map[string]bool
+	// reattach holds running jobs left by a previous app, claimed before
+	// queued ones, each with the slot Reattach holds for it.
+	reattach map[string]func()
+	// recovered: Reattach ran (once per Worker).
+	recovered bool
+	// draining: Quiesce closed the intake; Accept refuses requests (errDraining).
+	draining bool
 	// live maps a watched detached job to its cancel signal.
 	live map[string]chan struct{}
 }
@@ -181,7 +194,12 @@ func New(run Runner, send SendFunc, stateDir, dir string, opt Options, log *slog
 	w := &Worker{
 		run: run, send: send, dir: dir, jobsDir: filepath.Join(stateDir, "jobs"), sessionsDir: filepath.Join(stateDir, "sessions"),
 		opt: opt.withDefaults(), log: log,
-		kick: make(chan struct{}, 1), jobs: map[string]*Job{}, reattach: map[string]bool{}, live: map[string]chan struct{}{},
+		kick: make(chan struct{}, 1), jobs: map[string]*Job{}, reattach: map[string]func(){}, live: map[string]chan struct{}{},
+		slots: opt.Slots,
+	}
+	if w.slots == nil {
+		w.slots = NewSlots(w.opt.MaxJobs)
+		w.slots.Open()
 	}
 	for _, d := range []string{w.jobsDir, w.sessionsDir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -230,9 +248,13 @@ func (w *Worker) Accept(m node.Message) error {
 	}
 	w.mu.Lock()
 	_, known := w.jobs[m.ID]
+	draining := w.draining
 	w.mu.Unlock()
 	if known {
 		return nil
+	}
+	if draining {
+		return errDraining // not ACKed: the sender resends it to where the project goes next
 	}
 	if !chat && w.opt.Chats != nil && w.opt.Chats.LiveSession(m.Area) {
 		return nil // a live session there reads it (unread)
@@ -268,6 +290,10 @@ func (w *Worker) Accept(m node.Message) error {
 	if _, ok := w.jobs[m.ID]; ok {
 		w.mu.Unlock()
 		return nil
+	}
+	if w.draining {
+		w.mu.Unlock()
+		return errDraining
 	}
 	now := time.Now().UTC()
 	j := &Job{Request: m, Seq: w.seq + 1, Status: node.JobQueued, AcceptedAt: now}
@@ -331,7 +357,7 @@ func (w *Worker) Job(id string) (Job, bool) {
 // running on disk and retried by the next Run. Without a runner, Run fails
 // the pending jobs and returns.
 func (w *Worker) Run(ctx context.Context) {
-	w.recover(ctx)
+	w.Reattach(ctx)
 	if !w.hasHandler() {
 		for j := w.next(); j != nil; j = w.next() {
 			w.finish(j, node.JobFailed, "", ErrNoHandler)
@@ -343,36 +369,126 @@ func (w *Worker) Run(ctx context.Context) {
 		slots.Go(func() { w.slot(ctx) })
 	}
 	slots.Wait()
+	// Reattached jobs no slot got to stay running on disk for the next start;
+	// the shared slots they held are free again.
+	w.mu.Lock()
+	for id, release := range w.reattach {
+		release()
+		delete(w.reattach, id)
+	}
+	w.mu.Unlock()
 }
 
-// slot runs jobs one after another until ctx is cancelled.
+// Reattach recovers the jobs a previous app left (see recover) and holds a
+// slot (Slots.Hold) for every job still running, so the shared slots count
+// them before any new job starts. The app runs it for every worker before it
+// opens the shared slots; Run runs it too, and only the first call acts.
+func (w *Worker) Reattach(ctx context.Context) {
+	w.mu.Lock()
+	done := w.recovered
+	w.recovered = true
+	w.mu.Unlock()
+	if !done {
+		w.recover(ctx)
+	}
+}
+
+// slot runs jobs one after another until ctx is cancelled: a reattached job
+// in the slot Reattach holds for it, a new one in a slot of the shared pool.
 func (w *Worker) slot(ctx context.Context) {
 	for ctx.Err() == nil {
-		j, reattach, err := w.claim()
+		if j, release := w.claimReattach(); j != nil {
+			w.runJob(ctx, j, true)
+			release()
+			continue
+		}
+		if w.next() == nil {
+			select {
+			case <-ctx.Done():
+			case <-w.kick:
+			}
+			continue
+		}
+		release, ok := w.slots.Acquire(ctx)
+		if !ok {
+			return
+		}
+		j, err := w.claim()
 		switch {
 		case err != nil:
+			release()
 			// Never run an attempt that is not on disk: it could repeat forever.
 			w.log.Error("save job", "err", err)
 			select {
 			case <-ctx.Done():
 			case <-time.After(time.Second):
 			}
-		case j == nil:
-			select {
-			case <-ctx.Done():
-			case <-w.kick:
-			}
-		case !reattach && w.chatClosed(j.Request):
-			// Queued before the close arrived: no new work in a closed chat.
-			w.finish(j, node.JobFailed, "", ErrChatClosed)
-		case w.opt.Agent != nil:
-			w.wake()
-			w.handleDetached(ctx, j, reattach)
+		case j == nil: // another slot took it
+			release()
 		default:
-			w.wake()
-			w.handle(ctx, j)
+			w.runJob(ctx, j, false)
+			release()
 		}
 	}
+}
+
+// runJob runs claimed job j (reattach: a running one left by a previous app).
+func (w *Worker) runJob(ctx context.Context, j *Job, reattach bool) {
+	switch {
+	case !reattach && w.chatClosed(j.Request):
+		// Queued before the close arrived: no new work in a closed chat.
+		w.finish(j, node.JobFailed, "", ErrChatClosed)
+	case w.opt.Agent != nil:
+		w.wake()
+		w.handleDetached(ctx, j, reattach)
+	default:
+		w.wake()
+		w.handle(ctx, j)
+	}
+}
+
+// ErrBusy: the worker has unfinished jobs (Quiesce).
+var ErrBusy = errors.New("worker has unfinished jobs")
+
+// errDraining: Quiesce closed the intake; the request is not accepted (not
+// ACKed) and its sender resends it later.
+var errDraining = errors.New("worker is draining")
+
+// Busy reports whether any job is not finished (queued or running).
+func (w *Worker) Busy() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.busyLocked()
+}
+
+func (w *Worker) busyLocked() bool {
+	for _, j := range w.jobs {
+		if !j.terminal() {
+			return true
+		}
+	}
+	return false
+}
+
+// Quiesce closes the intake for a leave or a folder change, atomically with
+// the check for unfinished jobs: with any, the intake stays open and it
+// returns ErrBusy; otherwise Accept refuses every request from now on
+// (errDraining, so it is not ACKed) until Resume.
+func (w *Worker) Quiesce() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.busyLocked() {
+		return ErrBusy
+	}
+	w.draining = true
+	return nil
+}
+
+// Resume opens the intake Quiesce closed (the change it was for failed).
+func (w *Worker) Resume() {
+	w.mu.Lock()
+	w.draining = false
+	w.mu.Unlock()
 }
 
 func (w *Worker) hasHandler() bool { return w.run != nil || w.opt.Agent != nil }
@@ -422,34 +538,43 @@ func (w *Worker) where(area string) string {
 	return w.dir
 }
 
-// claim returns a running job left by a previous app (reattach), else durably
-// moves the oldest queued job to running and returns it; nil when neither.
-func (w *Worker) claim() (j *Job, reattach bool, err error) {
+// claimReattach returns the oldest running job left by a previous app, with
+// the release of the slot Reattach holds for it; nil when there is none.
+func (w *Worker) claimReattach() (*Job, func()) {
 	w.mu.Lock()
+	defer w.mu.Unlock()
+	var j *Job
 	for id := range w.reattach {
 		if c := w.jobs[id]; j == nil || c.Seq < j.Seq {
 			j = c
 		}
 	}
-	if j != nil {
-		delete(w.reattach, j.Request.ID)
-		w.mu.Unlock()
-		return j, true, nil
+	if j == nil {
+		return nil, nil
 	}
-	j = w.nextLocked()
+	release := w.reattach[j.Request.ID]
+	delete(w.reattach, j.Request.ID)
+	return j, release
+}
+
+// claim durably moves the oldest queued job to running and returns it; nil
+// when there is none.
+func (w *Worker) claim() (*Job, error) {
+	w.mu.Lock()
+	j := w.nextLocked()
 	if j == nil {
 		w.mu.Unlock()
-		return nil, false, nil
+		return nil, nil
 	}
 	j.Status, j.Attempts, j.StartedAt, j.Proc = node.JobRunning, j.Attempts+1, time.Now().UTC(), nil
 	if err := w.save(j); err != nil {
 		j.Status, j.Attempts = node.JobQueued, j.Attempts-1
 		w.mu.Unlock()
-		return nil, false, err
+		return nil, err
 	}
 	w.mu.Unlock()
 	w.changed()
-	return j, false, nil
+	return j, nil
 }
 
 // recover requeues or fails jobs found running and re-sends missing final replies.
@@ -464,9 +589,10 @@ func (w *Worker) recover(ctx context.Context) {
 	for _, j := range jobs {
 		switch {
 		case j.Status == node.JobRunning && j.Proc != nil && w.opt.Agent != nil:
-			// A detached agent: reattach, finalize or resume it in a slot.
+			// A detached agent: reattach, finalize or resume it in a slot,
+			// which it holds from now on (it is running).
 			w.mu.Lock()
-			w.reattach[j.Request.ID] = true
+			w.reattach[j.Request.ID] = w.slots.Hold()
 			w.mu.Unlock()
 			continue
 		case j.Status == node.JobRunning && j.Proc != nil:
