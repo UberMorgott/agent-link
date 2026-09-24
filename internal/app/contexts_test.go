@@ -78,7 +78,7 @@ func waitTopic(t *testing.T, s *eventSubscription, topic string) {
 
 // The legacy network and every project run on one Hub; a project without a
 // folder has no worker and no folder at all; project data without a binding
-// moves to .left; every node and worker change carries its project topic.
+// stays where it is; every node and worker change carries its project topic.
 func TestContextsRunOnHub(t *testing.T) {
 	withDir, noDir := newBinding(t, t.TempDir()), newBinding(t, "")
 	var orphan string
@@ -104,10 +104,10 @@ func TestContextsRunOnHub(t *testing.T) {
 	if p2 == nil || p2.w != nil || hub.Node(noDir.ID) != p2.n || !p2.n.NeedsFolder() {
 		t.Fatalf("project without a folder %+v", p2)
 	}
-	if _, err := os.Stat(orphan); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("orphaned project data not moved: %v", err)
+	if _, err := os.Stat(orphan); err != nil {
+		t.Fatalf("project data without a binding not kept: %v", err)
 	}
-	if left, _ := filepath.Glob(filepath.Join(a.projectsRoot(), ".left", "*")); len(left) != 1 {
+	if left, _ := filepath.Glob(filepath.Join(a.projectsRoot(), ".left", "*")); len(left) != 0 {
 		t.Fatalf(".left holds %v", left)
 	}
 	if st := a.Status(); !st.Running {
@@ -229,5 +229,38 @@ func TestSetProjectDir(t *testing.T) {
 	}
 	if s, _, _ := settings.Load(a.path); s.Bindings[0].Dir != dir {
 		t.Fatalf("saved dir %q", s.Bindings[0].Dir)
+	}
+}
+
+// Project data kept without a binding comes back with its binding as it was;
+// joining the project again moves it to .left and starts fresh.
+func TestKeptProjectData(t *testing.T) {
+	b := newBinding(t, "")
+	var dir string
+	marker := func() string { return filepath.Join(dir, "marker") }
+	a := startApp(t, settings.Settings{Code: "K7Q2-MXPA-4RTB"}, func(a *App) {
+		dir = a.projectDir(b.ID)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(marker(), []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := os.Stat(marker()); err != nil {
+		t.Fatalf("kept data gone after start: %v", err)
+	}
+	a.mu.Lock()
+	err := a.addProjectLocked(t.Context(), b, "")
+	a.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old data still in the joined project: %v", err)
+	}
+	left, _ := filepath.Glob(filepath.Join(a.projectsRoot(), ".left", b.ID+"-*", "marker"))
+	if len(left) != 1 {
+		t.Fatalf(".left holds %v", left)
 	}
 }

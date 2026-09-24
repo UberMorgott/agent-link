@@ -42,6 +42,7 @@ func runApp(args []string) error {
 	noTray := fs.Bool("no-tray", false, "run without the tray icon until interrupted or quit via the API (scripts and tests)")
 	idle := fs.Duration("handler-idle-timeout", 0, "fail an agent run that printed nothing this long (default 10m; scripts and tests)")
 	restarted := fs.Bool(restartFlag, false, "started by an update: wait for the previous instance to release the API address")
+	outside := fs.Bool(sandboxFlag, false, "started again outside a packaged app's AppData virtualization (set by agentlink itself)")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	_ = fs.Parse(args) // ExitOnError
 	if *showVersion {
@@ -52,6 +53,15 @@ func runApp(args []string) error {
 	// double-click, or let the terminal that started it go on.
 	if !*noTray && leaveConsole(args) {
 		return nil
+	}
+	// The default settings folder must be the real one, not a packaged app's
+	// private copy of it (see leaveSandbox).
+	if filepath.Clean(*cfgPath) == filepath.Clean(defPath) {
+		if moved, err := leaveSandbox(filepath.Dir(*cfgPath), args, *outside, *noTray); err != nil {
+			return err
+		} else if moved {
+			return nil
+		}
 	}
 	// Captured before an update can rename the running file.
 	exe, err := os.Executable()
@@ -149,6 +159,10 @@ func runApp(args []string) error {
 
 // restartFlag marks the instance an update started; it waits for the old one.
 const restartFlag = "restarted"
+
+// sandboxFlag marks the instance started outside a packaged app's AppData
+// virtualization; it must not find itself inside again.
+const sandboxFlag = "unsandboxed"
 
 // listen takes the API address. After an update the old instance still holds
 // it while it shuts down, so a restarted instance keeps trying for a while.

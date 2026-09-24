@@ -168,7 +168,7 @@ Settings.Bindings []ProjectBinding `json:"project_bindings,omitempty"`
   data\projects\<pid>\             one project context: inbox/ outbox/ sent/ dropped/
                                    chats/ members.json node_id pake_seen.json
                                    sessions.json jobs/ sessions/ project.json
-  data\projects\.left\<pid>-<unix>\  left or orphaned project data (moved, never deleted)
+  data\projects\.left\<pid>-<unix>\  left project data (moved, never deleted)
 ```
 
 - Migration in `settings.Load`: `version` absent/0/1 → write
@@ -183,9 +183,11 @@ Settings.Bindings []ProjectBinding `json:"project_bindings,omitempty"`
   normalized dirs unique (`filepath.Clean` + case-fold on Windows; nesting
   allowed, deepest wins), at most `maxProjects = 32`.
 - Order of writes: create/join = data dir + `project.json` first, then config;
-  leave = config first, then stop, then move the dir. On start the app moves
-  every `data/projects/<pid>` without a binding to `.left/<pid>-<unix>`. A
-  binding without a data dir gets a fresh one.
+  leave = config first, then stop, then move the dir. On start the app keeps
+  every `data/projects/<pid>` without a binding where it is and logs it (a
+  missing binding must never hide a project's data); joining that project again
+  moves it to `.left/<pid>-<unix>` first. A binding without a data dir gets a
+  fresh one.
 
 ## 5. Protocol and handshake
 

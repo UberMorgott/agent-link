@@ -421,7 +421,7 @@ func (a *App) startNode(ctx context.Context) error {
 		ifaces = a.Ifaces()
 	}
 	a.listen, a.zeroTier = a.s.AdvertiseAddr(ifaces)
-	a.sweepProjectsLocked()
+	a.reportOrphanProjectsLocked()
 	key := a.s.Key()
 	if key == nil && len(a.s.Bindings) == 0 {
 		a.log.Info("node not started: no pairing code and no project")

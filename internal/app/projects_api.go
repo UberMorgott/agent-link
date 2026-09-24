@@ -218,6 +218,12 @@ func (a *App) addProjectLocked(ctx context.Context, b settings.ProjectBinding, n
 	if err := a.ensureHubLocked(ctx); err != nil {
 		return err
 	}
+	// Data of an earlier binding of this project (kept at start, see
+	// reportOrphanProjectsLocked) goes to .left: a new incarnation never
+	// inherits old queues, chats or node id.
+	if err := a.moveToLeft(b.ID); err != nil {
+		return err
+	}
 	c, err := a.newProjectContext(b)
 	if err != nil {
 		return err
@@ -227,7 +233,8 @@ func (a *App) addProjectLocked(ctx context.Context, b settings.ProjectBinding, n
 			return err
 		}
 	}
-	// A failed save leaves the new data directory to the sweep of the next start.
+	// A failed save leaves the new data directory unbound; a later join of
+	// the project moves it to .left.
 	if err := settings.Save(a.path, s); err != nil {
 		return err
 	}

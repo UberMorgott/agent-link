@@ -241,19 +241,21 @@ func (a *App) stopContextLocked(c *appContext) {
 	}
 }
 
-// sweepProjectsLocked moves the data of every project without a binding to
-// .left (never deleted): a leave that stopped before moving it, or a binding
-// removed by hand.
-func (a *App) sweepProjectsLocked() {
+// reportOrphanProjectsLocked logs the data of every project without a
+// binding and leaves it where it is: a binding missing from the settings read
+// at start (a leave that stopped before moving the data, a file restored or
+// edited by hand, or a settings view that is not the real one, as under a
+// packaged app's AppData virtualization) must never hide a project's data.
+// Putting the binding back brings the project back as it was; joining the
+// project again moves the old data to .left first (addProjectLocked).
+func (a *App) reportOrphanProjectsLocked() {
 	entries, err := os.ReadDir(a.projectsRoot())
 	if err != nil {
 		return // none yet
 	}
 	for _, e := range entries {
 		if e.IsDir() && config.ValidProjectID(e.Name()) && a.bindingIndex(e.Name()) < 0 {
-			if err := a.moveToLeft(e.Name()); err != nil {
-				a.log.Warn("move orphaned project data", "project", e.Name(), "err", err)
-			}
+			a.log.Warn("project data without a binding kept", "project", e.Name(), "dir", a.projectDir(e.Name()), "settings", a.path)
 		}
 	}
 }
