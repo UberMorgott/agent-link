@@ -698,6 +698,12 @@ func (n *Node) pinIDs(parts []string) ([]string, error) {
 			continue
 		}
 		m := n.members[p]
+		if m == nil { // a session just up, its record not written yet (noteSession)
+			if pc := n.conns[p]; pc != nil && validID(pc.id) {
+				ids[i] = pc.id
+				continue
+			}
+		}
 		if m == nil || m.Removed || !validID(m.ID) {
 			return nil, fmt.Errorf("%w %q", ErrUnknownPeer, p)
 		}
@@ -722,7 +728,11 @@ func (n *Node) pinned(c Chat, i int) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	m := n.members[c.Participants[i]]
-	return m != nil && !m.Removed && m.ID == c.ParticipantIDs[i]
+	if m == nil { // see pinIDs: a session whose record is not written yet
+		pc := n.conns[c.Participants[i]]
+		return pc != nil && pc.id == c.ParticipantIDs[i]
+	}
+	return !m.Removed && m.ID == c.ParticipantIDs[i]
 }
 
 // validProjectEnvelope checks the project fields of a chat message from
