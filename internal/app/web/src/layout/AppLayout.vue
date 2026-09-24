@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
 import MessageToasts from '@/components/MessageToasts.vue'
 import NewChatPicker from '@/components/NewChatPicker.vue'
+import ProjectDialogs from '@/components/ProjectDialogs.vue'
 import ProjectSidebar from '@/components/ProjectSidebar.vue'
 import { icon } from '@/lib/icons'
 import { browser, t } from '@/lib/runtime'
@@ -36,7 +37,7 @@ watch(current, () => { void nextTick(() => view.value?.focus({ preventScroll: tr
     <aside
       id="sidebar"
       aria-labelledby="nav_label"
-      class="fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-default bg-[var(--app-side)] transition-transform md:static md:w-64 md:translate-x-0"
+      class="fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-default bg-[var(--app-side)] transition-transform md:static md:z-auto md:w-64 md:translate-x-0"
       :class="layoutState.mobileMenuActive ? 'translate-x-0' : '-translate-x-full'"
     >
       <ProjectSidebar />
@@ -95,5 +96,6 @@ watch(current, () => { void nextTick(() => view.value?.focus({ preventScroll: tr
       <MessageToasts />
     </div>
     <NewChatPicker />
+    <ProjectDialogs />
   </div>
 </template>

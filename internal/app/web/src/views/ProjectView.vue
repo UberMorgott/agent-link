@@ -63,6 +63,14 @@ watch(() => [projects.list, pid.value] as const, ([list, id]) => {
         :class="{ warn: view?.state === 'error' }"
       >
         {{ state }}
+        <UButton
+          v-if="view?.state === 'needs_folder'"
+          class="project-folder-link"
+          :label="t('project.menu.folder')"
+          variant="link"
+          size="sm"
+          @click="projects.openDialog('folder', pid)"
+        />
       </p>
       <div class="flex flex-wrap justify-center gap-2">
         <UButton
@@ -70,6 +78,14 @@ watch(() => [projects.list, pid.value] as const, ([list, id]) => {
           :label="t('inbox.new.title')"
           :icon="icon('plus')"
           @click="inbox.showNewChat(pid)"
+        />
+        <UButton
+          id="project_invite"
+          :label="t('project.invite')"
+          :icon="icon('invite')"
+          color="neutral"
+          variant="outline"
+          @click="projects.openDialog('invite', pid)"
         />
       </div>
     </div>
@@ -92,6 +108,14 @@ watch(() => [projects.list, pid.value] as const, ([list, id]) => {
             :class="{ warn: view?.state === 'error' }"
           >
             {{ state }}
+            <UButton
+              v-if="view?.state === 'needs_folder'"
+              class="project-folder-link"
+              :label="t('project.menu.folder')"
+              variant="link"
+              size="sm"
+              @click="projects.openDialog('folder', pid)"
+            />
           </p>
         </div>
         <UButton

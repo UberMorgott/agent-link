@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UIcon from '@nuxt/ui/components/Icon.vue'
 import ChatRow from '@/components/ChatRow.vue'
+import ProjectMenu from '@/components/ProjectMenu.vue'
 import { useLayout } from '@/layout/composables/layout'
 import { isUnread } from '@/lib/chat'
 import { icon } from '@/lib/icons'
@@ -120,6 +121,10 @@ const tree = computed(() => (projects.list || []).map((p) => ({
                 :title="t('inbox.unread')"
               >{{ item.unread }}</span>
             </button>
+            <ProjectMenu
+              :project="item.p"
+              :name="item.name"
+            />
           </div>
           <ul
             v-if="item.open"

@@ -27,6 +27,9 @@ export function sortProjects(list: ProjectView[]): ProjectView[] {
 // folder (bind a folder and an alias) → done.
 export type JoinStep = 'invite' | 'connecting' | 'folder'
 
+// The dialogs of a project's menu, and those that make or join a project.
+export type ProjectDialog = '' | 'members' | 'invite' | 'name' | 'folder' | 'leave' | 'create' | 'join'
+
 export const useProjectsStore = defineStore('projects', () => {
   const list = shallowRef<ProjectView[] | null>(null)
   const chats = shallowRef<Record<string, ChatInfo[]>>({})
@@ -38,6 +41,9 @@ export const useProjectsStore = defineStore('projects', () => {
   // The invite of one project, only while its dialog is open: never kept.
   const invite = ref('')
   const inviteFor = ref('')
+
+  const dialog = ref<ProjectDialog>('')
+  const dialogProject = ref('')
 
   const joinStep = ref<JoinStep>('invite')
   const joinProject = ref('')
@@ -256,6 +262,20 @@ export const useProjectsStore = defineStore('projects', () => {
     if (pid && created) await leave(pid)
   }
 
+  // --- the project dialogs (ProjectDialogs.vue): one open at a time ---
+
+  function openDialog(kind: ProjectDialog, pid: string) {
+    hideInvite()
+    dialogProject.value = pid
+    dialog.value = kind
+  }
+
+  function closeDialog() {
+    // A shown invite never outlives its dialog.
+    if (dialog.value === 'invite') hideInvite()
+    dialog.value = ''
+  }
+
   watch(list, joinProgress)
 
   return {
@@ -263,6 +283,6 @@ export const useProjectsStore = defineStore('projects', () => {
     joinStep, joinProject, joinCreated,
     byID, upsert, listSettled, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped, toggleArchive,
     open, landing, create, rename, bind, addMember, leave, createChat, revealInvite, hideInvite,
-    joinReset, join, joinProgress, joinCancel,
+    joinReset, join, joinProgress, joinCancel, dialog, dialogProject, openDialog, closeDialog,
   }
 })

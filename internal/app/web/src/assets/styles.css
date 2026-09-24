@@ -102,6 +102,10 @@
     flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.4rem 0.4rem 0;
     border: 0; background: transparent; color: var(--app-text); font: inherit; font-size: 0.92rem; text-align: left; cursor: pointer;
   }
+  .project-more { opacity: 0; margin-right: 0.2rem; }
+  .project-row:hover .project-more, .project-row:focus-within .project-more, .project-row.active .project-more,
+  .project-more[data-state="open"] { opacity: 1; }
+  @media (hover: none) { .project-more { opacity: 1; } }
   .project-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .project-dot { flex: none; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--app-muted); opacity: 0.5; }
   .project-dot.on { background: var(--app-on); opacity: 1; }
