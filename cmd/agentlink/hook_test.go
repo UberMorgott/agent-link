@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -664,6 +666,95 @@ func TestHookUnreachableNodeIsSilent(t *testing.T) {
 	}
 	if code := runHook([]string{hookClaude, "--wait"}, strings.NewReader("not json"), &out, &errw); code != 0 {
 		t.Fatalf("wait garbage: code %d", code)
+	}
+}
+
+func TestHookHeadlessIsSilent(t *testing.T) {
+	dir := t.TempDir()
+	f := newFakeNode(t, dir)
+	f.claimOn = true
+	f.add(chatMsg("c1", "KPECTIK", "agent", "for the session", true))
+	t.Setenv(envAPI, f.api)
+	t.Setenv(envJobID, "")
+	t.Setenv("AppData", dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("HOME", dir)
+	t.Cleanup(func() { hookHeadless = func(string) bool { return false } })
+	hookHeadless = func(string) bool { return true }
+	for _, client := range []string{hookClaude, hookCodex} {
+		for _, ev := range []string{evSessionStart, evPrompt, evPreTool, evPostTool, evStop, evSessionEnd} {
+			in := `{"session_id":"s-1","hook_event_name":"` + ev + `","cwd":` + strconv.Quote(dir) + `}`
+			for _, args := range [][]string{{client}, {client, "--wait"}} {
+				var out, errw bytes.Buffer
+				if code := runHook(args, strings.NewReader(in), &out, &errw); code != 0 || out.Len() != 0 {
+					t.Fatalf("headless %v %s: code %d out %q", args, ev, code, out.String())
+				}
+			}
+		}
+	}
+	f.mu.Lock()
+	calls := len(f.sessions) + len(f.ended) + f.gets + len(f.claims) + len(f.acked) + len(f.activity)
+	f.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("headless run reached the node: sessions %v ended %v gets %d claims %v", f.sessions, f.ended, f.gets, f.claims)
+	}
+}
+
+func TestHeadlessDiscriminator(t *testing.T) {
+	t.Setenv(envAttended, "0")
+	if !headless(hookClaude) {
+		t.Fatal("claude with CLAUDE_CODE_SESSION_ATTENDED=0 is headless")
+	}
+	t.Setenv(envAttended, "1")
+	if headless(hookClaude) {
+		t.Fatal("claude with CLAUDE_CODE_SESSION_ATTENDED=1 is interactive")
+	}
+	for _, c := range []struct {
+		client string
+		args   []string
+		want   bool
+	}{
+		{hookClaude, []string{"claude.exe", "-p", "--model", "claude-opus-4-6", "--output-format", "text"}, true},
+		{hookClaude, []string{"claude", "--print", "hi"}, true},
+		{hookClaude, []string{"node", "cli.js", "-p", "hi"}, true},
+		{hookClaude, []string{"claude.exe", "--output-format", "stream-json", "--input-format", "stream-json", "--resume=x"}, false},
+		{hookClaude, []string{"claude"}, false},
+		{hookClaude, []string{"claude", "--", "-p"}, false},
+		{hookCodex, []string{"codex.exe", "exec", "--skip-git-repo-check", "hi"}, true},
+		{hookCodex, []string{"codex", "-c", "k=v", "exec", "hi"}, true},
+		{hookCodex, []string{"codex", "e", "hi"}, true},
+		{hookCodex, []string{"codex"}, false},
+		{hookCodex, []string{"codex", "resume", "--last"}, false},
+		{hookCodex, []string{"codex", "app-server"}, false},
+		{hookCodex, nil, false},
+	} {
+		if got := headlessArgs(c.client, c.args); got != c.want {
+			t.Errorf("headlessArgs(%s, %q) = %v, want %v", c.client, c.args, got, c.want)
+		}
+	}
+}
+
+// agentCommandLine finds the ancestor by name and reads its real command
+// line: a child of this test binary looks for it.
+func TestAgentCommandLine(t *testing.T) {
+	const envName = "AGENTLINK_TEST_AGENT_NAME"
+	if name := os.Getenv(envName); name != "" {
+		fmt.Print(strings.Join(agentCommandLine(name), "\n"))
+		os.Exit(0)
+	}
+	self := strings.TrimSuffix(strings.ToLower(filepath.Base(os.Args[0])), ".exe")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestAgentCommandLine$") // #nosec G204 -- the test binary itself
+	cmd.Env = append(os.Environ(), envName+"="+self)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(string(out), "\n")
+	if base := strings.TrimSuffix(strings.ToLower(filepath.Base(args[0])), ".exe"); base != self || !slices.ContainsFunc(args[1:], func(a string) bool { return strings.HasPrefix(a, "-test.") }) {
+		t.Fatalf("agentCommandLine(%q) = %q", self, args)
+	}
+	if got := agentCommandLine("no-such-agent"); got != nil {
+		t.Fatalf("no such ancestor: %q", got)
 	}
 }
 

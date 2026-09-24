@@ -157,6 +157,11 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if os.Getenv(envJobID) != "" {
 		return 0
 	}
+	// A headless run (claude -p, codex exec) has nobody behind it: it must
+	// neither take messages nor be kept alive by the waiter.
+	if hookHeadless(client) {
+		return 0
+	}
 	env, err := defaultHookEnv()
 	if err != nil {
 		return 0
@@ -167,6 +172,46 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// The output is written before the batch is acknowledged (see accept).
 	_ = hookRun(client, *event, stdin, stdout, env)
 	return 0
+}
+
+// envAttended is set by Claude Code for its hooks: "0" in a headless run
+// (-p/--print, any output format, also under Claude Desktop's environment),
+// "1" in the interactive CLI and in Claude Desktop's sessions.
+const envAttended = "CLAUDE_CODE_SESSION_ATTENDED"
+
+// hookHeadless is headless; tests replace it.
+var hookHeadless = headless
+
+// headless reports whether the hook runs in a non-interactive agent run that
+// no person is behind: `claude -p` or `codex exec`. Claude Code says so in
+// envAttended; without it (older versions, Codex) the agent's command line
+// decides.
+func headless(client string) bool {
+	if client == hookClaude {
+		if v, ok := os.LookupEnv(envAttended); ok {
+			return v == "0"
+		}
+	}
+	return headlessArgs(client, agentCommandLine(client))
+}
+
+// headlessArgs reports whether an agent command line (program first) is a
+// headless run: claude with -p/--print, codex with the exec subcommand.
+func headlessArgs(client string, args []string) bool {
+	if len(args) < 2 {
+		return false
+	}
+	for i, a := range args[1:] {
+		switch {
+		case a == "--":
+			return false
+		case client == hookClaude && (a == "-p" || a == "--print"):
+			return true
+		case client == hookCodex && (a == "exec" || (i == 0 && a == "e")):
+			return true
+		}
+	}
+	return false
 }
 
 // defaultHookEnv finds the node API like the other client commands and keeps

@@ -75,6 +75,13 @@ func TestUnreadRoutesRepliesToTheSendingSession(t *testing.T) {
 	if p, _ := a.UnreadFor(dir, "s-other", "", 10); !slices.Equal(ids(p), []string{r.ID, u.ID}) {
 		t.Fatalf("after the sender ended: %+v", p)
 	}
+	// A session that is not registered (a headless run, an ended one) takes
+	// nothing, not even a message for nobody in particular.
+	for _, s := range []string{"s-headless", "s-test"} {
+		if g, err := a.Claim(ClaimRequest{IDs: []string{r.ID, u.ID}, SessionID: s}); err != nil || len(g) != 0 {
+			t.Fatalf("unregistered %s claimed: %v, %v", s, g, err)
+		}
+	}
 	if g, _ := a.Claim(ClaimRequest{IDs: []string{u.ID}, SessionID: "s-other"}); !slices.Equal(g, []string{u.ID}) {
 		t.Fatalf("first claim once nobody holds the chat: %v", g)
 	}

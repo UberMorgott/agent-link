@@ -78,9 +78,9 @@ func assignedSession(r chatRecord) string {
 	return s
 }
 
-// Claim takes unread messages for delivery to one session, atomically: it
-// returns the ids granted, those still unread and not for another live
-// session (routeOf). A granted message stays that session's while it lives,
+// Claim takes unread messages for delivery to one live session, atomically:
+// it returns the ids granted, those still unread and not for another live
+// session (routeOf); none to a session that is not registered. A granted message stays that session's while it lives,
 // until it is acknowledged; claiming again is granted again.
 func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 	switch {
@@ -93,11 +93,16 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 	r.claimMu.Lock()
 	defer r.claimMu.Unlock()
 	live := r.liveIDs(time.Now())
+	granted := []string{}
+	if !live[req.SessionID] {
+		// Only a registered session takes messages: a hook of a run that never
+		// registered (a headless claude -p) must not steal them.
+		return granted, nil
+	}
 	plain := map[string]bool{}
 	for _, p := range n.store.unreadPlain() {
 		plain[p.Message.ID] = true
 	}
-	granted := []string{}
 	for _, id := range req.IDs {
 		var to string
 		if rec, ok := n.chats.message(id); ok {
