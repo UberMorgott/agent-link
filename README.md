@@ -37,11 +37,10 @@ Copy `agentlink.exe` anywhere and double-click it. Members reach each other over
 1. Start `agentlink.exe`; the settings page opens. Later click the tray icon (or its menu, «Открыть в браузере»).
 2. **Ваше имя** is already filled with your Windows name; change it if you like. Names must
    differ between members.
-3. **Код связи**: one person clicks **Создать код** and tells everyone the code, 12 symbols
-   written `XXXX-XXXX-XXXX` (60 bits, no 0/O/1/I); the others type it in (case, dashes and
-   spaces do not matter). The code is the same for every member: it is the network. A 6-character
-   code from an earlier version still works, but while the listener is reachable beyond private
-   networks the page and the tray warn «слабый код» until everyone switches to a new one.
+3. **Projects** (see "Projects" below): one person creates a project (**＋ Новый проект**: a name,
+   optionally a folder) and sends the others its invite (project menu → **Приглашение**); the
+   others press **Присоединиться** and paste it. There is no pairing code on the settings page any
+   more.
 4. **Участники сети** lists the members this node knows: name, «на связи» / «нет связи», version,
    addresses, **Удалить**. Members on the same LAN or ZeroTier network find each other by
    themselves (see "Members and discovery"). Otherwise type one member's IP under **Добавить
@@ -54,8 +53,8 @@ Copy `agentlink.exe` anywhere and double-click it. Members reach each other over
    bar shows "связь есть: <name>" (or «на связи N из M») once members are connected; names
    come from the connection.
 
-Saving with only some fields filled is fine: the bar then says what is missing ("нет кода
-связи", «пока никого — добавьте адрес участника…»). **Дополнительно** (collapsed) holds the rest:
+Saving with only some fields filled is fine: the bar then says what is missing («нет ни одного
+проекта…», «пока никого — добавьте адрес участника…»). **Дополнительно** (collapsed) holds the rest:
 your own listen address (default: every interface, port 7420, so ZeroTier, LAN and external
 addresses all work; set one IP, e.g. the ZeroTier one, to restrict it), the page address
 (default `127.0.0.1:7520`, applies after a restart), shared areas, **Искать участников в
@@ -63,15 +62,50 @@ addresses all work; set one IP, e.g. the ZeroTier one, to restrict it), the page
 at once («Сколько вопросов агент решает сразу», `max_jobs`, 1–4, default 2) and autostart.
 Every error on the page is one sentence saying what to do.
 
-Configs written by v0.1 (long `secret`, `peer_name`, `listen`) still load and work; typing a
-code and saving replaces the secret. Both sides must run v0.2 or later: the handshake changed.
+Configs written by v0.1 (long `secret`, `peer_name`, `listen`) still load and work as the legacy
+network. Both sides must run v0.2 or later: the handshake changed.
 The single `peer_addr` / `peer_name` of v0.5 and earlier is migrated on load into the `peers`
 list (`[{"name":…, "addr":…}]`, written back on the next save); a `peer_addr` posted to the
 settings API is added to that list.
 
+### Projects
+
+The sidebar lists **projects**. Each project is its own network: its own invite, members, shared
+name and chats; nothing crosses between projects. Every member binds its **own** folder to it.
+
+- **Create**: **＋ Новый проект** — a name (1–80 characters) and optionally a folder and your own
+  alias for it. **Join**: **Присоединиться** — paste the invite `ALP1.<project>.<epoch>.<secret>.<check>`
+  (case and spaces do not matter; a typo fails its checksum), optionally a member's address when
+  discovery cannot find one. Joining succeeds once the project's key matches; the shared name then
+  arrives from the members («Подключение…» until it does). Pasting the invite of a project already
+  here just opens it. At most 32 projects and 64 members per project.
+- **Project menu** `⋯`: **Участники**, **Приглашение** (hidden `••••` until you reveal it; the
+  settings page and the other API answers never carry the secret), **Общее имя** (anyone renames it
+  for everyone; the last rename wins), **Моя папка** (folder and alias, only yours), **Выйти**.
+- **No folder**: chats work, but no agent runs for you there: requests that ask you get the held
+  status «у участника не выбрана папка проекта», and agent sessions cannot register. A folder change
+  or a leave waits until the agent has finished that project's requests («Агент ещё выполняет
+  запросы…»); a folder change forgets the agent sessions of the old folder.
+- **Chats**: **＋ Новый чат** picks the participants (every member preselected, at least one other);
+  who must answer is still chosen per message. **Завершить чат** ends it for everyone; a finished
+  chat goes to the archive and a new chat continues the topic.
+- **Leave** tells the members, stops the project and moves its data to
+  `data\projects\.left\<id>-<time>` (never deleted). Joining again later is a new member identity.
+- **Прежняя сеть**: a network from before projects (a `XXXX-XXXX-XXXX` code or an old long secret)
+  keeps running as the project «Прежняя сеть» while its code exists; it is not converted. Its code is
+  set by pasting it into **Присоединиться** and removed by leaving it (its history stays). The
+  working folder and «Проекты» areas on the settings page belong to it only.
+- **Agents**: the app runs one agent worker per project with a folder, all sharing «Сколько
+  вопросов агент решает сразу». An agent it starts for a project gets `AGENTLINK_PROJECT_ID`, and
+  the CLI (`send`, `wait`, `chat …`, flag `--project`) and the folder hooks reach the project of the
+  chat, the message or the folder they name (see [docs/agent-usage.md](docs/agent-usage.md)).
+- **Storage**: bindings (id, secret, alias, folder, typed addresses) are in `config.json`
+  (`project_bindings`, settings `version` 2; the first start of this version keeps a copy of the
+  old file as `config.v1.bak.json`); each project's data is in `data\projects\<id>\`.
+
 ### Members and discovery
 
-A network is everyone holding the same code; every member sees every other member.
+A network is everyone holding the same key: a project's invite, or the legacy code; every member sees every other member. A project's beacons are `v: 3` with its own tag (derived from the invite's secret, no Argon2 needed at 128 bits); the rest below holds for projects and the legacy network alike.
 
 - **Member table.** Each node keeps `{name, node id, addresses, version, last seen}` for every
   member, itself included, in `data\members.json`, and exchanges the whole table with each peer
@@ -112,7 +146,7 @@ light/dark/system theme. It works offline: the Lucide icons are bundled into it 
 are the system's. Its build output
 `internal/app/web/dist` is committed and embedded in the binary, so `go build` needs no Node.
 
-Settings, including the code, live in `%APPDATA%\agentlink\config.json` (per user, never in a
+Settings, including the project secrets and the legacy code, live in `%APPDATA%\agentlink\config.json` (per user, never in a
 repo); messages in `%APPDATA%\agentlink\data`, the log in `%APPDATA%\agentlink\agentlink.log`.
 Autostart is the `agentlink` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 (the quoted path of the executable). The settings page and the tray menu show it as Windows has

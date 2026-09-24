@@ -33,6 +33,28 @@ written from `examples/node-a.json`:
 
 No code or secret is needed for the client commands: the running node holds it.
 
+## Projects: which network a command reaches
+
+The desktop app runs one network per **project** (and, while it still has a pairing code, the
+network from before projects, «Прежняя сеть», id `legacy`). Every member binds its own folder
+to a project. Chat and message ids belong to exactly one project. A command picks its project:
+
+1. `--project <id>` (or `legacy`), else `$AGENTLINK_PROJECT_ID` (set for an agent the app runs
+   for a project). An explicit project never falls back: an unknown one is `404`, and a chat or
+   message of another project named in the same command is `409`.
+2. Without it: the project of the chat (`--chat`, `$AGENTLINK_CHAT_ID`) or of the message
+   answered (`--reply-to`); else the project whose folder holds the current folder (the deepest
+   one; `send` and `wait` send it); else the legacy network; with none of these, `400 folder is
+   not in a project`.
+
+`chat list` without a project lists every project's chats, each with its `project`; so does
+`GET /sessions`. `members`, `inbox` and `chat new` without a project reach the legacy network.
+
+A project without a bound folder has no agent sessions: `POST /sessions`, `wait` and
+`chat unread` for it answer `409 project_needs_folder: …`; a `folder` outside the project's
+folder is `409 folder_not_in_project: …`. People keep chatting in the app either way; requests
+that ask such a member get the held status «у участника не выбрана папка проекта».
+
 ## Message format (agent to agent)
 
 Every body an agent sends is compressed English, whatever language its user speaks: no
@@ -144,7 +166,8 @@ answered, the `answer` text).
 
 ### Inside a job (you are the worker's agent)
 
-The environment has `AGENTLINK_API` (this node's API, so no `--config`); when your task came
+The environment has `AGENTLINK_API` (this node's API, so no `--config`), in a project also
+`AGENTLINK_PROJECT_ID` (every command then stays in that project); when your task came
 from a chat also `AGENTLINK_CHAT_ID` and `AGENTLINK_JOB_ID`. `send` without `--to`/`--chat` then
 goes to that chat, and `chat history` without `--chat` reads it. Do **not** send your final
 answer yourself: it is posted to the chat automatically. To involve another member, send
@@ -166,7 +189,8 @@ it), so the node knows someone is there. All on the control API (loopback, no to
 | `POST /chats/{id}/ack`, `POST /ack` | `{"ids":[…],"session_id"}` | `[{"id","found","was_unread","assigned"}]` |
 | `POST /chats/{id}/activity` | `{"session_id","reply_to","id","type","text","phase":"running"\|"done"\|"idle"}` | the status message sent |
 
-- `folder` binds a session to an area: inside a «Проекты» folder (the deepest) → that area;
+- `folder` first picks the project (the deepest bound project folder that holds it, see
+  «Projects» above), then, on the legacy network, the area: inside a «Проекты» folder (the deepest) → that area;
   the «Рабочая папка» (any folder when none is set) → no area: direct messages and chats whose
   area has no project here. Another folder is refused (`folder is not the working folder or a
   project folder of this node`). The oldest live session of an area is `primary`.
