@@ -72,18 +72,47 @@ export function activityText(job: Job): string {
   const typeKey = info?.type ? "inbox.activity.type." + info.type : ''
   const verb = typeKey && t(typeKey) !== typeKey ? t(typeKey) : ''
   // A step that only names its type ("thinking") reads as the verb alone; a
-  // text that already starts with the verb (session hooks send «думает»,
-  // «правит x.go») is shown as it is, never with the verb twice.
+  // text that already starts with a verb (session hooks send «думает»,
+  // «правит x.go», and older ones «читает сообщения» as type thinking) is
+  // shown as it is, never with a second verb.
   if (!verb || !text) return verb || text || t("inbox.activity.working")
-  const lower = text.toLowerCase(), v = verb.toLowerCase()
+  const lower = text.toLowerCase()
   if (lower === info!.type!.toLowerCase()) return verb
-  if (lower === v || lower.startsWith(v + ' ')) return text
+  const first = lower.split(/[\s:]/, 1)[0]!
+  if (activityVerbs().includes(first)) return text
   return verb + ' ' + text
+}
+
+// The verbs an activity text can start with: every type's, and the ones the
+// session hooks write («запускает go», «работает: X»).
+const ACTIVITY_TYPES = ['thinking', 'edit', 'command', 'read', 'search', 'tool']
+const HOOK_VERBS = ['думает', 'читает', 'правит', 'запускает', 'ищет', 'работает', 'готово']
+function activityVerbs(): string[] {
+  const out = [...HOOK_VERBS]
+  for (const type of ACTIVITY_TYPES) {
+    const key = "inbox.activity.type." + type, verb = t(key)
+    if (verb !== key) out.push(verb.toLowerCase())
+  }
+  return out
+}
+
+// ACTIVITY_EXPIRE_MS matches the node's ActivityExpire: a running job not
+// heard of for this long is over as far as anyone can tell.
+export const ACTIVITY_EXPIRE_MS = 10 * 60 * 1000
+
+// liveJobs drops the running jobs gone quiet past ACTIVITY_EXPIRE_MS by now,
+// by heard_at (this computer's clock; updated_at is the author's, maybe off).
+export function liveJobs(jobs: Job[] | undefined, now: number): Job[] {
+  return (jobs || []).filter((job) => {
+    if (job.job_status !== 'running') return true
+    const heard = Date.parse(job.heard_at || '')
+    return Number.isNaN(heard) || now - heard < ACTIVITY_EXPIRE_MS
+  })
 }
 
 export function workingLines(chat: ChatInfo, self: string): string[] {
   const out: string[] = []
-  for (const m of chat.members || []) for (const job of m.jobs || []) out.push(agentName(m.name, self) + ' ' + activityText(job))
+  for (const m of chat.members || []) for (const job of liveJobs(m.jobs, Date.now())) out.push(agentName(m.name, self) + ' ' + activityText(job))
   return out
 }
 
@@ -175,7 +204,10 @@ export interface ActivityLine {
   name: string
   who: string
   text: string
+  // since: when the job's request (or the wait) began; heard: the job's last
+  // news (running and stale lines), which is what their time shows.
   since: string
+  heard?: string
 }
 
 function jobStart(job: Job, messages: ChatMessage[]): string {
@@ -185,10 +217,10 @@ function jobStart(job: Job, messages: ChatMessage[]): string {
 
 // waitingLine: this computer's agent has unread messages of the chat but runs
 // nothing for them — say why, so a silent chat is never a mystery.
-export function waitingLine(info: ChatInfo | null, messages: ChatMessage[], self: string, sessions: Session[], settings: AppSettings | null) {
+export function waitingLine(info: ChatInfo | null, messages: ChatMessage[], self: string, sessions: Session[], settings: AppSettings | null, now = Date.now()) {
   if (!info || info.closed || info.legacy) return null
   const mine = (info.members || []).find((m) => m.self)
-  if ((mine?.jobs || []).length) return null
+  if (liveJobs(mine?.jobs, now).length) return null
   const pending = messages.filter((m) => m.unread && m.direction === 'in' && !m.kind)
   if (!pending.length) return null
   let key = ''
@@ -202,7 +234,7 @@ export function waitingLine(info: ChatInfo | null, messages: ChatMessage[], self
 // has not read it yet, what its node says of its session there — so the
 // sender knows whether it is read at once or waits. Offline: the tick says it.
 const PRESENCE_KEY: Record<string, string> = { rewake: "inbox.presence.rewake", 'next-event': "inbox.presence.next_event" }
-export function presenceLines(info: ChatInfo | null, messages: ChatMessage[]): { name: string; text: string }[] {
+export function presenceLines(info: ChatInfo | null, messages: ChatMessage[], now = Date.now()): { name: string; text: string }[] {
   if (!info || info.closed || info.legacy) return []
   const last = [...messages].reverse().find((m) => m.direction === 'out' && !m.kind)
   if (!last) return []
@@ -211,27 +243,29 @@ export function presenceLines(info: ChatInfo | null, messages: ChatMessage[]): {
     if (tickState(d) !== 'delivered') continue
     const member = (info.members || []).find((m) => !m.self && m.name === d.peer)
     const p = member?.connected ? member.presence : null
-    if (!p || (member!.jobs || []).length) continue
+    if (!p || liveJobs(member!.jobs, now).length) continue
     const key = PRESENCE_KEY[p.session || ''] || (p.auto_answer ? "inbox.presence.worker" : "inbox.presence.none")
     out.push({ name: d.peer, text: t(key) })
   }
   return out
 }
 
-export function activityLines(info: ChatInfo | null, messages: ChatMessage[], self: string, sessions: Session[], settings: AppSettings | null): ActivityLine[] {
+export function activityLines(info: ChatInfo | null, messages: ChatMessage[], self: string, sessions: Session[], settings: AppSettings | null, now = Date.now()): ActivityLine[] {
   const rows: ActivityLine[] = []
   for (const member of info?.members || []) {
-    for (const job of member.jobs || []) {
+    for (const job of liveJobs(member.jobs, now)) {
+      const queued = job.job_status === 'queued'
       rows.push({
         key: member.name + '\n' + job.reply_to,
-        cls: job.stale ? 'stale' : job.job_status === 'queued' ? 'queued' : 'running',
+        cls: job.stale ? 'stale' : queued ? 'queued' : 'running',
         name: member.name, who: agentName(member.name, self), text: activityText(job), since: jobStart(job, messages),
+        heard: queued ? undefined : job.heard_at || job.updated_at,
       })
     }
   }
-  const waiting = waitingLine(info, messages, self, sessions, settings)
+  const waiting = waitingLine(info, messages, self, sessions, settings, now)
   if (waiting) rows.push({ key: '\nwaiting', cls: 'waiting', name: waiting.name, who: agentName(waiting.name, self), text: waiting.text, since: waiting.since })
-  for (const line of presenceLines(info, messages)) {
+  for (const line of presenceLines(info, messages, now)) {
     rows.push({ key: '\npresence\n' + line.name, cls: 'presence', name: line.name, who: line.name + ':', text: line.text, since: '' })
   }
   return rows

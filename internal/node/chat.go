@@ -188,10 +188,19 @@ type JobActivity struct {
 	Activity     string         `json:"activity,omitempty"`
 	ActivityInfo *ActivityState `json:"activity_info,omitempty"`
 	HoldReason   string         `json:"hold_reason,omitempty"` // held only
-	UpdatedAt    time.Time      `json:"updated_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`            // the author's clock
+	// HeardAt is when this node last heard of the job, by its own clock.
+	HeardAt time.Time `json:"heard_at,omitzero"`
 	// Stale: the participant is disconnected, so this may be over.
 	Stale bool `json:"stale,omitempty"`
 }
+
+// ActivityExpire: a running job this node has heard nothing of for this long
+// is shown no more. A worker re-sends its activity every two minutes and a
+// live session reports every tool call, so only a crashed, cut off or
+// finished-without-telling one (an older peer's session that ended without its
+// idle status) goes quiet that long.
+const ActivityExpire = 10 * time.Minute
 
 // ParticipantState is one participant of a chat as this node sees it.
 type ParticipantState struct {
@@ -1269,10 +1278,19 @@ func (n *Node) chatInfo(s chatSnapshot, queued map[string]map[string]int) ChatIn
 		info.Archived = info.Archived || info.Removed
 	}
 	jobs, held := map[string][]JobActivity{}, map[string][]JobActivity{}
+	now := time.Now()
 	for _, m := range s.jobs {
-		a := JobActivity{ReplyTo: m.ReplyTo, JobStatus: m.JobStatus, Activity: m.Activity, ActivityInfo: m.ActivityInfo, UpdatedAt: m.CreatedAt}
+		a := JobActivity{ReplyTo: m.ReplyTo, JobStatus: m.JobStatus, Activity: m.Activity, ActivityInfo: m.ActivityInfo, UpdatedAt: m.CreatedAt,
+			HeardAt: s.heard[m.From+"/"+m.ReplyTo]}
+		if a.HeardAt.IsZero() {
+			a.HeardAt = m.CreatedAt
+		}
 		switch m.JobStatus {
-		case JobQueued, JobRunning:
+		case JobRunning:
+			if now.Sub(a.HeardAt) < ActivityExpire {
+				jobs[m.From] = append(jobs[m.From], a)
+			}
+		case JobQueued:
 			jobs[m.From] = append(jobs[m.From], a)
 		case JobHeld:
 			a.HoldReason, a.ActivityInfo = m.HoldReason, nil

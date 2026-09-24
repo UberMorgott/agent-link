@@ -45,6 +45,9 @@ type chatState struct {
 	// id; a job's final reply removes it (done).
 	jobs map[string]Message
 	done map[string]bool
+	// heard is when this node last heard of each job (its clock, not the
+	// author's), for how fresh a running job's activity is (ActivityExpire).
+	heard map[string]time.Time
 }
 
 // chatRecord is one chat message as stored on this node. Seq numbers the
@@ -165,7 +168,7 @@ func (cs *chatStore) repliedBy(id string) map[string]time.Time {
 }
 
 func newChatState() *chatState {
-	return &chatState{index: map[string]int{}, jobs: map[string]Message{}, done: map[string]bool{}}
+	return &chatState{index: map[string]int{}, jobs: map[string]Message{}, done: map[string]bool{}, heard: map[string]time.Time{}}
 }
 
 func compareSeq(a, b uint64) int {
@@ -407,12 +410,26 @@ type unreadRecord struct {
 }
 
 // noteDone records a final reply: the job it ends shows no activity anymore.
+// A worker's reply carries its final JobStatus; a live session's agent answers
+// with a plain reply (author_kind agent), which ends that node's activity on
+// the request too: a session that keeps working afterwards (or an older peer
+// that never sends its idle status) must not show "reading" it forever. A held
+// job is left to clearHeld.
 func (st *chatState) noteDone(m Message) {
-	if m.Kind == "" && m.ReplyTo != "" && (m.JobStatus == JobCompleted || m.JobStatus == JobFailed) {
-		key := m.From + "/" + m.ReplyTo
-		st.done[key] = true
-		delete(st.jobs, key)
+	if m.Kind != "" || m.ReplyTo == "" {
+		return
 	}
+	final := m.JobStatus == JobCompleted || m.JobStatus == JobFailed
+	if !final && (m.JobStatus != "" || m.AuthorKind != AuthorAgent) {
+		return
+	}
+	key := m.From + "/" + m.ReplyTo
+	if j, ok := st.jobs[key]; ok && j.JobStatus == JobHeld && !final {
+		return
+	}
+	st.done[key] = true
+	delete(st.jobs, key)
+	delete(st.heard, key)
 }
 
 // noteStatus keeps m as the latest status of its job unless the job already
@@ -434,6 +451,7 @@ func (cs *chatStore) noteStatus(m Message) bool {
 		// A job that ends without a reply of its own (answered another way).
 		st.done[key] = true
 		delete(st.jobs, key)
+		delete(st.heard, key)
 		if wasHeld {
 			cs.saveHeldLocked(st)
 		}
@@ -449,6 +467,7 @@ func (cs *chatStore) noteStatus(m Message) bool {
 		return false
 	}
 	st.jobs[key] = m
+	st.heard[key] = time.Now().UTC()
 	if wasHeld || m.JobStatus == JobHeld {
 		cs.saveHeldLocked(st)
 	}
@@ -467,6 +486,7 @@ func (st *chatState) clearHeld(m Message) bool {
 		if j.JobStatus == JobHeld && j.From == m.From && (j.ReplyTo == m.ReplyTo || m.JobStatus == "") &&
 			!m.CreatedAt.Before(j.CreatedAt) {
 			delete(st.jobs, key)
+			delete(st.heard, key)
 			changed = true
 		}
 	}
@@ -506,9 +526,10 @@ func (cs *chatStore) message(id string) (chatRecord, bool) {
 
 // chatSnapshot is a copy of one chat's state.
 type chatSnapshot struct {
-	chat Chat
-	msgs []chatRecord
-	jobs []Message
+	chat  Chat
+	msgs  []chatRecord
+	jobs  []Message
+	heard map[string]time.Time // chatState.heard
 }
 
 func (cs *chatStore) snapshot(id string) (chatSnapshot, bool) {
@@ -522,7 +543,7 @@ func (cs *chatStore) snapshot(id string) (chatSnapshot, bool) {
 }
 
 func (st *chatState) snapshotLocked() chatSnapshot {
-	s := chatSnapshot{chat: st.chat, msgs: slices.Clone(st.msgs)}
+	s := chatSnapshot{chat: st.chat, msgs: slices.Clone(st.msgs), heard: maps.Clone(st.heard)}
 	for _, m := range st.jobs {
 		s.jobs = append(s.jobs, m)
 	}

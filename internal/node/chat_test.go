@@ -196,6 +196,68 @@ func TestChatStatusAndActivity(t *testing.T) {
 	}
 }
 
+// A live session's agent answers with a plain reply (no JobStatus) and may
+// never send its idle status (an older peer, a turn that goes on): the reply
+// ends its activity on that request, a person's reply does not, and a running
+// job heard of no more for ActivityExpire is shown no more.
+func TestAgentReplyAndSilenceEndActivity(t *testing.T) {
+	a, b, _ := trio(t)
+	info, err := a.CreateChat([]string{"b"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b knows the chat", func() bool { _, ok := b.ChatOf(info.ID); return ok })
+	running := func(q Message, tag string, seq uint64) {
+		t.Helper()
+		if _, err := b.SendMessage(Message{ID: DerivedID(q.ID, "b/"+tag), ChatID: info.ID, ReplyTo: q.ID, Kind: KindStatus, JobStatus: JobRunning,
+			Activity: "читает сообщения", ActivityInfo: &ActivityState{Type: "thinking", Text: "читает сообщения", Phase: PhaseRunning, Seq: seq}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobs := func() []JobActivity { got, _ := a.Chat(info.ID); return got.Members[1].Jobs }
+	q, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "do it", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	running(q, "s1", 1)
+	eventually(t, "a shows b reading", func() bool { j := jobs(); return len(j) == 1 && !j[0].HeardAt.IsZero() })
+	if _, err := b.SendChat(ChatSend{ChatID: info.ID, ReplyTo: q.ID, Body: "a person's note", AuthorKind: AuthorHuman}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if len(jobs()) != 1 {
+		t.Fatal("a person's reply ended the agent's activity")
+	}
+	if _, err := b.SendChat(ChatSend{ChatID: info.ID, ReplyTo: q.ID, Body: "answer"}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the agent's reply ends it", func() bool { return len(jobs()) == 0 })
+	for _, n := range []*testNode{a, b} {
+		if got, _ := n.Chat(info.ID); got.Active {
+			t.Fatalf("%s still shows the answered request active", n.cfg.Node)
+		}
+	}
+	running(q, "s2", 2) // the session keeps reporting on the answered request
+	time.Sleep(300 * time.Millisecond)
+	if len(jobs()) != 0 {
+		t.Fatal("activity after the agent's reply revived the request")
+	}
+
+	// Silence: nothing heard for ActivityExpire ends a running job.
+	q2, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "again", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	running(q2, "s3", 3)
+	eventually(t, "a shows b on the second request", func() bool { return len(jobs()) == 1 })
+	a.chats.mu.Lock()
+	a.chats.chats[info.ID].heard["b/"+q2.ID] = time.Now().Add(-ActivityExpire)
+	a.chats.mu.Unlock()
+	if j := jobs(); len(j) != 0 {
+		t.Fatalf("a job silent for ActivityExpire still shows: %+v", j)
+	}
+}
+
 func TestChatCloseRace(t *testing.T) {
 	a, b, c := trio(t)
 	info, err := a.CreateChat([]string{"b", "c"}, "")

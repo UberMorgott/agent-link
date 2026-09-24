@@ -111,7 +111,7 @@ beforeEach(() => {
   chats = fixtures()
   releaseSend = null
   sent.length = 0
-  runtime.strings = { 'inbox.activity.type.edit': 'правит', 'inbox.author.agent': 'агент {name}', 'inbox.member.queued': 'в очереди {n}' }
+  runtime.strings = { 'inbox.activity.type.edit': 'правит', 'inbox.activity.ago': '{t} назад','inbox.author.agent': 'агент {name}', 'inbox.member.queued': 'в очереди {n}' }
 })
 
 afterEach(() => { releaseSend?.() })
@@ -189,11 +189,12 @@ describe('the open chat', () => {
     vi.spyOn(Date, 'now').mockReturnValue(base + 246000)
     vi.advanceTimersByTime(1000)
     await nextTick()
-    expect(text(rows[0]!.querySelector('.act-time'))).toBe('· 0:42')
+    // A running line's time is how long ago its agent was last heard of.
+    expect(text(rows[0]!.querySelector('.act-time'))).toBe('· 0:05 назад')
     vi.spyOn(Date, 'now').mockReturnValue(base + 306000)
     vi.advanceTimersByTime(1000)
     await nextTick()
-    expect(text(rows[0]!.querySelector('.act-time'))).toBe('· 1:42')
+    expect(text(rows[0]!.querySelector('.act-time'))).toBe('· 1:05 назад')
     expect(api.calls.length).toBe(before)
   })
 

@@ -249,7 +249,8 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 			}
 			return nil
 		case in.StopHookActive && st.Blocks >= hookMaxStopBlocks:
-			quiet() // let it end; the waiter or the next event delivers the rest
+			h.idle() // the turn ends all the same: its activity too
+			quiet()  // let it end; the waiter or the next event delivers the rest
 			return nil
 		}
 		st.Blocks++
@@ -315,14 +316,15 @@ func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force boo
 	}
 }
 
-// endSession deregisters the session and marks its state ended, which stops
-// its waiter.
+// endSession ends the session's activity, deregisters it and marks its state
+// ended, which stops its waiter.
 func endSession(env hookEnv, path, sid string) {
 	unlock, err := lockFile(path + ".lock")
 	if err == nil {
 		defer unlock()
 	}
 	st := loadHookState(path)
+	(&hookSession{env: env, st: &st, sid: sid, folder: st.Folder}).idle()
 	st.Ended, st.Active = true, nil
 	_ = saveHookState(path, st)
 	_ = hookCall(env.api, http.MethodDelete, "/sessions/"+url.PathEscape(sid), nil, nil, nil, hookHTTPTimeout)

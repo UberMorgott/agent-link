@@ -363,8 +363,27 @@ func TestHookStopNoLoop(t *testing.T) {
 	if blocks != hookMaxStopBlocks {
 		t.Fatalf("blocks %d, want %d", blocks, hookMaxStopBlocks)
 	}
-	if st := c.state(hookClaude); st.Blocks != hookMaxStopBlocks {
+	st := c.state(hookClaude)
+	if st.Blocks != hookMaxStopBlocks {
 		t.Fatalf("state blocks %d", st.Blocks)
+	}
+	// The stop that wins ends the turn's activity too.
+	if texts := c.f.texts(); texts[len(texts)-1] != "готово|idle" || len(st.Active) != 0 {
+		t.Fatalf("idle after the last block: %v %v", texts, st.Active)
+	}
+}
+
+// A session that ends while working on a chat ends its activity there.
+func TestHookSessionEndEndsActivity(t *testing.T) {
+	c := newHookCase(t)
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "do it", true))
+	c.run(hookClaude, evPrompt)
+	if len(c.state(hookClaude).Active) != 1 {
+		t.Fatalf("not working on c1: %+v", c.state(hookClaude))
+	}
+	c.run(hookClaude, evSessionEnd)
+	if texts := c.f.texts(); texts[len(texts)-1] != "готово|idle" || len(c.state(hookClaude).Active) != 0 {
+		t.Fatalf("session end: %v %+v", texts, c.state(hookClaude))
 	}
 }
 

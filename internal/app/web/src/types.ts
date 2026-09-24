@@ -56,6 +56,8 @@ export interface Job {
   activity?: string
   activity_info?: ActivityInfo
   updated_at?: string
+  // heard_at: when this node last heard of the job, by its own clock.
+  heard_at?: string
   stale?: boolean
 }
 

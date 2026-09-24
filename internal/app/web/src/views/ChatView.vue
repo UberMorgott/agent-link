@@ -9,8 +9,8 @@ import ChatTimeline from '@/components/ChatTimeline.vue'
 import { isNarrow } from '@/layout/composables/layout'
 import { icon } from '@/lib/icons'
 import {
-  activityLines, authorLabel, authorName, chatName, chatSessionList, elapsed, legacyPeerOld, memberState, others, preview,
-  when, whoColor,
+  activityLines, authorLabel, authorName, chatName, chatSessionList, clock, elapsed, legacyPeerOld, memberState, others, preview,
+  when, whoColor, type ActivityLine,
 } from '@/lib/chat'
 import { openProject } from '@/lib/nav'
 import { fmt, t } from '@/lib/runtime'
@@ -74,10 +74,20 @@ onMounted(() => { ticker = setInterval(() => { now.value = Date.now() }, 1000) }
 onBeforeUnmount(() => clearInterval(ticker))
 
 const activity = computed(() => activityLines(info.value, inbox.messages, self.value,
-  chatSessionList(info.value, app.sessions, app.settings), app.settings))
-function since(iso: string) {
-  const at = Date.parse(iso)
-  return Number.isNaN(at) ? '' : '· ' + elapsed(now.value - at)
+  chatSessionList(info.value, app.sessions, app.settings), app.settings, now.value))
+// A running line's time is how long ago its agent was last heard of («0:12
+// назад»); the tooltip adds when it took the request. A waiting or queued
+// line's time is how long it has waited.
+function since(row: ActivityLine) {
+  const at = Date.parse(row.heard || row.since)
+  if (Number.isNaN(at)) return ''
+  const span = elapsed(now.value - at)
+  return '· ' + (row.heard ? fmt("inbox.activity.ago", { t: span }) : span)
+}
+function sinceTitle(row: ActivityLine) {
+  if (!row.heard) return ''
+  const start = clock(row.since)
+  return fmt("inbox.activity.heard_title", { heard: clock(row.heard) }) + (start ? '\n' + fmt("inbox.activity.since_title", { start }) : '')
 }
 
 // --- composer ---
@@ -316,7 +326,10 @@ function back() {
                 class="act-text"
                 :title="row.text"
               >{{ row.text }}</span>
-              <span class="act-time">{{ since(row.since) }}</span>
+              <span
+                class="act-time"
+                :title="sinceTitle(row)"
+              >{{ since(row) }}</span>
             </li>
           </ul>
           <form
