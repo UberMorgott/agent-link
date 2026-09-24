@@ -42,7 +42,9 @@ const bubbles = computed<Bubble[]>(() => {
     if (m.kind === 'chat_open' || m.kind === 'chat_close') {
       return {
         m, event: true, out: false, cont: false, cls: 'msg-event', who: '', icon: '', fyi: '', quote: '', note: '', tick: null, canReply: false,
-        author: fmt(m.kind === 'chat_open' ? "inbox.event.open" : "inbox.event.close", { name: authorName(m.from, self) }),
+        author: m.from === self
+          ? t(m.kind === 'chat_open' ? "inbox.event.open_self" : "inbox.event.close_self")
+          : fmt(m.kind === 'chat_open' ? "inbox.event.open" : "inbox.event.close", { name: authorName(m.from, self) }),
       }
     }
     const agent = isAgent(m)

@@ -109,4 +109,22 @@ describe('the project menu', () => {
     expect(router.currentRoute.value.params.project).not.toBe(SITE)
     expect(router.currentRoute.value.name).toBe('project')
   })
+
+  it('binds only the working folder of the legacy network, without an own name', async () => {
+    const { requests, backend } = await open('/p/legacy')
+    const projects = useProjectsStore()
+    projects.openDialog('folder', 'legacy')
+    await settle()
+    expect($('#project_alias')).toBeNull()
+    const input = $<HTMLInputElement>('#project_dir')!
+    input.value = 'D:\\old'
+    input.dispatchEvent(new Event('input'))
+    $<HTMLFormElement>('#folder_form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle()
+    const last = requests[requests.length - 1]!
+    expect(last.url).toBe('/ui/api/projects/legacy/binding')
+    expect(JSON.parse(String(last.init.body))).toEqual({ dir: 'D:\\old' })
+    expect(backend.projects.find((p) => p.legacy)!.dir).toBe('D:\\old')
+    expect(projects.dialog).toBe('')
+  })
 })

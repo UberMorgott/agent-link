@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UInput from '@nuxt/ui/components/Input.vue'
 import UModal from '@nuxt/ui/components/Modal.vue'
+import { ApiError } from '@/lib/api'
 import { pickFolder } from '@/lib/folders'
 import { openProject } from '@/lib/nav'
 import { fmt, t } from '@/lib/runtime'
@@ -26,11 +27,16 @@ const dir = ref('')
 const alias = ref('')
 const result = ref('')
 const busy = ref(false)
+// workDir: the legacy network's working folder, asked for after a 400
+// work_dir (its code joined while an agent answers).
+const workDir = ref('')
+const needsWorkDir = ref(false)
 
 watch(open, (value) => {
   if (!value) return
   projects.joinReset()
-  invite.value = addr.value = dir.value = alias.value = result.value = ''
+  invite.value = addr.value = dir.value = alias.value = result.value = workDir.value = ''
+  needsWorkDir.value = false
 })
 
 async function run(action: () => Promise<unknown>) {
@@ -55,7 +61,13 @@ function finish(pid: string) {
 
 function join() {
   return run(async () => {
-    const r = await projects.join(invite.value, addr.value)
+    let r
+    try {
+      r = await projects.join(invite.value, addr.value, needsWorkDir.value ? workDir.value : '')
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'work_dir') needsWorkDir.value = true
+      throw error
+    }
     // A project that was here already, or the legacy network, just opens.
     if (!r.created || r.project.legacy) finish(r.project.id)
   })
@@ -64,6 +76,12 @@ function join() {
 async function pick() {
   const r = await pickFolder(dir.value)
   if (r.path) dir.value = r.path
+  else result.value = r.message || ''
+}
+
+async function pickWorkDir() {
+  const r = await pickFolder(workDir.value)
+  if (r.path) workDir.value = r.path
   else result.value = r.message || ''
 }
 
@@ -131,6 +149,31 @@ function cancel() {
         <p class="hint">
           {{ t("project.join.addr_hint") }}
         </p>
+        <template v-if="needsWorkDir">
+          <label
+            for="join_work_dir"
+            class="mt-2 text-sm font-medium"
+          >{{ t("project.join.work_dir") }}</label>
+          <span class="flex gap-2">
+            <UInput
+              id="join_work_dir"
+              v-model="workDir"
+              class="flex-1"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <UButton
+              type="button"
+              :label="t('settings.work_dir.pick')"
+              color="neutral"
+              variant="outline"
+              @click="pickWorkDir"
+            />
+          </span>
+          <p class="hint">
+            {{ t("project.join.work_dir_hint") }}
+          </p>
+        </template>
       </form>
       <p
         v-else-if="step === 'connecting'"

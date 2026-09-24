@@ -50,6 +50,9 @@ export const useProjectsStore = defineStore('projects', () => {
   const joinCreated = ref(false)
 
   const chatTickets = new Map<string, number>()
+  // left: projects this page left; the app's late project:<pid> events for
+  // them would only answer 404.
+  const left = new Set<string>()
   let listTicket = 0
   let latestList: Promise<void> | null = null
 
@@ -64,6 +67,7 @@ export const useProjectsStore = defineStore('projects', () => {
 
   // upsert puts a project answer into the list, in place or as a new row.
   function upsert(view: ProjectView) {
+    left.delete(view.id)
     const rest = (list.value || []).filter((p) => p.id !== view.id)
     list.value = sortProjects([...rest, view])
   }
@@ -138,6 +142,7 @@ export const useProjectsStore = defineStore('projects', () => {
 
   // refreshScoped answers a "project:<pid>" event: the project and its chats.
   async function refreshScoped(pid: string) {
+    if (left.has(pid)) return
     await refreshProject(pid)
     if (byID(pid)) await refreshChats(pid)
   }
@@ -193,6 +198,7 @@ export const useProjectsStore = defineStore('projects', () => {
   // leave returns the project to open next ("" when none is left).
   async function leave(pid: string): Promise<string> {
     await api('POST', projectPath(pid, 'leave'))
+    left.add(pid)
     drop(pid)
     if (current.value === pid) current.value = ''
     return landing()
@@ -229,9 +235,11 @@ export const useProjectsStore = defineStore('projects', () => {
 
   // join sends the invite. A project that was here already opens as it is
   // (created: false); a new one waits for its shared name, then for a folder.
-  async function join(inviteText: string, addr: string): Promise<JoinResult> {
+  // dir is the legacy network's working folder, sent after a 400 work_dir.
+  async function join(inviteText: string, addr: string, dir = ''): Promise<JoinResult> {
     const body: Record<string, string> = { invite: inviteText.trim() }
     if (addr.trim()) body.addr = addr.trim()
+    if (dir.trim()) body.dir = dir.trim()
     const result = await api<JoinResult>('POST', 'projects/join', body)
     upsert(result.project)
     joinProject.value = result.project.id

@@ -47,6 +47,11 @@ export interface Backend {
   messages: Record<string, ChatMessage[]> // by chat id
   sessions: Session[]
   sent: unknown[]
+  // legacyNeedsDir: joining the legacy network answers 400 work_dir without
+  // a dir (its code joined while an agent answers and no working folder is set).
+  legacyNeedsDir: boolean
+  // failNext: the next request answers this error fixture (e.g. "internal").
+  failNext: string
   // changed names the event topics a request made stale.
   changed: (topics: string[]) => void
 }
@@ -79,6 +84,8 @@ export function createBackend(): Backend {
     },
     sessions: fixture<Session[]>('sessions'),
     sent: [],
+    legacyNeedsDir: false,
+    failNext: '',
     changed: () => {},
   }
 }
@@ -127,6 +134,11 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
   const query = new URLSearchParams(search)
   const req = (body || {}) as Record<string, unknown>
   const parts = path.split('/').map(decodeURIComponent)
+  if (b.failNext) {
+    const code = b.failNext
+    b.failNext = ''
+    throw apiError(code)
+  }
 
   if (method === 'GET') {
     switch (path) {
@@ -162,9 +174,28 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
 
   if (method === 'POST' && parts[1] === 'join') {
     const invite = String(req.invite || '').trim()
+    const addr = String(req.addr || '').trim()
+    if (addr && !/^\d{1,3}(\.\d{1,3}){3}(:\d{1,5})?$/.test(addr)) throw apiError('addr')
+    const dir = String(req.dir || '').trim()
+    if (dir && !/^([A-Za-z]:[\\/]|\/)/.test(dir)) throw apiError('work_dir')
+    // A known invite (or the legacy code set here) changes nothing, not even addr.
     const known = b.projects.find((p) => invite.includes('.' + p.id + '.'))
     if (known) return { project: known, created: false } satisfies JoinResult
-    if (!invite.startsWith('ALP1.') && !/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(invite)) throw apiError('invite')
+    if (/^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(invite)) {
+      const legacy = b.projects.find((p) => p.legacy)
+      if (legacy) {
+        if (invite.toUpperCase() !== LEGACY_CODE) throw apiError('legacy_exists')
+        return { project: legacy, created: false } satisfies JoinResult
+      }
+      if (b.legacyNeedsDir && !dir) throw apiError('work_dir')
+      const p = { ...fixture<ProjectView>('project_legacy') }
+      if (dir) p.dir = dir
+      b.projects = [...b.projects, p]
+      b.chats.legacy = []
+      b.changed(['projects', 'project:legacy'])
+      return { project: p, created: true } satisfies JoinResult
+    }
+    if (!invite.startsWith('ALP1.')) throw apiError('invite')
     const joined = fixture<JoinResult>('join_created')
     if (b.projects.some((p) => p.id === joined.project.id)) b.projects = b.projects.filter((p) => p.id !== joined.project.id)
     b.projects = [...b.projects, joined.project]
@@ -186,6 +217,8 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
   }
   if (method === 'POST' && rest[0] === 'binding') {
     if (p.busy && req.dir !== undefined && req.dir !== p.dir) throw apiError('project_busy')
+    // The legacy network's binding sets its working folder; it has no alias.
+    if (p.legacy && typeof req.alias === 'string' && req.alias.trim()) throw apiError('alias')
     const next = { ...p }
     if (typeof req.alias === 'string') next.alias = req.alias.trim()
     if (typeof req.dir === 'string') next.dir = req.dir.trim()
@@ -230,7 +263,9 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     if (rest.length === 1 && method === 'GET') return (b.chats[pid] || []).filter((c) => !!c.archived === (query.get('archive') === '1'))
     if (rest.length === 1 && method === 'POST') {
       const names = (Array.isArray(req.participants) ? req.participants : []).map(String)
-      if (!names.some((n) => n !== SELF)) throw apiError('chat_participants')
+      // Unknown participants (not members of the project) are refused as well.
+      const members = new Set(p.members.map((m) => m.name))
+      if (!names.some((n) => n !== SELF) || names.some((n) => !members.has(n) && n !== SELF)) throw apiError('chat_participants')
       const participants = [...new Set([SELF, ...names])].sort()
       const online = new Set(p.members.filter((m) => m.online || m.self).map((m) => m.name))
       const at = new Date().toISOString()

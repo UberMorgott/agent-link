@@ -122,12 +122,17 @@ export interface ChatInfo {
   members?: ChatMember[]
 }
 
+// Session is a SessionView of GET sessions: an agent session with its context.
 export interface Session {
   session_id?: string
   provider?: string
   folder?: string
   area?: string
   wake?: string
+  ttl_sec?: number
+  registered_at?: string
+  last_seen?: string
+  primary?: boolean
   project?: string // project id or "legacy"
 }
 
@@ -155,7 +160,7 @@ export interface ProjectView {
   display: string // alias || name || ""
   dir: string
   state: ProjectState
-  problem: string // "" or unknown_project | auth | name_taken | removed
+  problem: string // "" or unknown_project | wrong_project | auth | name_taken | removed
   online: number
   total: number
   members: MemberInfo[] // self first

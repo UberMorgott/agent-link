@@ -57,9 +57,13 @@ async function apiRequest<T>(method: string, path: string, body?: unknown): Prom
   try { data = JSON.parse(text) } catch { /* plain-text error */ }
   if (!resp.ok) {
     // The token changes on every start: a tab left open from before gets 403.
+    // A coded error reads as the page's own sentence for its code, else the
+    // app's, else the generic one.
     const coded = data && typeof data === 'object' ? (data as { error?: string; code?: string }) : {}
-    const message = resp.status === 403 ? t("error.forbidden") : coded.error || t("error.internal")
-    throw new ApiError(String(message), resp.status, typeof coded.code === 'string' ? coded.code : '')
+    const code = typeof coded.code === 'string' ? coded.code : ''
+    const known = code && t("error." + code) !== "error." + code ? t("error." + code) : ''
+    const message = resp.status === 403 ? t("error.forbidden") : known || coded.error || t("error.internal")
+    throw new ApiError(String(message), resp.status, code)
   }
   return data as T
 }

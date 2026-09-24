@@ -125,7 +125,10 @@ async function pick() {
 
 function saveFolder() {
   return run(async () => {
-    await projects.bind(projects.dialogProject, { dir: dir.value.trim(), alias: alias.value.trim() })
+    // The legacy network has no own name: its binding takes the working folder only.
+    const body: { dir: string; alias?: string } = { dir: dir.value.trim() }
+    if (!view.value?.legacy) body.alias = alias.value.trim()
+    await projects.bind(projects.dialogProject, body)
     projects.closeDialog()
   })
 }
@@ -339,20 +342,22 @@ function leave() {
         <p class="hint warn">
           {{ t("project.folder.warn") }}
         </p>
-        <label
-          for="project_alias"
-          class="mt-2 text-sm font-medium"
-        >{{ t("project.alias.label") }}</label>
-        <UInput
-          id="project_alias"
-          v-model="alias"
-          autocomplete="off"
-          maxlength="64"
-          :placeholder="view?.name"
-        />
-        <p class="hint">
-          {{ t("project.alias.hint") }}
-        </p>
+        <template v-if="!view?.legacy">
+          <label
+            for="project_alias"
+            class="mt-2 text-sm font-medium"
+          >{{ t("project.alias.label") }}</label>
+          <UInput
+            id="project_alias"
+            v-model="alias"
+            autocomplete="off"
+            maxlength="64"
+            :placeholder="view?.name"
+          />
+          <p class="hint">
+            {{ t("project.alias.hint") }}
+          </p>
+        </template>
         <p
           class="dialog-result text-sm text-error"
           role="status"

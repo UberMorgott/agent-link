@@ -98,4 +98,31 @@ describe('making and joining projects', () => {
     await submit('#join_form')
     expect(document.body.textContent).toContain(fixture<{ body: { error: string } }>('error_invite').body.error)
   })
+
+  it('asks for the legacy working folder after 400 work_dir and joins with it', async () => {
+    const { backend, router, requests } = await open('/p/' + SITE, (list) => list.filter((p) => !p.legacy))
+    backend.legacyNeedsDir = true
+    useProjectsStore().openDialog('join', '')
+    await settle()
+    expect($('#join_work_dir')).toBeNull()
+    await type('#join_invite', 'k7q2-mxpa-4rtb')
+    await submit('#join_form')
+    expect(document.body.textContent).toContain(fixture<{ body: { error: string } }>('error_work_dir').body.error)
+    await type('#join_work_dir', 'C:\\legacy')
+    await submit('#join_form')
+    const last = requests[requests.length - 1]!
+    expect(JSON.parse(String(last.init.body))).toEqual({ invite: 'k7q2-mxpa-4rtb', dir: 'C:\\legacy' })
+    expect(useProjectsStore().byID('legacy')!.dir).toBe('C:\\legacy')
+    expect(router.currentRoute.value.params.project).toBe('legacy')
+  })
+
+  it('shows the internal error sentence of a 500', async () => {
+    const { backend } = await open('/p/' + SITE)
+    useProjectsStore().openDialog('join', '')
+    await settle()
+    await type('#join_invite', 'ALP1.NEWPROJECT')
+    backend.failNext = 'internal'
+    await submit('#join_form')
+    expect(document.body.textContent).toContain(fixture<{ body: { error: string } }>('error_internal').body.error)
+  })
 })

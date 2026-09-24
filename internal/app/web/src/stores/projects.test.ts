@@ -46,6 +46,17 @@ describe('the projects store', () => {
     await expect(projects.leave(SITE)).rejects.toMatchObject({ code: 'project_busy' })
   })
 
+  it('does not read a project it left again on the app\'s late events', async () => {
+    const { calls } = fakeBackend()
+    const projects = useProjectsStore()
+    await projects.refreshList()
+    await projects.leave(SITE)
+    const before = calls.length
+    await projects.refreshScoped(SITE)
+    expect(calls.length).toBe(before)
+    expect(projects.byID(SITE)).toBeNull()
+  })
+
   it('reveals an invite once per dialog and forgets it on close', async () => {
     const { calls } = fakeBackend()
     const projects = useProjectsStore()
