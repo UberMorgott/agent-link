@@ -3,6 +3,7 @@ import { SITE } from '@/test/backend'
 import { fakeBackend, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
 import { useProjectsStore } from '@/stores/projects'
+import { useLayout } from './composables/layout'
 
 const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T>(sel)
 const $$ = <T extends Element = HTMLElement>(sel: string) => Array.from(document.querySelectorAll<T>(sel))
@@ -73,6 +74,15 @@ describe('the application shell', () => {
     tree[2]!.querySelector<HTMLButtonElement>('.project-fold')!.click()
     await settle()
     expect(tree[2]!.querySelectorAll('.chat-row')).toHaveLength(1)
+  })
+
+  it('closes the phone drawer when a project dialog opens from it', async () => {
+    await open('/p/' + SITE)
+    const { layoutState } = useLayout()
+    layoutState.mobileMenuActive = true
+    useProjectsStore().openDialog('invite', SITE)
+    await settle()
+    expect(layoutState.mobileMenuActive).toBe(false)
   })
 
   it('sends /inbox to the last used project, or the welcome screen without any', async () => {

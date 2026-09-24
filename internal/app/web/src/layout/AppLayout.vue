@@ -11,6 +11,8 @@ import ProjectSidebar from '@/components/ProjectSidebar.vue'
 import { icon } from '@/lib/icons'
 import { browser, t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
+import { useInboxStore } from '@/stores/inbox'
+import { useProjectsStore } from '@/stores/projects'
 import { useLayout } from './composables/layout'
 
 const app = useAppStore()
@@ -23,6 +25,10 @@ const current = computed(() => String(route.name || ''))
 // Any move closes the phone drawer; a new kind of page takes the focus to its
 // view, as a page load would.
 watch(() => route.fullPath, hideMobileMenu)
+// A dialog opened from the phone drawer shows above the page, not under the drawer.
+const projects = useProjectsStore()
+const inbox = useInboxStore()
+watch(() => projects.dialog || inbox.newChatOpen, (open) => { if (open) hideMobileMenu() })
 watch(current, () => { void nextTick(() => view.value?.focus({ preventScroll: true })) })
 </script>
 

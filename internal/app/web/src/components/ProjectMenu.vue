@@ -29,6 +29,7 @@ const items = computed<DropdownMenuItem[][]>(() => {
   <UDropdownMenu
     :items="items"
     :content="{ align: 'start' }"
+    :ui="{ content: 'z-50' }"
   >
     <UButton
       class="project-more"
