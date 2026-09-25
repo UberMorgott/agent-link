@@ -5,8 +5,11 @@
       "command": "cmd",
       "args": [
         "/v:on", "/d", "/c",
+        "set", "AL_MCP_EXE=&",
         "(if", "defined", "PLUGIN_ROOT", "(set", "PATH=!PLUGIN_ROOT!\\bin;!PATH!)",
-        "else", "if", "defined", "CLAUDE_PLUGIN_ROOT", "(set", "PATH=!CLAUDE_PLUGIN_ROOT!\\bin;!PATH!))",
+        "else", "if", "defined", "CLAUDE_PLUGIN_ROOT", "(set", "PATH=!CLAUDE_PLUGIN_ROOT!\\bin;!PATH!)",
+        "else", "if", "exist", "!APPDATA!\\agentlink\\executable.path", "(set", "/p", "AL_MCP_EXE=<!APPDATA!\\agentlink\\executable.path))",
+        "&", "(if", "defined", "AL_MCP_EXE", "set", "PATH=!AL_MCP_EXE:\\agentlink.exe=!;!PATH!)",
         "&", "agentlink", "mcp"
       ]
     }

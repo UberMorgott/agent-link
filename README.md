@@ -333,7 +333,8 @@ Start the desktop app once after installing it, or set `AGENTLINK_EXE`. The plug
 server are Windows only (the launcher is a `.cmd`); elsewhere use `agentlink hook install claude`.
 The one `.mcp.json` serves Claude Code and Codex: it puts the plugin's `bin` first on `PATH` from
 the host's `PLUGIN_ROOT` or `CLAUDE_PLUGIN_ROOT` variable and runs `agentlink mcp`; a host that
-sets neither (Codex 0.155) gets `agentlink.exe` from `PATH`.
+sets neither (Codex 0.155) puts the folder of the `agentlink.exe` named in
+`%APPDATA%\agentlink\executable.path` first on `PATH`, else gets `agentlink.exe` from `PATH`.
 
 **One source of hooks per session.** Claude Code runs a plugin's hooks and the settings' hooks
 side by side, so with the plugin enabled remove the others, or every message is handled twice:
