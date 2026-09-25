@@ -335,6 +335,9 @@ The one `.mcp.json` serves Claude Code and Codex: it puts the plugin's `bin` fir
 the host's `PLUGIN_ROOT` or `CLAUDE_PLUGIN_ROOT` variable and runs `agentlink mcp`; a host that
 sets neither (Codex 0.155) puts the folder of the `agentlink.exe` named in
 `%APPDATA%\agentlink\executable.path` first on `PATH`, else gets `agentlink.exe` from `PATH`.
+So on Codex 0.155 `AGENTLINK_EXE` is not used for the MCP server: it needs the marker
+`%APPDATA%\agentlink\executable.path` naming a file called `agentlink.exe` (start the desktop app
+once), or `agentlink.exe` on `PATH`.
 
 **One source of hooks per session.** Claude Code runs a plugin's hooks and the settings' hooks
 side by side, so with the plugin enabled remove the others, or every message is handled twice:

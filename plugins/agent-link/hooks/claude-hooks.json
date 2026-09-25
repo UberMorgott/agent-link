@@ -39,6 +39,20 @@
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "cmd", "args": ["/d", "/c", "${CLAUDE_PLUGIN_ROOT}\\bin\\agentlink.cmd", "hook", "claude"], "timeout": 10 }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "cmd", "args": ["/d", "/c", "${CLAUDE_PLUGIN_ROOT}\\bin\\agentlink.cmd", "hook", "claude"], "timeout": 10 }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
