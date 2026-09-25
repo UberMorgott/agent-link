@@ -362,7 +362,7 @@ func (s *attachStore) referenced() (map[string]bool, error) {
 		case !d.Type().IsRegular():
 			return nil
 		}
-		data, err := os.ReadFile(p) //nolint:gosec // G304: the node's own data folder
+		data, err := readShared(p) // the store may be renaming it meanwhile
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}

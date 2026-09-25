@@ -1,12 +1,32 @@
 package node
 
 import (
+	"io"
 	"io/fs"
+	"os"
 	"strings"
 	"syscall"
 
 	"golang.org/x/sys/windows"
 )
+
+// readShared reads file p without holding up its rename or removal meanwhile
+// (FILE_SHARE_DELETE, which os.ReadFile does not give): the attachment sweep
+// reads files the store is replacing by rename.
+func readShared(p string) ([]byte, error) {
+	name, err := windows.UTF16PtrFromString(p)
+	if err != nil {
+		return nil, err
+	}
+	h, err := windows.CreateFile(name, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return nil, &fs.PathError{Op: "open", Path: p, Err: err}
+	}
+	f := os.NewFile(uintptr(h), p)
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(f)
+}
 
 // isReparsePoint reports whether an Lstat result is a reparse point: a
 // symbolic link, a junction or any other redirection of the path.
