@@ -4,12 +4,11 @@ import { useRoute } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UChatPrompt from '@nuxt/ui/components/ChatPrompt.vue'
 import UCheckbox from '@nuxt/ui/components/Checkbox.vue'
-import UPopover from '@nuxt/ui/components/Popover.vue'
 import ChatTimeline from '@/components/ChatTimeline.vue'
 import { isNarrow } from '@/layout/composables/layout'
 import { icon } from '@/lib/icons'
 import {
-  activityLines, keepLastKnown, authorLabel, authorName, chatName, chatSessionList, clock, elapsed, legacyPeerOld, memberState, others, preview,
+  activityLines, keepLastKnown, authorLabel, authorName, chatName, chatSessionList, clock, elapsed, legacyPeerOld, others, preview,
   when, whoColor, type ActivityLine,
 } from '@/lib/chat'
 import { openProject } from '@/lib/nav'
@@ -36,40 +35,14 @@ watch(() => route.fullPath, () => {
 const info = computed(() => inbox.chat)
 const self = computed(() => app.self)
 
-// --- header ---
-
-const project = computed(() => projects.byID(pid.value))
-// A project has one chat: it goes by the project's name.
-const title = computed(() => chatName(info.value, self.value, project.value?.legacy ? '' : project.value?.display))
-// The subtitle: who is reachable right now, and the chat's project area.
-const presence = computed(() => (info.value?.members || []).filter((m) => !m.self).map((member) => {
-  const state = memberState(member)
-  return { name: member.name, state, text: member.name + ' — ' + t(state === 'old' ? "inbox.member.old_short" : state === 'on' ? "inbox.member.online" : "inbox.member.away") }
-}))
-const chips = computed(() => (info.value?.members || []).map((member) => {
-  const state = memberState(member)
-  const notes: string[] = []
-  if (!member.self) notes.push(t(state === 'old' ? "inbox.member.old" : state === 'on' ? "inbox.member.online" : "inbox.member.away"))
-  if (member.queued) notes.push(fmt("inbox.member.queued", { n: member.queued }))
-  for (const job of member.held || []) notes.push(job.activity || t("inbox.hold.unknown"))
-  return { key: member.name, self: !!member.self, name: member.self ? member.name + ' (' + t("inbox.you") + ')' : member.name, state, who: whoColor(member.name), note: notes.join(' · ') }
-}))
-// The owner of an open project chat invites project members to it and removes them.
-const canManage = computed(() => {
-  const i = info.value
-  return !!i && i.mode === 'project' && !!self.value && i.owner === self.value && !i.closed && !i.removed
-})
-const invitable = computed(() => (projects.byID(pid.value)?.members || [])
-  .filter((m) => !m.self && !(info.value?.participants || []).includes(m.name))
-  .map((m) => ({ name: m.name, online: !!m.online })))
-const sessions = computed(() => chatSessionList(info.value, app.sessions, app.settings).map((s) =>
-  [s.provider || '', s.folder || '', t(s.wake === 'rewake' ? "inbox.session.rewake" : s.wake === 'queue' ? "inbox.session.queue" : "inbox.session.next_event")].filter(Boolean).join(' · ')))
-// A project chat's history goes to the archive and a fresh chat with the same
-// members opens at once; a chat of the network from before projects is closed
-// (a legacy chat's peer archives it too).
+// The chat has no header: the project's row in the sidebar names it, and its
+// "⋯" menu holds the chat's controls (ProjectMenu.vue).
 const inProject = computed(() => !!info.value && !info.value.legacy && pid.value !== 'legacy')
-const canArchive = computed(() => inProject.value && !info.value?.closed && !info.value?.archived)
-const canClose = computed(() => !inProject.value && !!info.value && !info.value.closed && !info.value.archived)
+// A project has one chat: it goes by the project's name.
+const title = computed(() => {
+  const project = projects.byID(pid.value)
+  return chatName(info.value, self.value, project?.legacy ? '' : project?.display)
+})
 
 // --- live activity, one line per running or queued job ---
 
@@ -156,9 +129,18 @@ function back() {
         class="conversation-panel flex h-full flex-col"
         aria-labelledby="conversation_title"
       >
-        <header class="chat-head chat-column flex flex-none items-start gap-1 pb-2">
+        <!-- For screen readers only: the project's row names the chat on screen. -->
+        <h1
+          id="conversation_title"
+          class="sr-only"
+        >
+          {{ title }}
+        </h1>
+        <div
+          v-if="isNarrow"
+          class="chat-column flex flex-none items-center pb-2"
+        >
           <UButton
-            v-if="isNarrow"
             id="chat_back"
             :icon="icon('back')"
             :aria-label="t('inbox.back')"
@@ -167,162 +149,15 @@ function back() {
             size="sm"
             @click="back"
           />
-          <div class="chat-head-main min-w-0 flex-1">
-            <h1
-              id="conversation_title"
-              class="truncate text-base font-semibold"
-            >
-              {{ title }}
-            </h1>
-            <p
-              v-if="inbox.subtitleError"
-              id="chat_subtitle"
-              class="chat-subtitle text-xs text-error"
-            >
-              {{ inbox.subtitleError }}
-            </p>
-            <p
-              v-else-if="presence.length || info?.area"
-              id="chat_subtitle"
-              class="chat-subtitle flex flex-wrap gap-x-3 text-xs"
-            >
-              <span
-                v-for="p in presence"
-                :key="p.name"
-                class="presence"
-                :class="p.state"
-              >{{ p.text }}</span>
-              <span
-                v-if="info?.area"
-                class="chat-area text-muted"
-              >{{ fmt("inbox.area", { area: info.area }) }}</span>
-            </p>
-          </div>
-          <UPopover
-            v-if="info"
-            v-model:open="inbox.infoOpen"
-            :content="{ align: 'end' }"
-          >
-            <UButton
-              id="chat_info"
-              :icon="icon('info')"
-              :aria-label="t('inbox.info')"
-              :title="t('inbox.info')"
-              color="neutral"
-              variant="ghost"
-              size="sm"
-            />
-            <template #content>
-              <div class="chat-info-panel flex w-72 max-w-[calc(100vw-2rem)] flex-col gap-2 p-4">
-                <h3>{{ t("inbox.participants.label") }}</h3>
-                <ul
-                  id="chat_members"
-                  class="chat-members flex flex-col gap-1.5"
-                  :aria-label="t('inbox.participants.label')"
-                >
-                  <li
-                    v-for="chip in chips"
-                    :key="chip.name"
-                    class="member-chip flex items-start gap-2 text-sm"
-                    :class="chip.state"
-                    :style="{ '--who': chip.who }"
-                  >
-                    <span class="flex min-w-0 flex-1 flex-col">
-                      <strong class="text-[var(--who)]">{{ chip.name }}</strong>
-                      <span
-                        v-if="chip.note"
-                        class="member-note text-xs text-muted"
-                      >{{ chip.note }}</span>
-                    </span>
-                    <UButton
-                      v-if="canManage && !chip.self"
-                      :id="'chat_remove_' + chip.key"
-                      :icon="icon('close')"
-                      :aria-label="t('inbox.members.remove') + ': ' + chip.key"
-                      :title="t('inbox.members.remove')"
-                      color="neutral"
-                      variant="ghost"
-                      size="xs"
-                      :disabled="inbox.membersBusy"
-                      @click="inbox.confirmRemove(chip.key)"
-                    />
-                  </li>
-                </ul>
-                <template v-if="canManage && invitable.length">
-                  <h3>{{ t("inbox.members.add") }}</h3>
-                  <ul
-                    id="chat_invite"
-                    class="flex flex-col gap-1.5"
-                    :aria-label="t('inbox.members.add')"
-                  >
-                    <li
-                      v-for="person in invitable"
-                      :key="person.name"
-                      class="flex items-center gap-2 text-sm"
-                      :style="{ '--who': whoColor(person.name) }"
-                    >
-                      <span class="flex min-w-0 flex-1 flex-col">
-                        <strong class="text-[var(--who)]">{{ person.name }}</strong>
-                        <span class="text-xs text-muted">{{ t(person.online ? 'inbox.member.online' : 'inbox.member.away') }}</span>
-                      </span>
-                      <UButton
-                        :id="'chat_invite_' + person.name"
-                        :label="t('inbox.members.add_button')"
-                        size="xs"
-                        variant="soft"
-                        :disabled="inbox.membersBusy"
-                        @click="inbox.setMembers([person.name])"
-                      />
-                    </li>
-                  </ul>
-                </template>
-                <h3>{{ t("inbox.info.sessions") }}</h3>
-                <ul
-                  id="chat_sessions"
-                  class="chat-sessions flex flex-col gap-1 text-sm"
-                >
-                  <li
-                    v-for="(s, i) in sessions"
-                    :key="i"
-                  >
-                    {{ s }}
-                  </li>
-                  <li
-                    v-if="!sessions.length"
-                    class="empty text-muted"
-                  >
-                    {{ t("inbox.info.no_sessions") }}
-                  </li>
-                </ul>
-              </div>
-            </template>
-          </UPopover>
-          <UButton
-            v-if="canArchive"
-            id="chat_archive"
-            :icon="icon('archive')"
-            :label="isNarrow ? undefined : t('inbox.archive_history')"
-            :aria-label="t('inbox.archive_history')"
-            :title="t('inbox.archive_history.title')"
-            color="neutral"
-            variant="ghost"
-            size="sm"
-            :disabled="inbox.closing"
-            @click="inbox.confirmArchive"
-          />
-          <UButton
-            v-if="canClose"
-            id="chat_close"
-            :icon="icon(info?.legacy ? 'archive' : 'finish')"
-            :aria-label="t(info?.legacy ? 'inbox.close.legacy' : 'inbox.close')"
-            :title="t(info?.legacy ? 'inbox.close.legacy' : 'inbox.close')"
-            color="neutral"
-            variant="ghost"
-            size="sm"
-            :disabled="inbox.closing"
-            @click="inbox.confirmClose"
-          />
-        </header>
+        </div>
+        <p
+          v-if="inbox.subtitleError"
+          id="chat_error"
+          class="chat-column flex-none pb-2 text-xs text-error"
+          role="status"
+        >
+          {{ inbox.subtitleError }}
+        </p>
 
         <ChatTimeline />
         <div class="chat-column flex flex-none flex-col gap-2 pb-4">

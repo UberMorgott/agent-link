@@ -195,6 +195,13 @@ export const useProjectsStore = defineStore('projects', () => {
     return view
   }
 
+  // removeMember removes a member from the whole project, for every member.
+  async function removeMember(pid: string, name: string) {
+    const view = await api<ProjectView>('POST', projectPath(pid, 'members/remove'), { name })
+    upsert(view)
+    return view
+  }
+
   // leave returns the project to open next ("" when none is left).
   async function leave(pid: string): Promise<string> {
     await api('POST', projectPath(pid, 'leave'))
@@ -290,7 +297,7 @@ export const useProjectsStore = defineStore('projects', () => {
     list, chats, archives, archiveOpen, current, currentProject, hasLegacy, loaded, invite, inviteFor,
     joinStep, joinProject, joinCreated,
     byID, upsert, listSettled, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped, toggleArchive,
-    open, landing, create, rename, bind, addMember, leave, createChat, revealInvite, hideInvite,
+    open, landing, create, rename, bind, addMember, removeMember, leave, createChat, revealInvite, hideInvite,
     joinReset, join, joinProgress, joinCancel, dialog, dialogProject, openDialog, closeDialog,
   }
 })

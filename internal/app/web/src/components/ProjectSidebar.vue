@@ -46,7 +46,9 @@ const tree = computed(() => (projects.list || []).map((p) => ({
   p,
   name: p.display || t("projects.connecting"),
   dot: p.state === 'error' ? 'off' : p.online > 0 ? 'on' : 'away',
-  online: fmt("projects.online", { online: p.online, total: p.total }),
+  // Who is reachable, on the dot's tooltip (the chat has no header of its own).
+  online: [fmt("projects.online", { online: p.online, total: p.total }), ...(p.members || []).filter((m) => !m.self)
+    .map((m) => m.name + ' — ' + t(m.online ? "inbox.member.online" : "inbox.member.away"))].join('\n'),
   unread: unread(p.id),
   open: expanded(p),
   active: projects.current === p.id && current.value === 'project',

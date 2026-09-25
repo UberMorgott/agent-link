@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -150,6 +151,10 @@ func TestProjectsAPI(t *testing.T) {
 	if got := h.app.Settings().Bindings[0].Peers; !slices.Equal(got, []string{"127.0.0.1:7420"}) {
 		t.Fatalf("binding peers %v", got)
 	}
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/members/remove", map[string]any{"name": "alice"}, http.StatusBadRequest, "remove_self")
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/members/remove", map[string]any{"name": "zed"}, http.StatusNotFound, "unknown_member")
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/members/remove", map[string]any{"name": " "}, http.StatusBadRequest, "bad_request")
+	h.wantError(t, http.MethodPost, "projects/"+strings.Repeat("A", 26)+"/members/remove", map[string]any{"name": "bob"}, http.StatusNotFound, "not_found")
 
 	// Join: bad input, a known invite, another secret for the same project.
 	h.wantError(t, http.MethodPost, "projects/join", map[string]any{"invite": "ALP1.nope"}, http.StatusBadRequest, "invite")
@@ -384,6 +389,38 @@ func TestProjectsJoinFlow(t *testing.T) {
 		t.Fatalf("close: %d %s", code, raw)
 	}
 	alice.wantError(t, http.MethodPost, "projects/"+p.ID+"/send", map[string]any{"chat_id": chat.ID, "body": "ещё"}, http.StatusConflict, "chat_closed")
+
+	// A removal whose settings cannot be saved changes nothing: bob keeps
+	// alice as a member and her address in his binding.
+	peers := bob.app.Settings().Bindings[bob.app.bindingIndex(p.ID)].Peers
+	if !slices.Contains(peers, addr) {
+		t.Fatalf("bob's binding peers %v, want %s", peers, addr)
+	}
+	saved, err := os.ReadFile(bob.app.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bob.app.path, []byte(`{"version": 999}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, raw := bob.api(t, http.MethodPost, "projects/"+p.ID+"/members/remove", map[string]any{"name": "alice"}, nil); code != http.StatusInternalServerError {
+		t.Fatalf("remove with a failing save: %d %s", code, raw)
+	}
+	if err := os.WriteFile(bob.app.path, saved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bob.api(t, http.MethodGet, "projects/"+p.ID, nil, &v)
+	if !slices.ContainsFunc(v.Members, func(m node.MemberInfo) bool { return m.Name == "alice" }) ||
+		!slices.Equal(bob.app.Settings().Bindings[bob.app.bindingIndex(p.ID)].Peers, peers) {
+		t.Fatalf("a failed save changed the member list %+v or peers %v", v.Members, bob.app.Settings().Bindings[bob.app.bindingIndex(p.ID)].Peers)
+	}
+
+	// Removing bob: gone from alice's members; a second removal knows no bob.
+	if code, raw := alice.api(t, http.MethodPost, "projects/"+p.ID+"/members/remove", map[string]any{"name": "bob"}, &v); code != http.StatusOK ||
+		slices.ContainsFunc(v.Members, func(m node.MemberInfo) bool { return m.Name == "bob" }) {
+		t.Fatalf("remove member: %d %s", code, raw)
+	}
+	alice.wantError(t, http.MethodPost, "projects/"+p.ID+"/members/remove", map[string]any{"name": "bob"}, http.StatusNotFound, "unknown_member")
 }
 
 // Joining the legacy network while an agent answers needs its working folder:

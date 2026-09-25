@@ -6,12 +6,16 @@ import UModal from '@nuxt/ui/components/Modal.vue'
 import { pickFolder } from '@/lib/folders'
 import { icon } from '@/lib/icons'
 import { navigate, openProject } from '@/lib/nav'
-import { fmt, t } from '@/lib/runtime'
+import { browser, fmt, t } from '@/lib/runtime'
+import { useAppStore } from '@/stores/app'
+import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore, type ProjectDialog } from '@/stores/projects'
 
 // The dialogs of a project's menu (ProjectMenu.vue): members, the invite, the
-// shared name, this member's folder, leaving.
+// shared name, this member's folder, deleting the project here (leaving).
 const projects = useProjectsStore()
+const inbox = useInboxStore()
+const app = useAppStore()
 
 const view = computed(() => projects.byID(projects.dialogProject))
 const name = computed(() => view.value?.display || t("projects.connecting"))
@@ -61,14 +65,44 @@ async function run(action: () => Promise<unknown>) {
 
 // --- members ---
 
+// The project's active chat: its owner invites project members into it and
+// removes them from it, here (the chat has no header of its own).
+const active = computed(() => inbox.activeChat(projects.dialogProject))
+const canManageChat = computed(() => {
+  const c = active.value
+  return !!c && c.mode === 'project' && !!app.self && c.owner === app.self && !c.closed && !c.removed
+})
+
 const members = computed(() => (view.value?.members || []).map((m) => {
   const details: string[] = []
   if (!m.self) details.push(t(m.online ? "participants.online" : "participants.lost"))
   if (!m.self && !m.online && m.seen) details.push(fmt("participants.seen", { when: new Date(m.seen).toLocaleString('ru-RU') }))
   if (m.app) details.push(fmt("participants.version", { version: m.app }))
   if ((m.addrs || []).length) details.push(fmt("participants.addresses", { addresses: m.addrs!.join(', ') }))
-  return { name: m.self ? m.name + ' (' + t("inbox.you") + ')' : m.name, online: m.self || m.online, details: details.join(' · ') }
+  const inChat = (active.value?.participants || []).includes(m.name)
+  return {
+    key: m.name, self: !!m.self, inChat, name: m.self ? m.name + ' (' + t("inbox.you") + ')' : m.name,
+    online: m.self || m.online, details: details.join(' · '),
+  }
 }))
+
+function chatMembers(name: string, add: boolean) {
+  const c = active.value
+  if (!c) return
+  return run(async () => {
+    if (add) await inbox.setMembers(projects.dialogProject, c.id, [name])
+    else await inbox.confirmRemove(projects.dialogProject, c.id, name)
+  })
+}
+
+// removeMember removes a member from the whole project, after a confirmation.
+function removeMember(name: string) {
+  if (!browser.confirm(fmt("project.members.remove_confirm", { name }))) return
+  return run(async () => {
+    await projects.removeMember(projects.dialogProject, name)
+    result.value = fmt("project.members.removed", { name })
+  })
+}
 
 function addMember() {
   const value = addr.value.trim()
@@ -166,10 +200,43 @@ function leave() {
               class="project-dot mt-2"
               :class="m.online ? 'on' : 'away'"
             />
-            <span class="flex min-w-0 flex-col">
+            <span class="flex min-w-0 flex-1 flex-col">
               <strong class="text-sm text-highlighted">{{ m.name }}</strong>
               <span class="text-xs break-all text-muted">{{ m.details }}</span>
             </span>
+            <template v-if="!m.self">
+              <UButton
+                v-if="canManageChat && !m.inChat"
+                :id="'chat_invite_' + m.key"
+                :label="t('inbox.members.add_button')"
+                :title="t('inbox.members.add')"
+                size="xs"
+                variant="soft"
+                :disabled="busy || inbox.membersBusy"
+                @click="chatMembers(m.key, true)"
+              />
+              <UButton
+                v-if="canManageChat && m.inChat"
+                :id="'chat_remove_' + m.key"
+                :label="t('inbox.members.remove')"
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                :disabled="busy || inbox.membersBusy"
+                @click="chatMembers(m.key, false)"
+              />
+              <UButton
+                :id="'member_remove_' + m.key"
+                :icon="icon('remove')"
+                :aria-label="t('project.members.remove') + ': ' + m.key"
+                :title="t('project.members.remove')"
+                size="xs"
+                color="error"
+                variant="ghost"
+                :disabled="busy"
+                @click="removeMember(m.key)"
+              />
+            </template>
           </li>
         </ul>
         <form
@@ -385,13 +452,13 @@ function leave() {
 
   <UModal
     v-model:open="leaveOpen"
-    :title="t('project.leave.title')"
+    :title="t(view?.legacy ? 'project.leave.title' : 'project.delete.title')"
     :description="name"
     :ui="{ footer: 'justify-end' }"
   >
     <template #body>
       <p class="text-sm">
-        {{ view?.legacy ? t("project.leave.text_legacy") : fmt("project.leave.text", { name }) }}
+        {{ view?.legacy ? t("project.leave.text_legacy") : fmt("project.delete.text", { name }) }}
       </p>
       <p
         class="dialog-result mt-2 text-sm text-error"
@@ -409,7 +476,7 @@ function leave() {
       />
       <UButton
         id="leave_confirm"
-        :label="t('project.leave.submit')"
+        :label="t(view?.legacy ? 'project.leave.submit' : 'project.delete.submit')"
         color="error"
         :disabled="busy"
         @click="leave"

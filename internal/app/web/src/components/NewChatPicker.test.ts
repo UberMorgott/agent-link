@@ -38,16 +38,17 @@ describe('the new chat picker', () => {
     expect(made.participants).toEqual(['alice'])
     expect(made.owner).toBe('alice')
 
-    const inbox = useInboxStore()
-    inbox.infoOpen = true
+    // The project's members dialog invites into its chat and removes from it.
+    useProjectsStore().openDialog('members', SITE)
     await settle()
-    expect($$('#chat_invite button').map((b) => b.id)).toEqual(['chat_invite_bob', 'chat_invite_carol'])
+    const invites = () => $$('[id^="chat_invite_"]').map((b) => b.id)
+    expect(invites()).toEqual(['chat_invite_bob', 'chat_invite_carol'])
     // carol is away: she is invited all the same.
     $<HTMLButtonElement>('#chat_invite_carol')!.click()
     await settle()
     expect(calls).toContain('POST projects/' + SITE + '/chats/' + made.id + '/members')
     expect(made.participants).toEqual(['alice', 'carol'])
-    expect($$('#chat_invite button').map((b) => b.id)).toEqual(['chat_invite_bob'])
+    expect(invites()).toEqual(['chat_invite_bob'])
 
     const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(true)
     $<HTMLButtonElement>('#chat_remove_carol')!.click()
@@ -95,8 +96,10 @@ describe('the new chat picker', () => {
   it('archives a project chat\'s history and opens a fresh chat with the same people at once', async () => {
     const { backend, router, calls } = await open('/p/' + SITE + '/c/' + CHAT)
     expect($('#chat_close')).toBeNull()
-    const archive = $<HTMLButtonElement>('#chat_archive')!
-    expect(archive.getAttribute('aria-label')).toBe('inbox.archive_history')
+    // «Очистить историю» lives in the project's menu.
+    $<HTMLButtonElement>('[data-project="' + SITE + '"] .project-more')!.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }))
+    await settle()
+    const archive = $$('[role="menuitem"]').find((i) => i.textContent!.trim() === 'inbox.archive_history')!
     const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(true)
     archive.click()
     await settle()
