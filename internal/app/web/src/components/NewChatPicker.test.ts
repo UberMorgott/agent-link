@@ -11,8 +11,10 @@ const $$ = <T extends Element = HTMLElement>(sel: string) => Array.from(document
 const ticked = () => $$('#new_chat_members [role="checkbox"]').filter((box) => box.getAttribute('aria-checked') === 'true').map((box) => box.id)
 const CHAT = '7b8b965ad4bca0e41ab51de7b31363a1'
 
-async function open(path: string) {
+async function open(path: string, noActive = false) {
   const api = fakeBackend()
+  // A project has one active chat; without one «new chat» starts it.
+  if (noActive) for (const c of api.backend.chats[SITE] || []) Object.assign(c, { closed: true, archived: true })
   const mounted = await mountApp(path)
   useAppStore().status = { configured: true, node: 'alice' }
   await useProjectsStore().refreshAll()
@@ -22,7 +24,7 @@ async function open(path: string) {
 
 describe('the new chat picker', () => {
   it('starts a project chat with nobody else; its owner invites and removes members later', async () => {
-    const { backend, calls } = await open('/p/' + SITE)
+    const { backend, calls } = await open('/p/' + SITE, true)
     $<HTMLButtonElement>('#project_new_chat')!.click()
     await settle()
     for (const box of $$('#new_chat_members [role="checkbox"]')) box.click()
@@ -56,7 +58,7 @@ describe('the new chat picker', () => {
   })
 
   it('lists every member with their state, all chosen; the list is sent as is', async () => {
-    const { backend } = await open('/p/' + SITE)
+    const { backend } = await open('/p/' + SITE, true)
     $<HTMLButtonElement>('#project_new_chat')!.click()
     await settle()
     const people = $$('#new_chat_members [role="checkbox"]')
@@ -79,22 +81,37 @@ describe('the new chat picker', () => {
     expect(useInboxStore().newChatOpen).toBe(false)
   })
 
-  it('names the end of a chat «Завершить чат» and offers a new chat with the same people', async () => {
-    const { router, calls } = await open('/p/' + SITE + '/c/' + CHAT)
-    const close = $<HTMLButtonElement>('#chat_close')!
-    expect(close.getAttribute('aria-label')).toBe('inbox.close')
-    const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(true)
-    close.click()
+  it('asking for a new chat in a project with one opens that chat', async () => {
+    const { backend, router } = await open('/p/' + SITE)
+    const before = backend.chats[SITE]!.length
+    $<HTMLButtonElement>('#project_new_chat')!.click()
     await settle()
-    expect(confirm).toHaveBeenCalledWith('inbox.close.confirm')
-    expect(calls).toContain('POST projects/' + SITE + '/chats/' + CHAT + '/close')
-    expect(router.currentRoute.value.name).toBe('project')
-    // The finished chat, reopened from the archive, offers the same people again.
+    $<HTMLButtonElement>('#new_chat_create')!.click()
+    await settle()
+    expect(backend.chats[SITE]!.length).toBe(before)
+    expect(router.currentRoute.value.params.chat).toBe(CHAT)
+  })
+
+  it('archives a project chat\'s history and opens a fresh chat with the same people at once', async () => {
+    const { backend, router, calls } = await open('/p/' + SITE + '/c/' + CHAT)
+    expect($('#chat_close')).toBeNull()
+    const archive = $<HTMLButtonElement>('#chat_archive')!
+    expect(archive.getAttribute('aria-label')).toBe('inbox.archive_history')
+    const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(true)
+    archive.click()
+    await settle()
+    expect(confirm).toHaveBeenCalledWith('inbox.archive_history.confirm')
+    expect(calls).toContain('POST projects/' + SITE + '/chats/' + CHAT + '/archive')
+    const fresh = backend.chats[SITE]![0]!
+    expect(fresh.id).not.toBe(CHAT)
+    expect(fresh.prev).toBe(CHAT)
+    expect(router.currentRoute.value.params.chat).toBe(fresh.id)
+    // The archived history, reopened, leads back to the project's chat.
     await router.push('/p/' + SITE + '/c/' + CHAT)
     await settle()
-    expect($('#chat_note_text')!.textContent).toContain('inbox.closed_note')
-    $<HTMLButtonElement>('#chat_note_action')!.click()
+    expect($('#chat_note_text')!.textContent).toContain('inbox.archived_note')
+    $<HTMLButtonElement>('#chat_note_current')!.click()
     await settle()
-    expect(ticked()).toEqual(['new_chat_bob'])
+    expect(router.currentRoute.value.params.chat).toBe(fresh.id)
   })
 })

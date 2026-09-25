@@ -300,6 +300,13 @@ export const useInboxStore = defineStore('inbox', () => {
     else showNewChat(pid, [peer])
   }
 
+  // openActive opens a project's one active chat, or starts it.
+  function openActive(pid: string) {
+    const found = (projects.chats[pid] || []).find((c) => !c.legacy && !c.closed && !c.archived)
+    if (found) openChat(pid, found.id)
+    else showNewChat(pid)
+  }
+
   // --- members of a project chat: its owner invites and removes them ---
 
   const membersBusy = ref(false)
@@ -350,6 +357,31 @@ export const useInboxStore = defineStore('inbox', () => {
     const key = !info?.legacy ? "inbox.close.confirm" : legacyPeerOldOf(info) ? "inbox.close.confirm_old" : "inbox.close.confirm_legacy"
     if (!browser.confirm(t(key))) return
     return closeChat()
+  }
+
+  // --- archiving a project chat's history: a fresh chat with the same members
+  // takes its place at once and the view moves to it ---
+
+  async function archiveChat() {
+    const info = chat.value
+    const pid = project.value
+    if (!info || closing.value) return
+    closing.value = true
+    try {
+      const fresh = await api<ChatInfo>('POST', chatPath(pid, info.id, 'archive'))
+      projects.chats = { ...projects.chats, [pid]: [fresh, ...(projects.chats[pid] || []).filter((c) => c.id !== info.id && c.id !== fresh.id)] }
+      openChat(pid, fresh.id)
+      focusComposer.value++
+      void projects.refreshChats(pid)
+    } catch (error) {
+      sendResult.value = (error as Error).message
+      subtitleError.value = (error as Error).message
+    } finally { closing.value = false }
+  }
+
+  function confirmArchive() {
+    if (!browser.confirm(t("inbox.archive_history.confirm"))) return
+    return archiveChat()
   }
 
   function legacyPeerOldOf(info: ChatInfo) {
@@ -435,6 +467,6 @@ export const useInboxStore = defineStore('inbox', () => {
     subtitleError, sending, closing, infoOpen, focusComposer, askState, reads, toasts,
     newChatOpen, newChatPeople, newChatChosen, newChatResult, newChatBusy, focusNewChat,
     askFor, setAsk, loadChat, loadOlder, saveDraft, setReply, selectChat, submitMessage, showNewChat, hideNewChat,
-    createChat, openPeer, closeChat, confirmClose, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, openKey,
+    createChat, openPeer, openActive, closeChat, confirmClose, archiveChat, confirmArchive, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, openKey,
   }
 })

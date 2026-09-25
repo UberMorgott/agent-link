@@ -38,7 +38,7 @@ describe('a project page', () => {
     }
   })
 
-  it('lists the chats of a project and starts a new one from the sidebar', async () => {
+  it('lists the chat of a project; «new chat» from the sidebar opens it, a project has one', async () => {
     const { router, calls } = await open('/p/' + SITE)
     expect($('#project_title')!.textContent).toContain('Мой сайт')
     expect($$('#project_chats .chat-row')).toHaveLength(1)
@@ -50,7 +50,8 @@ describe('a project page', () => {
     expect(calls).toContain('POST projects/' + SITE + '/chats')
     expect(router.currentRoute.value.name).toBe('chat')
     expect(router.currentRoute.value.params.project).toBe(SITE)
-    expect(useProjectsStore().chats[SITE]).toHaveLength(2)
+    expect(router.currentRoute.value.params.chat).toBe(CHAT)
+    expect(useProjectsStore().chats[SITE]).toHaveLength(1)
   })
 
   it('counts unread chats per project from the read cursors, not from the agent', async () => {

@@ -47,11 +47,15 @@ const bubbles = computed<Bubble[]>(() => {
       }
     }
     if (m.kind === 'chat_open' || m.kind === 'chat_close') {
+      // A project has one chat: closing it archives its history, and the chat
+      // that takes over (prev) opens with the history in the archive.
+      const inProject = inbox.project !== 'legacy' && !info?.legacy
+      const [key, own] = m.kind === 'chat_close'
+        ? (inProject ? ["inbox.event.archive", "inbox.event.archive_self"] : ["inbox.event.close", "inbox.event.close_self"])
+        : (inProject && info?.prev ? ["inbox.event.reopen", "inbox.event.reopen_self"] : ["inbox.event.open", "inbox.event.open_self"])
       return {
         m, event: true, out: false, cont: false, cls: 'msg-event', who: '', icon: '', fyi: '', quote: '', note: '', tick: null, canReply: false,
-        author: m.from === self
-          ? t(m.kind === 'chat_open' ? "inbox.event.open_self" : "inbox.event.close_self")
-          : fmt(m.kind === 'chat_open' ? "inbox.event.open" : "inbox.event.close", { name: authorName(m.from, self) }),
+        author: m.from === self ? t(own) : fmt(key, { name: authorName(m.from, self) }),
       }
     }
     const agent = isAgent(m)

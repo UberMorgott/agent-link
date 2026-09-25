@@ -72,6 +72,13 @@ function serve() {
     if (path === 'projects') return [{ id: P, legacy: false, name: 'Сайт', alias: '', display: 'Сайт', dir: 'W:/work', state: 'ready', problem: '', online: 2, total: 2, can_rename: true, has_invite: true, busy: false, members: [{ name: 'local', self: true, online: true }, { name: 'bob', online: true }, { name: 'карл & sons', online: true }, { name: 'alice', online: false }] }]
     if (!path.startsWith(prefix)) throw new Error('unexpected call ' + method + ' ' + path)
     path = path.slice(prefix.length)
+    if (method === 'POST' && path.endsWith('/archive')) {
+      const id = decodeURIComponent(path.split('/')[1]!)
+      const chat = chats[id]!
+      chat.info = { ...chat.info, closed: true, archived: true }
+      chats.c6 = { info: { ...chat.info, id: 'c6', prev: id, closed: false, archived: false, last_seq: 0 }, items: [] }
+      return chats.c6.info
+    }
     if (method === 'POST' && path.endsWith('/close')) {
       const chat = chats[decodeURIComponent(path.split('/')[1]!)]!
       chat.info = { ...chat.info, closed: true, archived: true }
@@ -164,13 +171,15 @@ describe('the open chat', () => {
     expect(text(bubble('m199').querySelector('.msg-author'))).toBe('bob')
     expect(text(bubble('m198').querySelector('.msg-author'))).toBe('inbox.you')
 
-    expect(text($('#conversation_title'))).toContain('bob, карл & sons')
+    // A project has one chat: it goes by the project's name.
+    expect(text($('#conversation_title'))).toBe('Сайт')
     // Members and sessions live in the chat's info popover.
     inbox.infoOpen = true
     await settle()
     const chips = $$('#chat_members > li')
     expect(chips).toHaveLength(3)
-    expect($('#chat_close')).not.toBeNull()
+    expect($('#chat_archive')).not.toBeNull()
+    expect($('#chat_close')).toBeNull()
     expect($('#send')).not.toBeNull()
     expect(chips[2]!.className).toContain('away')
     expect(text(chips[2]!)).toContain('в очереди 2')
@@ -373,18 +382,19 @@ describe('the chat list and the ways into a chat', () => {
       expect($$('#chat_activity > li.presence')).toHaveLength(0)
     }
 
-    // Closing: the chat leaves the list at once and the view moves to the next chat.
+    // Archiving the history: the chat leaves the list at once and the view
+    // moves to the fresh chat that takes its place.
     await router.push('/p/PROJ/c/c4')
     await settle()
-    projects.chats = { [P]: [chats.c4!.info, chats.c3!.info] }
+    projects.chats = { [P]: [chats.c4!.info] }
     await settle()
     const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(true)
-    $<HTMLButtonElement>('#chat_close')!.click()
+    $<HTMLButtonElement>('#chat_archive')!.click()
     await settle()
-    expect(confirm).toHaveBeenCalledWith('inbox.close.confirm')
+    expect(confirm).toHaveBeenCalledWith('inbox.archive_history.confirm')
     expect(projects.chats[P]!.some((c) => c.id === 'c4')).toBe(false)
     expect($('[data-chat="c4"]')).toBeNull()
-    expect(router.currentRoute.value.params.chat).toBe('c3')
+    expect(router.currentRoute.value.params.chat).toBe('c6')
   })
 })
 
