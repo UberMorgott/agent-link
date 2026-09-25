@@ -43,6 +43,9 @@ func (a *App) projectRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST "+p+"/{pid}/chats/{id}/close", a.projectChat(func(n *node.Node, _ *http.Request, id string) (any, error) {
 		return n.CloseChat(id)
 	}))
+	api.HandleFunc("POST "+p+"/{pid}/chats/{id}/archive", a.projectChat(func(n *node.Node, _ *http.Request, id string) (any, error) {
+		return n.ArchiveChat(id)
+	}))
 	api.HandleFunc("POST "+p+"/{pid}/chats/{id}/members", a.projectChat(chatMembers))
 	api.HandleFunc("POST "+p+"/{pid}/send", a.projectSend)
 }
@@ -795,7 +798,7 @@ func (a *App) chatFailed(w http.ResponseWriter, err error) {
 		writeCodedError(w, http.StatusBadRequest, "empty_body")
 	case errors.Is(err, node.ErrBadParticipants), errors.Is(err, node.ErrUnknownPeer), errors.Is(err, node.ErrNoChatSupport):
 		writeCodedError(w, http.StatusBadRequest, "chat_participants")
-	case errors.Is(err, node.ErrBadRequest):
+	case errors.Is(err, node.ErrBadRequest), errors.Is(err, node.ErrNotProject):
 		writeCodedError(w, http.StatusBadRequest, "bad_request")
 	case errors.Is(err, node.ErrNotChatOwner):
 		writeCodedError(w, http.StatusForbidden, "chat_owner")

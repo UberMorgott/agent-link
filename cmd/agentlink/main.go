@@ -45,7 +45,8 @@ const usage = `usage:
   agentlink send  --config <path> [--to <node|area:NAME>] [--area <name>] --body <text> [--reply-to <id>] [--ask <node,...>] [--project <id>]   (into the one open chat with them; no --to: the only peer; the area defaults to this folder's project)
   agentlink send  --config <path> --chat <id> --body <text> [--ask <node,...>] [--reply-to <id>] [--project <id>]   (to every chat participant; --ask: who must answer)
   agentlink wait  --config <path> [--timeout 0] [--chat <id>] [--project <id>]   (seconds or duration; 0 = forever; exit 2 on timeout; --chat: only that chat)
-  agentlink chat new     --config <path> --with <node,...> [--area <name>] [--project <id>]   (prints the chat id; you are added)
+  agentlink chat new     --config <path> --with <node,...> [--area <name>] [--project <id>]   (prints the chat id; you are added; in a project: its one active chat)
+  agentlink chat archive --config <path> [--chat <id>] [--project <id>]   (the project's chat history goes to the archive; a fresh chat with the same members opens; prints its id)
   agentlink chat list    --config <path> [--archive] [--legacy] [--project <id>]   (one JSON line per chat; without a project: every project's)
   agentlink chat history --config <path> --chat <id> [--limit 50] [--before <seq>] [--after <seq>] [--project <id>]   (one JSON line per message, oldest first)
   agentlink chat unread  --config <path> [--folder <path>] [--limit 50] [--after <cursor>] [--project <id>]   (unread messages for this node, oldest first, one JSON line each; a last line {"next":...} when more follow)
@@ -122,7 +123,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	cfgPath := fs.String("config", "", "config file")
 	project := new(string)
 	switch name {
-	case "send", "wait", "chat new", "chat list", "chat history", "chat unread", "chat ack", "inbox", "members", "add", "remove":
+	case "send", "wait", "chat new", "chat archive", "chat list", "chat history", "chat unread", "chat ack", "inbox", "members", "add", "remove":
 		project = fs.String("project", "", "project id (or legacy); default $"+envProjectID+", else the chat's or this folder's project")
 	}
 	// proj is the project selector: --project, else the agent's own project.
@@ -166,6 +167,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		with := fs.String("with", "", "the other participants, comma-separated")
 		area := fs.String("area", "", "area (project) the participants' agents work in")
 		cmd = func(c config.Config) (int, error) { return 0, chatNew(c, *with, *area, proj(), stdout) }
+	case "chat archive":
+		chat := fs.String("chat", "", "chat id to archive (default: the project's active chat)")
+		cmd = func(c config.Config) (int, error) { return 0, chatArchive(c, *chat, proj(), stdout) }
 	case "chat list":
 		archive := fs.Bool("archive", false, "list the archive instead of the main list")
 		legacy := fs.Bool("legacy", false, "add history from before chats as virtual chats")
@@ -438,6 +442,17 @@ func createChat(cfg config.Config, with []string, area, project string) (node.Ch
 	var info node.ChatInfo
 	err := apiJSON(http.MethodPost, apiURL(cfg, "/chats", inFolder(nil, project)), node.CreateChatRequest{Participants: with, Area: area}, &info)
 	return info, err
+}
+
+// chatArchive moves the project's chat history to the archive and prints the
+// id of the fresh active chat.
+func chatArchive(cfg config.Config, chat, project string, stdout io.Writer) error {
+	var info node.ChatInfo
+	if err := apiJSON(http.MethodPost, apiURL(cfg, "/chats/archive", inFolder(nil, project)), node.ArchiveRequest{ChatID: chat}, &info); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(stdout, info.ID)
+	return err
 }
 
 func chatList(cfg config.Config, archive, legacy bool, project string, stdout io.Writer) error {

@@ -258,6 +258,7 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	if err := n.repairChats(); err != nil {
 		return nil, err
 	}
+	n.MigrateProjectChats()
 	return n, nil
 }
 

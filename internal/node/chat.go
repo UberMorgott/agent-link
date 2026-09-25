@@ -72,6 +72,10 @@ type Chat struct {
 	// Seq before it joined: it never gets (nor is shown as owed) older
 	// messages. Local only.
 	Joined map[string]uint64 `json:"joined,omitempty"`
+	// Prev is, in a project, the chat this one took over from (its history
+	// went to the archive): live sessions of that chat follow it here
+	// (chatStore.affinity). Local only, never sent.
+	Prev string `json:"prev,omitempty"`
 }
 
 // ChatModeProject marks a standalone project chat (Chat.Mode, Message.ChatMode).
@@ -325,7 +329,13 @@ func (n *Node) EnsureOpenChat(parts []string, area string) (Chat, error) {
 	}
 	n.ensureMu.Lock()
 	defer n.ensureMu.Unlock()
-	proto := Chat{Participants: parts, Area: area, Project: n.cfg.Project}
+	if n.cfg.Project != "" {
+		// A project has one active chat: it is the conversation of any members.
+		if c, ok, err := n.projectChatLocked(parts); ok || err != nil {
+			return c, err
+		}
+	}
+	proto := Chat{Participants: parts, Area: area, Project: n.cfg.Project, Prev: n.lastChatLocked("")}
 	if proto.Project != "" {
 		ids, err := n.pinIDs(parts)
 		if err != nil {
@@ -382,12 +392,12 @@ func (n *Node) EnsureOpenChat(parts []string, area string) (Chat, error) {
 	}
 }
 
-// NewProjectChat starts a standalone chat of this project node with the
+// NewProjectChat returns the one active chat of this project node with the
 // members in with (names, also comma-separated; none for a chat of this node
-// alone, whose members come later by SetChatMembers): a new chat every time,
-// even for the same participants (Mode ChatModeProject), pinned to their node
-// ids and owned by this node. Once finished (closed) it never reopens;
-// talking on takes a new one.
+// alone, whose members come later by SetChatMembers) among its participants
+// (projectChatLocked). Only when the project has no active chat is a new
+// standalone chat started (Mode ChatModeProject), pinned to their node ids and
+// owned by this node. Once archived (closed) a chat never reopens.
 func (n *Node) NewProjectChat(with []string) (ChatInfo, error) {
 	if n.cfg.Project == "" {
 		return ChatInfo{}, ErrNotProject
@@ -395,26 +405,262 @@ func (n *Node) NewProjectChat(with []string) (ChatInfo, error) {
 	parts := slices.Concat([]string{n.cfg.Node}, splitNames(with))
 	slices.Sort(parts)
 	parts = slices.Compact(parts)
+	n.ensureMu.Lock()
+	defer n.ensureMu.Unlock()
+	c, ok, err := n.projectChatLocked(parts)
+	if !ok && err == nil {
+		c, err = n.startProjectChatLocked(parts, n.lastChatLocked(""))
+	}
+	if err != nil {
+		return ChatInfo{}, err
+	}
+	return n.Chat(c.ID)
+}
+
+// startProjectChatLocked starts a standalone project chat of parts (sorted,
+// this node included), owned by this node and taking over from prev. The
+// caller holds n.ensureMu.
+func (n *Node) startProjectChatLocked(parts []string, prev string) (Chat, error) {
 	for _, p := range parts {
 		if p != n.cfg.Node && n.Connected(p) && !n.PeerHas(p, CapChat) {
-			return ChatInfo{}, fmt.Errorf("%w: %s", ErrNoChatSupport, p)
+			return Chat{}, fmt.Errorf("%w: %s", ErrNoChatSupport, p)
 		}
 	}
 	ids, err := n.pinIDs(parts)
 	if err != nil {
-		return ChatInfo{}, err
+		return Chat{}, err
 	}
 	c := Chat{ID: DerivedID("agentlink-chat-v3/"+n.cfg.Project, n.id+"/"+newID()), Participants: parts,
-		CreatedAt: time.Now().UTC(), Project: n.cfg.Project, Mode: ChatModeProject, ParticipantIDs: ids, Owner: n.cfg.Node}
+		CreatedAt: time.Now().UTC(), Project: n.cfg.Project, Mode: ChatModeProject, ParticipantIDs: ids, Owner: n.cfg.Node, Prev: prev}
 	if _, err := n.chats.ensure(c); err != nil {
-		return ChatInfo{}, err
+		return Chat{}, err
 	}
 	open := Message{ID: DerivedID(c.ID, "open"), Kind: KindChatOpen, CreatedAt: c.CreatedAt}
 	if err := n.postChat(c, open); err != nil {
-		return ChatInfo{}, err
+		return Chat{}, err
 	}
 	n.changed("chats")
+	return c, nil
+}
+
+// activeChat reports whether c is an active chat of a project here: open, this
+// node a participant, and the chat of its conversation (keyed or standalone),
+// not history (chatInfo's Archived).
+func (n *Node) activeChat(c Chat) bool {
+	return c.Project != "" && !c.Closed() && slices.Contains(c.Participants, n.cfg.Node) &&
+		(c.Mode == ChatModeProject || c.Keyed())
+}
+
+// newerChat orders chats by creation: the later one, the greater id on a tie,
+// wins when a project has two active chats (every node picks the same one).
+func newerChat(a, b Chat) bool {
+	if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
+		return c > 0
+	}
+	return a.ID > b.ID
+}
+
+// activeChatsLocked lists this project node's active chats, the newest first
+// (newerChat). There is at most one but for a moment: another node's chat
+// just arrived (settleActiveLocked), or data from before the rule
+// (MigrateProjectChats). The caller holds n.ensureMu.
+func (n *Node) activeChatsLocked() []Chat {
+	var out []Chat
+	for _, s := range n.chats.all() {
+		if n.activeChat(s.chat) {
+			out = append(out, s.chat)
+		}
+	}
+	slices.SortFunc(out, func(a, b Chat) int {
+		if newerChat(a, b) {
+			return -1
+		}
+		return 1
+	})
+	return out
+}
+
+// lastChatLocked is the chat of this project node, other than except, with
+// the newest message stored here: the one a new active chat takes over from
+// (Chat.Prev). "" outside projects or with no other chat.
+func (n *Node) lastChatLocked(except string) string {
+	if n.cfg.Project == "" {
+		return ""
+	}
+	var best string
+	var at time.Time
+	for _, s := range n.chats.all() {
+		if s.chat.ID == except || !slices.Contains(s.chat.Participants, n.cfg.Node) {
+			continue
+		}
+		t := s.chat.CreatedAt
+		if len(s.msgs) > 0 {
+			t = s.msgs[len(s.msgs)-1].ReceivedAt
+		}
+		if best == "" || t.After(at) || (t.Equal(at) && s.chat.ID > best) {
+			best, at = s.chat.ID, t
+		}
+	}
+	return best
+}
+
+// projectChatLocked returns the project's active chat with parts (sorted,
+// this node included) among its participants; ok is false when the project
+// has none. Members it lacks are added when this node owns the standalone
+// chat; otherwise the chat is archived and a new one with everyone takes
+// over (rotateLocked). The caller holds n.ensureMu.
+func (n *Node) projectChatLocked(parts []string) (c Chat, ok bool, err error) {
+	active := n.activeChatsLocked()
+	if len(active) == 0 {
+		return Chat{}, false, nil
+	}
+	c = active[0]
+	kept := n.stillPinned(c)
+	var missing []string
+	repin := false // a member now on another node id (it re-joined)
+	for _, p := range parts {
+		if !slices.Contains(kept, p) {
+			missing = append(missing, p)
+			repin = repin || slices.Contains(c.Participants, p)
+		}
+	}
+	if len(missing) == 0 {
+		return c, true, nil
+	}
+	if !repin && c.Mode == ChatModeProject && n.chatOwner(c) == n.cfg.Node {
+		_, err := n.SetChatMembers(c.ID, missing, nil)
+		if err == nil {
+			c, _ = n.chats.get(c.ID)
+			return c, true, nil
+		}
+		if !errors.Is(err, ErrNoChatSupport) {
+			return Chat{}, true, err
+		}
+	}
+	all := slices.Concat(kept, missing)
+	slices.Sort(all)
+	c, err = n.rotateLocked(c, slices.Compact(all))
+	return c, true, err
+}
+
+// stillPinned lists c's participants still pinned to the node it was made
+// with (pinned): the members a chat that takes over from c keeps.
+func (n *Node) stillPinned(c Chat) []string {
+	var out []string
+	for i, p := range c.Participants {
+		if p == n.cfg.Node || n.pinned(c, i) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// rotateLocked archives active chat old (closes it for everyone) and starts
+// the project's new active chat of parts, which takes over from it. The
+// caller holds n.ensureMu.
+func (n *Node) rotateLocked(old Chat, parts []string) (Chat, error) {
+	for _, p := range parts {
+		if p != n.cfg.Node && n.Connected(p) && !n.PeerHas(p, CapChat) {
+			return Chat{}, fmt.Errorf("%w: %s", ErrNoChatSupport, p)
+		}
+	}
+	if _, err := n.pinIDs(parts); err != nil { // fail before archiving anything
+		return Chat{}, err
+	}
+	if err := n.closeLocal(old); err != nil {
+		return Chat{}, err
+	}
+	return n.startProjectChatLocked(parts, old.ID)
+}
+
+// ArchiveChat moves the history of this project's active chat to the archive
+// and opens a fresh, empty active chat with the same members at once: the
+// old chat is closed for every participant (its close message, and the new
+// chat's open message, tell them), the new one takes over its live sessions.
+// id names the chat to archive; "" means the active one. Archiving a chat that
+// is not active (already archived) only returns the active chat.
+func (n *Node) ArchiveChat(id string) (ChatInfo, error) {
+	if n.cfg.Project == "" {
+		return ChatInfo{}, ErrNotProject
+	}
+	n.ensureMu.Lock()
+	defer n.ensureMu.Unlock()
+	if id != "" {
+		if _, ok := n.chats.get(id); !ok {
+			return ChatInfo{}, fmt.Errorf("%w %s", ErrUnknownChat, id)
+		}
+	}
+	active := n.activeChatsLocked()
+	var c Chat
+	switch {
+	case len(active) == 0:
+		return ChatInfo{}, fmt.Errorf("%w: the project has no active chat", ErrUnknownChat)
+	case id != "" && id != active[0].ID:
+		c = active[0]
+	default:
+		var err error
+		if c, err = n.rotateLocked(active[0], n.stillPinned(active[0])); err != nil {
+			return ChatInfo{}, err
+		}
+	}
 	return n.Chat(c.ID)
+}
+
+// settleActiveLocked keeps one active chat in this project: of several, keep
+// wins and the others are archived (closed for everyone); keep takes over
+// from the newest of them. The caller holds n.ensureMu.
+func (n *Node) settleActiveLocked(keep Chat) {
+	var prev string
+	for _, c := range n.activeChatsLocked() {
+		if c.ID == keep.ID {
+			continue
+		}
+		if prev == "" {
+			prev = c.ID
+		}
+		if err := n.closeLocal(c); err != nil {
+			n.log.Warn("archive extra project chat", "chat", c.ID, "err", err)
+		}
+	}
+	if cur, _ := n.chats.get(keep.ID); prev != "" && cur.Prev == "" {
+		if err := n.chats.setPrev(keep.ID, prev); err != nil {
+			n.log.Warn("link project chat", "chat", keep.ID, "err", err)
+		}
+	}
+}
+
+// MigrateProjectChats enforces one active chat per project on data from
+// before the rule: of several active chats the one with the newest message
+// stays, the others are archived (closed for everyone). Nothing is deleted.
+func (n *Node) MigrateProjectChats() {
+	if n.cfg.Project == "" {
+		return
+	}
+	n.ensureMu.Lock()
+	defer n.ensureMu.Unlock()
+	active := n.activeChatsLocked()
+	if len(active) < 2 {
+		return
+	}
+	last := n.lastActiveLocked(active)
+	n.log.Info("one chat per project: archiving older chats", "keep", last.ID, "archived", len(active)-1)
+	n.settleActiveLocked(last)
+}
+
+// lastActiveLocked is the chat of chats with the newest message (its creation
+// when it has none).
+func (n *Node) lastActiveLocked(chats []Chat) Chat {
+	best, at := chats[0], time.Time{}
+	for i, c := range chats {
+		t := c.CreatedAt
+		if s, ok := n.chats.snapshot(c.ID); ok && len(s.msgs) > 0 {
+			t = s.msgs[len(s.msgs)-1].Message.CreatedAt
+		}
+		if i == 0 || t.After(at) {
+			best, at = c, t
+		}
+	}
+	return best
 }
 
 // chatOwner is who owns c: Owner, or for a chat made before owners the author
@@ -507,9 +753,18 @@ func (n *Node) SetChatMembers(id string, add, remove []string) (ChatInfo, error)
 
 // openChatOf returns the open chat of c's conversation: c itself when it is
 // an open keyed chat, else the open generation of its key (a closed chat, a
-// random-id chat of v0.5). A standalone project chat is its own conversation:
-// once closed, ErrChatClosed.
+// random-id chat of v0.5). In a project every conversation goes on in the
+// project's one active chat (EnsureOpenChat); without one a closed standalone
+// chat is ErrChatClosed.
 func (n *Node) openChatOf(c Chat) (Chat, error) {
+	if c.Project != "" && !n.activeChat(c) && slices.Contains(c.Participants, n.cfg.Node) {
+		n.ensureMu.Lock()
+		active, ok, err := n.projectChatLocked([]string{n.cfg.Node})
+		n.ensureMu.Unlock()
+		if ok || err != nil {
+			return active, err
+		}
+	}
 	if c.Mode == ChatModeProject {
 		if c.Closed() || !slices.Contains(c.Participants, n.cfg.Node) {
 			return Chat{}, fmt.Errorf("%w %s", ErrChatClosed, c.ID)
@@ -536,14 +791,24 @@ func (n *Node) CloseChat(id string) (ChatInfo, error) {
 	if !ok {
 		return ChatInfo{}, fmt.Errorf("%w %s", ErrUnknownChat, id)
 	}
-	if !c.Closed() && slices.Contains(c.Participants, n.cfg.Node) { // a removed member has nothing to close
-		m := Message{ID: DerivedID(c.ID, "close/"+n.cfg.Node), Kind: KindChatClose, AuthorKind: AuthorHuman, CreatedAt: time.Now().UTC()}
-		if err := n.postChat(c, m); err != nil {
-			return ChatInfo{}, err
-		}
-		n.changed("chats")
+	if err := n.closeLocal(c); err != nil {
+		return ChatInfo{}, err
 	}
 	return n.Chat(id)
+}
+
+// closeLocal closes stored chat c for every participant unless it is closed
+// already or this node was removed from it (it has nothing to close).
+func (n *Node) closeLocal(c Chat) error {
+	if c.Closed() || !slices.Contains(c.Participants, n.cfg.Node) {
+		return nil
+	}
+	m := Message{ID: DerivedID(c.ID, "close/"+n.cfg.Node), Kind: KindChatClose, AuthorKind: AuthorHuman, CreatedAt: time.Now().UTC()}
+	if err := n.postChat(c, m); err != nil {
+		return err
+	}
+	n.changed("chats")
+	return nil
 }
 
 // closeLegacy archives legacy chat id with peer here, up to its last message
@@ -980,10 +1245,39 @@ func (n *Node) receiveChat(peer, peerID string, m Message) bool {
 			n.changed("messages")
 		}
 	}
+	if created || moved {
+		n.settleReceived(m.ChatID)
+	}
 	if created || closed || moved {
 		n.changed("chats")
 	}
 	return true
+}
+
+// settleReceived keeps one active chat in this project after chat id arrived
+// from a peer or took this node in (an older peer may still start another
+// chat): the newest active chat (newerChat) wins, the others are archived. A
+// chat new here takes over from the chat last used here.
+func (n *Node) settleReceived(id string) {
+	if n.cfg.Project == "" {
+		return
+	}
+	n.ensureMu.Lock()
+	defer n.ensureMu.Unlock()
+	c, ok := n.chats.get(id)
+	if !ok || !n.activeChat(c) {
+		return
+	}
+	if c.Prev == "" {
+		if prev := n.lastChatLocked(id); prev != "" {
+			if err := n.chats.setPrev(id, prev); err != nil {
+				n.log.Warn("link project chat", "chat", id, "err", err)
+			}
+		}
+	}
+	if active := n.activeChatsLocked(); len(active) > 1 {
+		n.settleActiveLocked(active[0])
+	}
 }
 
 // receiveMembers applies the participants of m, from peer, to a known

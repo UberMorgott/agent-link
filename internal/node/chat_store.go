@@ -259,6 +259,26 @@ func (cs *chatStore) setMembers(c Chat) (Chat, error) {
 	return next, nil
 }
 
+// setPrev records on known chat id the chat it took over from (Chat.Prev).
+func (cs *chatStore) setPrev(id, prev string) error {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	st := cs.chats[id]
+	if st == nil {
+		return fmt.Errorf("%w %s", ErrUnknownChat, id)
+	}
+	if st.chat.Prev == prev || prev == id {
+		return nil
+	}
+	next := st.chat
+	next.Prev = prev
+	if err := writeJSON(filepath.Join(cs.chatDir(id), "chat.json"), next); err != nil {
+		return err
+	}
+	st.chat = next
+	return nil
+}
+
 func (cs *chatStore) get(id string) (Chat, bool) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
@@ -638,21 +658,26 @@ func (cs *chatStore) message(id string) (chatRecord, bool) {
 
 // affinity is the live session chat id's messages go to (routeOf): the one
 // behind its newest message a session of this node (self) wrote or was
-// assigned; "" when none of them is live.
+// assigned; "" when none of them is live. A chat that took over from another
+// (Chat.Prev: its history was archived) has that chat's sessions until one
+// of its own takes part.
 func (cs *chatStore) affinity(id, self string, live map[string]bool) string {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	st := cs.chats[id]
-	if st == nil {
-		return ""
-	}
-	for _, r := range slices.Backward(st.msgs) {
-		if r.Message.From == self && live[r.Session] {
-			return r.Session
+	for range 8 { // a few archived chats back at most
+		st := cs.chats[id]
+		if st == nil {
+			return ""
 		}
-		if s := assignedSession(r); live[s] {
-			return s
+		for _, r := range slices.Backward(st.msgs) {
+			if r.Message.From == self && live[r.Session] {
+				return r.Session
+			}
+			if s := assignedSession(r); live[s] {
+				return s
+			}
 		}
+		id = st.chat.Prev
 	}
 	return ""
 }

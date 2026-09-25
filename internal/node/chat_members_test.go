@@ -89,9 +89,18 @@ func TestProjectChatMembers(t *testing.T) {
 	if a.store.delivery("c", before.ID) != "" || a.store.delivery("c", hi.ID) != "" {
 		t.Fatal("repair queued older messages for a member that joined later")
 	}
-	keyed, err := a.EnsureOpenChat([]string{"a", "b"}, "")
-	if err != nil {
+	// The project's one active chat takes b back in (a owns it) rather than
+	// opening another; once it is finished a keyed chat starts.
+	again, err := a.EnsureOpenChat([]string{"a", "b"}, "")
+	if err != nil || again.ID != solo.ID || !slices.Equal(again.Participants, []string{"a", "b", "c"}) {
+		t.Fatalf("active chat with b again: %+v, %v", again, err)
+	}
+	if _, err := a.CloseChat(solo.ID); err != nil {
 		t.Fatal(err)
+	}
+	keyed, err := a.EnsureOpenChat([]string{"a", "b"}, "")
+	if err != nil || keyed.ID == solo.ID || keyed.Mode != "" || keyed.Prev != solo.ID {
+		t.Fatalf("keyed chat %+v, %v", keyed, err)
 	}
 	if _, err := a.SetChatMembers(keyed.ID, []string{"c"}, nil); !errors.Is(err, ErrBadParticipants) {
 		t.Fatalf("a keyed chat changed members: %v", err)

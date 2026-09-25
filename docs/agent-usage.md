@@ -95,8 +95,14 @@ agentlink chat ack     --ids <id,...> [--session <id>]         # mark read: the 
 agentlink chat history --chat <id> [--limit 50] [--before <seq>] [--after <seq>]
 agentlink chat list    [--archive] [--legacy]
 agentlink chat new     --with nikita[,olga] [--area dev]       # prints the chat id (the open one; created when missing)
+agentlink chat archive [--chat <id>]                           # project: history to the archive, a fresh chat opens
 agentlink wait         [--chat <id>] --timeout 0               # blocks until the next message
 ```
+
+A project has exactly one active chat, shown under the project's name: `chat new`, `send --to`
+and MCP `send` with `new_chat_with` all land in it (members it lacks are added), and a message to
+an archived chat of the project continues there. `chat archive` moves its history to the
+project's archive and opens a fresh chat with the same members; live sessions follow it.
 
 0. The network can have many members (everyone with the same code). `members` lists them:
    `name`, `online`, `addrs`, `app` (version), `self: true` for this node. Pick the recipient

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"slices"
@@ -138,6 +139,12 @@ type CreateChatRequest struct {
 	Area         string   `json:"area,omitempty"`
 }
 
+// ArchiveRequest is the body of POST /chats/archive: ChatID names the chat to
+// archive, "" the project's active one.
+type ArchiveRequest struct {
+	ChatID string `json:"chat_id,omitempty"`
+}
+
 // APIHandler serves the loopback control API (agents and the CLI; see
 // docs/agent-usage.md). It has no close: only people close chats, in the app.
 //
@@ -145,7 +152,8 @@ type CreateChatRequest struct {
 //	GET  /wait?timeout=30s   200 []Message (marked delivered) or 204 on timeout; 0 waits forever.
 //	                         Requests and replies only: status updates never wake it.
 //	     &chat=ID            only that chat's messages; the others stay for a later wait
-//	POST /chats              CreateChatRequest -> ChatInfo (EnsureOpenChat)
+//	POST /chats              CreateChatRequest -> ChatInfo (EnsureOpenChat; in a project its one active chat)
+//	POST /chats/archive      ArchiveRequest (optional) -> ChatInfo: the project's fresh active chat (ArchiveChat)
 //	GET  /chats?archive=1    200 []ChatInfo: the archive (default the main list); &legacy=1 adds pre-chat history
 //	GET  /chats/{id}         200 ChatInfo
 //	GET  /chats/{id}/messages?before=SEQ&after=SEQ&limit=50   200 []ChatMessage in Seq order
@@ -168,6 +176,19 @@ func (n *Node) APIHandler() http.Handler {
 	mux.HandleFunc("POST /send", n.handleSend)
 	mux.HandleFunc("GET /wait", n.handleWait)
 	mux.HandleFunc("GET /inbox", n.handleInbox)
+	mux.HandleFunc("POST /chats/archive", func(w http.ResponseWriter, r *http.Request) {
+		var req ArchiveRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxFrame)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		info, err := n.ArchiveChat(strings.TrimSpace(req.ChatID))
+		if err != nil {
+			http.Error(w, err.Error(), errorCode(err))
+			return
+		}
+		writeJSONResponse(w, info)
+	})
 	n.ChatRoutes(mux, "", false, func(w http.ResponseWriter, code int, err error) { http.Error(w, err.Error(), code) })
 	n.sessionRoutes(mux)
 	mux.HandleFunc("GET /members", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Members()) })

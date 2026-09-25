@@ -170,8 +170,9 @@ func TestProjectFanoutStopsAfterRejoin(t *testing.T) {
 	}
 }
 
-// Standalone chats: two open at once with equal participants; a finished one
-// is archived on both sides and never continues in a next generation.
+// Standalone chats: a project has one active chat, so asking for a new one
+// returns it; a finished one is archived on both sides and never continues in
+// a next generation. Only then does a new chat start.
 func TestProjectStandaloneChats(t *testing.T) {
 	p := newTestProject(t)
 	a, b := projectPair(t, p)
@@ -179,15 +180,21 @@ func TestProjectStandaloneChats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	two, err := a.NewProjectChat([]string{"b"})
+	same, err := a.NewProjectChat([]string{"b"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if one.ID == two.ID || one.Mode != ChatModeProject || one.Keyed || one.Archived || one.Gen != 0 ||
+	if one.ID != same.ID || one.Mode != ChatModeProject || one.Keyed || one.Archived || one.Gen != 0 ||
 		!slices.Equal(one.ParticipantIDs, []string{a.ID(), b.ID()}) {
-		t.Fatalf("standalone chats %+v / %+v", one.Chat, two.Chat)
+		t.Fatalf("standalone chats %+v / %+v", one.Chat, same.Chat)
 	}
-	eventually(t, "b has both open", func() bool { return len(openChats(b)) == 2 })
+	if keyed, err := a.EnsureOpenChat([]string{"a", "b"}, ""); err != nil || keyed.ID != one.ID {
+		t.Fatalf("keyed chat beside the active one: %+v, %v", keyed, err)
+	}
+	eventually(t, "b has it open", func() bool { return len(openChats(b)) == 1 })
+	if again, err := b.NewProjectChat([]string{"a"}); err != nil || again.ID != one.ID {
+		t.Fatalf("b's new chat: %+v, %v", again.Chat, err)
+	}
 	m, err := b.SendChat(ChatSend{ChatID: one.ID, Body: "in one", Ask: []string{"a"}})
 	if err != nil || m.ChatMode != ChatModeProject {
 		t.Fatalf("send: %+v, %v", m, err)
@@ -205,9 +212,20 @@ func TestProjectStandaloneChats(t *testing.T) {
 		if _, err := n.SendChat(ChatSend{ChatID: one.ID, Body: "more"}); !errors.Is(err, ErrChatClosed) {
 			t.Fatalf("%s: send to a finished chat: %v", n.cfg.Node, err)
 		}
-		if open := openChats(n); len(open) != 1 || open[0].ID != two.ID {
+		if open := openChats(n); len(open) != 0 {
 			t.Fatalf("%s: open chats %v", n.cfg.Node, open)
 		}
+	}
+	two, err := a.NewProjectChat([]string{"b"})
+	if err != nil || two.ID == one.ID || two.Prev != one.ID {
+		t.Fatalf("next chat %+v, %v", two.Chat, err)
+	}
+	eventually(t, "b has the next chat", func() bool {
+		open := openChats(b)
+		return len(open) == 1 && open[0].ID == two.ID
+	})
+	if m, err := b.SendChat(ChatSend{ChatID: one.ID, Body: "more"}); err != nil || m.ChatID != two.ID {
+		t.Fatalf("send to the archived chat goes on in the active one: %+v, %v", m, err)
 	}
 	if _, err := a.NewProjectChat([]string{"zed"}); !errors.Is(err, ErrUnknownPeer) {
 		t.Fatalf("unknown member: %v", err)
