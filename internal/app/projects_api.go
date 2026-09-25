@@ -863,8 +863,10 @@ func (a *App) projectSend(w http.ResponseWriter, r *http.Request) {
 	}
 	m, err := n.SendRequest(node.SendRequest{ChatID: req.ChatID, Body: req.Body, ReplyTo: req.ReplyTo, Ask: req.Ask,
 		AuthorKind: node.AuthorHuman, Attachments: req.Attachments})
-	if err != nil && !attachmentFailed(w, err) {
-		a.chatFailed(w, err)
+	if err != nil {
+		if !attachmentFailed(w, err) {
+			a.chatFailed(w, err)
+		}
 		return
 	}
 	writeJSON(w, m)

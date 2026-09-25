@@ -349,6 +349,7 @@ func (n *Node) Run(ctx context.Context, peerLn net.Listener) {
 	n.wg.Go(func() { n.acceptLoop(ctx, peerLn) })
 	n.wg.Go(func() { n.meshLoop(ctx) }) // also dials the configured peers
 	n.wg.Go(func() { n.activityLoop(ctx) })
+	n.wg.Go(func() { n.attachSweepLoop(ctx) })
 	if n.waker != nil || n.poster != nil || n.launcher != nil {
 		n.wg.Go(func() { n.wakeLoop(ctx) })
 	}

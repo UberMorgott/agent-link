@@ -1,18 +1,23 @@
 package node
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -87,6 +92,10 @@ type Attachment struct {
 	// Path is the absolute path of the copy in the agent's workspace, on
 	// unread messages. Set locally, never sent.
 	Path string `json:"path,omitempty"`
+	// Key is the capability that opens the file in the local web UI
+	// (/ui/files/...?k=), on uploads and chat messages shown there. Set
+	// locally, never sent.
+	Key string `json:"key,omitempty"`
 }
 
 // IsImage reports whether a is an image.
@@ -227,9 +236,26 @@ func sniffBytes(data []byte) (string, error) {
 	return MIMEText, nil
 }
 
+// Store limits and upkeep.
+const (
+	// MaxStoreTotal bounds the bytes of all blobs one node keeps, stored and
+	// being received: an upload or transfer over it is refused.
+	MaxStoreTotal = 2 << 30
+	// OrphanAge: a blob no stored message names is removed once it is this
+	// old (an upload waits that long for the message that sends it).
+	OrphanAge = 24 * time.Hour
+	// attSweepEvery is how often orphan blobs are looked for.
+	attSweepEvery = time.Hour
+	// attKeyFile holds the store's secret for file capabilities (Attachment.Key).
+	attKeyFile = "attachments.key"
+)
+
 // attachStore keeps the blobs of one node and the blobs being received.
 type attachStore struct {
-	dir string
+	dir  string
+	data string // the node's data folder, whose messages name the blobs
+	key  []byte // secret of the file capabilities (sign)
+	max  int64  // MaxStoreTotal; lower in tests
 
 	mu    sync.Mutex
 	parts map[string]*partial // peer + "/" + id
@@ -255,7 +281,128 @@ func openAttachStore(dataDir string) (*attachStore, error) {
 			_ = os.Remove(p)
 		}
 	}
-	return &attachStore{dir: dir, parts: map[string]*partial{}}, nil
+	key, err := loadAttachKey(filepath.Join(dataDir, attKeyFile))
+	if err != nil {
+		return nil, err
+	}
+	return &attachStore{dir: dir, data: dataDir, key: key, max: MaxStoreTotal, parts: map[string]*partial{}}, nil
+}
+
+// loadAttachKey reads the store's 32-byte secret, creating it once. It lasts
+// across restarts so a cached file URL stays valid.
+func loadAttachKey(path string) ([]byte, error) {
+	if b, err := os.ReadFile(path); err == nil && len(b) == 32 { //nolint:gosec // G304: the node's own data folder
+		return b, nil
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, key, 0o600); err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+// sign is the capability of blob id: HMAC-SHA256 under the store's secret.
+// Knowing a file's content (its sha256) does not give it.
+func (s *attachStore) sign(id string) string {
+	m := hmac.New(sha256.New, s.key)
+	m.Write([]byte("file|" + id))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// verify reports whether k is the capability of blob id (constant time).
+func (s *attachStore) verify(id, k string) bool {
+	return validSHA(id) && hmac.Equal([]byte(k), []byte(s.sign(id)))
+}
+
+// usedLocked is the bytes of all stored blobs and of the transfers in
+// progress. s.mu is held.
+func (s *attachStore) usedLocked() int64 {
+	var n int64
+	entries, _ := os.ReadDir(s.dir)
+	for _, e := range entries {
+		if !validSHA(e.Name()) {
+			continue
+		}
+		if st, err := e.Info(); err == nil && st.Mode().IsRegular() {
+			n += st.Size()
+		}
+	}
+	for _, p := range s.parts {
+		n += p.size
+	}
+	return n
+}
+
+// fits reports whether size more bytes stay within the store's limit.
+func (s *attachStore) fits(size int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.usedLocked()+size <= s.max
+}
+
+// hexID finds sha256 hex digests in stored messages.
+var hexID = regexp.MustCompile(`[0-9a-f]{64}`)
+
+// referenced collects every sha256 hex digest in the files of the data
+// folder outside the store: the ids of the blobs messages name, whatever
+// record holds them. A stray match only keeps a blob longer.
+func (s *attachStore) referenced() (map[string]bool, error) {
+	ids := map[string]bool{}
+	err := filepath.WalkDir(s.data, func(p string, d fs.DirEntry, err error) error {
+		switch {
+		case errors.Is(err, fs.ErrNotExist): // renamed away meanwhile
+			return nil
+		case err != nil:
+			return err
+		case d.IsDir() && p == s.dir:
+			return filepath.SkipDir
+		case !d.Type().IsRegular():
+			return nil
+		}
+		data, err := os.ReadFile(p) //nolint:gosec // G304: the node's own data folder
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for _, id := range hexID.FindAll(data, -1) {
+			ids[string(id)] = true
+		}
+		return nil
+	})
+	return ids, err
+}
+
+// sweep removes the blobs no stored message names that are older than age
+// and returns how many.
+func (s *attachStore) sweep(age time.Duration) (int, error) {
+	ids, err := s.referenced()
+	if err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().Add(-age)
+	removed := 0
+	for _, e := range entries {
+		if !validSHA(e.Name()) || ids[e.Name()] {
+			continue
+		}
+		st, err := e.Info()
+		if err != nil || !st.Mode().IsRegular() || st.ModTime().After(cutoff) {
+			continue
+		}
+		if os.Remove(s.path(e.Name())) == nil {
+			removed++
+		}
+	}
+	return removed, nil
 }
 
 // path is where blob id is stored; id must be valid.
@@ -323,16 +470,21 @@ func (s *attachStore) put(r io.Reader, name string) (Attachment, error) {
 		return Attachment{}, fmt.Errorf("%w: %s: %w", ErrAttachment, name, err)
 	}
 	id := hex.EncodeToString(h.Sum(nil))
+	if !s.has(id) && !s.fits(n) {
+		return Attachment{}, fmt.Errorf("%w: %s: %w (the attachment store is full: %d MB)", ErrAttachment, name, ErrAttachmentSize, s.max>>20)
+	}
 	if err := s.commit(tmp, id); err != nil {
 		return Attachment{}, err
 	}
 	return Attachment{ID: id, Name: name, MIME: mime, Size: n}, nil
 }
 
-// commit moves the verified file tmp to blob id, unless it is there already.
+// commit moves the verified file tmp to blob id, unless it is there already;
+// then it is touched, so the sweep counts its age from this new use.
 func (s *attachStore) commit(tmp, id string) error {
 	if s.has(id) {
-		return nil
+		now := time.Now()
+		return os.Chtimes(s.path(id), now, now)
 	}
 	return os.Rename(tmp, s.path(id))
 }
@@ -362,6 +514,9 @@ func (s *attachStore) receive(peer string, c attChunk) (done bool, err error) {
 		}
 		if s.countLocked(peer) >= MaxAttachments {
 			return false, fmt.Errorf("%w: too many transfers from %s", ErrAttachment, peer)
+		}
+		if s.usedLocked()+c.Size > s.max {
+			return false, fmt.Errorf("%w: %.12s: %w (the attachment store is full)", ErrAttachment, c.ID, ErrAttachmentSize)
 		}
 		f, err := os.CreateTemp(s.dir, "part-*")
 		if err != nil {
@@ -481,27 +636,47 @@ func (s *attachStore) materialize(a Attachment, dir string) (string, error) {
 	if !s.has(a.ID) {
 		return "", fmt.Errorf("%w: %.12s is not here", ErrAttachment, a.ID)
 	}
-	root, err := filepath.Abs(dir)
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	// The real folder, links resolved once; below it nothing may be a link
+	// or another reparse point (a junction), so a write cannot leave it.
+	root, err := realDir(abs)
 	if err != nil {
 		return "", err
 	}
 	base := filepath.Join(root, attachDir)
 	out := filepath.Join(base, "attachments")
-	if err := os.MkdirAll(out, 0o750); err != nil {
-		return "", err
-	}
-	ignore := filepath.Join(base, ".gitignore")
-	if _, err := os.Stat(ignore); errors.Is(err, os.ErrNotExist) {
-		if err := os.WriteFile(ignore, []byte("*\n"), 0o600); err != nil {
+	for _, d := range []string{base, out} {
+		if err := plainDir(d); err != nil {
 			return "", err
 		}
+	}
+	if real, err := realDir(out); err != nil || !inFolder(root, real) {
+		return "", fmt.Errorf("%w: %s is not a plain folder inside %s", ErrAttachment, out, root)
+	}
+	ignore := filepath.Join(base, ".gitignore")
+	if f, err := os.OpenFile(ignore, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); err == nil { //nolint:gosec // G304: checked folder
+		_, werr := f.WriteString("*\n")
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			return "", werr
+		}
+	} else if !errors.Is(err, fs.ErrExist) {
+		return "", err
 	}
 	target := filepath.Join(out, a.ID[:8]+"-"+SanitizeName(a.Name))
 	if rel, err := filepath.Rel(out, target); err != nil || rel != filepath.Base(target) {
 		return "", fmt.Errorf("%w: bad name %q", ErrAttachment, a.Name)
 	}
 	src := s.path(a.ID)
-	if st, err := os.Stat(target); err == nil {
+	if st, err := os.Lstat(target); err == nil {
+		if !st.Mode().IsRegular() {
+			return "", fmt.Errorf("%w: %s is not a plain file", ErrAttachment, target)
+		}
 		if sst, err := os.Stat(src); err == nil && sst.Size() == st.Size() {
 			return target, nil
 		}
@@ -510,13 +685,42 @@ func (s *attachStore) materialize(a Attachment, dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	// A fresh file of our own (O_EXCL), renamed over the target: an existing
+	// name, a link included, is never written through.
+	f, err := os.CreateTemp(out, ".tmp-*")
+	if err != nil {
 		return "", err
 	}
-	if err := os.Rename(tmp, target); err != nil {
+	tmp := f.Name()
+	_, werr := f.Write(data)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(tmp, target)
+	}
+	if werr != nil {
 		_ = os.Remove(tmp)
-		return "", err
+		return "", werr
 	}
 	return target, nil
+}
+
+// plainDir makes sure d is a real folder, creating it when missing: not a
+// symbolic link, junction or other reparse point.
+func plainDir(d string) error {
+	st, err := os.Lstat(d)
+	if errors.Is(err, fs.ErrNotExist) {
+		if err := os.Mkdir(d, 0o750); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		st, err = os.Lstat(d)
+	}
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() || st.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0 || isReparsePoint(st) {
+		return fmt.Errorf("%w: %s is a link or not a folder", ErrAttachment, d)
+	}
+	return nil
 }

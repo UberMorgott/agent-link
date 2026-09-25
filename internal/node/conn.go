@@ -261,7 +261,7 @@ func (n *Node) readLoop(pc *peerConn) {
 		case f.Type == frameProject:
 			n.mergeProjectMeta(f.ProjectMeta)
 		case f.Type == frameAtt:
-			n.receiveAttachment(pc.attKey(), f.Att)
+			n.receiveAttachment(pc, f.Att)
 		default:
 			n.log.Debug("unknown frame type ignored", "peer", pc.peer, "type", f.Type)
 		}

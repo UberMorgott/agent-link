@@ -126,6 +126,7 @@ export interface Attachment {
   mime: string
   size: number
   failed?: boolean // this node does not have the file (it did not arrive)
+  key?: string // capability that opens the file at /ui/files (?k=)
 }
 
 export interface ChatInfo {

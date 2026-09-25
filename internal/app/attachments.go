@@ -10,11 +10,14 @@ import (
 // Chat attachments in the web UI:
 //
 //	POST /ui/api/projects/{pid}/attachments   the file as the raw body (?name=) or multipart -> node.Attachment
-//	GET  /ui/files/{pid}/{id}?name=&download=1 the file: images inline, anything else as a download
+//	GET  /ui/files/{pid}/{id}?k=&name=&download=1 the file: images inline, anything else as a download
 //
-// The file route carries no token, so <img> and download links work: a blob is
-// named by its sha256, which only a page that was shown the message knows, and
-// a cross-site request (Sec-Fetch-Site, Origin) is refused.
+// The file route carries no token header, so <img> and download links work.
+// Instead it needs the blob's capability k (node.Attachment.Key): an HMAC under
+// the node's secret that the token-protected API hands out with the upload and
+// the chat messages; knowing the content (its sha256) is not enough. Like every
+// route it answers only a loopback Host (loopbackHost), and a cross-site
+// request (Sec-Fetch-Site, Origin) is refused.
 func (a *App) attachmentRoutes(api, ui *http.ServeMux) {
 	api.HandleFunc("POST /ui/api/projects/{pid}/attachments", func(w http.ResponseWriter, r *http.Request) {
 		n, ok := a.contextNode(w, r.PathValue("pid"))
@@ -40,7 +43,12 @@ func (a *App) attachmentRoutes(api, ui *http.ServeMux) {
 		if !ok {
 			return
 		}
-		n.ServeAttachment(w, r, r.PathValue("id"))
+		id := r.PathValue("id")
+		if !n.AttachmentKeyOK(id, r.URL.Query().Get("k")) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		n.ServeAttachment(w, r, id)
 	})
 }
 

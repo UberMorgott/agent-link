@@ -1493,7 +1493,7 @@ func (n *Node) ChatMessages(id string, before, after uint64, limit int) ([]ChatM
 
 func (n *Node) chatMessage(c Chat, r chatRecord) ChatMessage {
 	msg := r.Message
-	msg.Attachments = n.withState(msg.Attachments)
+	msg.Attachments = n.withKeys(msg.Attachments)
 	cm := ChatMessage{Seq: r.Seq, Direction: "in", Message: msg,
 		Unread: r.Unread && r.ReadAt.IsZero(), Assigned: r.Assigned}
 	if r.Message.From == n.cfg.Node {

@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"mime"
@@ -8,11 +9,40 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 )
 
-// PutAttachment stores an uploaded file (POST /attachments) and describes it.
+// PutAttachment stores an uploaded file (POST /attachments) and describes it,
+// with its capability (Attachment.Key).
 func (n *Node) PutAttachment(r io.Reader, name string) (Attachment, error) {
-	return n.atts.put(r, name)
+	a, err := n.atts.put(r, name)
+	if err == nil {
+		a.Key = n.atts.sign(a.ID)
+	}
+	return a, err
+}
+
+// AttachmentKeyOK reports whether k is the capability of blob id
+// (Attachment.Key), in constant time.
+func (n *Node) AttachmentKeyOK(id, k string) bool { return n.atts.verify(id, k) }
+
+// attachSweepLoop removes orphan blobs (OrphanAge) at start and every
+// attSweepEvery until ctx ends.
+func (n *Node) attachSweepLoop(ctx context.Context) {
+	t := time.NewTicker(attSweepEvery)
+	defer t.Stop()
+	for {
+		if removed, err := n.atts.sweep(OrphanAge); err != nil {
+			n.log.Warn("attachment sweep", "err", err)
+		} else if removed > 0 {
+			n.log.Info("orphan attachments removed", "count", removed)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // AttachmentFile returns the stored blob id as a file path and its
@@ -132,7 +162,7 @@ func (n *Node) cleanAttachments(m *Message) {
 		if !validSHA(a.ID) {
 			continue
 		}
-		a.Name, a.Failed, a.Path = SanitizeName(a.Name), false, ""
+		a.Name, a.Failed, a.Path, a.Key = SanitizeName(a.Name), false, "", ""
 		if d, err := n.atts.describe(a.ID, a.Name); err == nil {
 			a.MIME, a.Size = d.MIME, d.Size
 		} else if a.Size < 0 || a.Size > MaxAttachmentSize || !knownMIME(a.MIME) {
@@ -158,8 +188,19 @@ func (n *Node) withState(atts []Attachment) []Attachment {
 	}
 	out := make([]Attachment, len(atts))
 	for i, a := range atts {
-		a.Failed, a.Path = !n.atts.has(a.ID), ""
+		a.Failed, a.Path, a.Key = !n.atts.has(a.ID), "", ""
 		out[i] = a
+	}
+	return out
+}
+
+// withKeys is withState plus the capability of each blob here, for the web UI.
+func (n *Node) withKeys(atts []Attachment) []Attachment {
+	out := n.withState(atts)
+	for i, a := range out {
+		if !a.Failed {
+			out[i].Key = n.atts.sign(a.ID)
+		}
 	}
 	return out
 }
@@ -219,17 +260,22 @@ func (n *Node) pushAttachments(pc *peerConn, m *Message, pushed map[string]bool)
 	return nil
 }
 
-// receiveAttachment takes an att frame from peer.
-func (n *Node) receiveAttachment(peer string, c *attChunk) {
+// receiveAttachment takes an att frame from pc; a peer that did not declare
+// CapAttachments is not sent blobs and may not store any here either.
+func (n *Node) receiveAttachment(pc *peerConn, c *attChunk) {
 	if c == nil {
 		return
 	}
-	done, err := n.atts.receive(peer, *c)
+	if !pc.has(CapAttachments) {
+		n.log.Debug("att frame from a peer without attachments ignored", "peer", pc.peer)
+		return
+	}
+	done, err := n.atts.receive(pc.attKey(), *c)
 	switch {
 	case err != nil:
-		n.log.Warn("attachment transfer dropped", "peer", peer, "err", err)
+		n.log.Warn("attachment transfer dropped", "peer", pc.peer, "err", err)
 	case done:
-		n.log.Info("attachment received", "peer", peer, "id", c.ID, "size", c.Size)
+		n.log.Info("attachment received", "peer", pc.peer, "id", c.ID, "size", c.Size)
 		n.changed("messages")
 	}
 }

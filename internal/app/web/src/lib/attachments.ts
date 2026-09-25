@@ -7,11 +7,12 @@ export const MAX_FILES = 10
 export const MAX_SIZE = 10 << 20
 export const MAX_TOTAL = 50 << 20
 
-// fileURL is where the app serves a message's file: images show inline,
-// download=1 saves any file under its name.
-export function fileURL(project: string, a: Pick<Attachment, 'id' | 'name'>, download = false): string {
+// fileURL is where the app serves a message's file: k is the capability the
+// app handed out with the file, images show inline, download=1 saves any file
+// under its name.
+export function fileURL(project: string, a: Pick<Attachment, 'id' | 'name' | 'key'>, download = false): string {
   return '/ui/files/' + encodeURIComponent(project) + '/' + encodeURIComponent(a.id) +
-    '?name=' + encodeURIComponent(a.name) + (download ? '&download=1' : '')
+    '?k=' + encodeURIComponent(a.key || '') + '&name=' + encodeURIComponent(a.name) + (download ? '&download=1' : '')
 }
 
 export function isImage(a: Pick<Attachment, 'mime'>): boolean {

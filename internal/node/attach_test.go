@@ -10,7 +10,9 @@ import (
 	"image/png"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -442,7 +444,8 @@ func TestAttachmentEndToEnd(t *testing.T) {
 			t.Fatalf("%s history: %v", n.cfg.Node, err)
 		}
 		last := msgs[len(msgs)-1]
-		if len(last.Attachments) != 1 || last.Attachments[0].Failed || last.Attachments[0].Path != "" {
+		if len(last.Attachments) != 1 || last.Attachments[0].Failed || last.Attachments[0].Path != "" ||
+			!n.AttachmentKeyOK(last.Attachments[0].ID, last.Attachments[0].Key) {
 			t.Fatalf("%s history attachments %+v", n.cfg.Node, last.Attachments)
 		}
 	}
@@ -455,7 +458,7 @@ func TestAttachmentMissingBlobFails(t *testing.T) {
 	eventually(t, "b connected", func() bool { return a.Connected("b") })
 	id := strings.Repeat("ab", 32)
 	m := Message{ID: newID(), From: "b", To: "a", Body: "see [attachment: x.png]", CreatedAt: time.Now().UTC(),
-		Attachments: []Attachment{{ID: id, Name: "../x.png", MIME: "application/x-evil", Size: 5, Path: "C:\\evil", Failed: false}}}
+		Attachments: []Attachment{{ID: id, Name: "../x.png", MIME: "application/x-evil", Size: 5, Path: "C:\\evil", Key: "forged", Failed: false}}}
 	if err := writeFrame(c, frame{Type: "msg", Msg: &m}); err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +468,179 @@ func TestAttachmentMissingBlobFails(t *testing.T) {
 		t.Fatalf("unread %+v %v", p, err)
 	}
 	got := p.Messages[0].Attachments
-	if len(got) != 1 || !got[0].Failed || got[0].Name != "x.png" || got[0].MIME != "" || got[0].Path != "" {
+	if len(got) != 1 || !got[0].Failed || got[0].Name != "x.png" || got[0].MIME != "" || got[0].Path != "" || got[0].Key != "" {
 		t.Fatalf("attachment %+v", got)
+	}
+}
+
+// A peer that did not declare CapAttachments cannot store blobs here: its att
+// frames are ignored.
+func TestAttFramesNeedCapability(t *testing.T) {
+	a := openNode(t, time.Second, 5*time.Second)
+	c, sc := manualDial(t, a, "b", nil, `,"proto":6,"caps":["caps","hb"]`)
+	eventually(t, "b connected", func() bool { return a.Connected("b") })
+	data := []byte("pushed without asking\n")
+	id := shaHex(data)
+	if err := writeFrame(c, frame{Type: frameAtt, Att: &attChunk{ID: id, Size: int64(len(data)), Data: data}}); err != nil {
+		t.Fatal(err)
+	}
+	m := Message{ID: newID(), From: "b", To: "a", Body: "after", CreatedAt: time.Now().UTC()}
+	if err := writeFrame(c, frame{Type: "msg", Msg: &m}); err != nil {
+		t.Fatal(err)
+	}
+	awaitAck(t, c, sc, m.ID) // the att frame was read before the message
+	if a.atts.has(id) {
+		t.Fatal("blob stored from a peer without attachments")
+	}
+	assertNoPartials(t, a.atts)
+}
+
+// The file capability is an HMAC of the id under the store's secret, kept
+// across restarts; the content hash alone or another id's key does not open it.
+func TestAttachCapability(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := openAttachStore(dir)
+	a, err := s.put(strings.NewReader("x\n"), "x.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := s.sign(a.ID)
+	other := strings.Repeat("0", 64)
+	if !s.verify(a.ID, k) || s.verify(a.ID, a.ID) || s.verify(a.ID, "") || s.verify(other, k) || s.verify("../x", k) {
+		t.Fatal("capability check")
+	}
+	again, _ := openAttachStore(dir)
+	if again.sign(a.ID) != k {
+		t.Fatal("secret not kept across restarts")
+	}
+	if fresh, _ := openAttachStore(t.TempDir()); fresh.sign(a.ID) == k {
+		t.Fatal("secret shared between stores")
+	}
+}
+
+// The store as a whole is bounded: an upload or a transfer that would pass
+// MaxStoreTotal is refused.
+func TestAttachStoreCap(t *testing.T) {
+	s, _ := openAttachStore(t.TempDir())
+	s.max = 100
+	if _, err := s.put(strings.NewReader(strings.Repeat("a", 60)+"\n"), "a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.put(strings.NewReader(strings.Repeat("b", 60)+"\n"), "b.txt"); !errors.Is(err, ErrAttachmentSize) {
+		t.Fatalf("upload over the store cap: %v", err)
+	}
+	// The blob already stored costs nothing more.
+	if _, err := s.put(strings.NewReader(strings.Repeat("a", 60)+"\n"), "again.txt"); err != nil {
+		t.Fatalf("dedupe over the cap: %v", err)
+	}
+	data := []byte(strings.Repeat("c", 60) + "\n")
+	if _, err := s.receive("peer", attChunk{ID: shaHex(data), Size: int64(len(data)), Data: data}); !errors.Is(err, ErrAttachmentSize) {
+		t.Fatalf("transfer over the store cap: %v", err)
+	}
+	assertNoPartials(t, s)
+}
+
+// The sweep removes blobs no stored message names once they are OrphanAge
+// old; a named or a recent blob stays.
+func TestAttachSweepOrphans(t *testing.T) {
+	data := t.TempDir()
+	s, _ := openAttachStore(data)
+	put := func(text string, age time.Duration) string {
+		t.Helper()
+		a, err := s.put(strings.NewReader(text), "f.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-age)
+		if err := os.Chtimes(s.path(a.ID), old, old); err != nil {
+			t.Fatal(err)
+		}
+		return a.ID
+	}
+	orphan, named, fresh := put("orphan\n", 2*OrphanAge), put("named\n", 2*OrphanAge), put("fresh\n", time.Minute)
+	msg := filepath.Join(data, "chats", "c1")
+	if err := os.MkdirAll(msg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rec := `{"message":{"attachments":[{"id":"` + named + `","name":"f.txt"}]}}`
+	if err := os.WriteFile(filepath.Join(msg, "log.jsonl"), []byte(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := s.sweep(OrphanAge)
+	if err != nil || removed != 1 {
+		t.Fatalf("sweep removed %d: %v", removed, err)
+	}
+	if s.has(orphan) || !s.has(named) || !s.has(fresh) {
+		t.Fatalf("after sweep: orphan %v named %v fresh %v", s.has(orphan), s.has(named), s.has(fresh))
+	}
+	// Uploading an old blob again restarts its age.
+	again := put("orphan again\n", 2*OrphanAge)
+	if _, err := s.put(strings.NewReader("orphan again\n"), "f.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.sweep(OrphanAge); err != nil || !s.has(again) {
+		t.Fatalf("re-uploaded blob swept: %v", err)
+	}
+}
+
+// linkDir makes link point at target: a junction on Windows (no privilege
+// needed), else a symbolic link.
+func linkDir(t *testing.T, link, target string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if out, err := exec.CommandContext(t.Context(), "cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil { //nolint:gosec // G204: fixed command on the test's own temp folders
+			t.Skipf("junction: %v %s", err, out)
+		}
+		return
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+}
+
+// A workspace whose .agentlink (or its attachments folder) is a link or a
+// junction to elsewhere gets nothing written through it.
+func TestMaterializeRefusesLinks(t *testing.T) {
+	s, _ := openAttachStore(t.TempDir())
+	a, err := s.put(strings.NewReader("hello\n"), "note.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, linked := range []string{".agentlink", filepath.Join(".agentlink", "attachments")} {
+		work, outside := t.TempDir(), t.TempDir()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(work, linked)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		linkDir(t, filepath.Join(work, linked), outside)
+		if p, err := s.materialize(a, work); !errors.Is(err, ErrAttachment) {
+			t.Fatalf("%s linked: materialized at %s, %v", linked, p, err)
+		}
+		if left, _ := os.ReadDir(outside); len(left) != 0 {
+			t.Fatalf("%s linked: wrote outside: %v", linked, left)
+		}
+	}
+	// A target name that is a link is not written through either.
+	work, outside := t.TempDir(), t.TempDir()
+	out := filepath.Join(work, ".agentlink", "attachments")
+	if err := os.MkdirAll(out, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	linkDir(t, filepath.Join(out, a.ID[:8]+"-note.txt"), outside)
+	if _, err := s.materialize(a, work); !errors.Is(err, ErrAttachment) {
+		t.Fatalf("linked target: %v", err)
+	}
+	if left, _ := os.ReadDir(outside); len(left) != 0 {
+		t.Fatalf("linked target: wrote outside: %v", left)
+	}
+	// The project folder itself may be reached by a link: the real folder is used.
+	real := t.TempDir()
+	via := filepath.Join(t.TempDir(), "via")
+	linkDir(t, via, real)
+	p, err := s.materialize(a, via)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(real, ".agentlink", "attachments", filepath.Base(p))); string(got) != "hello\n" { //nolint:gosec // G304: the test's own temp folder
+		t.Fatalf("via a linked project folder: %s %q", p, got)
 	}
 }

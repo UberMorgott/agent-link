@@ -20,7 +20,7 @@ function serve() {
       const name = decodeURIComponent(path.slice('attachments?name='.length))
       uploads.push(name)
       if (name.endsWith('.exe')) throw new HttpError(400, 'refused', 'attachment_type')
-      return { id: sha(String(uploads.length)), name, mime: name.endsWith('.png') ? 'image/png' : 'text/plain; charset=utf-8', size: 2048 }
+      return { id: sha(String(uploads.length)), key: 'k' + uploads.length, name, mime: name.endsWith('.png') ? 'image/png' : 'text/plain; charset=utf-8', size: 2048 }
     }
     if (method === 'POST' && path === 'send') {
       sent.push(body as Record<string, unknown>)
@@ -70,7 +70,7 @@ describe('attachment helpers', () => {
     expect(bodyText('keep [attachment: a.png] inline', atts.slice(0, 1))).toBe('keep [attachment: a.png] inline')
     expect(clipName(png(), new Date(2026, 8, 25, 10, 5, 7))).toBe('clipboard-20260925-100507.png')
     expect(clipName(png('shot.png'))).toBe('shot.png')
-    expect(fileURL('P 1', { id: sha('a'), name: 'a b.png' }, true)).toBe('/ui/files/P%201/' + sha('a') + '?name=a%20b.png&download=1')
+    expect(fileURL('P 1', { id: sha('a'), name: 'a b.png', key: 'k/1' }, true)).toBe('/ui/files/P%201/' + sha('a') + '?k=k%2F1&name=a%20b.png&download=1')
     expect(pastedFiles(null)).toEqual([])
   })
 })
@@ -88,7 +88,7 @@ describe('composer attachments', () => {
     await settle()
     expect(uploads).toEqual([expect.stringMatching(/^clipboard-\d{8}-\d{6}\.png$/)])
     const thumb = $<HTMLImageElement>('#composer_files img.composer-thumb')!
-    expect(thumb.getAttribute('src')).toBe('/ui/files/PROJ/' + sha('1') + '?name=' + encodeURIComponent(uploads[0]!))
+    expect(thumb.getAttribute('src')).toBe('/ui/files/PROJ/' + sha('1') + '?k=k1&name=' + encodeURIComponent(uploads[0]!))
 
     drop([new File(['x'], 'notes.md', { type: 'text/markdown' }), png('second.png')])
     await settle()
@@ -132,8 +132,8 @@ describe('message attachments', () => {
       id: 'm1', seq: 1, from: 'bob', direction: 'in', created_at: iso(1700000000000),
       body: 'смотри\n[attachment: shot.png]\n[attachment: log.txt]\n[attachment: lost.pdf]',
       attachments: [
-        { id: sha('a'), name: 'shot.png', mime: 'image/png', size: 4000 },
-        { id: sha('b'), name: 'log.txt', mime: 'text/plain; charset=utf-8', size: 3 << 20 },
+        { id: sha('a'), name: 'shot.png', mime: 'image/png', size: 4000, key: 'ka' },
+        { id: sha('b'), name: 'log.txt', mime: 'text/plain; charset=utf-8', size: 3 << 20, key: 'kb' },
         { id: sha('c'), name: 'lost.pdf', mime: '', size: 0, failed: true },
       ],
     }]
@@ -143,9 +143,9 @@ describe('message attachments', () => {
     const bubble = $('[data-message-id="m1"]')!
     expect(bubble.querySelector('.msg-body')!.textContent).toBe('смотри')
     const img = bubble.querySelector<HTMLImageElement>('.msg-image img')!
-    expect(img.getAttribute('src')).toBe('/ui/files/PROJ/' + sha('a') + '?name=shot.png')
+    expect(img.getAttribute('src')).toBe('/ui/files/PROJ/' + sha('a') + '?k=ka&name=shot.png')
     const file = bubble.querySelector<HTMLAnchorElement>('a.msg-file')!
-    expect(file.getAttribute('href')).toBe('/ui/files/PROJ/' + sha('b') + '?name=log.txt&download=1')
+    expect(file.getAttribute('href')).toBe('/ui/files/PROJ/' + sha('b') + '?k=kb&name=log.txt&download=1')
     expect(file.getAttribute('download')).toBe('log.txt')
     expect(bubble.querySelector('.msg-file.failed')!.textContent).toContain('lost.pdf')
   })
