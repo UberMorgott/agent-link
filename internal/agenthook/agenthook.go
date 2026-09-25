@@ -25,16 +25,25 @@ const (
 
 // Hook events agentlink installs and answers.
 const (
-	SessionStart = "SessionStart"
-	Prompt       = "UserPromptSubmit"
-	PreTool      = "PreToolUse"
-	PostTool     = "PostToolUse"
-	Stop         = "Stop"
-	SessionEnd   = "SessionEnd"
+	SessionStart  = "SessionStart"
+	Prompt        = "UserPromptSubmit"
+	PreTool       = "PreToolUse"
+	PostTool      = "PostToolUse"
+	Stop          = "Stop"
+	SessionEnd    = "SessionEnd"
+	SubagentStart = "SubagentStart"
+	SubagentStop  = "SubagentStop"
 )
 
 // Events are installed in this order.
 var Events = []string{SessionStart, Prompt, PreTool, PostTool, Stop, SessionEnd}
+
+func eventsFor(client string) []string {
+	if client == Codex {
+		return append(slices.Clone(Events), SubagentStart, SubagentStop)
+	}
+	return Events
+}
 
 // Hook entry timeouts, in seconds.
 const (
@@ -135,7 +144,7 @@ func isAgentlink(group json.RawMessage, client string) bool {
 // agentlink group (fewer events, no waiter) is replaced in place. It reports
 // whether the file changed.
 func Install(path, client, exe string) (bool, error) {
-	return edit(path, func(ev string, groups []json.RawMessage) []json.RawMessage {
+	return edit(path, client, func(ev string, groups []json.RawMessage) []json.RawMessage {
 		group := struct {
 			Matcher string    `json:"matcher,omitempty"`
 			Hooks   []Handler `json:"hooks"`
@@ -160,14 +169,14 @@ func Remove(path, client string) (bool, error) {
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
-	return edit(path, func(_ string, groups []json.RawMessage) []json.RawMessage {
+	return edit(path, client, func(_ string, groups []json.RawMessage) []json.RawMessage {
 		return slices.DeleteFunc(groups, func(g json.RawMessage) bool { return isAgentlink(g, client) })
 	})
 }
 
 // edit rewrites the matcher groups of every agentlink event with change. An
 // event left without groups is dropped, and so is an empty "hooks".
-func edit(path string, change func(ev string, groups []json.RawMessage) []json.RawMessage) (bool, error) {
+func edit(path, client string, change func(ev string, groups []json.RawMessage) []json.RawMessage) (bool, error) {
 	old, err := os.ReadFile(filepath.Clean(path))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, err
@@ -188,7 +197,7 @@ func edit(path string, change func(ev string, groups []json.RawMessage) []json.R
 	if err != nil {
 		return false, fmt.Errorf("%s: hooks: %w", path, err)
 	}
-	for _, ev := range Events {
+	for _, ev := range eventsFor(client) {
 		var groups []json.RawMessage
 		if raw, ok := hooks.get(ev); ok {
 			if err := json.Unmarshal(raw, &groups); err != nil {

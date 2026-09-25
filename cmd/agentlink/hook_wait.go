@@ -107,11 +107,11 @@ func waiterBusy(st hookState, now time.Time, busyFor time.Duration) bool {
 	return false
 }
 
-// pendingUnread reports whether unread messages for session wait in folder
+// pendingUnread reports whether actionable unread messages for session wait in folder
 // (not those for another session of the folder).
 func pendingUnread(env hookEnv, folder, session string) bool {
 	var page node.UnreadPage
-	q := url.Values{"folder": {folder}, "session": {session}, "limit": {"1"}}
+	q := url.Values{"folder": {folder}, "session": {session}, "limit": {"1"}, "actionable": {"1"}}
 	return hookCall(env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout) == nil && page.Total > 0
 }
 
@@ -129,7 +129,7 @@ func wakeWith(client, sid, folder, path string, stderr io.Writer, env hookEnv, b
 		return 0, st.Ended
 	}
 	h := &hookSession{env: env, st: &st, sid: sid, folder: folder}
-	b, err := h.collect(false)
+	b, err := h.collect(false, true)
 	if err != nil || b.empty() {
 		return 0, false
 	}

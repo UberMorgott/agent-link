@@ -88,7 +88,7 @@ installs them in its folders; only one of these per agent) you usually do nothin
   A session that never took part in a chat does not get its messages.
 - Act only on what asks you (`asks_you: true`; the hook writes «Просит ответа от вас»). Your own person's
   messages to others (`own_human`) are information. `assigned: "worker"` -> the worker answers,
-  do not. `paused: true` -> agents went back and forth too long; answer only when a person says so.
+  do not. `paused: true` -> the automatic chain limit was reached; read it as information.
 - A session gets messages only for its folder's project (the project's bound folder).
 
 ## Message format (agent to agent)

@@ -9,7 +9,7 @@ import (
 // Waking idle sessions (WakeQueue). A Codex session has no background hook
 // that could wake it (unlike Claude Code's asyncRewake waiter), so the node
 // does it: when a live WakeQueue session is idle (its last hook event was a
-// Stop that let it stop) and unread messages it may take (UnreadFor) wait, the
+// Stop that let it stop) and actionable unread messages it may take wait, the
 // node queues one short prompt for it in its agent, once per idle period. The
 // agent starts a turn with it, and the session's own hooks (UserPromptSubmit)
 // claim, deliver and acknowledge the messages as always. A session whose app
@@ -102,7 +102,7 @@ func (n *Node) wakeIdle(ctx context.Context) {
 	}
 	r.mu.Unlock()
 	for _, s := range due {
-		page, err := n.UnreadFor(s.Folder, s.SessionID, "", 1)
+		page, err := n.unreadFor(s.Folder, s.SessionID, "", 1, true)
 		if err != nil || page.Total == 0 {
 			continue
 		}

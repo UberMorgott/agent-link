@@ -110,6 +110,11 @@ func TestInstall(t *testing.T) {
 	if !strings.Contains(string(data), `"command": "\"C:/Program Files/agentlink/agentlink.exe\" hook codex"`) {
 		t.Fatalf("codex entry:\n%s", data)
 	}
+	for _, ev := range []string{SubagentStart, SubagentStop} {
+		if !strings.Contains(string(data), `"`+ev+`"`) || strings.Contains(got, `"`+ev+`"`) {
+			t.Fatalf("%s must be installed for Codex only", ev)
+		}
+	}
 	if _, err := os.Stat(cpath + ".agentlink.bak"); err == nil {
 		t.Fatal("backup of a file that did not exist")
 	}

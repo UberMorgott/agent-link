@@ -457,6 +457,9 @@ func jobKey(m Message) string {
 	k := m.From + "/" + m.ReplyTo
 	if m.ActivityInfo != nil && m.ActivityInfo.Session != "" {
 		k += "/" + m.ActivityInfo.Session
+		if m.ActivityInfo.AgentID != "" {
+			k += "/" + m.ActivityInfo.AgentID
+		}
 	}
 	return k
 }

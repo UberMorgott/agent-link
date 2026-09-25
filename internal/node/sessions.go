@@ -296,7 +296,9 @@ type ActivityRequest struct {
 	// Phase is PhaseRunning (default), PhaseDone (the operation ended, the
 	// session still works) or PhaseIdle (the session finished its turn: the
 	// activity ends).
-	Phase string `json:"phase,omitempty"`
+	Phase   string `json:"phase,omitempty"`
+	AgentID string `json:"agent_id,omitempty"`
+	Label   string `json:"label,omitempty"`
 }
 
 // PhaseIdle ends a live session's activity on a request (ActivityRequest).
@@ -318,7 +320,8 @@ func (n *Node) SessionActivity(chatID string, req ActivityRequest) (Message, err
 	default:
 		return Message{}, fmt.Errorf("%w: invalid phase %q", ErrBadRequest, req.Phase)
 	}
-	if len(req.Text) > 500 || len(req.Type) > 32 || len(req.ID) > 128 {
+	if len(req.Text) > 500 || len(req.Type) > 32 || len(req.ID) > 128 || len(req.Label) > 128 ||
+		(req.AgentID != "" && !validSessionID(req.AgentID)) {
 		return Message{}, fmt.Errorf("%w: activity too long", ErrBadRequest)
 	}
 	r := n.sess
@@ -332,11 +335,18 @@ func (n *Node) SessionActivity(chatID string, req ActivityRequest) (Message, err
 	s.LastSeen = now
 	prev, had := r.last[req.SessionID]
 	a := ActivityState{ID: req.ID, Type: req.Type, Text: req.Text, Phase: req.Phase, StartedAt: now, Seq: uint64(now.UnixNano()),
-		Session: ShortSession(req.SessionID)}
+		Session: ShortSession(req.SessionID), Role: "main"}
+	if req.AgentID != "" {
+		a.Session = a.Session + ":" + req.AgentID // older peers key jobs by Session alone
+		a.AgentID, a.ParentSession, a.Role, a.Label = req.AgentID, req.SessionID, "subagent", req.Label
+		had = false
+	}
 	if had && prev.ID == a.ID && prev.Type == a.Type && (prev.Text == a.Text || a.Phase == PhaseDone) {
 		a.StartedAt = prev.StartedAt
 	}
-	r.last[req.SessionID] = a
+	if req.AgentID == "" {
+		r.last[req.SessionID] = a
+	}
 	r.mu.Unlock()
 	if req.ReplyTo == "" {
 		if snap, ok := n.chats.snapshot(c.ID); ok {
@@ -351,14 +361,33 @@ func (n *Node) SessionActivity(chatID string, req ActivityRequest) (Message, err
 	if !validID(req.ReplyTo) {
 		return Message{}, fmt.Errorf("%w: no request to report on (reply_to)", ErrBadRequest)
 	}
-	m := Message{ID: DerivedID(req.ReplyTo, n.cfg.Node+"/session/"+req.SessionID+"/"+strconv.FormatUint(a.Seq, 10)),
+	if req.AgentID == "" && a.Phase == PhaseIdle {
+		if snap, ok := n.chats.snapshot(c.ID); ok {
+			for _, child := range snap.jobs {
+				x := child.ActivityInfo
+				if child.From == n.cfg.Node && child.JobStatus == JobRunning && x != nil && x.ParentSession == req.SessionID && x.AgentID != "" {
+					if _, err := n.SessionActivity(chatID, ActivityRequest{SessionID: req.SessionID, ReplyTo: child.ReplyTo,
+						AgentID: x.AgentID, Label: x.Label, Phase: PhaseIdle}); err != nil {
+						n.log.Warn("end subagent activity", "session", req.SessionID, "agent", x.AgentID, "err", err)
+					}
+				}
+			}
+		}
+	}
+	idLabel := n.cfg.Node + "/session/" + req.SessionID + "/"
+	if req.AgentID != "" {
+		idLabel += req.AgentID + "/"
+	}
+	m := Message{ID: DerivedID(req.ReplyTo, idLabel+strconv.FormatUint(a.Seq, 10)),
 		ChatID: c.ID, ReplyTo: req.ReplyTo, Kind: KindStatus, JobStatus: JobRunning, Activity: a.Text}
 	if a.Phase == PhaseIdle {
 		// The end names the session too: it ends that session's line only.
 		m.JobStatus, m.Activity = JobCompleted, ""
-		m.ActivityInfo = &ActivityState{Phase: PhaseIdle, Seq: a.Seq, Session: a.Session}
+		m.ActivityInfo = &ActivityState{Phase: PhaseIdle, Seq: a.Seq, Session: a.Session, AgentID: a.AgentID, ParentSession: a.ParentSession, Role: a.Role, Label: a.Label}
 		r.mu.Lock()
-		delete(r.last, req.SessionID)
+		if req.AgentID == "" {
+			delete(r.last, req.SessionID)
+		}
 		r.mu.Unlock()
 	} else {
 		m.ActivityInfo = &a

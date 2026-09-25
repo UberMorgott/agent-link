@@ -327,6 +327,69 @@ func TestSessionActivityOneLinePerSession(t *testing.T) {
 	eventually(t, "a sees b's agent after it wrote", func() bool { return slices.Equal(sessions(a), []string{"sess-one:запускает go"}) })
 }
 
+func TestSubagentActivityKeepsParentLine(t *testing.T) {
+	a, b, _ := trio(t)
+	info, err := a.CreateChat([]string{"b"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b knows the chat", func() bool { _, ok := b.ChatOf(info.ID); return ok })
+	const sid = "parent-session-1"
+	if _, err := b.RegisterSession(SessionRequest{SessionID: sid, Provider: "codex", Folder: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	q, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "review", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the request", func() bool { return slices.Contains(chatIDs(b, info.ID), q.ID) })
+	for _, req := range []ActivityRequest{
+		{SessionID: sid, ReplyTo: q.ID, Text: "main works"},
+		{SessionID: sid, ReplyTo: q.ID, AgentID: "child-1", Label: "reviewer", Text: "child works"},
+	} {
+		if _, err := b.SessionActivity(info.ID, req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobs := func() []JobActivity { got, _ := a.Chat(info.ID); return got.Members[1].Jobs }
+	eventually(t, "parent and child show separately", func() bool { return len(jobs()) == 2 })
+	legacyKeys := map[string]bool{}
+	for _, j := range jobs() {
+		x := j.ActivityInfo
+		if x == nil || x.Session == "" || legacyKeys["b/"+q.ID+"/"+x.Session] {
+			t.Fatalf("legacy job key collision: %+v", jobs())
+		}
+		legacyKeys["b/"+q.ID+"/"+x.Session] = true
+		if x.AgentID == "child-1" && (x.ParentSession != sid || x.Role != "subagent" || x.Label != "reviewer") {
+			t.Fatalf("child metadata: %+v", x)
+		}
+	}
+	if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: q.ID, AgentID: "child-1", Phase: PhaseIdle}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "child ended, parent remains", func() bool {
+		js := jobs()
+		return len(js) == 1 && js[0].ActivityInfo != nil && js[0].ActivityInfo.Role == "main"
+	})
+	if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: q.ID, AgentID: "child-2", Text: "still working"}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "second child started", func() bool { return len(jobs()) == 2 })
+	if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: q.ID, Phase: PhaseIdle}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "parent idle ends child", func() bool { return len(jobs()) == 0 })
+	if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: q.ID, AgentID: "child-2", Text: "late status"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: q.ID, AgentID: "child-2", Phase: PhaseIdle}); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs()) != 0 {
+		t.Fatalf("late child revived after parent idle: %+v", jobs())
+	}
+}
+
 func TestChatCloseRace(t *testing.T) {
 	a, b, c := trio(t)
 	info, err := a.CreateChat([]string{"b", "c"}, "")

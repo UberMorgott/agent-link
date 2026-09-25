@@ -420,7 +420,7 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 			}
 			limit = v
 		}
-		page, err := n.UnreadFor(q.Get("folder"), q.Get("session"), q.Get("after"), limit)
+		page, err := n.unreadFor(q.Get("folder"), q.Get("session"), q.Get("after"), limit, q.Get("actionable") == "1")
 		reply(w, page, err)
 	})
 	mux.HandleFunc("POST /claim", func(w http.ResponseWriter, r *http.Request) {

@@ -85,6 +85,9 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 			if _, done := f.acked[m.ID]; done {
 				continue
 			}
+			if q.Get("actionable") == "1" && m.Paused {
+				continue
+			}
 			page.Total++
 			if q.Get("after") != "" && m.Cursor <= q.Get("after") {
 				continue
@@ -414,6 +417,67 @@ func TestHookActivityOfTheWritingSession(t *testing.T) {
 	}
 }
 
+func TestCodexSubagentActivity(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookCodex, evSessionStart)
+	noteSent(c.env, c.sid, "c1", "own1")
+	start := c.run(hookCodex, evSubagentStart, `,"agent_id":"child-1","agent_type":"reviewer"`)
+	if got := c.state(hookCodex).Subagents["child-1"]["c1"]; got != "own1" {
+		t.Fatalf("child start snapshot %q", got)
+	}
+	noteSent(c.env, c.sid, "c1", "own2") // parent moves to another request in the same chat
+	stop := c.run(hookCodex, evSubagentStop, `,"agent_id":"child-1","agent_type":"reviewer"`)
+	if start != "" || stop != "{}" {
+		t.Fatalf("subagent hook output: start %q, stop %q", start, stop)
+	}
+	got := c.f.activity
+	if len(got) != 4 || got[1].SessionID != c.sid || got[1].AgentID != "child-1" || got[1].Label != "reviewer" || got[1].Phase != "" ||
+		got[1].ReplyTo != "own1" || got[3].AgentID != "child-1" || got[3].Phase != node.PhaseIdle || got[3].ReplyTo != "own1" ||
+		len(c.state(hookCodex).Subagents) != 0 {
+		t.Fatalf("subagent lifecycle: %+v", got)
+	}
+}
+
+func TestCodexSubagentStopAfterParentIdle(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookCodex, evSessionStart)
+	noteSent(c.env, c.sid, "c1", "own1")
+	c.run(hookCodex, evSubagentStart, `,"agent_id":"child-1"`)
+	c.run(hookCodex, evStop)
+	got := c.f.activity[len(c.f.activity)-2:]
+	if len(c.state(hookCodex).Active) != 0 || len(c.state(hookCodex).Subagents) != 0 || !c.f.sessions[c.sid].Idle ||
+		got[0].AgentID != "child-1" || got[0].ReplyTo != "own1" || got[0].Phase != node.PhaseIdle || got[1].AgentID != "" || got[1].Phase != node.PhaseIdle {
+		t.Fatalf("parent idle did not end child first: %+v", got)
+	}
+	n := len(c.f.activity)
+	if out := c.run(hookCodex, evSubagentStop, `,"agent_id":"child-1"`); out != "{}" {
+		t.Fatalf("subagent stop output %q", out)
+	}
+	if len(c.f.activity) != n || !c.f.sessions[c.sid].Idle {
+		t.Fatalf("late child stop posted duplicate activity: %+v", c.f.activity[n:])
+	}
+}
+
+func TestHookChainLimitIsInformational(t *testing.T) {
+	c := newHookCase(t)
+	m := chatMsg("c1", "KPECTIK", "agent", "deep reply", true)
+	m.Paused = true
+	c.f.add(m)
+	if out := c.run(hookCodex, evStop); out != "{}" || len(c.f.ackedIDs()) != 0 {
+		t.Fatalf("guarded message continued Stop or was acked: %q %v", out, c.f.ackedIDs())
+	}
+	if !c.state(hookCodex).Idle {
+		t.Fatal("Stop did not leave Codex idle")
+	}
+	out := parseOut(t, c.run(hookCodex, evPrompt))
+	if strings.Contains(out.HookSpecificOutput.AdditionalContext, "Пауза") ||
+		strings.Contains(out.HookSpecificOutput.AdditionalContext, "Просит ответа") ||
+		!strings.Contains(out.HookSpecificOutput.AdditionalContext, "К сведению, ответ не требуется") ||
+		len(c.f.ackedIDs()) != 1 {
+		t.Fatalf("chain limit output: %+v, acked %v", out, c.f.ackedIDs())
+	}
+}
+
 func TestHookOwnHumanIsInformation(t *testing.T) {
 	c := newHookCase(t)
 	m := chatMsg("c1", "me", "human", "I told everyone: ship on Friday", false)
@@ -623,6 +687,28 @@ func TestHookWaitWakesIdleSession(t *testing.T) {
 	}
 	if c.state(hookClaude).Notice != "" {
 		t.Fatal("notice shown twice")
+	}
+}
+
+func TestHookGuardedMessageDoesNotRewake(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evStop)
+	m := chatMsg("c1", "KPECTIK", "agent", "guarded", true)
+	m.Paused = true
+	c.f.add(m)
+	if out := c.run(hookClaude, evStop); out != "" || len(c.f.ackedIDs()) != 0 {
+		t.Fatalf("guarded message continued Claude Stop: %q %v", out, c.f.ackedIDs())
+	}
+	if pendingUnread(c.env, c.folder, c.sid) {
+		t.Fatal("guarded message looked actionable to the waiter")
+	}
+	var stderr bytes.Buffer
+	if code, done := wakeWith(hookClaude, c.sid, c.folder, hookStatePath(c.env.dir, hookClaude, c.sid), &stderr, c.env, time.Hour); code != 0 || done || stderr.Len() != 0 || len(c.f.ackedIDs()) != 0 {
+		t.Fatalf("guarded message rewoke: code %d done %v stderr %q acked %v", code, done, stderr.String(), c.f.ackedIDs())
+	}
+	if out := c.run(hookClaude, evPrompt); !strings.Contains(out, "К сведению, ответ не требуется") || len(c.f.ackedIDs()) != 1 {
+		t.Fatalf("next human turn did not read guarded message: %q %v", out, c.f.ackedIDs())
 	}
 }
 

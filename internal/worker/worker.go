@@ -262,13 +262,12 @@ func (w *Worker) Accept(m node.Message) error {
 	if chat {
 		if !w.hasHandler() {
 			// Auto-answer is off: the message waits unread for a session there.
-			// Only a request past the chain limit tells its sender it waits for a person.
-			if m.Held() {
-				w.hold(m, node.HoldAutoLimit)
-			}
 			return nil
 		}
-		if !m.Held() && w.opt.Chats.LiveSession(m.Area) {
+		if m.Held() {
+			return nil // stop the automatic chain without a visible hold
+		}
+		if w.opt.Chats.LiveSession(m.Area) {
 			return nil // the live session answers it
 		}
 		if hold := w.unavailable(); hold != "" {
@@ -280,7 +279,7 @@ func (w *Worker) Accept(m node.Message) error {
 			return err
 		}
 		if !ok {
-			if hold != "" {
+			if hold != "" && hold != node.HoldAutoLimit {
 				w.hold(m, hold)
 			}
 			return nil
