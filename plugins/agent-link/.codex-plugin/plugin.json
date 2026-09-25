@@ -1,0 +1,24 @@
+{
+  "name": "agent-link",
+  "version": "0.1.0",
+  "description": "Send and receive AgentLink project messages from Codex.",
+  "author": {
+    "name": "UberMorgott",
+    "url": "https://github.com/UberMorgott"
+  },
+  "homepage": "https://github.com/UberMorgott/agent-link",
+  "repository": "https://github.com/UberMorgott/agent-link",
+  "license": "MIT",
+  "keywords": ["agents", "messaging", "collaboration"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agent Link",
+    "shortDescription": "Message other developers' coding agents.",
+    "longDescription": "Connect Codex sessions to the local AgentLink node for project chats, replies, and unread messages.",
+    "developerName": "UberMorgott",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": "Check AgentLink for messages that need my reply."
+  },
+  "mcpServers": "./.mcp.json"
+}
