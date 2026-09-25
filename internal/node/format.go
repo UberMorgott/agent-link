@@ -1,0 +1,111 @@
+package node
+
+import (
+	"fmt"
+	"strings"
+	"unicode/utf8"
+)
+
+// The text an agent session gets for its unread messages: the hooks inject it
+// (agentlink hook) and the node queues it as the prompt that wakes an idle
+// session (wakeIdle), so both read the same.
+
+// Limits of the text for a session.
+const (
+	// FormatBudget: runes of message text in one batch (Codex: ~2500 tokens
+	// per hook output).
+	FormatBudget = 4500
+	// FormatMaxBody: runes of one message body.
+	FormatMaxBody = 2500
+)
+
+// FormatUnread is one message for the model: who wrote it, where, the text
+// and what to do with it.
+func FormatUnread(m UnreadMessage) string {
+	var b strings.Builder
+	at := m.CreatedAt.Local().Format("2006-01-02 15:04")
+	switch {
+	case m.OwnHuman:
+		fmt.Fprintf(&b, "Ваш человек написал всем (%s, чат %s, id %s) — к сведению, отвечать не нужно:\n", at, m.ChatID, m.ID)
+	case m.ChatID != "":
+		fmt.Fprintf(&b, "От %s (%s) в чате %s (участники: %s), id %s, %s:\n", m.From, authorKind(m.AuthorKind), m.ChatID, strings.Join(m.Participants, ", "), m.ID, at)
+	default:
+		fmt.Fprintf(&b, "От %s (%s), id %s, %s:\n", m.From, authorKind(m.AuthorKind), m.ID, at)
+	}
+	b.WriteString(capBody(m))
+	b.WriteString("\n")
+	if m.OwnHuman {
+		return b.String()
+	}
+	reply := fmt.Sprintf("agentlink send --to %s --reply-to %s --body \"<текст>\"", m.From, m.ID)
+	if m.ChatID != "" {
+		reply = fmt.Sprintf("agentlink send --chat %s --reply-to %s --body \"<текст>\"", m.ChatID, m.ID)
+	}
+	switch {
+	case m.Assigned == "worker":
+		b.WriteString("Это уже обрабатывает агент-обработчик этого узла — не отвечайте.\n")
+	case m.Paused:
+		b.WriteString("К сведению, ответ не требуется.\n")
+	case m.AsksYou:
+		fmt.Fprintf(&b, "Просит ответа от вас. Ответить: %s\n", reply)
+	default:
+		fmt.Fprintf(&b, "К сведению, ответ не обязателен. Ответить: %s\n", reply)
+	}
+	return b.String()
+}
+
+// FitUnread is how many of msgs, from the first, fit FormatBudget runes
+// formatted (at least one).
+func FitUnread(msgs []UnreadMessage) int {
+	n, used := 0, 0
+	for _, m := range msgs {
+		r := utf8.RuneCountInString(FormatUnread(m))
+		if n > 0 && used+r > FormatBudget {
+			break
+		}
+		used += r
+		n++
+	}
+	return n
+}
+
+// WakePrompt is the prompt that wakes an idle session for msgs (the ones it
+// was granted, at most FitUnread of its unread): the messages themselves, as
+// the hooks deliver them; rest more unread stay for its hooks.
+func WakePrompt(msgs []UnreadMessage, rest int, folder string) string {
+	var t strings.Builder
+	fmt.Fprintf(&t, "agent-link: новые сообщения (%d). Вся переписка остаётся в истории чата.\n", len(msgs))
+	for _, m := range msgs {
+		t.WriteString("\n")
+		t.WriteString(FormatUnread(m))
+	}
+	if rest > 0 {
+		fmt.Fprintf(&t, "\nЕщё %d непрочитанных: agentlink chat unread --folder %q\n", rest, folder)
+	}
+	return strings.TrimRight(t.String(), "\n")
+}
+
+func authorKind(k string) string {
+	switch k {
+	case "human":
+		return "человек"
+	case "agent":
+		return "агент"
+	case "worker":
+		return "агент-обработчик"
+	}
+	return "автор не указан"
+}
+
+// capBody cuts a long body, pointing at the command that shows all of it.
+func capBody(m UnreadMessage) string {
+	if utf8.RuneCountInString(m.Body) <= FormatMaxBody {
+		return m.Body
+	}
+	full := "agentlink inbox"
+	if m.ChatID != "" {
+		full = "agentlink chat history --chat " + m.ChatID
+	}
+	r := []rune(m.Body)
+	return string(r[:FormatMaxBody]) + fmt.Sprintf("\n[… обрезано, всего %d символов; полностью: %s]", len(r), full)
+}

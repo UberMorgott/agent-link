@@ -181,8 +181,13 @@ func TestWakeIdleClaudeInbox(t *testing.T) {
 	reg(true, testSocket, testToken)
 	a.wakeIdle(context.Background())
 	a.wakeIdle(context.Background())
-	if p.count() != 1 || p.calls[0] != testSocket+"|"+testToken+"|"+WakeText(1) {
+	if p.count() != 1 || !strings.HasPrefix(p.calls[0], testSocket+"|"+testToken+"|agent-link: новые сообщения (1).") ||
+		!strings.Contains(p.calls[0], "wake up") || !strings.Contains(p.calls[0], "id "+m.ID) {
 		t.Fatalf("posts %v", p.calls)
+	}
+	// The prompt carries it: the session's hooks do not get it again.
+	if page, _ := a.UnreadFor(dir, "s-c", "", 10); page.Total != 0 || len(page.Woken) != 1 || page.Woken[0].ID != m.ID {
+		t.Fatalf("after the wake: %+v", page)
 	}
 	waitAttempts(t, b, m, AttemptWakeRequested)
 	if !a.InboxWakes("s-c") {
@@ -213,6 +218,10 @@ func TestWakeIdleClaudeInbox(t *testing.T) {
 	a.wakeIdle(context.Background())
 	if a.InboxWakes("s-c") || p.count() != 2 {
 		t.Fatalf("after a failed post: inbox %v posts %d", a.InboxWakes("s-c"), p.count())
+	}
+	// Its claim is dropped: the hooks deliver it.
+	if page, _ := a.UnreadFor(dir, "s-c", "", 10); page.Total != 1 || len(page.Woken) != 0 {
+		t.Fatalf("after a failed post: %+v", page)
 	}
 	// An invalid inbox is ignored, not refused.
 	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-x", Provider: "claude", Folder: dir, InboxSocket: `C:\evil`, InboxToken: testToken}); err != nil || a.InboxWakes("s-x") {

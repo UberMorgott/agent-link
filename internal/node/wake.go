@@ -2,14 +2,13 @@ package node
 
 import (
 	"context"
-	"fmt"
 	"time"
 )
 
 // Waking idle sessions. The node wakes a live session that ended its turn
 // (Idle) and has actionable unread messages to take, once per idle period:
 //
-//   - Codex (WakeQueue): it queues one short prompt in the session's agent
+//   - Codex (WakeQueue): it queues one prompt in the session's agent
 //     (`codex queue`, SessionWaker); the agent starts a turn with it. A session
 //     whose app is closed keeps the prompt queued until it is opened again.
 //     Without a usable waker (no codex 0.149 or later, or a failed wake) such
@@ -19,9 +18,13 @@ import (
 //     background waiter (asyncRewake, which defers to the node while it holds
 //     the inbox) wakes it instead.
 //
-// Either way the session's own hooks (UserPromptSubmit) claim, deliver and
-// acknowledge the messages as always, and each woken message's author hears
-// of it (AttemptWakeRequested, then AttemptWokenConfirmed at the ack).
+// The prompt is the messages themselves (WakePrompt, as the hooks format
+// them), as many as fit FormatBudget. The node claims them for the session as
+// a wake claim first (wakeClaim): its hooks then do not deliver them again but
+// acknowledge them at that prompt (UnreadPage.Woken); a failed wake drops the
+// claim, and one the session never took lapses after inboxWakeGrace, and the
+// hooks deliver them as always. Each woken message's author hears of it
+// (AttemptWakeRequested, then AttemptWokenConfirmed at the ack).
 // The same loop runs the launch ladder (launch.go).
 
 // wakePoll is how often the node looks for idle sessions to wake.
@@ -125,14 +128,22 @@ func (n *Node) wakeIdle(ctx context.Context) {
 	for _, d := range list {
 		s := d.s
 		page, err := n.unreadFor(s.Folder, s.SessionID, "", hookBatchIDs, true)
-		if err != nil || page.Total == 0 {
+		if err != nil || len(page.Messages) == 0 {
 			continue
 		}
+		msgs := n.wakeClaim(s.SessionID, page.Messages[:FitUnread(page.Messages)])
+		if len(msgs) == 0 {
+			continue
+		}
+		text := WakePrompt(msgs, page.Total-len(msgs), s.Folder)
 		byInbox := d.inbox.socket != ""
 		if byInbox {
-			err = n.poster.Post(ctx, d.inbox.socket, d.inbox.token, WakeText(page.Total))
+			err = n.poster.Post(ctx, d.inbox.socket, d.inbox.token, text)
 		} else {
-			err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, WakeText(page.Total))
+			err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, text)
+		}
+		if err != nil {
+			n.unclaim(s.SessionID, ids(msgs)) // its hooks deliver them instead
 		}
 		r.mu.Lock()
 		if cur := r.sessions[s.SessionID]; cur != nil {
@@ -157,23 +168,10 @@ func (n *Node) wakeIdle(ctx context.Context) {
 			n.changed("sessions")
 			continue
 		}
-		n.log.Info("idle session woken", "session", s.SessionID, "provider", s.Provider, "inbox", byInbox, "unread", page.Total)
-		n.noteWoken(page.Messages)
+		n.log.Info("idle session woken", "session", s.SessionID, "provider", s.Provider, "inbox", byInbox, "messages", len(msgs), "unread", page.Total)
+		n.noteWoken(msgs)
 	}
 }
 
-// hookBatchIDs bounds the messages one wake reports attempts for.
+// hookBatchIDs bounds the unread messages one wake looks at.
 const hookBatchIDs = 50
-
-// WakeText is the prompt queued for an idle session with n unread messages:
-// «agent-link: 3 новых сообщения — прочитай их».
-func WakeText(n int) string {
-	form := "новых сообщений"
-	switch n10, n100 := n%10, n%100; {
-	case n10 == 1 && n100 != 11:
-		form = "новое сообщение"
-	case n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14):
-		form = "новых сообщения"
-	}
-	return fmt.Sprintf("agent-link: %d %s — прочитай их", n, form)
-}

@@ -29,8 +29,8 @@ import (
 // The auth line is required on Windows and proves the message comes from the
 // session's own child (a hook), so Claude Code delivers it unless the
 // session's crossSessionInbound setting says otherwise. An idle session starts
-// a turn with the prompt; its UserPromptSubmit hook then delivers the unread
-// messages as always. Claude Code closes a connection that sends no complete
+// a turn with the prompt, which carries the messages (WakePrompt); its
+// UserPromptSubmit hook acknowledges them. Claude Code closes a connection that sends no complete
 // line within 30 s, so the connection is opened only when the lines are ready.
 
 // Providers of agent sessions the node wakes or opens.
