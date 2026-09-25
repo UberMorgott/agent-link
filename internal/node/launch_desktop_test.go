@@ -455,13 +455,14 @@ func TestLaunchDirectAckRetry(t *testing.T) {
 			var calls atomic.Int32
 			var broken atomic.Bool
 			broken.Store(true)
-			a.launchAck = func(req AckRequest) error {
+			ackFn := func(req AckRequest) error {
 				if int(calls.Add(1)) <= fails || (fails >= launchAckTries && broken.Load()) {
 					return errors.New("store busy")
 				}
 				_, err := a.Ack("", req)
 				return err
 			}
+			a.launchAck.Store(&ackFn)
 			m := ask(t, a, b, "ack me")
 			a.launchDue(context.Background(), time.Now().Add(launchGrace+time.Second))
 			a.directWG.Wait()

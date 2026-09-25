@@ -73,13 +73,21 @@ func (l DesktopLauncher) Run(ctx context.Context, spec LaunchSpec, started func(
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrNoAgent, err)
 	}
-	// The turn is the person's session now: it outlives the node's context.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), desktopTurnTimeout)
+	// The turn is the person's session now: it outlives the node's context
+	// (a seat's turn ends when its seat stops).
+	base := context.WithoutCancel(ctx)
+	if spec.Seat != "" {
+		base = ctx
+	}
+	ctx, cancel := context.WithTimeout(base, desktopTurnTimeout)
 	defer cancel()
 	// The app shows the session live, as soon as its id is known.
 	var openErr error
 	seen := func(id string) {
 		started(id)
+		if spec.NoOpen {
+			return
+		}
 		if err := openURL(ctx, DeepLink(spec.Provider, id)); err != nil {
 			openErr = err
 		}
@@ -121,7 +129,7 @@ func ClaudeArgs(spec LaunchSpec) []string {
 func runClaude(ctx context.Context, bin string, spec LaunchSpec, started func(string)) (string, error) {
 	cmd := exec.CommandContext(ctx, bin, ClaudeArgs(spec)...) //nolint:gosec // G204: the agent's CLI, arguments built by ClaudeArgs
 	cmd.Dir = spec.Folder
-	cmd.Env = LaunchEnv(os.Environ())
+	cmd.Env = append(LaunchEnv(os.Environ()), spec.Env...)
 	cmd.Stdin = strings.NewReader(spec.Prompt)
 	var stderr tailBuffer
 	cmd.Stderr = &stderr
@@ -194,9 +202,9 @@ func ReadClaudeStream(r io.Reader, started func(string)) (string, error) {
 }
 
 func (l DesktopLauncher) runCodex(ctx context.Context, bin string, spec LaunchSpec, started func(string)) (string, error) {
-	cmd := exec.CommandContext(ctx, bin, "app-server")
+	cmd := exec.CommandContext(ctx, bin, CodexServerArgs(spec)...) //nolint:gosec // G204: the agent's CLI, arguments built by CodexServerArgs
 	cmd.Dir = spec.Folder
-	cmd.Env = LaunchEnv(os.Environ())
+	cmd.Env = append(LaunchEnv(os.Environ()), spec.Env...)
 	var stderr tailBuffer
 	cmd.Stderr = &stderr
 	hideWindow(cmd)
@@ -229,6 +237,25 @@ func (l DesktopLauncher) runCodex(ctx context.Context, bin string, spec LaunchSp
 		terr = fmt.Errorf("%w: %s", terr, stderr.String())
 	}
 	return id, terr
+}
+
+// CodexServerArgs are the arguments of `codex app-server` for spec. Codex
+// gives its commands a filtered environment, so spec.Env reaches them through
+// shell_environment_policy.set (TOML literal strings; a value with a quote or
+// a newline is left out).
+func CodexServerArgs(spec LaunchSpec) []string {
+	var set []string
+	for _, kv := range spec.Env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" || strings.ContainsAny(k+v, "'\r\n") || strings.ContainsAny(k, " .=\"{}") {
+			continue
+		}
+		set = append(set, k+"='"+v+"'")
+	}
+	if len(set) == 0 {
+		return []string{"app-server"}
+	}
+	return []string{"app-server", "-c", "shell_environment_policy.set={" + strings.Join(set, ",") + "}"}
 }
 
 // rpcMsg is one JSON-RPC message of codex app-server (no "jsonrpc" field).

@@ -69,6 +69,7 @@ export const useInboxStore = defineStore('inbox', () => {
   const closing = ref(false)
   const focusComposer = ref(0)
   const askState = ref<Record<string, string[]>>({}) // chatKey -> names asked to answer
+  const seatAskState = ref<Record<string, string[]>>({}) // chatKey -> this member's local agents (seat ids) asked
 
   const newChatOpen = ref(false)
   const newChatPeople = ref<NewChatPerson[]>([])
@@ -149,6 +150,11 @@ export const useInboxStore = defineStore('inbox', () => {
   }
   function setAsk(info: ChatInfo, names: string[]) {
     askState.value = { ...askState.value, [chatKey(project.value, info.id)]: names }
+  }
+  // seatAskFor: the local agents (seats) the next message asks; none by default.
+  function seatAskFor(info: ChatInfo): string[] { return seatAskState.value[chatKey(project.value, info.id)] || [] }
+  function setSeatAsk(info: ChatInfo, ids: string[]) {
+    seatAskState.value = { ...seatAskState.value, [chatKey(project.value, info.id)]: ids }
   }
 
   // --- loading ---
@@ -239,6 +245,8 @@ export const useInboxStore = defineStore('inbox', () => {
     try {
       const body: Record<string, unknown> = { chat_id: id, body: composer.value, ask: [...askFor(info)].sort() }
       if (replyTo.value) body.reply_to = replyTo.value.id
+      const seats = seatAskFor(info)
+      if (seats.length) body.ask_seats = [...seats].sort()
       const files = useAttachmentsStore()
       if (files.uploading) return // the send button waits for the uploads
       if (files.ready.length) body.attachments = files.ready
@@ -474,7 +482,7 @@ export const useInboxStore = defineStore('inbox', () => {
     project, selectedChat, selectedMessage, chat, messages, hasOlder, scrollIntent, drafts, composer, replyTo, sendResult,
     subtitleError, sending, closing, focusComposer, askState, reads, toasts,
     newChatOpen, newChatPeople, newChatChosen, newChatResult, newChatBusy, focusNewChat,
-    askFor, setAsk, loadChat, loadOlder, saveDraft, setReply, selectChat, submitMessage, showNewChat, hideNewChat,
+    askFor, setAsk, seatAskFor, setSeatAsk, loadChat, loadOlder, saveDraft, setReply, selectChat, submitMessage, showNewChat, hideNewChat,
     createChat, openPeer, activeChat, openActive, closeChat, confirmClose, archiveChat, confirmArchive, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, openKey,
   }
 })

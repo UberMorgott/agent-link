@@ -2,7 +2,7 @@
 // (internal/app/testdata/projects, checked against the Go types by
 // TestContractFixtures). Tests answer fetch with it (harness.ts); it keeps
 // what a request changes, so a page sees its own edits.
-import type { ChatInfo, ChatMessage, InviteView, JoinResult, ProjectView, Session } from '@/types'
+import type { ChatInfo, ChatMessage, InviteView, JoinResult, ProjectView, SeatView, Session } from '@/types'
 
 const files = import.meta.glob<unknown>('../../../testdata/projects/*.json', { eager: true, import: 'default' })
 
@@ -46,6 +46,7 @@ export interface Backend {
   chats: Record<string, ChatInfo[]> // by project id
   messages: Record<string, ChatMessage[]> // by chat id
   sessions: Session[]
+  seats: Record<string, SeatView[]> // by project id: the local agents
   sent: unknown[]
   // legacyNeedsDir: joining the legacy network answers 400 work_dir without
   // a dir (its code joined while an agent answers and no working folder is set).
@@ -83,6 +84,7 @@ export function createBackend(): Backend {
       'legacy-chat-1': [legacyChat().last_message!],
     },
     sessions: fixture<Session[]>('sessions'),
+    seats: {},
     sent: [],
     legacyNeedsDir: false,
     failNext: '',
@@ -251,6 +253,27 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     b.changed(['projects'])
     return undefined
   }
+  if (rest[0] === 'seats') {
+    const list = b.seats[pid] || (b.seats[pid] = [])
+    if (rest.length === 1 && method === 'GET') return list
+    if (rest.length === 1 && method === 'POST') {
+      const provider = String(req.provider || '')
+      if (provider !== 'claude' && provider !== 'codex') throw apiError('bad_request')
+      const base = provider === 'codex' ? 'Codex' : 'Claude'
+      const taken = list.filter((s) => s.provider === provider).length
+      const s: SeatView = { id: 'seat-' + newID().slice(0, 8), provider, label: taken ? base + ' ' + (taken + 1) : base, session_id: provider + '-' + (taken + 1), status: 'closed' }
+      list.push(s)
+      b.changed(['seats', 'project:' + pid])
+      return s
+    }
+    const s = list.find((x) => x.id === rest[1])
+    if (!s) throw apiError('not_found')
+    if (rest[2] === 'start') s.status = 'closed'
+    if (rest[2] === 'stop') s.status = 'stopped'
+    if (rest[2] === 'remove') b.seats[pid] = list.filter((x) => x.id !== s.id)
+    b.changed(['seats', 'project:' + pid])
+    return rest[2] === 'remove' ? b.seats[pid] : s
+  }
   if (method === 'POST' && rest[0] === 'send') {
     const text = String(req.body || '').trim()
     if (!text) throw apiError('empty_body')
@@ -262,6 +285,7 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     const m: ChatMessage = {
       id: newID(), seq: (info.last_seq || 0) + 1, from: SELF, direction: 'out', body: text, created_at: at, chat_id: info.id,
       reply_to: typeof req.reply_to === 'string' ? req.reply_to : undefined, author_kind: 'human',
+      ask_seats: Array.isArray(req.ask_seats) ? req.ask_seats.map(String) : undefined,
       delivery: (info.participants || []).filter((n) => n !== SELF).map((peer) => ({ peer, status: 'queued', state: 'queued' })),
     }
     items.push(m)

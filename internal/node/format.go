@@ -1,6 +1,7 @@
 package node
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -24,13 +25,14 @@ const (
 func FormatUnread(m UnreadMessage) string {
 	var b strings.Builder
 	at := m.CreatedAt.Local().Format("2006-01-02 15:04")
+	from := AuthorName(m.Message)
 	switch {
 	case m.OwnHuman:
 		fmt.Fprintf(&b, "Ваш человек написал всем (%s, чат %s, id %s) — к сведению, отвечать не нужно:\n", at, m.ChatID, m.ID)
 	case m.ChatID != "":
-		fmt.Fprintf(&b, "От %s (%s) в чате %s (участники: %s), id %s, %s:\n", m.From, authorKind(m.AuthorKind), m.ChatID, strings.Join(m.Participants, ", "), m.ID, at)
+		fmt.Fprintf(&b, "От %s (%s) в чате %s (участники: %s), id %s, %s:\n", from, authorKind(m.AuthorKind), m.ChatID, strings.Join(m.Participants, ", "), m.ID, at)
 	default:
-		fmt.Fprintf(&b, "От %s (%s), id %s, %s:\n", m.From, authorKind(m.AuthorKind), m.ID, at)
+		fmt.Fprintf(&b, "От %s (%s), id %s, %s:\n", from, authorKind(m.AuthorKind), m.ID, at)
 	}
 	b.WriteString(capBody(m))
 	b.WriteString("\n")
@@ -95,6 +97,15 @@ func WakeMarker(token string) string { return "[agent-link wake " + token + "]" 
 // prompt (the agent did not say) or another prompt is not.
 func WokenBy(prompt string, m UnreadMessage) bool {
 	return m.WakeToken != "" && strings.Contains(prompt, WakeMarker(m.WakeToken)) && strings.Contains(prompt, "id "+m.ID)
+}
+
+// AuthorName is who wrote m as people see it: its node, and the local agent
+// that wrote it ("Morgott · Codex").
+func AuthorName(m Message) string {
+	if m.Agent == nil {
+		return m.From
+	}
+	return m.From + " · " + cmp.Or(m.Agent.Label, ProviderName(m.Agent.Provider))
 }
 
 func authorKind(k string) string {

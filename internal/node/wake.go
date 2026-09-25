@@ -76,6 +76,7 @@ func (n *Node) wakeLoop(ctx context.Context) {
 			n.syncQueueWake()
 		}
 		n.wakeIdle(ctx)
+		n.seatsDue(ctx, time.Now())
 		n.launchMaintain(ctx, time.Now())
 		n.launchDue(ctx, time.Now())
 		select {
@@ -168,7 +169,7 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		mine := n.routedTo(ids(page.Messages))
 		take := page.Messages[:0:0]
 		for _, m := range page.Messages {
-			if to := mine[m.ID]; to == s.SessionID || (to == "" && anyone) {
+			if to := mine[m.ID]; m.ForSeat != "" || to == s.SessionID || (to == "" && anyone) {
 				take = append(take, m)
 			}
 		}

@@ -49,6 +49,53 @@ func (a *App) projectRoutes(api *http.ServeMux) {
 	}))
 	api.HandleFunc("POST "+p+"/{pid}/chats/{id}/members", a.projectChat(chatMembers))
 	api.HandleFunc("POST "+p+"/{pid}/send", a.projectSend)
+	api.HandleFunc("GET "+p+"/{pid}/seats", a.projectSeats(func(n *node.Node, _ *http.Request) (any, error) { return n.Seats(), nil }))
+	api.HandleFunc("POST "+p+"/{pid}/seats", a.projectSeats(func(n *node.Node, r *http.Request) (any, error) {
+		var req node.SeatRequest
+		if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxBody)).Decode(&req); err != nil {
+			return nil, node.ErrBadRequest
+		}
+		return n.AddSeat(req)
+	}))
+	api.HandleFunc("POST "+p+"/{pid}/seats/{sid}/start", a.projectSeats(func(n *node.Node, r *http.Request) (any, error) {
+		var req struct {
+			Open bool `json:"open"`
+		}
+		_ = json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxBody)).Decode(&req) // an empty body is fine
+		return n.StartSeat(r.PathValue("sid"), req.Open)
+	}))
+	api.HandleFunc("POST "+p+"/{pid}/seats/{sid}/stop", a.projectSeats(func(n *node.Node, r *http.Request) (any, error) {
+		return n.StopSeat(r.PathValue("sid"))
+	}))
+	api.HandleFunc("POST "+p+"/{pid}/seats/{sid}/remove", a.projectSeats(func(n *node.Node, r *http.Request) (any, error) {
+		if err := n.RemoveSeat(r.PathValue("sid")); err != nil {
+			return nil, err
+		}
+		return n.Seats(), nil
+	}))
+}
+
+// projectSeats serves the local agents (seats) of project pid: 404 not_found
+// for an unknown project or seat, 400 bad_request for a request the node
+// refuses (no folder, a bad provider or label).
+func (a *App) projectSeats(do func(n *node.Node, r *http.Request) (any, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		n, ok := a.contextNode(w, r.PathValue("pid"))
+		if !ok {
+			return
+		}
+		v, err := do(n, r)
+		switch {
+		case errors.Is(err, node.ErrUnknownSeat):
+			writeCodedError(w, http.StatusNotFound, "not_found")
+		case errors.Is(err, node.ErrNeedsFolder):
+			writeCodedError(w, http.StatusBadRequest, "project_needs_folder")
+		case err != nil:
+			writeCodedError(w, http.StatusBadRequest, "bad_request")
+		default:
+			writeJSON(w, v)
+		}
+	}
 }
 
 // Projects lists every project by display name, the legacy network last.
@@ -875,6 +922,7 @@ func (a *App) projectSend(w http.ResponseWriter, r *http.Request) {
 		Body        string            `json:"body"`
 		ReplyTo     string            `json:"reply_to"`
 		Ask         []string          `json:"ask"`
+		AskSeats    []string          `json:"ask_seats"`   // this node's local agents asked (seat ids)
 		Attachments []node.Attachment `json:"attachments"` // uploaded: id and name
 	}
 	if !decode(w, r, &req) {
@@ -890,7 +938,7 @@ func (a *App) projectSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m, err := n.SendRequest(node.SendRequest{ChatID: req.ChatID, Body: req.Body, ReplyTo: req.ReplyTo, Ask: req.Ask,
-		AuthorKind: node.AuthorHuman, Attachments: req.Attachments})
+		AuthorKind: node.AuthorHuman, Attachments: req.Attachments, AskSeats: req.AskSeats})
 	if err != nil {
 		if !attachmentFailed(w, err) {
 			a.chatFailed(w, err)

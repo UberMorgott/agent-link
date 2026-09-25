@@ -880,6 +880,9 @@ type ChatSend struct {
 	// Attachments are stored blobs (resolveAttachments); Body already has
 	// their fallback lines.
 	Attachments []Attachment
+	// Agent is the local agent that writes it, AskSeats the seats asked (seats.go).
+	Agent    *AgentRef
+	AskSeats []string
 }
 
 // SendChat posts a message to a chat. Without Ask it only informs. A closed
@@ -903,7 +906,8 @@ func (n *Node) SendChat(s ChatSend) (Message, error) {
 		}
 		s.ChatID = open.ID
 	}
-	m := Message{ChatID: s.ChatID, Body: s.Body, ReplyTo: s.ReplyTo, AuthorKind: s.AuthorKind, Attachments: s.Attachments}
+	m := Message{ChatID: s.ChatID, Body: s.Body, ReplyTo: s.ReplyTo, AuthorKind: s.AuthorKind, Attachments: s.Attachments,
+		Agent: s.Agent, AskSeats: s.AskSeats}
 	for _, a := range s.Ask {
 		for p := range strings.SplitSeq(a, ",") {
 			if p = strings.TrimSpace(p); p != "" {
@@ -1034,7 +1038,7 @@ func (n *Node) postChat(c Chat, m Message) error {
 	c.stamp(&m)
 	if m.Kind == KindStatus {
 		n.chats.noteStatus(m)
-	} else if _, isNew, _, err := n.chats.put(m, m.AuthorKind == AuthorHuman); err != nil {
+	} else if _, isNew, _, err := n.chats.put(m, m.AuthorKind == AuthorHuman && len(m.AskSeats) == 0); err != nil {
 		return err
 	} else if isNew && m.Kind == "" && m.ReplyTo != "" {
 		// Replying reads what it answers: the reply tells its author.

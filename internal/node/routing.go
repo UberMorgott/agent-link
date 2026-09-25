@@ -249,6 +249,12 @@ func (n *Node) claimLocked(session string, want []string, wake bool, token strin
 		plain[p.Message.ID] = true
 	}
 	for _, id := range want {
+		if handled, ok := n.seatClaim(session, id, wake, token); handled {
+			if ok {
+				granted = append(granted, id)
+			}
+			continue
+		}
 		if c, ok := r.claims[id]; ok && c.ackOnly {
 			continue // taken by a launched session, its ack pending: nobody's to deliver
 		}
@@ -302,6 +308,7 @@ func (n *Node) wakeClaim(session string, msgs []UnreadMessage) ([]UnreadMessage,
 // unclaim drops session's claims of ids (a wake that failed): the messages go
 // back to their route and the hooks deliver them.
 func (n *Node) unclaim(session string, ids []string) {
+	n.seatUnclaim(session, ids)
 	r := n.sess
 	r.claimMu.Lock()
 	defer r.claimMu.Unlock()

@@ -13,10 +13,12 @@ import UIcon from '@nuxt/ui/components/Icon.vue'
 import { icon } from '@/lib/icons'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore } from '@/stores/inbox'
+import { useProjectsStore } from '@/stores/projects'
 import type { ChatMessage } from '@/types'
 
 const app = useAppStore()
 const inbox = useInboxStore()
+const projects = useProjectsStore()
 const list = ref<HTMLElement | null>(null)
 
 interface Bubble {
@@ -66,6 +68,10 @@ const bubbles = computed<Bubble[]>(() => {
     const parent = m.reply_to ? byID.get(m.reply_to) : undefined
     // Whom a group message asks; in a chat of two it is always the other side.
     const asks = (m.responders || []).filter((name) => name !== m.from)
+    const names = asks.length && others(info, self).length > 1 ? asks.map((n) => genitiveName(n, self)) : []
+    // The local agents (seats) it asks, by their labels.
+    const seats = projects.seats[inbox.project] || []
+    for (const id of m.ask_seats || []) names.push(m.from + ' · ' + (seats.find((s) => s.id === id)?.label || t("inbox.seats.agent")))
     const tick = messageTick(m, info)
     return {
       m, event: false, out, cont,
@@ -77,10 +83,11 @@ const bubbles = computed<Bubble[]>(() => {
       // information, not as a request.
       fyi: m.own_human && m.unread ? t("inbox.author.fyi") : '',
       quote: parent ? fmt("inbox.reply_to", { name: genitiveName(parent.from, self), text: preview(parent.body, 70) }) : '',
-      note: asks.length && others(info, self).length > 1 ? fmt("inbox.asks", { names: asks.map((n) => genitiveName(n, self)).join(', ') }) : '',
+      note: names.length ? fmt("inbox.asks", { names: names.join(', ') }) : '',
       tick,
-      // Own messages get no reply button: a reference to oneself asks nobody.
-      canReply: !!info && !info.legacy && !info.closed && !out,
+      // Own messages get no reply button: a reference to oneself asks nobody;
+      // a local agent's message does (the reply asks that agent).
+      canReply: !!info && !info.legacy && !info.closed && (!out || !!m.agent?.seat),
     }
   })
 })

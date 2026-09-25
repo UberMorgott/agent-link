@@ -42,6 +42,11 @@ type SendRequest struct {
 	// Files are local files to attach (agentlink send --attach): absolute, or
 	// relative to Folder; only inside this node's folders or the temp folder.
 	Files []string `json:"files,omitempty"`
+	// AskSeats are this node's seats asked to answer (ids or labels, "all"),
+	// in a chat only; Seat is the sending seat (a seat's turn run by the node,
+	// AGENTLINK_SEAT), else the seat of SessionID (seats.go).
+	AskSeats []string `json:"ask_seats,omitempty"`
+	Seat     string   `json:"seat,omitempty"`
 }
 
 // SendRequest sends req like POST /send: every path goes to the one open chat
@@ -59,6 +64,26 @@ type SendRequest struct {
 // A reply (ReplyTo) that is not from the job answering that very request
 // (Parent) is reported to the local reply hook: the request is answered here.
 func (n *Node) SendRequest(req SendRequest) (Message, error) {
+	agent, err := n.senderAgent(req)
+	if err != nil {
+		return Message{}, err
+	}
+	sender := ""
+	if agent != nil {
+		sender = agent.Seat
+	}
+	asked, err := n.resolveSeats(req.AskSeats, sender)
+	if err != nil {
+		return Message{}, err
+	}
+	if req.AuthorKind == AuthorHuman && req.ReplyTo != "" {
+		// A person answering a seat's message asks that seat.
+		if r, ok := n.chats.message(req.ReplyTo); ok && r.Message.From == n.cfg.Node && r.Message.Agent != nil && r.Message.Agent.Seat != "" {
+			if extra, err := n.resolveSeats([]string{r.Message.Agent.Seat}, ""); err == nil {
+				asked = slices.Compact(slices.Sorted(slices.Values(append(asked, extra...))))
+			}
+		}
+	}
 	atts, err := n.resolveAttachments(req)
 	if err != nil {
 		return Message{}, err
@@ -66,7 +91,10 @@ func (n *Node) SendRequest(req SendRequest) (Message, error) {
 	if len(atts) > 0 {
 		req.Body = withFallback(req.Body, atts)
 	}
-	m, err := n.sendRequest(req, atts)
+	m, err := n.sendRequest(req, atts, agent, asked)
+	if err == nil && m.ChatID != "" {
+		n.deliverToSeats(m, sender)
+	}
 	if err == nil && m.ChatID != "" && validSessionID(req.SessionID) {
 		if serr := n.chats.setSession(m.ID, req.SessionID); serr != nil {
 			n.log.Warn("record sending session", "id", m.ID, "err", serr)
@@ -78,8 +106,9 @@ func (n *Node) SendRequest(req SendRequest) (Message, error) {
 	return m, err
 }
 
-func (n *Node) sendRequest(req SendRequest, atts []Attachment) (Message, error) {
-	cs := ChatSend{ChatID: req.ChatID, Body: req.Body, ReplyTo: req.ReplyTo, Ask: req.Ask, Parent: req.Parent, AuthorKind: req.AuthorKind, Attachments: atts}
+func (n *Node) sendRequest(req SendRequest, atts []Attachment, agent *AgentRef, asked []string) (Message, error) {
+	cs := ChatSend{ChatID: req.ChatID, Body: req.Body, ReplyTo: req.ReplyTo, Ask: req.Ask, Parent: req.Parent, AuthorKind: req.AuthorKind, Attachments: atts,
+		Agent: agent, AskSeats: asked}
 	if req.ChatID != "" {
 		if req.To != "" {
 			return Message{}, errors.New("give either to or chat_id")
@@ -125,7 +154,7 @@ func (n *Node) sendRequest(req SendRequest, atts []Attachment) (Message, error) 
 		plain = plain || (n.Connected(p) && !n.PeerHas(p, CapChat))
 	}
 	if plain {
-		if len(req.Ask) > 0 {
+		if len(req.Ask) > 0 || len(asked) > 0 {
 			return Message{}, errors.New("ask needs a chat")
 		}
 		if len(atts) > 0 {
@@ -142,7 +171,7 @@ func (n *Node) sendRequest(req SendRequest, atts []Attachment) (Message, error) 
 		return Message{}, err
 	}
 	cs.ChatID = c.ID
-	if len(cs.Ask) == 0 {
+	if len(cs.Ask) == 0 && len(asked) == 0 {
 		cs.Ask = recipients
 	}
 	return n.SendChat(cs)
@@ -186,6 +215,7 @@ type ArchiveRequest struct {
 //	DELETE /sessions/{id}    204
 //	GET  /inbox?limit=50     200 []Entry, chat messages included (with chat_id)
 //	GET  /members            200 []MemberInfo (this node first)
+//	GET  /seats              200 []SeatView: this node's local agents (seats.go)
 //	POST /members            {"addr"} -> dial that address too (AddPeer)
 //	POST /members/remove     {"name"} -> remove the member from the network
 func (n *Node) APIHandler() http.Handler {
@@ -210,6 +240,7 @@ func (n *Node) APIHandler() http.Handler {
 	n.sessionRoutes(mux)
 	n.AttachmentRoutes(mux, "", func(w http.ResponseWriter, code int, err error) { http.Error(w, err.Error(), code) })
 	mux.HandleFunc("GET /members", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Members()) })
+	mux.HandleFunc("GET /seats", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Seats()) })
 	mux.HandleFunc("POST /members", n.handleAddMember)
 	mux.HandleFunc("POST /members/remove", n.handleRemoveMember)
 	return localOnly(mux)

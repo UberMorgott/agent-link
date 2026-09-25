@@ -88,6 +88,16 @@ const asked = computed<string[]>({
 })
 const replying = computed(() => (inbox.replyTo ? fmt("inbox.replying", { text: authorLabel(inbox.replyTo, self.value) + ': ' + preview(inbox.replyTo.body, 60) }) : ''))
 
+// This member's local agents (seats) the message asks: none by default.
+watch(() => [pid.value, inProject.value] as const, ([p, on]) => {
+  if (on && p && !Object.hasOwn(projects.seats, p)) void projects.refreshSeats(p).catch(() => {})
+}, { immediate: true })
+const seatList = computed(() => (inProject.value ? projects.seats[pid.value] || [] : []))
+const seatAsked = computed<string[]>({
+  get: () => (info.value ? inbox.seatAskFor(info.value) : []),
+  set: (ids) => { if (info.value) inbox.setSeatAsk(info.value, ids) },
+})
+
 const note = computed(() => {
   const i = info.value
   if (!i || (writable.value && !i.legacy)) return null
@@ -262,6 +272,31 @@ function back() {
                 id="ask_hint"
                 class="ask-hint text-xs text-[var(--app-off)]"
               >{{ t("inbox.ask.none") }}</span>
+            </div>
+            <div
+              v-if="seatList.length"
+              id="seat_row"
+              class="ask-row flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm"
+              role="group"
+              aria-labelledby="seat_label"
+            >
+              <span
+                id="seat_label"
+                class="field-label text-muted"
+              >{{ t("inbox.seats.label") }}</span>
+              <span class="ask-choices flex flex-wrap gap-x-4 gap-y-1">
+                <UCheckbox
+                  v-for="s in seatList"
+                  :id="'seat_' + s.id"
+                  :key="s.id"
+                  :label="s.label"
+                  :title="t('project.agents.status.' + s.status)"
+                  :model-value="seatAsked.includes(s.id)"
+                  size="sm"
+                  class="choice"
+                  @update:model-value="seatAsked = toggle(seatAsked, s.id, $event)"
+                />
+              </span>
             </div>
             <ComposerAttachments />
             <p
