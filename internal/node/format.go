@@ -34,6 +34,7 @@ func FormatUnread(m UnreadMessage) string {
 	}
 	b.WriteString(capBody(m))
 	b.WriteString("\n")
+	b.WriteString(attachmentLines(m.Attachments))
 	if m.OwnHuman {
 		return b.String()
 	}
@@ -108,15 +109,46 @@ func authorKind(k string) string {
 	return "автор не указан"
 }
 
-// capBody cuts a long body, pointing at the command that shows all of it.
+// attachmentLines lists a message's attachments by absolute path, for the
+// model to open (images and text/PDF with its file tools).
+func attachmentLines(atts []Attachment) string {
+	if len(atts) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Вложения (откройте по пути: изображения и PDF — средством просмотра файлов, текст — чтением файла):\n")
+	for _, a := range atts {
+		if a.Failed || a.Path == "" {
+			fmt.Fprintf(&b, "- %s — не получено\n", a.Name)
+			continue
+		}
+		fmt.Fprintf(&b, "- %s (%s, %s)\n", a.Path, a.MIME, sizeText(a.Size))
+	}
+	return b.String()
+}
+
+// sizeText is a byte count for people: 512 Б, 12 КБ, 3.4 МБ.
+func sizeText(n int64) string {
+	switch {
+	case n < 1<<10:
+		return fmt.Sprintf("%d Б", n)
+	case n < 1<<20:
+		return fmt.Sprintf("%d КБ", n>>10)
+	}
+	return fmt.Sprintf("%.1f МБ", float64(n)/(1<<20))
+}
+
+// capBody cuts a long body, pointing at the command that shows all of it. The
+// attachments' fallback lines are left out: they are listed by path.
 func capBody(m UnreadMessage) string {
-	if utf8.RuneCountInString(m.Body) <= FormatMaxBody {
-		return m.Body
+	body := BodyText(m.Body, m.Attachments)
+	if utf8.RuneCountInString(body) <= FormatMaxBody {
+		return body
 	}
 	full := "agentlink inbox"
 	if m.ChatID != "" {
 		full = "agentlink chat history --chat " + m.ChatID
 	}
-	r := []rune(m.Body)
+	r := []rune(body)
 	return string(r[:FormatMaxBody]) + fmt.Sprintf("\n[… обрезано, всего %d символов; полностью: %s]", len(r), full)
 }

@@ -140,8 +140,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		ask := fs.String("ask", "", "chat participants who must answer, comma-separated; none: the message only informs")
 		area := fs.String("area", "", "project (area) of the conversation; default: this folder's project")
 		session := fs.String("session", "", "the sending agent session's id, which gets the replies; default: the agent's own ($"+envClaudeSession+", $"+envCodexThread+")")
+		var attach listFlag
+		fs.Var(&attach, "attach", "file to attach (repeatable): an image (png, jpeg, gif, webp), pdf or text file of at most 10 MB inside the project folder or the temp folder")
 		cmd = func(c config.Config) (int, error) {
-			return 0, send(c, sendArgs{to: *to, body: *body, replyTo: *replyTo, chat: *chat, ask: *ask, area: *area, project: proj(), session: *session}, stdout)
+			return 0, send(c, sendArgs{to: *to, body: *body, replyTo: *replyTo, chat: *chat, ask: *ask, area: *area, project: proj(), session: *session, files: attach}, stdout)
 		}
 	case "wait":
 		timeout := fs.String("timeout", "0", "seconds or Go duration; 0 waits forever")
@@ -312,7 +314,16 @@ func inFolder(q url.Values, project string) url.Values {
 	return q
 }
 
-type sendArgs struct{ to, body, replyTo, chat, ask, area, project, session string }
+type sendArgs struct {
+	to, body, replyTo, chat, ask, area, project, session string
+	files                                                []string // local files to attach
+}
+
+// listFlag is a repeatable string flag.
+type listFlag []string
+
+func (l *listFlag) String() string     { return strings.Join(*l, ",") }
+func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
 
 // Environment of the agent sessions agentlink send runs in: the session's id,
 // so replies go back to that session.
@@ -338,8 +349,8 @@ func agentSession() (id, client string) {
 }
 
 func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
-	if a.body == "" {
-		return errors.New("--body is required")
+	if a.body == "" && len(a.files) == 0 {
+		return errors.New("--body is required (or --attach)")
 	}
 	if a.chat == "" && a.to == "" {
 		a.chat = os.Getenv(envChatID)
@@ -369,6 +380,13 @@ func sendMessage(cfg config.Config, a sendArgs, ask []string) (node.Message, err
 	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat, Area: a.area, SessionID: a.session, Ask: ask}
 	if wd, err := os.Getwd(); err == nil {
 		r.Folder = wd // the node picks the project of this folder
+	}
+	for _, f := range a.files {
+		p, err := filepath.Abs(f) // the node resolves no relative paths of its own
+		if err != nil {
+			return node.Message{}, err
+		}
+		r.Files = append(r.Files, p)
 	}
 	// A job's agent names its request: in a chat that continues its chain, and
 	// its own reply to it never counts as answered by someone else.

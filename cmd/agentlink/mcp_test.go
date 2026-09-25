@@ -205,6 +205,12 @@ func TestMCPSendRoutingModes(t *testing.T) {
 			}
 		}
 	}
+	// Attachments alone make a message; relative paths go as absolute ones.
+	text, isErr := callTool(t, cs, "send", map[string]any{"chat": "c1", "attachments": []string{"pic.png"}})
+	want, _ := filepath.Abs("pic.png")
+	if isErr || len(f.send.Files) != 1 || f.send.Files[0] != want {
+		t.Fatalf("send attachments: %s, request %+v", text, f.send)
+	}
 }
 
 // The session of ack and send defaults to the agent's own: Claude's, Codex's

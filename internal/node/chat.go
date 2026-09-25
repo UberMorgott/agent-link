@@ -877,6 +877,9 @@ type ChatSend struct {
 	Parent string
 	// AuthorKind is who writes it (Author*); empty means an agent.
 	AuthorKind string
+	// Attachments are stored blobs (resolveAttachments); Body already has
+	// their fallback lines.
+	Attachments []Attachment
 }
 
 // SendChat posts a message to a chat. Without Ask it only informs. A closed
@@ -900,7 +903,7 @@ func (n *Node) SendChat(s ChatSend) (Message, error) {
 		}
 		s.ChatID = open.ID
 	}
-	m := Message{ChatID: s.ChatID, Body: s.Body, ReplyTo: s.ReplyTo, AuthorKind: s.AuthorKind}
+	m := Message{ChatID: s.ChatID, Body: s.Body, ReplyTo: s.ReplyTo, AuthorKind: s.AuthorKind, Attachments: s.Attachments}
 	for _, a := range s.Ask {
 		for p := range strings.SplitSeq(a, ",") {
 			if p = strings.TrimSpace(p); p != "" {
@@ -932,7 +935,7 @@ func (n *Node) continueLegacy(peer string, s ChatSend) (Message, error) {
 		return Message{}, err
 	}
 	if n.Connected(peer) && !n.PeerHas(peer, CapChat) {
-		return n.Send(peer, s.Body, s.ReplyTo)
+		return n.Send(peer, s.Body, s.ReplyTo) // the attachments stay as fallback lines
 	}
 	parts := []string{n.cfg.Node, peer}
 	slices.Sort(parts)
@@ -1489,7 +1492,9 @@ func (n *Node) ChatMessages(id string, before, after uint64, limit int) ([]ChatM
 }
 
 func (n *Node) chatMessage(c Chat, r chatRecord) ChatMessage {
-	cm := ChatMessage{Seq: r.Seq, Direction: "in", Message: r.Message,
+	msg := r.Message
+	msg.Attachments = n.withKeys(msg.Attachments)
+	cm := ChatMessage{Seq: r.Seq, Direction: "in", Message: msg,
 		Unread: r.Unread && r.ReadAt.IsZero(), Assigned: r.Assigned}
 	if r.Message.From == n.cfg.Node {
 		cm.Direction = "out"

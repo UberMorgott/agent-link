@@ -53,6 +53,7 @@ func (a *App) URL(page string) string {
 //
 //	GET  /ui/dashboard, /ui/inbox, /ui/participants, /ui/settings, /ui/welcome,
 //	     /ui/p/{pid}, /ui/p/{pid}/c/{chat}   application shell with the per-run token embedded
+//	GET  /ui/files/{pid}/{id}     a chat attachment (attachments.go)
 //	GET  /ui/open                 public launcher that activates or adopts the dashboard tab
 //	GET  /ui/assets/..., /ui/icon.svg  the built UI's scripts, styles and icon (web/dist)
 //	GET  /ui/api/status            Status
@@ -110,6 +111,7 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("GET /ui/api/events", a.eventsStream)
 	api.HandleFunc("GET /ui/api/sessions", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.allSessions()) })
 	a.projectRoutes(api)
+	a.attachmentRoutes(api, ui)
 	api.HandleFunc("POST /ui/api/send", a.send)
 	api.HandleFunc("/ui/api/chats", a.chats)
 	api.HandleFunc("/ui/api/chats/", a.chats)

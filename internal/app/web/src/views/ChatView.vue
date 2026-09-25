@@ -4,7 +4,9 @@ import { useRoute } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UChatPrompt from '@nuxt/ui/components/ChatPrompt.vue'
 import UCheckbox from '@nuxt/ui/components/Checkbox.vue'
+import AttachButton from '@/components/AttachButton.vue'
 import ChatTimeline from '@/components/ChatTimeline.vue'
+import ComposerAttachments from '@/components/ComposerAttachments.vue'
 import { isNarrow } from '@/layout/composables/layout'
 import { icon } from '@/lib/icons'
 import {
@@ -13,7 +15,9 @@ import {
 } from '@/lib/chat'
 import { openProject } from '@/lib/nav'
 import { fmt, t } from '@/lib/runtime'
+import { pastedFiles } from '@/lib/attachments'
 import { useAppStore } from '@/stores/app'
+import { useAttachmentsStore } from '@/stores/attachments'
 import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore } from '@/stores/projects'
 
@@ -109,6 +113,23 @@ function toggle(names: string[], name: string, on: boolean | 'indeterminate'): s
 
 watch(() => inbox.focusComposer, () => nextTick(() => document.getElementById('body')?.focus()))
 
+// Files go onto the message by paste (a screenshot), drop or the paperclip;
+// another chat starts without them.
+const files = useAttachmentsStore()
+const dragging = ref(false)
+watch(() => inbox.openKey(), () => files.clear())
+function onPaste(event: ClipboardEvent) {
+  const list = pastedFiles(event.clipboardData)
+  if (!list.length) return // text pastes as usual
+  event.preventDefault()
+  files.add(pid.value, list)
+}
+function onDrop(event: DragEvent) {
+  dragging.value = false
+  const list = Array.from(event.dataTransfer?.files || [])
+  if (list.length) files.add(pid.value, list)
+}
+
 
 function back() {
   openProject(pid.value)
@@ -201,7 +222,12 @@ function back() {
             id="send"
             class="composer flex flex-col gap-2"
             :aria-busy="inbox.sending ? 'true' : undefined"
+            :class="{ dragging }"
             @submit.prevent="inbox.submitMessage"
+            @paste="onPaste"
+            @dragover.prevent="dragging = true"
+            @dragleave="dragging = false"
+            @drop.prevent="onDrop"
           >
             <div
               v-if="askNames.length >= 2"
@@ -237,6 +263,14 @@ function back() {
                 class="ask-hint text-xs text-[var(--app-off)]"
               >{{ t("inbox.ask.none") }}</span>
             </div>
+            <ComposerAttachments />
+            <p
+              v-if="dragging"
+              id="drop_hint"
+              class="drop-hint px-1 text-xs text-muted"
+            >
+              {{ t("inbox.attach.drop") }}
+            </p>
             <!-- Enter sends, Shift+Enter starts a new line; an IME composition
                  and a blank message never send (UChatPrompt guards both). -->
             <UChatPrompt
@@ -280,12 +314,13 @@ function back() {
                   id="composer_hint"
                   class="composer-hint text-xs text-[var(--app-off)]"
                 >{{ t("inbox.body.hint") }}</span>
+                <AttachButton :project="pid" />
                 <UButton
                   id="send_button"
                   type="submit"
                   :icon="icon('send')"
                   :aria-label="t('inbox.send')"
-                  :disabled="inbox.sending"
+                  :disabled="inbox.sending || files.uploading"
                   class="rounded-full"
                 />
               </template>
@@ -295,7 +330,7 @@ function back() {
               class="composer-result px-1 text-xs text-error"
               role="status"
             >
-              {{ inbox.sendResult }}
+              {{ inbox.sendResult || files.error }}
             </p>
           </form>
           <p

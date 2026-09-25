@@ -148,3 +148,21 @@ func TestAtLeast(t *testing.T) {
 		}
 	}
 }
+
+// Images go with the prompt as --image flags, absolute paths only.
+func TestQueueWakeImages(t *testing.T) {
+	q, out := fake(t, "0.155.1")
+	img := filepath.Join(t.TempDir(), "a b.png")
+	if err := q.WakeImages(context.Background(), "", "thread-1", "look", []string{img}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(out) //nolint:gosec // G304: the test's own temp file
+	if want := "queue|--thread|thread-1|--message|look|--image|" + img + "|home="; string(got) != want {
+		t.Fatalf("codex ran with %q, want %q", got, want)
+	}
+	for _, bad := range []string{"rel.png", "-x"} {
+		if err := q.WakeImages(context.Background(), "", "thread-1", "look", []string{bad}); err == nil {
+			t.Fatalf("image %q queued", bad)
+		}
+	}
+}

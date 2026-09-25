@@ -37,6 +37,11 @@ type SendRequest struct {
 	// SessionID is the live session of this node that sends (agentlink send
 	// inside it): replies to the message are delivered to it (routeOf).
 	SessionID string `json:"session_id,omitempty"`
+	// Attachments are files uploaded before (POST /attachments): id and name.
+	Attachments []Attachment `json:"attachments,omitempty"`
+	// Files are local files to attach (agentlink send --attach): absolute, or
+	// relative to Folder; only inside this node's folders or the temp folder.
+	Files []string `json:"files,omitempty"`
 }
 
 // SendRequest sends req like POST /send: every path goes to the one open chat
@@ -54,7 +59,14 @@ type SendRequest struct {
 // A reply (ReplyTo) that is not from the job answering that very request
 // (Parent) is reported to the local reply hook: the request is answered here.
 func (n *Node) SendRequest(req SendRequest) (Message, error) {
-	m, err := n.sendRequest(req)
+	atts, err := n.resolveAttachments(req)
+	if err != nil {
+		return Message{}, err
+	}
+	if len(atts) > 0 {
+		req.Body = withFallback(req.Body, atts)
+	}
+	m, err := n.sendRequest(req, atts)
 	if err == nil && m.ChatID != "" && validSessionID(req.SessionID) {
 		if serr := n.chats.setSession(m.ID, req.SessionID); serr != nil {
 			n.log.Warn("record sending session", "id", m.ID, "err", serr)
@@ -66,8 +78,8 @@ func (n *Node) SendRequest(req SendRequest) (Message, error) {
 	return m, err
 }
 
-func (n *Node) sendRequest(req SendRequest) (Message, error) {
-	cs := ChatSend{ChatID: req.ChatID, Body: req.Body, ReplyTo: req.ReplyTo, Ask: req.Ask, Parent: req.Parent, AuthorKind: req.AuthorKind}
+func (n *Node) sendRequest(req SendRequest, atts []Attachment) (Message, error) {
+	cs := ChatSend{ChatID: req.ChatID, Body: req.Body, ReplyTo: req.ReplyTo, Ask: req.Ask, Parent: req.Parent, AuthorKind: req.AuthorKind, Attachments: atts}
 	if req.ChatID != "" {
 		if req.To != "" {
 			return Message{}, errors.New("give either to or chat_id")
@@ -116,6 +128,9 @@ func (n *Node) sendRequest(req SendRequest) (Message, error) {
 		if len(req.Ask) > 0 {
 			return Message{}, errors.New("ask needs a chat")
 		}
+		if len(atts) > 0 {
+			return Message{}, fmt.Errorf("%w: attachments need a chat", ErrAttachment)
+		}
 		return n.Send(to, req.Body, req.ReplyTo)
 	}
 	parts, err := n.normalizeParticipants(recipients)
@@ -149,6 +164,8 @@ type ArchiveRequest struct {
 // docs/agent-usage.md). It has no close: only people close chats, in the app.
 //
 //	POST /send               SendRequest -> Message, written by an agent (AuthorAgent)
+//	POST /attachments        raw body ?name=, or multipart -> Attachment (for SendRequest.Attachments)
+//	GET  /attachments/{id}   the file (?name=, &download=1)
 //	GET  /wait?timeout=30s   200 []Message (marked delivered) or 204 on timeout; 0 waits forever.
 //	                         Requests and replies only: status updates never wake it.
 //	     &chat=ID            only that chat's messages; the others stay for a later wait
@@ -191,6 +208,7 @@ func (n *Node) APIHandler() http.Handler {
 	})
 	n.ChatRoutes(mux, "", false, func(w http.ResponseWriter, code int, err error) { http.Error(w, err.Error(), code) })
 	n.sessionRoutes(mux)
+	n.AttachmentRoutes(mux, "", func(w http.ResponseWriter, code int, err error) { http.Error(w, err.Error(), code) })
 	mux.HandleFunc("GET /members", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Members()) })
 	mux.HandleFunc("POST /members", n.handleAddMember)
 	mux.HandleFunc("POST /members/remove", n.handleRemoveMember)

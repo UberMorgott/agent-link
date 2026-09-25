@@ -181,6 +181,7 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 		if actionable && um.Paused {
 			continue
 		}
+		n.materialize(&um.Message, u.chat.Area)
 		if wake(&um) {
 			woken = append(woken, um)
 			continue
@@ -196,6 +197,7 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 		}
 		um := UnreadMessage{Direction: "in", Unread: true, Message: r.Message,
 			ReceivedAt: r.ReceivedAt, AsksYou: r.Message.IsRequest()}
+		n.materialize(&um.Message, r.Message.Area)
 		if wake(&um) {
 			woken = append(woken, um)
 			continue

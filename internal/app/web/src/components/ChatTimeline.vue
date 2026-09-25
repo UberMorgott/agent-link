@@ -3,7 +3,9 @@ import { computed, ref, watch } from 'vue'
 import {
   authorLabel, authorName, clock, continues, genitiveName, isAgent, messageTick, others, preview, when, whoColor,
 } from '@/lib/chat'
+import { bodyText } from '@/lib/attachments'
 import { fmt, t } from '@/lib/runtime'
+import MessageAttachments from '@/components/MessageAttachments.vue'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UChatMessage from '@nuxt/ui/components/ChatMessage.vue'
 import UChatMessages from '@nuxt/ui/components/ChatMessages.vue'
@@ -209,7 +211,15 @@ watch(source, () => {
                 >
                   {{ b.quote }}
                 </button>
-                <pre class="msg-body">{{ b.m.body || "" }}</pre>
+                <pre
+                  v-if="bodyText(b.m.body, b.m.attachments) || !b.m.attachments?.length"
+                  class="msg-body"
+                >{{ bodyText(b.m.body, b.m.attachments) }}</pre>
+                <MessageAttachments
+                  v-if="b.m.attachments?.length"
+                  :project="inbox.project"
+                  :items="b.m.attachments"
+                />
                 <div class="msg-foot">
                   <span
                     v-if="b.note"

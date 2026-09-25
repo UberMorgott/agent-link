@@ -90,6 +90,7 @@ agentlink send         --to nikita --area dev --body "<question>"   # the same, 
 agentlink send         --to area:dev --body "<question>"       # the chat of you + every member of area dev, asks them all
 agentlink send         --chat <id> [--ask nikita] --body "<text>"   # into that chat's conversation (a closed one: its next chat)
 agentlink send         --reply-to <id> --body "<answer>"       # into the conversation of the message you answer
+agentlink send         --chat <id> --attach shot.png [--attach log.txt] [--body "<text>"]   # with files (see Attachments below)
 agentlink chat unread  [--folder <path>]                       # what this node has not read yet, oldest first
 agentlink chat ack     --ids <id,...> [--session <id>]         # mark read: the authors see «прочитано»
 agentlink chat history --chat <id> [--limit 50] [--before <seq>] [--after <seq>]
@@ -98,6 +99,15 @@ agentlink chat new     --with nikita[,olga] [--area dev]       # prints the chat
 agentlink chat archive [--chat <id>]                           # project: history to the archive, a fresh chat opens
 agentlink wait         [--chat <id>] --timeout 0               # blocks until the next message
 ```
+
+Attachments: images (PNG, JPEG, GIF, WebP), PDF and UTF-8 text files, by content (not by
+extension), at most 10 MB each, 10 files and 50 MB per message; `--attach` (MCP `send`:
+`attachments: [path]`) takes only files inside the project folder or the temp folder. Received
+files are copied to `<project folder>/.agentlink/attachments/<sha8>-<name>` (git-ignored) and
+listed by absolute path in unread messages and wake prompts: open images and PDFs with your file
+viewer, text by reading the file. A Codex session woken by the node also gets the images with
+the prompt (`codex queue --image`). Peers older than attachments see a line
+`[attachment: <name>]` in the text instead.
 
 A project has exactly one active chat, shown under the project's name: `chat new`, `send --to`
 and MCP `send` with `new_chat_with` all land in it (members it lacks are added), and a message to

@@ -843,10 +843,11 @@ func chatMembers(n *node.Node, r *http.Request, id string) (any, error) {
 func (a *App) projectSend(w http.ResponseWriter, r *http.Request) {
 	pid := r.PathValue("pid")
 	var req struct {
-		ChatID  string   `json:"chat_id"`
-		Body    string   `json:"body"`
-		ReplyTo string   `json:"reply_to"`
-		Ask     []string `json:"ask"`
+		ChatID      string            `json:"chat_id"`
+		Body        string            `json:"body"`
+		ReplyTo     string            `json:"reply_to"`
+		Ask         []string          `json:"ask"`
+		Attachments []node.Attachment `json:"attachments"` // uploaded: id and name
 	}
 	if !decode(w, r, &req) {
 		return
@@ -861,9 +862,11 @@ func (a *App) projectSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m, err := n.SendRequest(node.SendRequest{ChatID: req.ChatID, Body: req.Body, ReplyTo: req.ReplyTo, Ask: req.Ask,
-		AuthorKind: node.AuthorHuman})
+		AuthorKind: node.AuthorHuman, Attachments: req.Attachments})
 	if err != nil {
-		a.chatFailed(w, err)
+		if !attachmentFailed(w, err) {
+			a.chatFailed(w, err)
+		}
 		return
 	}
 	writeJSON(w, m)
