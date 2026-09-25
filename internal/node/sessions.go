@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -94,6 +95,10 @@ type sessionRegistry struct {
 	sessions map[string]*Session
 	// last is the latest activity each session reported, for elapsed times.
 	last map[string]ActivityState
+	// on is, per session, the chats (chat -> request) its latest running main
+	// activity went to: refreshActivity re-sends it there while the session
+	// stays busy.
+	on map[string]map[string]string
 
 	// claimMu serializes Claim and the session filter of Unread; claims maps
 	// an unread message id to the session that took it for delivery (Claim).
@@ -104,7 +109,7 @@ type sessionRegistry struct {
 
 func openSessions(dir string) (*sessionRegistry, error) {
 	r := &sessionRegistry{path: filepath.Join(dir, "sessions.json"), sessions: map[string]*Session{}, last: map[string]ActivityState{},
-		claims: map[string]sessionClaim{}}
+		on: map[string]map[string]string{}, claims: map[string]sessionClaim{}}
 	var list []Session
 	if err := readJSON(r.path, &list); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -122,6 +127,7 @@ func (r *sessionRegistry) saveLocked(now time.Time) error {
 		if !s.live(now) {
 			delete(r.sessions, id)
 			delete(r.last, id)
+			delete(r.on, id)
 			continue
 		}
 		list = append(list, *s)
@@ -221,6 +227,7 @@ func (n *Node) EndSession(id string) error {
 	_, ok := r.sessions[id]
 	delete(r.sessions, id)
 	delete(r.last, id)
+	delete(r.on, id)
 	err := r.saveLocked(time.Now())
 	r.mu.Unlock()
 	if !ok {
@@ -374,25 +381,93 @@ func (n *Node) SessionActivity(chatID string, req ActivityRequest) (Message, err
 			}
 		}
 	}
-	idLabel := n.cfg.Node + "/session/" + req.SessionID + "/"
-	if req.AgentID != "" {
-		idLabel += req.AgentID + "/"
+	if req.AgentID == "" {
+		r.mu.Lock()
+		on := r.on[req.SessionID]
+		switch {
+		case a.Phase == PhaseIdle:
+			delete(r.last, req.SessionID)
+			delete(on, c.ID)
+		case on == nil:
+			r.on[req.SessionID] = map[string]string{c.ID: req.ReplyTo}
+		default:
+			on[c.ID] = req.ReplyTo
+		}
+		r.mu.Unlock()
 	}
-	m := Message{ID: DerivedID(req.ReplyTo, idLabel+strconv.FormatUint(a.Seq, 10)),
-		ChatID: c.ID, ReplyTo: req.ReplyTo, Kind: KindStatus, JobStatus: JobRunning, Activity: a.Text}
+	return n.SendMessage(sessionStatus(n.cfg.Node, c.ID, req.SessionID, req.ReplyTo, a))
+}
+
+// sessionStatus is the status message of activity a of session sid on request
+// replyTo of chat chatID.
+func sessionStatus(node, chatID, sid, replyTo string, a ActivityState) Message {
+	idLabel := node + "/session/" + sid + "/"
+	if a.AgentID != "" {
+		idLabel += a.AgentID + "/"
+	}
+	m := Message{ID: DerivedID(replyTo, idLabel+strconv.FormatUint(a.Seq, 10)),
+		ChatID: chatID, ReplyTo: replyTo, Kind: KindStatus, JobStatus: JobRunning, Activity: a.Text}
 	if a.Phase == PhaseIdle {
 		// The end names the session too: it ends that session's line only.
 		m.JobStatus, m.Activity = JobCompleted, ""
 		m.ActivityInfo = &ActivityState{Phase: PhaseIdle, Seq: a.Seq, Session: a.Session, AgentID: a.AgentID, ParentSession: a.ParentSession, Role: a.Role, Label: a.Label}
-		r.mu.Lock()
-		if req.AgentID == "" {
-			delete(r.last, req.SessionID)
-		}
-		r.mu.Unlock()
 	} else {
 		m.ActivityInfo = &a
 	}
-	return n.SendMessage(m)
+	return m
+}
+
+// ActivityRefresh: a busy live session's latest activity is sent again this
+// long after it was last reported, so a long tool call (no hook event for its
+// whole run) keeps its line on every participant (ActivityExpire).
+const ActivityRefresh = 2 * time.Minute
+
+// refreshActivity re-sends the latest activity of every live, busy session
+// not heard from for ActivityRefresh, with a new Seq and the same text and
+// start. It does not count as the session's heartbeat: a session that stops
+// its heartbeats ends (TTL) and its line with it.
+func (n *Node) refreshActivity(now time.Time) {
+	r := n.sess
+	var out []Message
+	r.mu.Lock()
+	for sid, on := range r.on {
+		s, a, ok := r.sessions[sid], r.last[sid], false
+		if s != nil && s.live(now) && !s.Idle && a.Phase != PhaseIdle && a.Seq != 0 {
+			ok = true
+		}
+		if !ok || len(on) == 0 {
+			delete(r.on, sid)
+			continue
+		}
+		if a.Seq > uint64(now.Add(-ActivityRefresh).UnixNano()) { // reported within ActivityRefresh
+			continue
+		}
+		a.Seq = uint64(now.UnixNano())
+		r.last[sid] = a
+		for chat, replyTo := range on {
+			out = append(out, sessionStatus(n.cfg.Node, chat, sid, replyTo, a))
+		}
+	}
+	r.mu.Unlock()
+	for _, m := range out {
+		if _, err := n.SendMessage(m); err != nil {
+			n.log.Debug("refreshing a session's activity failed", "chat", m.ChatID, "err", err)
+		}
+	}
+}
+
+// activityLoop runs refreshActivity until ctx is done.
+func (n *Node) activityLoop(ctx context.Context) {
+	t := time.NewTicker(ActivityRefresh / 4)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			n.refreshActivity(now)
+		}
+	}
 }
 
 // ShortSession is the short name of a session id its activity carries: its

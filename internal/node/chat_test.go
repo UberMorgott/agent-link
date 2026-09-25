@@ -390,6 +390,103 @@ func TestSubagentActivityKeepsParentLine(t *testing.T) {
 	}
 }
 
+// A session that moves on to another request keeps one line: the newer
+// request's status replaces the older one's, and a late older status does not
+// bring it back.
+func TestSessionMovesOnKeepsOneLine(t *testing.T) {
+	a, b, _ := trio(t)
+	info, err := a.CreateChat([]string{"b"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b knows the chat", func() bool { _, ok := b.ChatOf(info.ID); return ok })
+	const sid = "moving-session-1"
+	if _, err := b.RegisterSession(SessionRequest{SessionID: sid, Provider: "claude", Folder: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	var qs []string
+	for _, body := range []string{"first", "second"} {
+		q, err := a.SendChat(ChatSend{ChatID: info.ID, Body: body, Ask: []string{"b"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		qs = append(qs, q.ID)
+	}
+	eventually(t, "b has the requests", func() bool { return slices.Contains(chatIDs(b, info.ID), qs[1]) })
+	first, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: qs[0], Text: "on the first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a sees the first line", func() bool { got, _ := a.Chat(info.ID); return len(got.Members[1].Jobs) == 1 })
+	if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: qs[1], Text: "on the second"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []*testNode{a, b} {
+		eventually(t, n.cfg.Node+" shows one line, on the second", func() bool {
+			got, _ := n.Chat(info.ID)
+			js := got.Members[1].Jobs
+			return len(js) == 1 && js[0].ReplyTo == qs[1]
+		})
+	}
+	first.ID = newID() // the first request's status again, arriving late
+	if a.chats.noteStatus(first) {
+		t.Fatal("a late status of the older request came back")
+	}
+	if got, _ := a.Chat(info.ID); len(got.Members[1].Jobs) != 1 {
+		t.Fatalf("lines after a late status: %+v", got.Members[1].Jobs)
+	}
+}
+
+// A busy session's latest activity is sent again after ActivityRefresh, so a
+// long tool call keeps its line; an idle or ended one's is not.
+func TestSessionActivityRefresh(t *testing.T) {
+	a, b, _ := trio(t)
+	info, err := a.CreateChat([]string{"b"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b knows the chat", func() bool { _, ok := b.ChatOf(info.ID); return ok })
+	const sid = "busy-session-1"
+	if _, err := b.RegisterSession(SessionRequest{SessionID: sid, Provider: "claude", Folder: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	q, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "long job", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the request", func() bool { return slices.Contains(chatIDs(b, info.ID), q.ID) })
+	m, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: q.ID, Type: "command", Text: "запускает go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq := func() uint64 {
+		got, _ := a.Chat(info.ID)
+		if js := got.Members[1].Jobs; len(js) == 1 && js[0].ActivityInfo != nil {
+			return js[0].ActivityInfo.Seq
+		}
+		return 0
+	}
+	eventually(t, "a sees the activity", func() bool { return seq() == m.ActivityInfo.Seq })
+	b.refreshActivity(time.Now()) // too early: nothing sent
+	later := time.Now().Add(ActivityRefresh + time.Second)
+	b.refreshActivity(later)
+	eventually(t, "a hears it again", func() bool { return seq() == uint64(later.UnixNano()) })
+	got, _ := a.Chat(info.ID)
+	if j := got.Members[1].Jobs[0]; j.Activity != "запускает go" || !j.ActivityInfo.StartedAt.Equal(m.ActivityInfo.StartedAt) {
+		t.Fatalf("refreshed line: %+v", j)
+	}
+	if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: q.ID, Phase: PhaseIdle}); err != nil {
+		t.Fatal(err)
+	}
+	b.refreshActivity(later.Add(2 * ActivityRefresh))
+	b.sess.mu.Lock()
+	left := len(b.sess.on)
+	b.sess.mu.Unlock()
+	if left != 0 {
+		t.Fatal("an idle session is still refreshed")
+	}
+}
+
 func TestChatCloseRace(t *testing.T) {
 	a, b, c := trio(t)
 	info, err := a.CreateChat([]string{"b", "c"}, "")

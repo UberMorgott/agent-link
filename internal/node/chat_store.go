@@ -515,6 +515,9 @@ func (cs *chatStore) noteStatus(m Message) bool {
 	if had && (wasHeld || m.JobStatus == JobHeld) && m.CreatedAt.Before(old.CreatedAt) {
 		return false
 	}
+	if m.JobStatus == JobRunning && mainSession(m) && !st.replaceSessionLine(key, m) {
+		return false
+	}
 	st.jobs[key] = m
 	st.heard[key] = time.Now().UTC()
 	if wasHeld || m.JobStatus == JobHeld {
@@ -553,6 +556,34 @@ func (cs *chatStore) saveHeldLocked(st *chatState) {
 		}
 	}
 	_ = writeJSON(filepath.Join(cs.chatDir(st.chat.ID), "held.json"), held)
+}
+
+// mainSession reports whether m is a live session's own status (not a
+// subagent's, not the worker's).
+func mainSession(m Message) bool {
+	return m.ActivityInfo != nil && m.ActivityInfo.Session != "" && m.ActivityInfo.AgentID == ""
+}
+
+// replaceSessionLine keeps one running line per live session's main agent: a
+// session that moved on to another request (its hook took a new batch without
+// ending the old one) drops its line on the older request. It reports false,
+// dropping nothing, when that other line is newer than m (m came late).
+func (st *chatState) replaceSessionLine(key string, m Message) bool {
+	var older []string
+	for k, j := range st.jobs {
+		if k == key || j.From != m.From || j.JobStatus != JobRunning || !mainSession(j) || j.ActivityInfo.Session != m.ActivityInfo.Session {
+			continue
+		}
+		if activitySeq(j) > activitySeq(m) {
+			return false
+		}
+		older = append(older, k)
+	}
+	for _, k := range older {
+		delete(st.jobs, k)
+		delete(st.heard, k)
+	}
+	return true
 }
 
 func activitySeq(m Message) uint64 {
