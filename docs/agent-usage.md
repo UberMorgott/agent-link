@@ -342,6 +342,10 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   for no session in particular. A message for one session (its claim, the session assigned to
   answer it, or the chat's session: the one behind the chat's newest message it wrote) goes to
   that one, woken if idle (the chat's session only while no session of the folder is in a turn). Else the idle session seen last in the folder is woken, and only it.
+  By design, a message explicitly routed to one session (its claim, or the session assigned
+  to answer it, e.g. the reply to a question that session asked) goes to that session even
+  while it is idle and another session of the folder is in a turn: it is woken for it, the
+  active one does not get it.
 - **Opening a session (auto-open, off by default).** When a message asks this member and no
   session at all (in a turn or idle) is live in the project's folder, the node opens a new
   one there, only while the project's «Разрешить другим агентам создавать сессию в этом
@@ -356,16 +360,24 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   `codex://threads/`) as soon as its id is known. Only a turn that succeeded (Claude: a
   `result` with `is_error: false`; Codex: `turn/completed` with status `completed`)
   acknowledges the messages as that session's (`launch_confirmed`; an ack that still fails
-  after 3 tries is `launch_failed:ack_error` and leaves them unread). A turn that started and
+  after 3 tries keeps them claimed by that session, delivered to no other session, hook or
+  launch, and is retried every 30 s until it succeeds, then `launch_confirmed`). A turn that started and
   then fails, is interrupted or runs out of its 60 minutes (its whole process tree is killed)
   drops the claim and reports `launch_failed:<reason>` (`turn_error`, `interrupted`,
   `timeout`) plus `needs_human`: it may have acted in part, so nothing is opened again for
-  those messages; they stay unread for a session's hooks or a person. Only a launch that
+  those messages; they stay unread for a session's hooks or a person (only the automatic
+  launch is suppressed). Which messages were launched for (and the events reported for them)
+  and the pending acks are kept in `launch_state.json` in the node's data directory, so a
+  restart neither reopens a session for them nor reports them again; an entry goes once its
+  message is read, or after 7 days. Only a launch that
   failed before its turn started (`start_error`, `no_agent`) opens Windows Terminal once
   instead. No session is opened in a folder a session that is not registered yet occupies (a
   Claude Code transcript in `~/.claude/projects/<folder, every character but ASCII letters and digits
   as ->/`, or a Codex rollout in `~/.codex/sessions/` with that `cwd`, written to
-  within 10 minutes): `needs_human` instead. Launch mode `terminal`
+  within 10 minutes): `needs_human` instead. This occupancy check is a heuristic (the
+  transcript's or rollout's modification time within 10 minutes) until the agents give a
+  native presence signal: a session that was left open but quiet longer does not occupy the
+  folder, and one that just ended still does for up to 10 minutes. Launch mode `terminal`
   opens `wt -w new -d <folder> claude|codex "<prompt>"` and the session's hooks deliver the
   messages; it counts as confirmed when a session of the folder registers within 90 s, else
   it is retried once, then `launch_failed:timeout`.

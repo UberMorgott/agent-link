@@ -45,6 +45,9 @@ type sessionClaim struct {
 	// launch: the node's for the first turn of a desktop launch (launchClaim);
 	// session is then launchOwner(area), no registered session.
 	launch bool
+	// ackOnly: the messages a desktop launch's session took whose ack is
+	// pending (holdForAck); held until acknowledged, delivered to nobody.
+	ackOnly bool
 }
 
 // launchHold bounds a launch claim: the first turn's own timeout, plus the
@@ -55,6 +58,9 @@ const launchHold = desktopTurnTimeout + 5*time.Minute
 // or inboxWakeGrace for a wake (then the session's waiter takes over); a
 // launch claim holds for launchHold, no session being live yet.
 func (c sessionClaim) held(live map[string]bool) bool {
+	if c.ackOnly {
+		return true
+	}
 	if c.launch {
 		return time.Since(c.at) < launchHold
 	}
@@ -116,14 +122,15 @@ func (n *Node) routedTo(ids []string) map[string]string {
 	return out
 }
 
-// launchHeld is the set of messages a desktop launch holds (launchClaim).
+// launchHeld is the set of messages a desktop launch holds (launchClaim), or
+// its session does while their ack is pending (holdForAck).
 func (n *Node) launchHeld() map[string]bool {
 	r := n.sess
 	r.claimMu.Lock()
 	defer r.claimMu.Unlock()
 	out := map[string]bool{}
 	for id, c := range r.claims {
-		if c.launch && c.held(nil) {
+		if (c.launch || c.ackOnly) && c.held(nil) {
 			out[id] = true
 		}
 	}
@@ -242,6 +249,9 @@ func (n *Node) claimLocked(session string, want []string, wake bool, token strin
 		plain[p.Message.ID] = true
 	}
 	for _, id := range want {
+		if c, ok := r.claims[id]; ok && c.ackOnly {
+			continue // taken by a launched session, its ack pending: nobody's to deliver
+		}
 		var to string
 		if rec, ok := n.chats.message(id); ok {
 			if !rec.Unread || !rec.ReadAt.IsZero() || rec.Message.Kind != "" {

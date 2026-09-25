@@ -22,8 +22,9 @@ import (
 // first turn headless with the messages themselves as its prompt (startDirect)
 // and shows the session in the app as soon as its id is known. Only a turn
 // that succeeded proves the session took them: then they are acknowledged as
-// that session's (launch_confirmed; an ack that keeps failing is
-// launch_failed:ack_error and leaves them unread and retryable). A turn that
+// that session's (launch_confirmed; an ack that keeps failing keeps them
+// claimed by that session and is retried until it succeeds, launch_state.go).
+// A turn that
 // started and then failed, was interrupted or timed out drops the claim (the
 // hooks deliver them again), is launch_failed:<reason> and needs_human: it may
 // have acted in part, so nothing opens again for them. Only a launch that
@@ -218,8 +219,9 @@ func launchSafe(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// deliveryState is the ladder's memory (never persisted: after a restart the
-// ladder starts over, which may report an event again).
+// deliveryState is the ladder's memory; spent and acks are durable
+// (launch_state.go), the rest starts over after a restart (an event may then
+// be reported again).
 type deliveryState struct {
 	mu       sync.Mutex
 	provider string
@@ -231,9 +233,13 @@ type deliveryState struct {
 	// spent: messages a launch was already confirmed or given up for; not
 	// launched for again (a session that took them and ended, or a window the
 	// person closed, must not reopen every launchDebounce).
-	spent   map[string]bool
+	spent   map[string]spentMark
+	acks    []*ackJob                 // pending acks of desktop launches
 	pending map[string]*pendingLaunch // by area
 	last    map[string]time.Time      // last launch per area
+	// statePath: launch_state.json; pruned: last pruneLaunchState.
+	statePath string
+	pruned    time.Time
 }
 
 type pendingLaunch struct {
@@ -246,7 +252,7 @@ type pendingLaunch struct {
 }
 
 func newDeliveryState() *deliveryState {
-	return &deliveryState{provider: ProviderClaude, mode: LaunchDesktop, sent: map[string]bool{}, woken: map[string]bool{}, spent: map[string]bool{},
+	return &deliveryState{provider: ProviderClaude, mode: LaunchDesktop, sent: map[string]bool{}, woken: map[string]bool{}, spent: map[string]spentMark{},
 		pending: map[string]*pendingLaunch{}, last: map[string]time.Time{}}
 }
 
@@ -342,7 +348,7 @@ func (n *Node) launchable(dir string, now time.Time) (eligible, paused []UnreadM
 		case !m.AsksYou || m.OwnHuman || m.Assigned != "" || held[m.ID]:
 		case m.Paused:
 			paused = append(paused, m)
-		case d.spent[m.ID] || now.Sub(m.ReceivedAt) < launchGrace:
+		case d.isSpent(m.ID) || now.Sub(m.ReceivedAt) < launchGrace:
 		default:
 			eligible = append(eligible, m)
 		}
@@ -374,10 +380,8 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 		if p != nil {
 			d.mu.Lock()
 			delete(d.pending, area)
-			for _, id := range p.ids {
-				d.spent[id] = true
-			}
 			d.mu.Unlock()
+			n.spend(p.ids, now, AttemptLaunchConfirmed)
 			n.log.Info("opened session confirmed", "area", area, "provider", p.spec.Provider, "tries", p.tries)
 			n.report(p.ids, AttemptLaunchConfirmed)
 		}
@@ -390,11 +394,11 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 		if p.tries >= launchTries || len(eligible) == 0 {
 			d.mu.Lock()
 			delete(d.pending, area)
-			for _, id := range p.ids {
-				d.spent[id] = true
-			}
 			d.mu.Unlock()
-			if len(eligible) > 0 {
+			if len(eligible) == 0 {
+				n.spend(p.ids, now)
+			} else {
+				n.spend(p.ids, now, AttemptLaunchFailed+":timeout")
 				n.log.Warn("opened session never started", "area", area, "folder", p.spec.Folder, "tries", p.tries)
 				n.report(p.ids, AttemptLaunchFailed+":timeout")
 			}
@@ -498,19 +502,14 @@ func (n *Node) runDirect(ctx context.Context, dl DirectLauncher, area string, p 
 			n.log.Warn("the opened session's desktop app did not open", "area", area, "session", id, "err", err)
 		}
 		if aerr := n.ackLaunched(ctx, p.ids, id); aerr != nil {
-			// Not confirmed and not spent: the messages stay unread and
-			// retryable (the hooks, a person, or the ladder once the folder is
-			// no longer occupied).
-			n.unclaim(launchOwner(area), p.ids)
-			n.log.Warn("acknowledging the opened session's messages failed", "area", area, "session", id, "err", aerr)
-			n.report(p.ids, AttemptLaunchFailed+":ack_error")
+			// The session took them: they stay claimed by it (no other session
+			// or launch gets them again) and the ack is retried until it
+			// succeeds (retryLaunchAcks), durably.
+			n.holdForAck(area, p.ids, id, time.Now())
+			n.log.Warn("acknowledging the opened session's messages failed; retrying later", "area", area, "session", id, "err", aerr)
 			return
 		}
-		d.mu.Lock()
-		for _, m := range p.ids {
-			d.spent[m] = true
-		}
-		d.mu.Unlock()
+		n.spend(p.ids, time.Now(), AttemptLaunchConfirmed)
 		n.log.Info("opened session's first turn done", "area", area, "provider", p.spec.Provider, "session", id)
 		n.report(p.ids, AttemptLaunchConfirmed)
 		return
@@ -531,11 +530,7 @@ func (n *Node) runDirect(ctx context.Context, dl DirectLauncher, area string, p 
 		// The turn ran: it may have acted in part. Neither Terminal nor a new
 		// launch repeats it; the messages stay unread for the hooks and a
 		// person, and are not launched for again.
-		d.mu.Lock()
-		for _, m := range p.ids {
-			d.spent[m] = true
-		}
-		d.mu.Unlock()
+		n.spend(p.ids, time.Now(), AttemptLaunchFailed+":"+reason, AttemptNeedsHuman)
 		n.log.Warn("the opened session's first turn failed; not retried", "area", area, "provider", p.spec.Provider,
 			"session", id, "reason", reason, "err", err)
 		n.report(p.ids, AttemptLaunchFailed+":"+reason)
@@ -558,10 +553,7 @@ const (
 // ackLaunched acknowledges ids as session's, retrying a failure a few times.
 func (n *Node) ackLaunched(ctx context.Context, ids []string, session string) error {
 	req := AckRequest{IDs: ids, SessionID: session}
-	ack := n.launchAck
-	if ack == nil {
-		ack = func(req AckRequest) error { _, err := n.Ack("", req); return err }
-	}
+	ack := n.launchAckFunc()
 	var err error
 	for i := range launchAckTries {
 		if err = ack(req); err == nil {

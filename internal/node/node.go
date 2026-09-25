@@ -266,6 +266,9 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		return nil, err
 	}
 	n.deliv = newDeliveryState()
+	if err := n.loadLaunchState(); err != nil {
+		return nil, err
+	}
 	if err := n.repairChats(); err != nil {
 		return nil, err
 	}

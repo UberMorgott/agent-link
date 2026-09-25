@@ -76,6 +76,7 @@ func (n *Node) wakeLoop(ctx context.Context) {
 			n.syncQueueWake()
 		}
 		n.wakeIdle(ctx)
+		n.launchMaintain(ctx, time.Now())
 		n.launchDue(ctx, time.Now())
 		select {
 		case <-ctx.Done():

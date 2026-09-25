@@ -315,7 +315,7 @@ func TestLaunchDirectFallback(t *testing.T) {
 		t.Fatalf("terminal fallback %+v", got)
 	}
 	a.deliv.mu.Lock()
-	spent, fallback := a.deliv.spent[m.ID], a.deliv.pending[""]
+	spent, fallback := a.deliv.isSpent(m.ID), a.deliv.pending[""]
 	clear(a.deliv.pending) // the fallback is not awaited
 	a.deliv.mu.Unlock()
 	if spent || fallback == nil || fallback.direct {
@@ -374,16 +374,78 @@ func TestLaunchDirectTurnFailed(t *testing.T) {
 			if _, err := a.RegisterSession(SessionRequest{SessionID: "s-h", Provider: "claude", Folder: dir}); err != nil {
 				t.Fatal(err)
 			}
+			// Durable: after a restart it is still not launched for, and
+			// needs_human is not reported again.
+			restartLaunchState(t, a)
+			a.deliv.mu.Lock()
+			resent := a.deliv.sent[m.ID+"|"+AttemptNeedsHuman]
+			a.deliv.mu.Unlock()
+			if !resent {
+				t.Fatal("needs_human not kept")
+			}
+			a.launchDue(context.Background(), time.Now().Add(2*launchDebounce+launchGrace+time.Minute))
+			a.directWG.Wait()
+			if len(l.allRuns()) != 1 || len(l.all()) != 0 {
+				t.Fatalf("relaunched after restart: runs %d terminal %d", len(l.allRuns()), len(l.all()))
+			}
+			// Only the launch is suppressed: the hooks deliver it (a person
+			// decides).
+			if _, err := a.RegisterSession(SessionRequest{SessionID: "s-h", Provider: "claude", Folder: dir}); err != nil {
+				t.Fatal(err)
+			}
 			if got, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-h"}); len(got) != 1 {
 				t.Fatalf("hooks cannot take it: %v", got)
+			}
+			// Pruned once read.
+			if _, err := a.Ack("", AckRequest{IDs: []string{m.ID}, SessionID: "s-h"}); err != nil {
+				t.Fatal(err)
+			}
+			a.pruneLaunchState(time.Now())
+			restartLaunchState(t, a)
+			a.deliv.mu.Lock()
+			left := len(a.deliv.spent)
+			a.deliv.mu.Unlock()
+			if left != 0 {
+				t.Fatalf("read message not pruned: %d", left)
 			}
 		})
 	}
 }
 
+// restartLaunchState drops a's in-memory launch state and claims and loads
+// them again from its data directory, as a restart does.
+func restartLaunchState(t *testing.T, a *testNode) {
+	t.Helper()
+	a.sess.claimMu.Lock()
+	clear(a.sess.claims)
+	a.sess.claimMu.Unlock()
+	a.deliv = newDeliveryState()
+	if err := a.loadLaunchState(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Spent messages older than spentKeep are pruned even while unread.
+func TestLaunchSpentExpires(t *testing.T) {
+	a, b := deliveryPair(t, t.TempDir(), nil, &fakeDirect{})
+	m := ask(t, a, b, "old")
+	now := time.Now()
+	a.spend([]string{m.ID}, now.Add(-spentKeep-time.Hour), AttemptNeedsHuman)
+	a.spend([]string{"other-unread-gone"}, now)
+	a.pruneLaunchState(now)
+	restartLaunchState(t, a)
+	a.deliv.mu.Lock()
+	n := len(a.deliv.spent)
+	a.deliv.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("not pruned: %d", n)
+	}
+}
+
 // A turn that succeeded is confirmed only once its messages are acknowledged:
-// a failed ack is retried; one that keeps failing is launch_failed:ack_error
-// and leaves them unread, unclaimed and not spent (retryable).
+// a failed ack is retried; one that keeps failing keeps them claimed by the
+// opened session (no other session, hook or launch takes them), durably, and
+// is retried later until it succeeds (launch_confirmed).
 func TestLaunchDirectAckRetry(t *testing.T) {
 	for _, fails := range []int{launchAckTries - 1, launchAckTries} {
 		t.Run(fmt.Sprint(fails), func(t *testing.T) {
@@ -391,8 +453,10 @@ func TestLaunchDirectAckRetry(t *testing.T) {
 			dir := t.TempDir()
 			a, b := deliveryPair(t, dir, nil, l)
 			var calls atomic.Int32
+			var broken atomic.Bool
+			broken.Store(true)
 			a.launchAck = func(req AckRequest) error {
-				if int(calls.Add(1)) <= fails {
+				if int(calls.Add(1)) <= fails || (fails >= launchAckTries && broken.Load()) {
 					return errors.New("store busy")
 				}
 				_, err := a.Ack("", req)
@@ -402,7 +466,7 @@ func TestLaunchDirectAckRetry(t *testing.T) {
 			a.launchDue(context.Background(), time.Now().Add(launchGrace+time.Second))
 			a.directWG.Wait()
 			a.deliv.mu.Lock()
-			spent := a.deliv.spent[m.ID]
+			spent := a.deliv.isSpent(m.ID)
 			a.deliv.mu.Unlock()
 			unread, _ := a.Unread("", "", 10)
 			if fails < launchAckTries {
@@ -412,9 +476,37 @@ func TestLaunchDirectAckRetry(t *testing.T) {
 				}
 				return
 			}
-			waitAttempts(t, b, m, AttemptLaunchRequested, AttemptLaunchFailed+":ack_error")
-			if spent || len(unread.Messages) != 1 || len(a.launchHeld()) != 0 || len(l.all()) != 0 {
-				t.Fatalf("spent %v unread %d held %v terminal %d", spent, len(unread.Messages), a.launchHeld(), len(l.all()))
+			if len(unread.Messages) != 1 || !a.launchHeld()[m.ID] || len(l.all()) != 0 {
+				t.Fatalf("unread %d held %v terminal %d", len(unread.Messages), a.launchHeld(), len(l.all()))
+			}
+			// Held by the opened session, across a restart: no other session
+			// sees or claims it, and no launch opens for it.
+			restartLaunchState(t, a)
+			if !a.launchHeld()[m.ID] {
+				t.Fatal("ack job not restored")
+			}
+			if _, err := a.RegisterSession(SessionRequest{SessionID: "s-other", Provider: "claude", Folder: dir}); err != nil {
+				t.Fatal(err)
+			}
+			if p, _ := a.UnreadFor(dir, "s-other", "", 10); len(p.Messages) != 0 {
+				t.Fatalf("another session sees it: %+v", p.Messages)
+			}
+			if got, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-other"}); len(got) != 0 {
+				t.Fatalf("another session claimed it: %v", got)
+			}
+			a.retryLaunchAcks(context.Background(), time.Now()) // due (restored), still failing
+			if len(a.launchHeld()) != 1 {
+				t.Fatalf("dropped while failing: %v", a.launchHeld())
+			}
+			broken.Store(false)
+			a.retryLaunchAcks(context.Background(), time.Now().Add(launchAckRetry+time.Second))
+			waitAttempts(t, b, m, AttemptLaunchRequested, AttemptLaunchConfirmed)
+			res, _ := a.Ack("", AckRequest{IDs: []string{m.ID}})
+			a.deliv.mu.Lock()
+			jobs := len(a.deliv.acks)
+			a.deliv.mu.Unlock()
+			if len(res) != 1 || res[0].WasUnread || res[0].Assigned != "session:sess-a" || jobs != 0 || len(a.launchHeld()) != 0 {
+				t.Fatalf("ack %+v jobs %d held %v", res, jobs, a.launchHeld())
 			}
 		})
 	}
@@ -459,7 +551,7 @@ func TestLaunchOccupied(t *testing.T) {
 	l.mu.Unlock()
 	a.launchDue(ctx, t0.Add(launchDebounce+launchGrace+time.Minute))
 	a.deliv.mu.Lock()
-	spent := a.deliv.spent[m.ID]
+	spent := a.deliv.isSpent(m.ID)
 	a.deliv.mu.Unlock()
 	if len(l.all()) != 1 || spent {
 		t.Fatalf("terminal %d spent %v", len(l.all()), spent)
