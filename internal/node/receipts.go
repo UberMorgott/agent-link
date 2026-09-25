@@ -97,7 +97,7 @@ type UnreadMessage struct {
 	// AsksYou: the message asks this node to answer (a chat request with this
 	// node among its responders, or a plain request). OwnHuman ones never do.
 	AsksYou bool `json:"asks_you,omitempty"`
-	// Paused: it asks this node but is past MaxAutoDepth: «пауза — нужен человек».
+	// Paused: past MaxAutoDepth; shown as information on the next human turn.
 	Paused bool `json:"paused,omitempty"`
 }
 
@@ -120,6 +120,11 @@ func (n *Node) Unread(folder, after string, limit int) (UnreadPage, error) {
 // the messages it may take (routeOf: the ones for it and the ones for no
 // session in particular), never those another live session is to get.
 func (n *Node) UnreadFor(folder, session, after string, limit int) (UnreadPage, error) {
+	return n.unreadFor(folder, session, after, limit, false)
+}
+
+// unreadFor optionally excludes guarded messages from automatic wake and Stop.
+func (n *Node) unreadFor(folder, session, after string, limit int, actionable bool) (UnreadPage, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -158,6 +163,9 @@ func (n *Node) UnreadFor(folder, session, after string, limit int) (UnreadPage, 
 		um := UnreadMessage{ChatMessage: n.chatMessage(u.chat, u.rec), ReceivedAt: u.rec.ReceivedAt}
 		um.AsksYou = !um.OwnHuman && um.Asks(n.cfg.Node)
 		um.Paused = um.AsksYou && um.Message.Held()
+		if actionable && um.Paused {
+			continue
+		}
 		all = append(all, um)
 	}
 	for _, r := range n.store.unreadPlain() {

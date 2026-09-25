@@ -223,7 +223,7 @@ func TestAuthorKindAndOwnHuman(t *testing.T) {
 	if res, _ := a.Ack("", AckRequest{IDs: []string{h.ID}}); !res[0].WasUnread || res[0].Assigned != "" {
 		t.Fatalf("ack of own human message: %+v", res)
 	}
-	// Past MaxAutoDepth a request is paused for a person.
+	// Past MaxAutoDepth a request is guarded but still read normally.
 	deep := Message{ChatID: h.ChatID, Body: "one more round", Responders: []string{"a"}, RootID: h.ID, AutoDepth: MaxAutoDepth + 1}
 	if deep, err = b.SendMessage(deep); err != nil {
 		t.Fatal(err)

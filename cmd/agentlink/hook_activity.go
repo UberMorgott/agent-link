@@ -123,6 +123,9 @@ func noteSent(env hookEnv, sid, chatID, msgID string) {
 
 // idle ends the activity of every chat this session worked on: its turn is over.
 func (h *hookSession) idle() {
+	for id := range h.st.Subagents {
+		h.subagent(id, "", true)
+	}
 	if len(h.st.Active) == 0 {
 		return
 	}

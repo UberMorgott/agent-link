@@ -178,7 +178,8 @@ goes to that chat, and `chat history` without `--chat` reads it. Do **not** send
 answer yourself: it is posted to the chat automatically. To involve another member, send
 `--ask <name>` with a complete question. Every agent message (a worker's, a live session's)
 counts one hop after the last message a person wrote; after 8 hops the automatic handler
-stops replying. A live session receives the message as information and acknowledges it.
+stops replying. A live session receives the message on its next human turn as
+information and acknowledges it.
 Never close the chat.
 
 ## MCP server: `agentlink mcp`

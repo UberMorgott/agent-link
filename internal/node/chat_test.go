@@ -353,8 +353,14 @@ func TestSubagentActivityKeepsParentLine(t *testing.T) {
 	}
 	jobs := func() []JobActivity { got, _ := a.Chat(info.ID); return got.Members[1].Jobs }
 	eventually(t, "parent and child show separately", func() bool { return len(jobs()) == 2 })
+	legacyKeys := map[string]bool{}
 	for _, j := range jobs() {
-		if x := j.ActivityInfo; x != nil && x.AgentID == "child-1" && (x.ParentSession != sid || x.Role != "subagent" || x.Label != "reviewer") {
+		x := j.ActivityInfo
+		if x == nil || x.Session == "" || legacyKeys["b/"+q.ID+"/"+x.Session] {
+			t.Fatalf("legacy job key collision: %+v", jobs())
+		}
+		legacyKeys["b/"+q.ID+"/"+x.Session] = true
+		if x.AgentID == "child-1" && (x.ParentSession != sid || x.Role != "subagent" || x.Label != "reviewer") {
 			t.Fatalf("child metadata: %+v", x)
 		}
 	}
@@ -365,6 +371,23 @@ func TestSubagentActivityKeepsParentLine(t *testing.T) {
 		js := jobs()
 		return len(js) == 1 && js[0].ActivityInfo != nil && js[0].ActivityInfo.Role == "main"
 	})
+	if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: q.ID, AgentID: "child-2", Text: "still working"}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "second child started", func() bool { return len(jobs()) == 2 })
+	if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: q.ID, Phase: PhaseIdle}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "parent idle ends child", func() bool { return len(jobs()) == 0 })
+	if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: q.ID, AgentID: "child-2", Text: "late status"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: q.ID, AgentID: "child-2", Phase: PhaseIdle}); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs()) != 0 {
+		t.Fatalf("late child revived after parent idle: %+v", jobs())
+	}
 }
 
 func TestChatCloseRace(t *testing.T) {

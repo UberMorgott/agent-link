@@ -142,6 +142,34 @@ func TestWakeIdleQueueSession(t *testing.T) {
 	}
 }
 
+func TestWakeIgnoresGuardedMessage(t *testing.T) {
+	w := &fakeWaker{ready: true}
+	a, b := wakePair(t, w)
+	chat, err := b.CreateChat([]string{"a"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a knows chat", func() bool { _, ok := a.ChatOf(chat.ID); return ok })
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-q", Provider: "codex", Folder: t.TempDir(), Wake: WakeQueue, Idle: true}); err != nil {
+		t.Fatal(err)
+	}
+	deep, err := b.SendMessage(Message{ChatID: chat.ID, Body: "guarded", Responders: []string{"a"}, RootID: newID(), AutoDepth: MaxAutoDepth + 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "guarded message is unread", func() bool {
+		page, _ := a.Unread("", "", 10)
+		return len(page.Messages) == 1 && page.Messages[0].ID == deep.ID && page.Messages[0].Paused
+	})
+	a.wakeIdle(context.Background())
+	if w.count() != 0 {
+		t.Fatalf("guarded message woke idle session: %v", w.calls)
+	}
+	if page, _ := a.Unread("", "", 10); page.Total != 1 {
+		t.Fatalf("guarded message disappeared: %+v", page)
+	}
+}
+
 func TestWakeText(t *testing.T) {
 	for n, want := range map[int]string{
 		1: "agent-link: 1 новое сообщение — прочитай их", 2: "agent-link: 2 новых сообщения — прочитай их",

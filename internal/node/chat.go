@@ -167,8 +167,8 @@ type Delivery struct {
 // per message id, however many peers it went to. Seq is this node's order.
 type ChatMessage struct {
 	Seq       uint64     `json:"seq"`
-	Direction string     `json:"direction"` // "in" or "out"
-	Held      bool       `json:"held,omitempty"`
+	Direction string     `json:"direction"`          // "in" or "out"
+	Held      bool       `json:"held,omitempty"`     // deprecated: always false; kept for API compatibility
 	Delivery  []Delivery `json:"delivery,omitempty"` // out only
 	// Unread: this node's sessions have not acknowledged it (see Ack). A
 	// browser showing it does not change that.

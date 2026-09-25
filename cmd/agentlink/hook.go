@@ -278,8 +278,7 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	now := env.clock()
 	st.LastEvent, st.LastEventAt = event, now
 	defer func() { _ = saveHookState(path, st) }()
-	// Every event but Stop is part of a turn: the session is not idle. A Stop
-	// tells the node it is only once it lets the session stop (below).
+	// SubagentStop preserves the parent's idle state if its turn already ended.
 	if !heartbeat(env, &st, client, in.SessionID, folder, event == evSessionStart, (event == evStop || event == evSubagentStop) && st.Idle) {
 		quiet()
 		return nil
@@ -296,7 +295,7 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		writeHookJSON(stdout, takeNotice(&st), nil)
 		return nil
 	}
-	b, err := h.collect(event == evStop)
+	b, err := h.collect(event == evStop, event == evStop)
 	if err != nil {
 		quiet()
 		return err
@@ -409,9 +408,6 @@ func endSession(env hookEnv, path, sid string) {
 	}
 	st := loadHookState(path)
 	h := &hookSession{env: env, st: &st, sid: sid, folder: st.Folder}
-	for id := range st.Subagents {
-		h.subagent(id, "", true)
-	}
 	h.idle()
 	st.Ended, st.Active = true, nil
 	_ = saveHookState(path, st)
@@ -476,9 +472,12 @@ func (b hookBatch) empty() bool { return len(b.ids) == 0 }
 // collect reads the unread messages of the session's folder that are for this
 // session, claims them and formats what fits one hook output. The rest stays
 // unread for the next event.
-func (h *hookSession) collect(stop bool) (hookBatch, error) {
+func (h *hookSession) collect(stop, actionable bool) (hookBatch, error) {
 	var page node.UnreadPage
 	q := url.Values{"folder": {h.folder}, "session": {h.sid}, "limit": {fmt.Sprint(hookPageSize)}}
+	if actionable {
+		q.Set("actionable", "1")
+	}
 	if err := hookCall(h.env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout); err != nil {
 		return hookBatch{}, err
 	}
