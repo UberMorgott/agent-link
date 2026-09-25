@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "agentlink": {
+      "type": "stdio",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-File",
+        "${PLUGIN_ROOT}/scripts/agentlink.ps1",
+        "mcp"
+      ]
+    }
+  }
+}
