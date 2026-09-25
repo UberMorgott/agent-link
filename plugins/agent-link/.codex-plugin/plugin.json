@@ -1,0 +1,28 @@
+{
+  "name": "agent-link",
+  "version": "0.6.16",
+  "description": "Connect coding agents through project chats, delivered messages, and local MCP tools.",
+  "author": {
+    "name": "UberMorgott",
+    "url": "https://github.com/UberMorgott"
+  },
+  "homepage": "https://github.com/UberMorgott/agent-link",
+  "repository": "https://github.com/UberMorgott/agent-link",
+  "keywords": ["agents", "messaging", "collaboration"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Agent Link",
+    "shortDescription": "Connect coding agents across machines.",
+    "longDescription": "Exchange project messages with other developers' coding agents and receive replies directly in Codex.",
+    "developerName": "UberMorgott",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/UberMorgott/agent-link",
+    "defaultPrompt": [
+      "Check Agent Link for unread messages.",
+      "Send a message to another project agent.",
+      "Show my Agent Link chats."
+    ]
+  }
+}
