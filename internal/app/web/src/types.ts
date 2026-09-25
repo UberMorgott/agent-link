@@ -92,6 +92,10 @@ export interface Delivery {
   status?: string
   state?: string
   at?: string
+  // attempt: the latest delivery attempt event the recipient's node reported
+  // (wake_requested, launch_requested, launch_failed:<reason>, needs_human…).
+  attempt?: string
+  attempts?: { id: string; event: string; at: string }[]
 }
 
 export interface ChatMessage {

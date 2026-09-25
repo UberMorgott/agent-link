@@ -257,6 +257,7 @@ func serve(cfg config.Config) error {
 	}
 	n.SetAppVersion(selfupdate.Version)
 	n.SetSessionWaker(codexqueue.New())
+	n.SetInboxPoster(node.PipePoster{})
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	var lc net.ListenConfig

@@ -6,16 +6,23 @@ import (
 	"time"
 )
 
-// Waking idle sessions (WakeQueue). A Codex session has no background hook
-// that could wake it (unlike Claude Code's asyncRewake waiter), so the node
-// does it: when a live WakeQueue session is idle (its last hook event was a
-// Stop that let it stop) and actionable unread messages it may take wait, the
-// node queues one short prompt for it in its agent, once per idle period. The
-// agent starts a turn with it, and the session's own hooks (UserPromptSubmit)
-// claim, deliver and acknowledge the messages as always. A session whose app
-// is closed keeps the prompt queued until it is opened again; the node never
-// resumes one itself. Without a usable waker (no codex 0.149 or later, or a
-// failed wake) such a session gets WakeNextEvent and reads at its next event.
+// Waking idle sessions. The node wakes a live session that ended its turn
+// (Idle) and has actionable unread messages to take, once per idle period:
+//
+//   - Codex (WakeQueue): it queues one short prompt in the session's agent
+//     (`codex queue`, SessionWaker); the agent starts a turn with it. A session
+//     whose app is closed keeps the prompt queued until it is opened again.
+//     Without a usable waker (no codex 0.149 or later, or a failed wake) such
+//     a session gets WakeNextEvent and reads at its next event.
+//   - Claude Code: it posts the prompt to the session's inbox (inbox.go,
+//     InboxPoster). A failed post drops the inbox, and the session's
+//     background waiter (asyncRewake, which defers to the node while it holds
+//     the inbox) wakes it instead.
+//
+// Either way the session's own hooks (UserPromptSubmit) claim, deliver and
+// acknowledge the messages as always, and each woken message's author hears
+// of it (AttemptWakeRequested, then AttemptWokenConfirmed at the ack).
+// The same loop runs the launch ladder (launch.go).
 
 // wakePoll is how often the node looks for idle sessions to wake.
 const wakePoll = 2 * time.Second
@@ -38,7 +45,7 @@ func (n *Node) SetSessionWaker(w SessionWaker) { n.waker = w }
 // canQueue reports whether a WakeQueue session can be woken now.
 func (n *Node) canQueue() bool { return n.waker != nil && n.waker.Ready() }
 
-// wakeLoop wakes idle WakeQueue sessions until ctx is done.
+// wakeLoop wakes idle sessions and runs the launch ladder until ctx is done.
 func (n *Node) wakeLoop(ctx context.Context) {
 	every := n.wakeEvery
 	if every <= 0 {
@@ -47,9 +54,12 @@ func (n *Node) wakeLoop(ctx context.Context) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
-		n.waker.Check(ctx, false)
-		n.syncQueueWake()
+		if n.waker != nil {
+			n.waker.Check(ctx, false)
+			n.syncQueueWake()
+		}
 		n.wakeIdle(ctx)
+		n.launchDue(ctx, time.Now())
 		select {
 		case <-ctx.Done():
 			return
@@ -84,49 +94,76 @@ func (n *Node) syncQueueWake() {
 	}
 }
 
-// wakeIdle queues a wake for every idle WakeQueue session not woken in this
-// idle period that has unread messages to take. A failed wake leaves the
-// session to its next event (WakeNextEvent) and is logged.
+// wakeIdle wakes every idle session not woken in this idle period that has
+// actionable unread messages to take: WakeQueue ones through the waker,
+// Claude ones through their inbox. What it takes is re-read right before each
+// wake.
 func (n *Node) wakeIdle(ctx context.Context) {
-	if !n.canQueue() {
+	queue := n.canQueue()
+	if !queue && n.poster == nil {
 		return
 	}
 	r := n.sess
 	now := time.Now()
-	var due []Session
+	type due struct {
+		s     Session
+		inbox inboxAddr
+	}
+	var list []due
 	r.mu.Lock()
 	for _, s := range r.sessions {
-		if s.Wake == WakeQueue && s.Idle && !s.Woken && s.live(now) {
-			due = append(due, *s)
+		if !s.Idle || s.Woken || !s.live(now) {
+			continue
+		}
+		if a, ok := r.inbox[s.SessionID]; ok && n.poster != nil {
+			list = append(list, due{s: *s, inbox: a})
+		} else if s.Wake == WakeQueue && queue {
+			list = append(list, due{s: *s})
 		}
 	}
 	r.mu.Unlock()
-	for _, s := range due {
-		page, err := n.unreadFor(s.Folder, s.SessionID, "", 1, true)
+	for _, d := range list {
+		s := d.s
+		page, err := n.unreadFor(s.Folder, s.SessionID, "", hookBatchIDs, true)
 		if err != nil || page.Total == 0 {
 			continue
 		}
-		err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, WakeText(page.Total))
+		byInbox := d.inbox.socket != ""
+		if byInbox {
+			err = n.poster.Post(ctx, d.inbox.socket, d.inbox.token, WakeText(page.Total))
+		} else {
+			err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, WakeText(page.Total))
+		}
 		r.mu.Lock()
-		cur := r.sessions[s.SessionID]
-		if cur != nil {
-			if err == nil {
+		if cur := r.sessions[s.SessionID]; cur != nil {
+			switch {
+			case err == nil:
 				cur.Woken = true
-			} else {
+				if a, ok := r.inbox[s.SessionID]; ok && byInbox {
+					a.woke = time.Now()
+					r.inbox[s.SessionID] = a
+				}
+			case byInbox:
+				delete(r.inbox, s.SessionID) // its waiter wakes it from now on
+			default:
 				cur.Wake = WakeNextEvent
 			}
 			_ = r.saveLocked(time.Now())
 		}
 		r.mu.Unlock()
 		if err != nil {
-			n.log.Warn("waking an idle session failed; it reads its messages at its next event", "session", s.SessionID, "provider", s.Provider, "err", err)
+			n.log.Warn("waking an idle session failed; it reads its messages at its next event", "session", s.SessionID, "provider", s.Provider, "inbox", byInbox, "err", err)
 			n.presenceChanged()
 			n.changed("sessions")
-			return
+			continue
 		}
-		n.log.Info("idle session woken", "session", s.SessionID, "provider", s.Provider, "unread", page.Total)
+		n.log.Info("idle session woken", "session", s.SessionID, "provider", s.Provider, "inbox", byInbox, "unread", page.Total)
+		n.noteWoken(page.Messages)
 	}
 }
+
+// hookBatchIDs bounds the messages one wake reports attempts for.
+const hookBatchIDs = 50
 
 // WakeText is the prompt queued for an idle session with n unread messages:
 // «agent-link: 3 новых сообщения — прочитай их».

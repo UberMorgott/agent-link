@@ -83,7 +83,7 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 		}
 		b := a.s.Bindings[i]
 		c = a.projects[pid]
-		v = ProjectView{ID: pid, Alias: b.Alias, Dir: b.Dir, CanRename: true, HasInvite: true}
+		v = ProjectView{ID: pid, Alias: b.Alias, Dir: b.Dir, CanRename: true, HasInvite: true, AutoOpen: b.AutoOpenOn()}
 		if c != nil {
 			v.Name = c.n.ProjectMeta().Name
 		}
@@ -463,19 +463,24 @@ func (a *App) renameProject(w http.ResponseWriter, r *http.Request) {
 	a.writeView(w, pid)
 }
 
-// bindProject changes this member's alias and folder of a project (absent:
-// kept; "": cleared). A folder change needs an idle worker (project_busy).
+// bindProject changes this member's alias, folder and auto-open of a project
+// (absent: kept; "": cleared). A folder change needs an idle worker
+// (project_busy).
 func (a *App) bindProject(w http.ResponseWriter, r *http.Request) {
 	pid := r.PathValue("pid")
 	var req struct {
-		Alias *string `json:"alias"`
-		Dir   *string `json:"dir"`
+		Alias    *string `json:"alias"`
+		Dir      *string `json:"dir"`
+		AutoOpen *bool   `json:"auto_open"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
 	a.mu.Lock()
 	err := a.bindLocked(pid, req.Alias, req.Dir) //nolint:contextcheck // a folder change restarts the context under the Hub's context
+	if err == nil && req.AutoOpen != nil {
+		err = a.setAutoOpenLocked(pid, *req.AutoOpen)
+	}
 	a.mu.Unlock()
 	if err != nil {
 		a.failed(w, "bind project", err)
@@ -525,6 +530,29 @@ func (a *App) bindLocked(pid string, alias, dir *string) error {
 		return err
 	}
 	a.s = s
+	return nil
+}
+
+// setAutoOpenLocked turns a project's auto-open on or off and applies it to
+// its running node; the legacy network has none (bad_request).
+func (a *App) setAutoOpenLocked(pid string, on bool) error {
+	i := a.bindingIndex(pid)
+	if i < 0 {
+		return &settings.Problem{Key: "bad_request"}
+	}
+	if a.s.Bindings[i].AutoOpenOn() == on {
+		return nil
+	}
+	s := a.s
+	s.Bindings = slices.Clone(s.Bindings)
+	s.Bindings[i].AutoOpen = &on
+	if err := settings.Save(a.path, s); err != nil {
+		return err
+	}
+	a.s = s
+	if c := a.projects[pid]; c != nil {
+		c.n.SetAutoOpen(on && s.Bindings[i].Dir != "")
+	}
 	return nil
 }
 

@@ -161,6 +161,11 @@ type Delivery struct {
 	Status string    `json:"status"`
 	State  string    `json:"state"`
 	At     time.Time `json:"at,omitzero"`
+	// Attempts are what the recipient node did to get the message seen by an
+	// agent session (wake, open a session, or why it could not), oldest first;
+	// Attempt is the latest event. Peers that report none leave both empty.
+	Attempts []Attempt `json:"attempts,omitempty"`
+	Attempt  string    `json:"attempt,omitempty"`
 }
 
 // ChatMessage is one message of a chat as listed by the chat API: one entry
@@ -1217,6 +1222,10 @@ func (n *Node) chatMessage(c Chat, r chatRecord) ChatMessage {
 			}
 			if at, ok := replied[p]; ok {
 				d.State, d.At = StateAnswered, at
+			}
+			if list := r.Attempts[p]; len(list) > 0 {
+				d.Attempts = slices.Clone(list)
+				d.Attempt = list[len(list)-1].Event
 			}
 			cm.Delivery = append(cm.Delivery, d)
 		}

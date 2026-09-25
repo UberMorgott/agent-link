@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/UberMorgott/agent-link/internal/config"
@@ -97,6 +98,13 @@ type Node struct {
 	// wakePoll); nil: none.
 	waker     SessionWaker
 	wakeEvery time.Duration
+	// poster wakes idle Claude sessions through their inbox (inbox.go);
+	// launcher opens a visible session when none is live (launch.go), while
+	// autoOpen is on. deliv is the delivery ladder's state.
+	poster   InboxPoster
+	launcher SessionLauncher
+	autoOpen atomic.Bool
+	deliv    *deliveryState
 
 	selfAddrs []string // this node's own peer addresses, set by Run
 
@@ -246,6 +254,7 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	if n.sess, err = openSessions(cfg.DataDir); err != nil {
 		return nil, err
 	}
+	n.deliv = newDeliveryState()
 	if err := n.repairChats(); err != nil {
 		return nil, err
 	}
@@ -334,7 +343,7 @@ func (n *Node) Run(ctx context.Context, peerLn net.Listener) {
 	n.wg.Go(func() { n.acceptLoop(ctx, peerLn) })
 	n.wg.Go(func() { n.meshLoop(ctx) }) // also dials the configured peers
 	n.wg.Go(func() { n.activityLoop(ctx) })
-	if n.waker != nil {
+	if n.waker != nil || n.poster != nil || n.launcher != nil {
 		n.wg.Go(func() { n.wakeLoop(ctx) })
 	}
 	if n.netTag != "" && n.hub == nil { // under a Hub, its socket carries the beacons

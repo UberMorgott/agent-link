@@ -154,6 +154,7 @@ type CreateChatRequest struct {
 //	POST /ack                AckRequest -> []AckResult, chat and plain messages
 //	GET  /unread?folder=PATH&after=CURSOR&limit=50   200 UnreadPage
 //	     &session=ID         only what that session may take (UnreadFor)
+//	     &waiter=1           a Claude waiter: empty while the node wakes that session (InboxWakes)
 //	POST /claim              ClaimRequest -> []string (ids granted to the session for delivery)
 //	POST /sessions           SessionRequest -> Session (register or heartbeat)
 //	GET  /sessions           200 []Session (live ones)
@@ -419,6 +420,12 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 				return
 			}
 			limit = v
+		}
+		// A Claude session's background waiter asks with waiter=1: while the
+		// node wakes that session through its inbox, the waiter has nothing to do.
+		if q.Get("waiter") == "1" && n.InboxWakes(q.Get("session")) {
+			writeJSONResponse(w, UnreadPage{Messages: []UnreadMessage{}})
+			return
 		}
 		page, err := n.unreadFor(q.Get("folder"), q.Get("session"), q.Get("after"), limit, q.Get("actionable") == "1")
 		reply(w, page, err)

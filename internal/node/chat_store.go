@@ -72,6 +72,9 @@ type chatRecord struct {
 	Session string `json:"session,omitempty"`
 	// Receipts: on this node's own messages, the latest receipt per recipient.
 	Receipts map[string]Receipt `json:"receipts,omitempty"`
+	// Attempts: on this node's own messages, the latest delivery attempt
+	// events per recipient (at most maxAttemptsKept each), oldest first.
+	Attempts map[string][]Attempt `json:"attempts,omitempty"`
 }
 
 var errChatMismatch = errors.New("chat participants or area differ from the stored chat")
@@ -323,6 +326,7 @@ func (cs *chatStore) updateLocked(id string, fn func(r *chatRecord) bool) (chatR
 	i := st.index[id]
 	r := st.msgs[i]
 	r.Receipts = maps.Clone(r.Receipts)
+	r.Attempts = maps.Clone(r.Attempts)
 	if !fn(&r) {
 		return st.msgs[i], false, nil
 	}
@@ -402,6 +406,34 @@ func (cs *chatStore) applyReceipt(peer string, rc Receipt) (bool, error) {
 			r.Receipts = map[string]Receipt{}
 		}
 		r.Receipts[peer] = rc
+		return true
+	})
+	return changed, err
+}
+
+// applyAttempt records peer's delivery attempt event on this node's message
+// a.ID, keeping the latest maxAttemptsKept per peer. A repeat (same event and
+// time) changes nothing. It reports whether anything changed.
+func (cs *chatStore) applyAttempt(peer string, a Attempt) (bool, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	_, changed, err := cs.updateLocked(a.ID, func(r *chatRecord) bool {
+		if r.Message.Kind != "" || !slices.Contains(cs.chats[r.Message.ChatID].chat.Participants, peer) {
+			return false
+		}
+		list := r.Attempts[peer]
+		if slices.ContainsFunc(list, func(o Attempt) bool { return o.Event == a.Event && o.At.Equal(a.At) }) {
+			return false
+		}
+		list = append(slices.Clone(list), a)
+		slices.SortStableFunc(list, func(x, y Attempt) int { return x.At.Compare(y.At) })
+		if len(list) > maxAttemptsKept {
+			list = list[len(list)-maxAttemptsKept:]
+		}
+		if r.Attempts == nil {
+			r.Attempts = map[string][]Attempt{}
+		}
+		r.Attempts[peer] = list
 		return true
 	})
 	return changed, err

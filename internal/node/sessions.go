@@ -61,6 +61,12 @@ type SessionRequest struct {
 	// CodexHome is the session's CODEX_HOME ("": Codex's default), where
 	// WakeQueue queues its message.
 	CodexHome string `json:"codex_home,omitempty"`
+	// InboxSocket and InboxToken are a Claude Code session's cross-session
+	// inbox (CLAUDE_CODE_MESSAGING_SOCKET, CLAUDE_CODE_MESSAGING_TOKEN): the
+	// node wakes the idle session by posting a prompt there (inbox.go). They
+	// are kept in memory only, expire with the session and never leave the node.
+	InboxSocket string `json:"inbox_socket,omitempty"`
+	InboxToken  string `json:"inbox_token,omitempty"`
 }
 
 // Session is one registered live session.
@@ -82,6 +88,9 @@ type Session struct {
 	CodexHome string `json:"codex_home,omitempty"`
 	// Woken: the node queued a wake in this idle period (once per period).
 	Woken bool `json:"woken,omitempty"`
+	// Inbox: the node holds a usable inbox of the session (InboxSocket) and
+	// wakes it there when idle. Not persisted: the address lives in memory.
+	Inbox bool `json:"inbox,omitempty"`
 }
 
 func (s Session) live(now time.Time) bool {
@@ -105,17 +114,41 @@ type sessionRegistry struct {
 	// Taken before mu and the chat store's lock, never inside them.
 	claimMu sync.Mutex
 	claims  map[string]sessionClaim
+
+	// inbox is each live Claude session's inbox address (memory only, never
+	// persisted or sent); recent is the last session seen per area, kept in
+	// last_sessions.json, which a launch resumes (launch.go).
+	inbox      map[string]inboxAddr
+	recent     map[string]LastSession
+	recentPath string
+}
+
+// LastSession is the latest agent session registered for an area: a launch
+// with no live session there resumes it.
+type LastSession struct {
+	SessionID string    `json:"session_id"`
+	Provider  string    `json:"provider"`
+	Folder    string    `json:"folder"`
+	At        time.Time `json:"at"`
 }
 
 func openSessions(dir string) (*sessionRegistry, error) {
 	r := &sessionRegistry{path: filepath.Join(dir, "sessions.json"), sessions: map[string]*Session{}, last: map[string]ActivityState{},
-		on: map[string]map[string]string{}, claims: map[string]sessionClaim{}}
+		on: map[string]map[string]string{}, claims: map[string]sessionClaim{}, inbox: map[string]inboxAddr{},
+		recent: map[string]LastSession{}, recentPath: filepath.Join(dir, "last_sessions.json")}
 	var list []Session
 	if err := readJSON(r.path, &list); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	for _, s := range list {
+		s.Inbox = false // its address was in memory only
 		r.sessions[s.SessionID] = &s
+	}
+	if err := readJSON(r.recentPath, &r.recent); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if r.recent == nil {
+		r.recent = map[string]LastSession{}
 	}
 	return r, nil
 }
@@ -128,9 +161,12 @@ func (r *sessionRegistry) saveLocked(now time.Time) error {
 			delete(r.sessions, id)
 			delete(r.last, id)
 			delete(r.on, id)
+			delete(r.inbox, id)
 			continue
 		}
-		list = append(list, *s)
+		c := *s
+		c.Inbox = false
+		list = append(list, c)
 	}
 	slices.SortFunc(list, func(a, b Session) int { return strings.Compare(a.SessionID, b.SessionID) })
 	return writeJSON(r.path, list)
@@ -164,6 +200,11 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 		return Session{}, fmt.Errorf("%w: ttl_sec out of range", ErrBadRequest)
 	case len(req.CodexHome) > 1024 || (req.CodexHome != "" && !filepath.IsAbs(req.CodexHome)):
 		return Session{}, fmt.Errorf("%w: codex_home must be an absolute path", ErrBadRequest)
+	}
+	// An inbox the node cannot use is ignored, not refused: the session still
+	// registers and its waiter wakes it.
+	if !validInboxSocket(req.InboxSocket) || !validInboxToken(req.InboxToken) || req.Provider != ProviderClaude {
+		req.InboxSocket, req.InboxToken = "", ""
 	}
 	switch req.Wake {
 	case "":
@@ -207,6 +248,22 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	// A new idle period (or none) may be woken again.
 	s.Woken = s.Woken && s.Idle && req.Idle
 	s.Asked, s.Idle, s.CodexHome = asked, req.Idle, req.CodexHome
+	if req.InboxSocket != "" {
+		a := inboxAddr{socket: req.InboxSocket, token: req.InboxToken}
+		if old, ok := r.inbox[req.SessionID]; ok && old.socket == a.socket && old.token == a.token {
+			a.woke = old.woke // a heartbeat keeps the time of the last wake
+		}
+		r.inbox[req.SessionID] = a
+	}
+	if req.Provider == ProviderClaude || req.Provider == ProviderCodex {
+		ls := LastSession{SessionID: req.SessionID, Provider: req.Provider, Folder: s.Folder, At: now}
+		if old, ok := r.recent[area]; !ok || old.SessionID != ls.SessionID || old.Folder != ls.Folder || now.Sub(old.At) > time.Hour {
+			r.recent[area] = ls
+			if err := writeJSON(r.recentPath, r.recent); err != nil {
+				n.log.Warn("save last sessions", "err", err)
+			}
+		}
+	}
 	err := r.saveLocked(now)
 	out := r.withPrimaryLocked(*s, now)
 	r.mu.Unlock()
@@ -228,6 +285,7 @@ func (n *Node) EndSession(id string) error {
 	delete(r.sessions, id)
 	delete(r.last, id)
 	delete(r.on, id)
+	delete(r.inbox, id)
 	err := r.saveLocked(time.Now())
 	r.mu.Unlock()
 	if !ok {
@@ -263,6 +321,7 @@ func (n *Node) Sessions() []Session {
 // older. The caller holds r.mu.
 func (r *sessionRegistry) withPrimaryLocked(s Session, now time.Time) Session {
 	s.Primary = true
+	_, s.Inbox = r.inbox[s.SessionID]
 	for _, o := range r.sessions {
 		if o.SessionID != s.SessionID && o.Area == s.Area && o.live(now) &&
 			(o.RegisteredAt.Before(s.RegisteredAt) || (o.RegisteredAt.Equal(s.RegisteredAt) && o.SessionID < s.SessionID)) {

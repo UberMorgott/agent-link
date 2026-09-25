@@ -267,6 +267,13 @@ func (n *Node) Ack(chat string, req AckRequest) ([]AckResult, error) {
 	}
 	n.sess.claimMu.Unlock()
 	n.sendReceipts(receipts, StateRead)
+	var read []string
+	for _, res := range out {
+		if res.WasUnread {
+			read = append(read, res.ID)
+		}
+	}
+	n.confirmRead(read)
 	if changed {
 		n.changed("messages")
 	}
@@ -322,7 +329,68 @@ func (n *Node) receiveReceipts(peer string, m Message) {
 		}
 		changed = changed || ok
 	}
+	for i, a := range m.Attempts {
+		if i >= maxAttemptsPerMessage {
+			break
+		}
+		if !validID(a.ID) || !validAttemptEvent(a.Event) {
+			continue
+		}
+		r, ok := n.chats.message(a.ID)
+		if !ok || r.Message.From != n.cfg.Node || r.Message.ChatID != m.ChatID {
+			continue
+		}
+		a.At = cmp.Or(a.At, m.CreatedAt)
+		ok, err := n.chats.applyAttempt(peer, a)
+		if err != nil {
+			n.log.Warn("apply delivery attempt", "peer", peer, "id", a.ID, "err", err)
+		}
+		changed = changed || ok
+	}
 	if changed {
 		n.changed("messages")
 	}
+}
+
+// sendAttempts reports delivery attempt event on the chat messages ids to
+// their authors: one KindReceipt message per author and chat carrying
+// Attempts (no Receipts). Messages of this node itself and plain ones are
+// skipped.
+func (n *Node) sendAttempts(ids []string, event string) {
+	if len(ids) == 0 || !validAttemptEvent(event) {
+		return
+	}
+	now, total := time.Now().UTC(), len(ids)
+	type key struct{ author, chat string }
+	groups := map[key][]string{}
+	for _, id := range ids {
+		r, ok := n.chats.message(id)
+		if !ok || r.Message.Kind != "" || r.Message.From == n.cfg.Node {
+			continue
+		}
+		k := key{r.Message.From, r.Message.ChatID}
+		groups[k] = append(groups[k], id)
+	}
+	for k, ids := range groups {
+		c, ok := n.chats.get(k.chat)
+		i := slices.Index(c.Participants, k.author)
+		if !ok || i < 0 || !n.pinned(c, i) {
+			continue
+		}
+		slices.Sort(ids)
+		for len(ids) > 0 {
+			part := ids[:min(len(ids), maxAttemptsPerMessage)]
+			ids = ids[len(part):]
+			m := Message{ID: DerivedID(strings.Join(part, ","), fmt.Sprintf("%s/attempt/%s/%d", n.cfg.Node, event, now.UnixNano())),
+				From: n.cfg.Node, To: k.author, Kind: KindReceipt, CreatedAt: now}
+			c.stamp(&m)
+			for _, id := range part {
+				m.Attempts = append(m.Attempts, Attempt{ID: id, Event: event, At: now})
+			}
+			if err := n.enqueue(k.author, m); err != nil {
+				n.log.Warn("queue delivery attempt", "peer", k.author, "chat", k.chat, "err", err)
+			}
+		}
+	}
+	n.log.Info("delivery attempt", "event", event, "messages", total)
 }

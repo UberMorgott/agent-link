@@ -218,6 +218,22 @@ export function tickState(d: Delivery): 'queued' | 'delivered' | 'read' {
   return d.status === 'sent' ? 'delivered' : 'queued'
 }
 
+// attemptText: what the recipient's node reported doing to get an unread
+// message seen (its latest delivery attempt), '' when nothing or once read.
+export function attemptText(d: Delivery): string {
+  if (!d.attempt || tickState(d) === 'read') return ''
+  const [event, reason] = d.attempt.split(':', 2)
+  if (event === 'launch_failed') return fmt("inbox.attempt.launch_failed", { reason: reason || '?' })
+  return ATTEMPTS.includes(event!) ? t("inbox.attempt." + event) : ''
+}
+const ATTEMPTS = ['wake_requested', 'woken_confirmed', 'launch_requested', 'launch_confirmed', 'needs_human']
+
+// attemptFailed: the recipient's node gave up getting the message seen
+// (it could not open a session, or the chain is paused): a person must act.
+export function attemptFailed(d: Delivery): boolean {
+  return tickState(d) !== 'read' && !!d.attempt && (d.attempt.startsWith('launch_failed:') || d.attempt === 'needs_human')
+}
+
 // holdsFor lists the participants that were asked message id but will not
 // answer it automatically, with why (their node's text); such a hold is idle.
 export function holdsFor(info: ChatInfo | null, id: string): { name: string; text: string }[] {
@@ -247,9 +263,12 @@ export function ticksFor(m: ChatMessage, info: ChatInfo | null): Tick | null {
     const state = tickState(d)
     if (TICK_RANK[state]! < TICK_RANK[lowest]!) lowest = state
     const word = t("inbox.tick." + (d.state === 'answered' ? 'answered' : state))
-    return d.peer + ': ' + word + (state === 'read' && d.at ? ' ' + clock(d.at) : '')
+    const attempt = attemptText(d)
+    return d.peer + ': ' + word + (state === 'read' && d.at ? ' ' + clock(d.at) : '') + (attempt ? ' — ' + attempt : '')
   })
-  return { state: lowest, label: delivery.length === 1 ? lines[0]! : lines.join('\n') }
+  // A recipient whose node gave up shows «!», not a quiet delivered tick.
+  const state: TickState = delivery.some(attemptFailed) ? 'held' : lowest
+  return { state, label: delivery.length === 1 ? lines[0]! : lines.join('\n') }
 }
 
 // messageTick: an own message's delivery tick, or an incoming held one.
@@ -313,8 +332,15 @@ export function presenceLines(info: ChatInfo | null, messages: ChatMessage[], no
   for (const d of last.delivery || []) {
     if (tickState(d) !== 'delivered') continue
     const member = (info.members || []).find((m) => !m.self && m.name === d.peer)
+    if (member && liveJobs(member.jobs, now).length) continue
+    // What its node reported doing about the message says more than presence.
+    const attempt = attemptText(d)
+    if (attempt) {
+      out.push({ name: d.peer, text: attempt })
+      continue
+    }
     const p = member?.connected ? member.presence : null
-    if (!p || liveJobs(member!.jobs, now).length) continue
+    if (!p) continue
     const key = PRESENCE_KEY[p.session || ''] || (p.auto_answer ? "inbox.presence.worker" : "inbox.presence.none")
     out.push({ name: d.peer, text: t(key) })
   }
