@@ -125,6 +125,14 @@ func (a *App) newNodeOf(pid string, cfg config.Config, key []byte) (*node.Node, 
 	if a.Waker != nil {
 		n.SetSessionWaker(a.Waker)
 	}
+	if a.Poster != nil {
+		n.SetInboxPoster(a.Poster)
+	}
+	if a.Launcher != nil {
+		// A new session is of the handler's agent (Claude unless it is Codex);
+		// a known last session of the folder is resumed in its own agent.
+		n.SetLauncher(a.Launcher, a.s.Handler)
+	}
 	topic := projectTopic(pid)
 	n.SetChangeHook(func(t string) { a.events.publish(t, topic) })
 	return n, nil
@@ -184,6 +192,7 @@ func (a *App) newProjectContext(b settings.ProjectBinding) (*appContext, error) 
 		n.SetInboundHook(n.HoldWithoutFolder)
 		return c, nil
 	}
+	n.SetAutoOpen(b.AutoOpenOn())
 	opt, hasHandler := a.workerOptions(b.ID, n)
 	if c.w, err = worker.New(nil, n.SendMessage, cfg.DataDir, b.Dir, opt, a.log); err != nil {
 		return nil, err

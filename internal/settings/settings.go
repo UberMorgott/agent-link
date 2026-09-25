@@ -96,7 +96,13 @@ type ProjectBinding struct {
 	Alias  string   `json:"alias,omitempty"` // this member's own name for it, ≤ maxAlias runes
 	Dir    string   `json:"dir,omitempty"`   // bound folder; "" = none
 	Peers  []string `json:"peers,omitempty"` // bootstrap addresses typed by the user (host:port)
+	// AutoOpen opens a visible agent session in Dir when a message asks this
+	// member and no session is live there (node.SetAutoOpen); nil means on.
+	AutoOpen *bool `json:"auto_open,omitempty"`
 }
+
+// AutoOpenOn reports whether the project opens sessions by itself (default on).
+func (b ProjectBinding) AutoOpenOn() bool { return b.AutoOpen == nil || *b.AutoOpen }
 
 // Version is the settings file format this build writes. Version 2 added
 // Bindings; a file without a version is version 1.

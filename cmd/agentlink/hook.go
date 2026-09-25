@@ -15,11 +15,15 @@ package main
 //     (agentlink send, noteSent), PreToolUse, UserPromptSubmit and Stop report
 //     what it does to those chats (POST /chats/{id}/activity), one line per
 //     session.
+//   - Both clients tell the node when the session is idle (a Stop that lets
+//     it stop) and busy again. The node wakes an idle Claude Code session
+//     through its cross-session inbox (the hooks hand it
+//     CLAUDE_CODE_MESSAGING_SOCKET and _TOKEN; node/inbox.go) and an idle Codex
+//     session with `codex queue` (node.WakeQueue; without a usable codex it
+//     hears of messages at its next event).
 //   - Claude Code also runs `agentlink hook claude --wait` in the background
-//     (asyncRewake): it waits for unread messages and wakes an idle session;
-//     see hook_wait.go. Codex has no such hook: its session tells the node
-//     when it is idle, and the node wakes it with `codex queue` (node.WakeQueue;
-//     without a usable codex it hears of messages at its next event).
+//     (asyncRewake): the fallback that wakes an idle session while the node
+//     holds no usable inbox of it; see hook_wait.go.
 //
 // A hook never breaks or stalls its session: every failure (node down, bad
 // input) ends quietly with exit 0.
@@ -375,17 +379,10 @@ func hookFolder(cwd string) string {
 // (`codex queue` in the session's CODEX_HOME), else it reads at its next event.
 func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force, idle bool) bool {
 	now := env.clock()
-	if client != hookCodex {
-		idle = false
-	}
 	if !force && st.Folder == folder && st.Idle == idle && now.Sub(st.Registered) < hookHeartbeat {
 		return !st.Unbound
 	}
-	req := node.SessionRequest{SessionID: sid, Provider: client, Folder: folder, Wake: node.WakeRewake, TTLSec: hookTTLClaude}
-	if client == hookCodex {
-		req.Wake, req.TTLSec, req.Idle, req.CodexHome = node.WakeQueue, hookTTLCodex, idle, codexHome()
-	}
-	err := hookCall(env.api, http.MethodPost, "/sessions", nil, req, nil, hookHTTPTimeout)
+	err := hookCall(env.api, http.MethodPost, "/sessions", nil, sessionRequest(client, sid, folder, idle), nil, hookHTTPTimeout)
 	var se *statusError
 	switch {
 	case err == nil:
@@ -397,6 +394,30 @@ func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force, id
 	default:
 		return false // node down: try again at the next event
 	}
+}
+
+// Claude Code's cross-session inbox of the session, exported to its hooks
+// (https://code.claude.com/docs/en/cross-session-messaging.md).
+const (
+	envInboxSocket = "CLAUDE_CODE_MESSAGING_SOCKET"
+	envInboxToken  = "CLAUDE_CODE_MESSAGING_TOKEN"
+)
+
+// sessionRequest is the registration of a session of client: Codex asks for
+// node.WakeQueue; Claude Code for node.WakeRewake and hands the node its
+// inbox (the node wakes it there while idle, else its waiter does). Both
+// report whether the session is idle (its turn ended).
+func sessionRequest(client, sid, folder string, idle bool) node.SessionRequest {
+	req := node.SessionRequest{SessionID: sid, Provider: client, Folder: folder, Wake: node.WakeRewake, TTLSec: hookTTLClaude, Idle: idle}
+	if client == hookCodex {
+		req.Wake, req.TTLSec, req.CodexHome = node.WakeQueue, hookTTLCodex, codexHome()
+		return req
+	}
+	sock, tok := strings.TrimSpace(os.Getenv(envInboxSocket)), strings.TrimSpace(os.Getenv(envInboxToken))
+	if sock != "" && tok != "" {
+		req.InboxSocket, req.InboxToken = sock, tok
+	}
+	return req
 }
 
 // codexHome is the session's CODEX_HOME, absolute, or "" for Codex's default.

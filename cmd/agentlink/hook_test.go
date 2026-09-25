@@ -41,6 +41,9 @@ type fakeNode struct {
 	claims  map[string]string
 	// unreadSession: the session the last GET /unread asked for.
 	unreadSession string
+	// inboxWakes: like a node that wakes the session through its inbox, a
+	// waiter's GET /unread (waiter=1) gets nothing.
+	inboxWakes bool
 }
 
 func newFakeNode(t *testing.T, folder string) *fakeNode {
@@ -75,6 +78,10 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 		f.gets++
 		q := r.URL.Query()
 		f.unreadSession = q.Get("session")
+		if q.Get("waiter") == "1" && f.inboxWakes {
+			_ = json.NewEncoder(w).Encode(node.UnreadPage{Messages: []node.UnreadMessage{}})
+			return
+		}
 		if !strings.EqualFold(filepath.Clean(q.Get("folder")), filepath.Clean(f.folder)) {
 			http.Error(w, "folder is not the working folder", http.StatusBadRequest)
 			return
@@ -195,6 +202,9 @@ type hookCase struct {
 
 func newHookCase(t *testing.T) *hookCase {
 	folder := t.TempDir()
+	// The tests may run inside a Claude Code session: never its inbox.
+	t.Setenv(envInboxSocket, "")
+	t.Setenv(envInboxToken, "")
 	c := &hookCase{t: t, f: newFakeNode(t, folder), folder: folder, now: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC), sid: "s-1"}
 	c.env = hookEnv{api: c.f.api, dir: t.TempDir(), now: func() time.Time { return c.now }}
 	return c
@@ -297,11 +307,19 @@ func TestHookCodexReportsIdle(t *testing.T) {
 	if idle() {
 		t.Fatal("a blocking Stop reported idle")
 	}
-	// Claude Code never reports idle (its waiter wakes it).
+	// Claude Code reports idle too (the node wakes it through its inbox,
+	// handed over at every registration), and busy at its next prompt.
+	t.Setenv(envInboxSocket, `\\.\pipe\LOCAL\cc-msg-0123456789abcdef`)
+	t.Setenv(envInboxToken, "fedcba9876543210fedcba9876543210")
 	c.run(hookClaude, evSessionStart)
 	c.run(hookClaude, evStop)
-	if s := c.f.sessions[c.sid]; s.Idle || s.Wake != node.WakeRewake || s.CodexHome != "" {
+	if s := c.f.sessions[c.sid]; !s.Idle || s.Wake != node.WakeRewake || s.CodexHome != "" ||
+		s.InboxSocket != `\\.\pipe\LOCAL\cc-msg-0123456789abcdef` || s.InboxToken != "fedcba9876543210fedcba9876543210" {
 		t.Fatalf("claude %+v", s)
+	}
+	c.run(hookClaude, evPrompt)
+	if idle() {
+		t.Fatal("claude: a prompt did not report busy")
 	}
 }
 
@@ -756,6 +774,27 @@ func TestHookGuardedMessageDoesNotRewake(t *testing.T) {
 	}
 	if out := c.run(hookClaude, evPrompt); !strings.Contains(out, "К сведению, ответ не требуется") || len(c.f.ackedIDs()) != 1 {
 		t.Fatalf("next human turn did not read guarded message: %q %v", out, c.f.ackedIDs())
+	}
+}
+
+// While the node wakes the session through its inbox, the waiter leaves it
+// alone; once the node dropped the inbox, the waiter wakes it again.
+func TestHookWaiterDefersToInboxWake(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evStop)
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "hi", true))
+	c.f.mu.Lock()
+	c.f.inboxWakes = true
+	c.f.mu.Unlock()
+	if pendingUnread(c.env, c.folder, c.sid) {
+		t.Fatal("the waiter woke a session the node wakes")
+	}
+	c.f.mu.Lock()
+	c.f.inboxWakes = false
+	c.f.mu.Unlock()
+	if !pendingUnread(c.env, c.folder, c.sid) {
+		t.Fatal("the waiter did not take over")
 	}
 }
 

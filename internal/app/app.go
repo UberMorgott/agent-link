@@ -43,6 +43,13 @@ type App struct {
 	// Waker wakes idle Codex sessions (codexqueue); nil: they read their
 	// messages at their next event.
 	Waker node.SessionWaker
+	// Poster wakes idle Claude Code sessions through their inbox; nil: their
+	// background waiter does.
+	Poster node.InboxPoster
+	// Launcher opens a visible session in a project's folder when a message
+	// asks this member and no session is live there (the project's auto-open);
+	// nil: none is opened.
+	Launcher node.SessionLauncher
 	// QuitFunc ends the program; Quit calls it. Nil makes quitting unavailable.
 	QuitFunc func()
 	// Ifaces lists network interfaces for ZeroTier detection; replaceable in tests.

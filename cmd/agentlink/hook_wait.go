@@ -83,7 +83,7 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 			return 0
 		}
 		if time.Since(lastBeat) >= o.heartbeat {
-			req := node.SessionRequest{SessionID: in.SessionID, Provider: client, Folder: folder, Wake: node.WakeRewake, TTLSec: hookTTLClaude}
+			req := sessionRequest(client, in.SessionID, folder, !waiterBusy(st, env.clock(), o.busyFor))
 			if hookCall(env.api, http.MethodPost, "/sessions", nil, req, nil, hookHTTPTimeout) == nil {
 				lastBeat = time.Now()
 			}
@@ -108,10 +108,11 @@ func waiterBusy(st hookState, now time.Time, busyFor time.Duration) bool {
 }
 
 // pendingUnread reports whether actionable unread messages for session wait in folder
-// (not those for another session of the folder).
+// (not those for another session of the folder). It asks as the waiter: a
+// node that wakes the session through its inbox answers none.
 func pendingUnread(env hookEnv, folder, session string) bool {
 	var page node.UnreadPage
-	q := url.Values{"folder": {folder}, "session": {session}, "limit": {"1"}, "actionable": {"1"}}
+	q := url.Values{"folder": {folder}, "session": {session}, "limit": {"1"}, "actionable": {"1"}, "waiter": {"1"}}
 	return hookCall(env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout) == nil && page.Total > 0
 }
 

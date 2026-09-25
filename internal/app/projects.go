@@ -42,6 +42,9 @@ type ProjectView struct {
 	CanRename bool              `json:"can_rename"`
 	HasInvite bool              `json:"has_invite"`
 	Busy      bool              `json:"busy"` // the worker has unfinished jobs
+	// AutoOpen: a message that asks this member opens a visible agent session
+	// in Dir when none is live there (settings.ProjectBinding.AutoOpen).
+	AutoOpen bool `json:"auto_open,omitempty"`
 }
 
 // InviteView is the answer of the invite reveal endpoint, the only way a
