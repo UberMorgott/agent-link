@@ -20,7 +20,10 @@ import (
 //     newest message a session of this node wrote (chatRecord.Session,
 //     recorded by agentlink send inside the session) or was assigned. A
 //     session that never took part in a chat does not get its messages while
-//     one that did lives;
+//     one that did lives. An active session (in a turn) wins over an idle
+//     one of its area: while one lives, affinity picks among the active ones
+//     only, and a chat whose session is idle is for no session in particular
+//     (the active one's hooks take it, no idle session is woken);
 //   - else no session in particular: the first session to Claim it takes it.
 //
 // Only live sessions count: a message for a session that is gone is anyone's.
@@ -160,7 +163,37 @@ func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string 
 	if s := assignedSession(*rec); live[s] {
 		return s
 	}
-	return n.chats.affinity(rec.Message.ChatID, n.cfg.Node, live)
+	aff := n.chats.affinity(rec.Message.ChatID, n.cfg.Node, live)
+	if busy := n.sess.busyBeside(aff, live); busy != nil {
+		// The chat's session is idle while another of its area is in a turn:
+		// the active one wins (no wake), affinity only picks among them.
+		return n.chats.affinity(rec.Message.ChatID, n.cfg.Node, busy)
+	}
+	return aff
+}
+
+// busyBeside is, when session id is idle, the set of the live sessions of its
+// area in a turn (not Idle); nil when it is not idle or there are none.
+func (r *sessionRegistry) busyBeside(id string, live map[string]bool) map[string]bool {
+	if id == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := r.sessions[id]
+	if s == nil || !s.Idle {
+		return nil
+	}
+	var out map[string]bool
+	for oid, o := range r.sessions {
+		if live[oid] && !o.Idle && o.Area == s.Area {
+			if out == nil {
+				out = map[string]bool{}
+			}
+			out[oid] = true
+		}
+	}
+	return out
 }
 
 // assignedSession is the session a record is assigned to ("session:<id>").

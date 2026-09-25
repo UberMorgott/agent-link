@@ -451,3 +451,52 @@ func TestWakeIdlePriority(t *testing.T) {
 		t.Fatalf("posts %v", p.calls)
 	}
 }
+
+// Active wins over chat affinity: the chat's session is idle while another
+// session of the folder is in a turn, so the message is the active one's
+// (its hooks take it) and the idle one is not woken; once no session is in a
+// turn, affinity names the idle one again and it is woken.
+func TestWakeIdleAffinityActiveWins(t *testing.T) {
+	p := &fakePoster{}
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, p, nil)
+	reg := func(id, sock string, idle bool) {
+		t.Helper()
+		if _, err := a.RegisterSession(SessionRequest{SessionID: id, Provider: "claude", Folder: dir, Wake: WakeRewake,
+			Idle: idle, InboxSocket: sock, InboxToken: testToken}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reg("s-idle", testSocket, true)
+	reg("s-act", `\\.\pipe\LOCAL\cc-msg-4f99f28c24f33ee84c6dd8f59791167e`, false)
+	q, err := a.SendRequest(SendRequest{To: "b", Body: "check it", AuthorKind: AuthorAgent, SessionID: "s-idle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the request", func() bool { p, _ := b.Unread("", "", 10); return p.Total == 1 })
+	m, err := b.SendRequest(SendRequest{ChatID: q.ChatID, Body: "new topic", Ask: []string{"a"}, AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has it", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 1 })
+	if to := a.routedTo([]string{m.ID})[m.ID]; to != "" {
+		t.Fatalf("routed to %q while a session is in a turn", to)
+	}
+	a.wakeIdle(context.Background())
+	if p.count() != 0 {
+		t.Fatalf("the idle chat session was woken while one is active: %v", p.calls)
+	}
+	if page, _ := a.UnreadFor(dir, "s-act", "", 10); page.Total != 1 {
+		t.Fatalf("the active session does not see it: %+v", page)
+	}
+	a.sess.mu.Lock()
+	a.sess.sessions["s-act"].Idle = true
+	a.sess.mu.Unlock()
+	if to := a.routedTo([]string{m.ID})[m.ID]; to != "s-idle" {
+		t.Fatalf("both idle: routed to %q, want the chat's session", to)
+	}
+	a.wakeIdle(context.Background())
+	if p.count() != 1 || !strings.HasPrefix(p.calls[0], testSocket+"|") {
+		t.Fatalf("posts %v", p.calls)
+	}
+}

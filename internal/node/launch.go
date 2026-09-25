@@ -22,9 +22,15 @@ import (
 // first turn headless with the messages themselves as its prompt (startDirect)
 // and shows the session in the app as soon as its id is known. Only a turn
 // that succeeded proves the session took them: then they are acknowledged as
-// that session's (launch_confirmed). A turn that failed, was interrupted or
-// timed out drops the claim (the hooks deliver them again), is
-// launch_failed:<reason> and falls back to Terminal once.
+// that session's (launch_confirmed; an ack that keeps failing is
+// launch_failed:ack_error and leaves them unread and retryable). A turn that
+// started and then failed, was interrupted or timed out drops the claim (the
+// hooks deliver them again), is launch_failed:<reason> and needs_human: it may
+// have acted in part, so nothing opens again for them. Only a launch that
+// failed before its turn started falls back to Terminal, once.
+//
+// No session opens in a folder occupied by one that is not registered
+// (folderOccupied, occupancy.go): needs_human instead.
 //
 // A launch always starts a new session (of the provider of the area's last
 // one): nothing proves an older session is closed, and resuming one that is
@@ -394,6 +400,12 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 			}
 			return
 		}
+		if n.occupiedFor(area, dir, eligible, now) {
+			d.mu.Lock()
+			delete(d.pending, area)
+			d.mu.Unlock()
+			return
+		}
 		spec := p.spec
 		spec.ResumeID = "" // the resumed session did not start: a new one
 		spec.Prompt = launchPrompt(n, eligible)
@@ -409,6 +421,9 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 	d.mu.Unlock()
 	if debounced {
 		n.log.Debug("launch debounced", "area", area, "last", recent)
+		return
+	}
+	if n.occupiedFor(area, dir, eligible, now) {
 		return
 	}
 	// Always a new session: nothing proves the area's last one is closed (a
@@ -471,30 +486,36 @@ func (n *Node) runDirect(ctx context.Context, dl DirectLauncher, area string, p 
 	id := session
 	mu.Unlock()
 	d := n.deliv
-	ok := id != "" && (err == nil || errors.Is(err, ErrOpenApp))
+	started := id != ""
 	d.mu.Lock()
 	if d.pending[area] == p {
 		delete(d.pending, area)
 	}
-	if ok {
-		for _, m := range p.ids {
-			d.spent[m] = true
-		}
-	}
 	d.last[area] = time.Now() // the ladder waits: the fallback below goes first
 	d.mu.Unlock()
-	if ok {
+	if started && (err == nil || errors.Is(err, ErrOpenApp)) {
 		if err != nil {
 			n.log.Warn("the opened session's desktop app did not open", "area", area, "session", id, "err", err)
 		}
-		if _, aerr := n.Ack("", AckRequest{IDs: p.ids, SessionID: id}); aerr != nil {
-			n.log.Warn("acknowledging the opened session's messages", "session", id, "err", aerr)
+		if aerr := n.ackLaunched(ctx, p.ids, id); aerr != nil {
+			// Not confirmed and not spent: the messages stay unread and
+			// retryable (the hooks, a person, or the ladder once the folder is
+			// no longer occupied).
+			n.unclaim(launchOwner(area), p.ids)
+			n.log.Warn("acknowledging the opened session's messages failed", "area", area, "session", id, "err", aerr)
+			n.report(p.ids, AttemptLaunchFailed+":ack_error")
+			return
 		}
+		d.mu.Lock()
+		for _, m := range p.ids {
+			d.spent[m] = true
+		}
+		d.mu.Unlock()
 		n.log.Info("opened session's first turn done", "area", area, "provider", p.spec.Provider, "session", id)
 		n.report(p.ids, AttemptLaunchConfirmed)
 		return
 	}
-	n.unclaim(launchOwner(area), p.ids) // the hooks, or the fallback, deliver them
+	n.unclaim(launchOwner(area), p.ids) // the hooks, a person, or the fallback deliver them
 	reason := "start_error"
 	switch {
 	case errors.Is(err, ErrNoAgent):
@@ -503,19 +524,82 @@ func (n *Node) runDirect(ctx context.Context, dl DirectLauncher, area string, p 
 		reason = ErrTurnTimeout.Error()
 	case errors.Is(err, ErrTurnInterrupted):
 		reason = ErrTurnInterrupted.Error()
-	case id != "":
+	case started:
 		reason = "turn_error"
 	}
+	if started {
+		// The turn ran: it may have acted in part. Neither Terminal nor a new
+		// launch repeats it; the messages stay unread for the hooks and a
+		// person, and are not launched for again.
+		d.mu.Lock()
+		for _, m := range p.ids {
+			d.spent[m] = true
+		}
+		d.mu.Unlock()
+		n.log.Warn("the opened session's first turn failed; not retried", "area", area, "provider", p.spec.Provider,
+			"session", id, "reason", reason, "err", err)
+		n.report(p.ids, AttemptLaunchFailed+":"+reason)
+		n.report(p.ids, AttemptNeedsHuman)
+		return
+	}
 	n.log.Warn("opening a session in the desktop app failed; opening Terminal", "area", area, "provider", p.spec.Provider,
-		"session", id, "reason", reason, "err", err)
+		"reason", reason, "err", err)
 	n.report(p.ids, AttemptLaunchFailed+":"+reason)
 	n.fallbackTerminal(ctx, area, p)
 }
 
-// fallbackTerminal opens Terminal once for the messages of the failed desktop
-// launch p that are still eligible; the Terminal ladder takes it from there.
+// launchAckTries bounds the acks of a desktop launch's messages
+// (ackLaunched), launchAckBackoff apart (growing).
+const (
+	launchAckTries   = 3
+	launchAckBackoff = 300 * time.Millisecond
+)
+
+// ackLaunched acknowledges ids as session's, retrying a failure a few times.
+func (n *Node) ackLaunched(ctx context.Context, ids []string, session string) error {
+	req := AckRequest{IDs: ids, SessionID: session}
+	ack := n.launchAck
+	if ack == nil {
+		ack = func(req AckRequest) error { _, err := n.Ack("", req); return err }
+	}
+	var err error
+	for i := range launchAckTries {
+		if err = ack(req); err == nil {
+			return nil
+		}
+		if i == launchAckTries-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(err, ctx.Err())
+		case <-time.After(launchAckBackoff * time.Duration(i+1)):
+		}
+	}
+	return err
+}
+
+// occupiedFor reports whether dir is occupied by a session that is not
+// registered (folderOccupied); then no session opens for eligible, which need
+// that session or a person (needs_human).
+func (n *Node) occupiedFor(area, dir string, eligible []UnreadMessage, now time.Time) bool {
+	if !n.folderOccupied(dir, now) {
+		return false
+	}
+	n.log.Debug("folder occupied by a session not registered; not opening one", "area", area, "folder", dir)
+	n.report(ids(eligible), AttemptNeedsHuman)
+	return true
+}
+
+// fallbackTerminal opens Terminal once for the messages of the desktop launch
+// p that failed before its turn started and are still eligible, unless a
+// session is live or the folder is occupied meanwhile; the Terminal ladder
+// takes it from there.
 func (n *Node) fallbackTerminal(ctx context.Context, area string, p *pendingLaunch) {
 	now := time.Now()
+	if n.areaLive(area, now) {
+		return
+	}
 	eligible, _ := n.launchable(p.spec.Folder, now.Add(launchGrace))
 	var msgs []UnreadMessage
 	for _, m := range eligible {
@@ -523,7 +607,7 @@ func (n *Node) fallbackTerminal(ctx context.Context, area string, p *pendingLaun
 			msgs = append(msgs, m)
 		}
 	}
-	if len(msgs) == 0 {
+	if len(msgs) == 0 || n.occupiedFor(area, p.spec.Folder, msgs, now) {
 		return
 	}
 	spec := LaunchSpec{Provider: p.spec.Provider, Folder: p.spec.Folder, Prompt: launchPrompt(n, msgs)}
@@ -561,12 +645,11 @@ func (n *Node) startLaunch(ctx context.Context, area string, spec LaunchSpec, ms
 		case errors.Is(err, ErrNoAgent):
 			reason = ErrNoAgent.Error()
 		}
+		// Nothing started: not spent, the ladder tries again after
+		// launchDebounce (launch_failed is reported once).
 		n.log.Warn("opening a session failed", "area", area, "provider", spec.Provider, "err", err)
 		d.mu.Lock()
 		delete(d.pending, area)
-		for _, id := range list {
-			d.spent[id] = true
-		}
 		d.mu.Unlock()
 		n.report(list, AttemptLaunchFailed+":"+reason)
 		return

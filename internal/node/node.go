@@ -108,6 +108,10 @@ type Node struct {
 	deliv    *deliveryState
 	// directWG counts the desktop-app first turns running (runDirect).
 	directWG sync.WaitGroup
+	// occupied replaces folderOccupied, launchAck the ack of a desktop
+	// launch's messages (tests); nil: the real ones.
+	occupied  func(dir string, now time.Time) bool
+	launchAck func(req AckRequest) error
 
 	selfAddrs []string // this node's own peer addresses, set by Run
 

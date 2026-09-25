@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -341,7 +344,8 @@ func TestLaunchDirectFallback(t *testing.T) {
 
 // A first turn that started but failed or timed out proves nothing: the
 // messages stay unread, the claim is dropped (a session's hooks may take
-// them), launch_failed:<reason>, and Terminal opens once.
+// them), launch_failed:<reason> and needs_human; neither Terminal nor a new
+// launch repeats the turn.
 func TestLaunchDirectTurnFailed(t *testing.T) {
 	for _, c := range []struct {
 		err    error
@@ -354,12 +358,18 @@ func TestLaunchDirectTurnFailed(t *testing.T) {
 			m := ask(t, a, b, "fail me")
 			a.launchDue(context.Background(), time.Now().Add(launchGrace+time.Second))
 			a.directWG.Wait()
-			waitAttempts(t, b, m, AttemptLaunchRequested, AttemptLaunchFailed+":"+c.reason)
+			waitAttempts(t, b, m, AttemptLaunchRequested, AttemptLaunchFailed+":"+c.reason, AttemptNeedsHuman)
 			if p, _ := a.Unread("", "", 10); len(p.Messages) != 1 {
 				t.Fatalf("unread %+v", p.Messages)
 			}
-			if len(a.launchHeld()) != 0 || len(l.all()) != 1 {
+			if len(a.launchHeld()) != 0 || len(l.all()) != 0 {
 				t.Fatalf("claim %v terminal %d", a.launchHeld(), len(l.all()))
+			}
+			// Not launched for again either: the turn may have acted in part.
+			a.launchDue(context.Background(), time.Now().Add(launchDebounce+launchGrace+time.Minute))
+			a.directWG.Wait()
+			if len(l.allRuns()) != 1 || len(l.all()) != 0 {
+				t.Fatalf("relaunched: runs %d terminal %d", len(l.allRuns()), len(l.all()))
 			}
 			if _, err := a.RegisterSession(SessionRequest{SessionID: "s-h", Provider: "claude", Folder: dir}); err != nil {
 				t.Fatal(err)
@@ -368,5 +378,132 @@ func TestLaunchDirectTurnFailed(t *testing.T) {
 				t.Fatalf("hooks cannot take it: %v", got)
 			}
 		})
+	}
+}
+
+// A turn that succeeded is confirmed only once its messages are acknowledged:
+// a failed ack is retried; one that keeps failing is launch_failed:ack_error
+// and leaves them unread, unclaimed and not spent (retryable).
+func TestLaunchDirectAckRetry(t *testing.T) {
+	for _, fails := range []int{launchAckTries - 1, launchAckTries} {
+		t.Run(fmt.Sprint(fails), func(t *testing.T) {
+			l := &fakeDirect{direct: true, session: "sess-a"}
+			dir := t.TempDir()
+			a, b := deliveryPair(t, dir, nil, l)
+			var calls atomic.Int32
+			a.launchAck = func(req AckRequest) error {
+				if int(calls.Add(1)) <= fails {
+					return errors.New("store busy")
+				}
+				_, err := a.Ack("", req)
+				return err
+			}
+			m := ask(t, a, b, "ack me")
+			a.launchDue(context.Background(), time.Now().Add(launchGrace+time.Second))
+			a.directWG.Wait()
+			a.deliv.mu.Lock()
+			spent := a.deliv.spent[m.ID]
+			a.deliv.mu.Unlock()
+			unread, _ := a.Unread("", "", 10)
+			if fails < launchAckTries {
+				waitAttempts(t, b, m, AttemptLaunchRequested, AttemptLaunchConfirmed)
+				if !spent || len(unread.Messages) != 0 {
+					t.Fatalf("spent %v unread %+v", spent, unread.Messages)
+				}
+				return
+			}
+			waitAttempts(t, b, m, AttemptLaunchRequested, AttemptLaunchFailed+":ack_error")
+			if spent || len(unread.Messages) != 1 || len(a.launchHeld()) != 0 || len(l.all()) != 0 {
+				t.Fatalf("spent %v unread %d held %v terminal %d", spent, len(unread.Messages), a.launchHeld(), len(l.all()))
+			}
+		})
+	}
+}
+
+// A folder occupied by a session that is not registered opens nothing
+// (needs_human), neither directly nor as the Terminal fallback of a desktop
+// launch that failed to start; a Terminal start error does not spend the
+// message.
+func TestLaunchOccupied(t *testing.T) {
+	var occupied atomic.Bool
+	occupied.Store(true)
+	l := &fakeDirect{direct: true, err: errors.New("spawn failed")}
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, nil, l)
+	a.occupied = func(string, time.Time) bool { return occupied.Load() }
+	m := ask(t, a, b, "someone is here")
+	ctx := context.Background()
+	t0 := time.Now().Add(launchGrace + time.Second)
+	a.launchDue(ctx, t0)
+	a.directWG.Wait()
+	if len(l.allRuns()) != 0 || len(l.all()) != 0 {
+		t.Fatalf("launched into an occupied folder: runs %d terminal %d", len(l.allRuns()), len(l.all()))
+	}
+	waitAttempts(t, b, m, AttemptNeedsHuman)
+
+	// Free: the desktop launch fails before its turn starts; the folder is
+	// occupied by then, so no Terminal either.
+	occupied.Store(false)
+	l.during = func() { occupied.Store(true) }
+	a.launchDue(ctx, t0.Add(time.Second))
+	a.directWG.Wait()
+	if len(l.allRuns()) != 1 || len(l.all()) != 0 {
+		t.Fatalf("fallback into an occupied folder: runs %d terminal %d", len(l.allRuns()), len(l.all()))
+	}
+
+	// Terminal only, start error: reported, not spent.
+	occupied.Store(false)
+	a.SetLaunchMode(LaunchTerminal)
+	l.mu.Lock()
+	l.err = ErrNoTerminal
+	l.mu.Unlock()
+	a.launchDue(ctx, t0.Add(launchDebounce+launchGrace+time.Minute))
+	a.deliv.mu.Lock()
+	spent := a.deliv.spent[m.ID]
+	a.deliv.mu.Unlock()
+	if len(l.all()) != 1 || spent {
+		t.Fatalf("terminal %d spent %v", len(l.all()), spent)
+	}
+}
+
+// The occupancy check reads Claude Code's transcripts and Codex's rollouts:
+// recent activity in the folder (a Codex one also in a subfolder) occupies it.
+func TestAgentOccupied(t *testing.T) {
+	if got := claudeProjectDir(`E:\DEV\agent-link\.data_x y`); got != "E--DEV-agent-link--data-x-y" {
+		t.Fatalf("claudeProjectDir %q", got)
+	}
+	claude, codex, dir := t.TempDir(), t.TempDir(), t.TempDir()
+	now := time.Now()
+	if agentOccupied(claude, codex, dir, now) {
+		t.Fatal("empty homes occupy")
+	}
+	proj := filepath.Join(claude, "projects", claudeProjectDir(dir))
+	if err := os.MkdirAll(proj, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tr := filepath.Join(proj, "11111111-2222-3333-4444-555555555555.jsonl")
+	if err := os.WriteFile(tr, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !agentOccupied(claude, codex, dir, now) {
+		t.Fatal("a fresh Claude transcript does not occupy")
+	}
+	if agentOccupied(claude, codex, dir, now.Add(occupiedWithin+time.Minute)) {
+		t.Fatal("an old Claude transcript occupies")
+	}
+	day := now.Local()
+	sub := filepath.Join(codex, "sessions", day.Format("2006"), day.Format("01"), day.Format("02"))
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := json.Marshal(map[string]any{"type": "session_meta", "payload": map[string]any{"cwd": filepath.Join(dir, "sub")}})
+	if err := os.WriteFile(filepath.Join(sub, "rollout-x.jsonl"), append(meta, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !agentOccupied("", codex, dir, now) {
+		t.Fatal("a fresh Codex rollout in the folder does not occupy")
+	}
+	if agentOccupied("", codex, t.TempDir(), now) {
+		t.Fatal("a Codex rollout of another folder occupies")
 	}
 }

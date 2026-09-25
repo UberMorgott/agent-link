@@ -30,7 +30,8 @@ import (
 // One recipient per message, by priority: a session in a turn (not Idle)
 // gets it through its hooks, so no idle session of its area is woken for a
 // message for no session in particular; a message routed to an idle session
-// (its claim, assignment or chat affinity, routeOf) wakes that one; else the
+// (its claim, assignment or chat affinity, routeOf; affinity never names an
+// idle session while one of its area is in a turn) wakes that one; else the
 // area's wakeable idle session seen last is woken, and only it.
 // The same loop runs the launch ladder (launch.go).
 

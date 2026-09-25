@@ -248,7 +248,7 @@ it), so the node knows someone is there. All on the control API (loopback, no to
   may take. Chat affinity: every message of a chat (new roots and replies alike) goes to the
   live session behind the chat's newest message a session here sent (`agentlink send` inside a
   session names it: `--session`, default `$CLAUDE_CODE_SESSION_ID` / `$CODEX_THREAD_ID`) or was
-  assigned; a session that never took part in the chat does not get it. A chat with no such
+  assigned; a session that never took part in the chat does not get it. An active session (in a turn) wins: while one lives in the folder, only active sessions count for the chat, so an idle chat session is not woken and the active one's hooks take the message. A chat with no such
   live session goes to the first session that `claim`s it. A claim holds until the ack, the
   session ends, or 1 minute passes unacked (then the message goes back to its route).
 - `activity` shows every member what the session does (like the worker's activity) for
@@ -341,7 +341,7 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   messages through its hooks, so the node wakes no idle session there for a message that is
   for no session in particular. A message for one session (its claim, the session assigned to
   answer it, or the chat's session: the one behind the chat's newest message it wrote) goes to
-  that one, woken if idle. Else the idle session seen last in the folder is woken, and only it.
+  that one, woken if idle (the chat's session only while no session of the folder is in a turn). Else the idle session seen last in the folder is woken, and only it.
 - **Opening a session (auto-open, off by default).** When a message asks this member and no
   session at all (in a turn or idle) is live in the project's folder, the node opens a new
   one there, only while the project's «Разрешить другим агентам создавать сессию в этом
@@ -355,10 +355,17 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   `thread/start` + `turn/start`) and opens the session in the app (`claude://resume?session=`,
   `codex://threads/`) as soon as its id is known. Only a turn that succeeded (Claude: a
   `result` with `is_error: false`; Codex: `turn/completed` with status `completed`)
-  acknowledges the messages as that session's (`launch_confirmed`). A turn that fails, is
-  interrupted or runs out of its 60 minutes (its whole process tree is killed) drops the
-  claim, reports `launch_failed:<reason>` (`start_error`, `no_agent`, `turn_error`,
-  `interrupted`, `timeout`) and opens Windows Terminal once instead. Launch mode `terminal`
+  acknowledges the messages as that session's (`launch_confirmed`; an ack that still fails
+  after 3 tries is `launch_failed:ack_error` and leaves them unread). A turn that started and
+  then fails, is interrupted or runs out of its 60 minutes (its whole process tree is killed)
+  drops the claim and reports `launch_failed:<reason>` (`turn_error`, `interrupted`,
+  `timeout`) plus `needs_human`: it may have acted in part, so nothing is opened again for
+  those messages; they stay unread for a session's hooks or a person. Only a launch that
+  failed before its turn started (`start_error`, `no_agent`) opens Windows Terminal once
+  instead. No session is opened in a folder a session that is not registered yet occupies (a
+  Claude Code transcript in `~/.claude/projects/<folder, every character but ASCII letters and digits
+  as ->/`, or a Codex rollout in `~/.codex/sessions/` with that `cwd`, written to
+  within 10 minutes): `needs_human` instead. Launch mode `terminal`
   opens `wt -w new -d <folder> claude|codex "<prompt>"` and the session's hooks deliver the
   messages; it counts as confirmed when a session of the folder registers within 90 s, else
   it is retried once, then `launch_failed:timeout`.
