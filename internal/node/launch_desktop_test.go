@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -14,12 +15,13 @@ import (
 )
 
 // fakeDirect is a DirectLauncher: Run gets session started (none when
-// empty) and returns err.
+// empty), runs during (the turn) and returns err.
 type fakeDirect struct {
 	fakeLauncher
 	direct  bool
 	session string
 	err     error
+	during  func()
 	runs    []LaunchSpec
 	runMu   sync.Mutex
 }
@@ -33,6 +35,9 @@ func (l *fakeDirect) Run(_ context.Context, spec LaunchSpec, started func(string
 	if l.session != "" {
 		started(l.session)
 	}
+	if l.during != nil {
+		l.during()
+	}
 	return l.err
 }
 
@@ -43,10 +48,10 @@ func (l *fakeDirect) allRuns() []LaunchSpec {
 }
 
 func TestClaudeArgsAndDeepLink(t *testing.T) {
-	if got := strings.Join(ClaudeArgs(LaunchSpec{Prompt: "x y"}), " "); got != "-p --output-format stream-json --verbose" {
+	if got := strings.Join(ClaudeArgs(LaunchSpec{Prompt: "x y"}), " "); got != "-p --output-format stream-json --verbose --permission-mode bypassPermissions" {
 		t.Errorf("new: %q", got)
 	}
-	if got := strings.Join(ClaudeArgs(LaunchSpec{ResumeID: "abc"}), " "); got != "-p --output-format stream-json --verbose --resume abc" {
+	if got := strings.Join(ClaudeArgs(LaunchSpec{ResumeID: "abc"}), " "); got != "-p --output-format stream-json --verbose --permission-mode bypassPermissions --resume abc" {
 		t.Errorf("resume: %q", got)
 	}
 	if got := DeepLink(ProviderClaude, "a-1"); got != "claude://resume?session=a-1" {
@@ -77,8 +82,9 @@ func TestReadClaudeStream(t *testing.T) {
 }
 
 // fakeAppServer answers CodexTurn like codex app-server: it records the
-// requests, asks one approval mid-turn and completes the turn with status.
-func fakeAppServer(t *testing.T, r io.Reader, w io.Writer, status string, seen *[]string) {
+// requests, asks one approval mid-turn and completes the turn with status;
+// with early, it completes the turn before it answers turn/start.
+func fakeAppServer(t *testing.T, r io.Reader, w io.Writer, status string, early bool, seen *[]string) {
 	t.Helper()
 	sc := bufio.NewScanner(r)
 	enc := json.NewEncoder(w)
@@ -106,8 +112,8 @@ func fakeAppServer(t *testing.T, r io.Reader, w io.Writer, status string, seen *
 		case "initialize":
 			_ = enc.Encode(map[string]any{"id": id, "result": map[string]any{"userAgent": "x"}})
 		case "thread/start":
-			if params["cwd"] != `C:\p` {
-				t.Errorf("cwd %v", params["cwd"])
+			if params["cwd"] != `C:\p` || params["approvalPolicy"] != "never" || params["sandbox"] != "danger-full-access" {
+				t.Errorf("thread/start %v", params)
 			}
 			_ = enc.Encode(map[string]any{"id": id, "result": map[string]any{"thread": map[string]any{"id": "th-1"}}})
 		case "thread/resume":
@@ -125,10 +131,18 @@ func fakeAppServer(t *testing.T, r io.Reader, w io.Writer, status string, seen *
 			if len(input) == 1 {
 				in, _ = input[0].(map[string]any)
 			}
-			if params["threadId"] != "th-1" || in["type"] != "text" || in["text"] != "line1\n\"q\"" {
+			sandbox, _ := params["sandboxPolicy"].(map[string]any)
+			if params["threadId"] != "th-1" || in["type"] != "text" || in["text"] != "line1\n\"q\"" ||
+				params["approvalPolicy"] != "never" || sandbox["type"] != "dangerFullAccess" {
 				t.Errorf("turn/start %v", params)
 			}
 			_ = enc.Encode(map[string]any{"method": "turn/started", "params": map[string]any{"threadId": "th-1"}})
+			if early { // a fast turn: done before its answer
+				_ = enc.Encode(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "th-1",
+					"turn": map[string]any{"id": "tu-1", "status": status}}})
+				_ = enc.Encode(map[string]any{"id": id, "result": map[string]any{"turn": map[string]any{"id": "tu-1", "status": "inProgress"}}})
+				continue
+			}
 			_ = enc.Encode(map[string]any{"id": id, "result": map[string]any{"turn": map[string]any{"id": "tu-1", "status": "inProgress"}}})
 			_ = enc.Encode(map[string]any{"id": 99, "method": "item/commandExecution/requestApproval", "params": map[string]any{}})
 		}
@@ -138,15 +152,16 @@ func fakeAppServer(t *testing.T, r io.Reader, w io.Writer, status string, seen *
 func TestCodexTurn(t *testing.T) {
 	for _, c := range []struct {
 		resume, status string
-		wantErr        bool
-	}{{"", "completed", false}, {"th-1", "completed", false}, {"busy", "completed", false}, {"", "failed", true}} {
+		early, wantErr bool
+	}{{"", "completed", false, false}, {"th-1", "completed", false, false}, {"busy", "completed", false, false}, {"", "failed", false, true},
+		{"", "interrupted", false, true}, {"", "completed", true, false}, {"", "interrupted", true, true}} {
 		sr, cw := io.Pipe() // client -> server
 		cr, sw := io.Pipe() // server -> client
 		var seen []string
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			fakeAppServer(t, sr, sw, c.status, &seen)
+			fakeAppServer(t, sr, sw, c.status, c.early, &seen)
 			_ = sw.Close()
 		}()
 		var started []string
@@ -159,7 +174,13 @@ func TestCodexTurn(t *testing.T) {
 		if id != "th-1" || (err != nil) != c.wantErr || !slices.Equal(started, []string{"th-1"}) {
 			t.Fatalf("%+v: id %q err %v started %v", c, id, err, started)
 		}
+		if c.status == "interrupted" && !errors.Is(err, ErrTurnInterrupted) {
+			t.Fatalf("%+v: interrupted: %v", c, err)
+		}
 		want := []string{"initialize", "initialized", "thread/start", "turn/start", "reply:decline"}
+		if c.early {
+			want = want[:4]
+		}
 		switch c.resume {
 		case "th-1":
 			want[2] = "thread/resume"
@@ -190,14 +211,20 @@ func TestCodexTurn(t *testing.T) {
 	<-done
 }
 
-// In desktop mode the node runs the first turn itself with the messages as
-// its prompt; they are read as the opened session's once it started, and it
-// is the area's last session from then on.
+// In desktop mode the node claims the messages, runs the first turn itself
+// with them as its prompt and reads them as the opened session's only once
+// the turn succeeded; it is the area's last session from then on (its
+// provider is the next launch's), but never resumed.
 func TestLaunchDirect(t *testing.T) {
 	l := &fakeDirect{direct: true, session: "sess-1"}
 	dir := t.TempDir()
 	a, b := deliveryPair(t, dir, nil, l)
 	m := ask(t, a, b, "please look")
+	l.during = func() { // the turn runs: not acknowledged yet
+		if p, _ := a.Unread("", "", 10); len(p.Messages) != 1 {
+			t.Errorf("acknowledged before the turn ended: %+v", p.Messages)
+		}
+	}
 	ctx := context.Background()
 	later := time.Now().Add(launchGrace + time.Second)
 	a.launchDue(ctx, later)
@@ -212,23 +239,62 @@ func TestLaunchDirect(t *testing.T) {
 	if p, _ := a.Unread("", "", 10); len(p.Messages) != 0 {
 		t.Fatalf("still unread: %+v", p.Messages)
 	}
+	if len(a.launchHeld()) != 0 {
+		t.Fatalf("launch claim kept: %v", a.launchHeld())
+	}
 	a.sess.mu.Lock()
 	ls := a.sess.recent[""]
 	a.sess.mu.Unlock()
 	if ls.SessionID != "sess-1" || ls.Provider != ProviderClaude || ls.Folder != dir {
 		t.Fatalf("last session %+v", ls)
 	}
-	// The next one resumes it.
+	l.during = nil
+	// The next one is a new session again, never a resume (nothing proves
+	// the last one is closed).
 	ask(t, a, b, "more")
 	a.launchDue(ctx, later.Add(launchDebounce+launchGrace+time.Minute))
 	a.directWG.Wait()
-	if runs := l.allRuns(); len(runs) != 2 || runs[1].ResumeID != "sess-1" {
-		t.Fatalf("resume %+v", runs)
+	if runs := l.allRuns(); len(runs) != 2 || runs[1].ResumeID != "" {
+		t.Fatalf("resumed %+v", runs)
 	}
 }
 
-// A desktop launch that never starts is launch_failed and leaves the message
-// unread; launch mode terminal, or no desktop app, opens Terminal instead.
+// While the first turn runs, the launch holds the messages: a session that
+// registers meanwhile neither sees nor claims them (no double delivery).
+func TestLaunchDirectHoldsClaim(t *testing.T) {
+	l := &fakeDirect{direct: true, session: "sess-1"}
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, nil, l)
+	m := ask(t, a, b, "only once")
+	l.during = func() {
+		if _, err := a.RegisterSession(SessionRequest{SessionID: "s-other", Provider: "claude", Folder: dir}); err != nil {
+			t.Error(err)
+			return
+		}
+		if p, _ := a.UnreadFor(dir, "s-other", "", 10); len(p.Messages) != 0 {
+			t.Errorf("hooks see the launch's message: %+v", p.Messages)
+		}
+		if got, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-other"}); len(got) != 0 {
+			t.Errorf("claimed the launch's message: %v", got)
+		}
+		var um UnreadMessage
+		um.Message = m
+		if msgs := a.launchClaim("", []UnreadMessage{um}); len(msgs) != 0 {
+			t.Errorf("claimed twice: %v", msgs)
+		}
+	}
+	a.launchDue(context.Background(), time.Now().Add(launchGrace+time.Second))
+	a.directWG.Wait()
+	waitAttempts(t, b, m, AttemptLaunchRequested, AttemptLaunchConfirmed)
+	res, _ := a.Ack("", AckRequest{IDs: []string{m.ID}})
+	if len(res) != 1 || res[0].WasUnread || res[0].Assigned != "session:sess-1" {
+		t.Fatalf("not the opened session's: %+v", res)
+	}
+}
+
+// A desktop launch that never starts is launch_failed, leaves the message
+// unread and not spent, and opens Terminal once instead; launch mode
+// terminal, or no desktop app, opens Terminal directly.
 func TestLaunchDirectFallback(t *testing.T) {
 	l := &fakeDirect{direct: true, err: errors.New("spawn failed")}
 	dir := t.TempDir()
@@ -242,23 +308,65 @@ func TestLaunchDirectFallback(t *testing.T) {
 	if p, _ := a.Unread("", "", 10); len(p.Messages) != 1 {
 		t.Fatalf("unread %+v", p.Messages)
 	}
+	if got := l.all(); len(got) != 1 || got[0].ResumeID != "" || got[0].Folder != dir {
+		t.Fatalf("terminal fallback %+v", got)
+	}
+	a.deliv.mu.Lock()
+	spent, fallback := a.deliv.spent[m.ID], a.deliv.pending[""]
+	clear(a.deliv.pending) // the fallback is not awaited
+	a.deliv.mu.Unlock()
+	if spent || fallback == nil || fallback.direct {
+		t.Fatalf("spent %v pending %+v", spent, fallback)
+	}
 
 	a.SetLaunchMode(LaunchTerminal)
 	ask(t, a, b, "via terminal")
 	t1 := t0.Add(launchDebounce + launchGrace + time.Minute)
 	a.launchDue(ctx, t1)
-	if len(l.all()) != 1 || len(l.allRuns()) != 1 {
+	if len(l.all()) != 2 || len(l.allRuns()) != 1 {
 		t.Fatalf("terminal mode: launches %d runs %d", len(l.all()), len(l.allRuns()))
 	}
 
 	a.SetLaunchMode(LaunchDesktop)
-	l.direct = false  // no desktop app
-	a.deliv.mu.Lock() // the Terminal launch above is not awaited
+	l.direct = false // no desktop app
+	a.deliv.mu.Lock()
 	clear(a.deliv.pending)
 	a.deliv.mu.Unlock()
 	ask(t, a, b, "no app")
 	a.launchDue(ctx, t1.Add(launchDebounce+launchGrace+time.Minute))
-	if len(l.all()) != 2 || len(l.allRuns()) != 1 {
+	if len(l.all()) != 3 || len(l.allRuns()) != 1 {
 		t.Fatalf("no desktop app: launches %d runs %d", len(l.all()), len(l.allRuns()))
+	}
+}
+
+// A first turn that started but failed or timed out proves nothing: the
+// messages stay unread, the claim is dropped (a session's hooks may take
+// them), launch_failed:<reason>, and Terminal opens once.
+func TestLaunchDirectTurnFailed(t *testing.T) {
+	for _, c := range []struct {
+		err    error
+		reason string
+	}{{errors.New("boom"), "turn_error"}, {fmt.Errorf("%w: killed", ErrTurnTimeout), "timeout"}, {fmt.Errorf("%w: x", ErrTurnInterrupted), "interrupted"}} {
+		t.Run(c.reason, func(t *testing.T) {
+			l := &fakeDirect{direct: true, session: "sess-f", err: c.err}
+			dir := t.TempDir()
+			a, b := deliveryPair(t, dir, nil, l)
+			m := ask(t, a, b, "fail me")
+			a.launchDue(context.Background(), time.Now().Add(launchGrace+time.Second))
+			a.directWG.Wait()
+			waitAttempts(t, b, m, AttemptLaunchRequested, AttemptLaunchFailed+":"+c.reason)
+			if p, _ := a.Unread("", "", 10); len(p.Messages) != 1 {
+				t.Fatalf("unread %+v", p.Messages)
+			}
+			if len(a.launchHeld()) != 0 || len(l.all()) != 1 {
+				t.Fatalf("claim %v terminal %d", a.launchHeld(), len(l.all()))
+			}
+			if _, err := a.RegisterSession(SessionRequest{SessionID: "s-h", Provider: "claude", Folder: dir}); err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-h"}); len(got) != 1 {
+				t.Fatalf("hooks cannot take it: %v", got)
+			}
+		})
 	}
 }

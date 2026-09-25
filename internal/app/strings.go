@@ -431,6 +431,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"project.menu.invite":             "Приглашение",
 	"project.menu.name":               "Общее имя",
 	"project.menu.folder":             "Моя папка",
+	"project.menu.auto_open":          "Разрешить другим агентам создавать сессию в этом проекте",
 	"project.menu.leave":              "Выйти из проекта",
 	"project.invite":                  "Пригласить",
 	"project.members.title":           "Участники проекта",

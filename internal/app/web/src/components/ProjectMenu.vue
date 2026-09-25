@@ -41,9 +41,16 @@ const items = computed<DropdownMenuItem[][]>(() => {
       onSelect: () => run(() => inbox.confirmClose()),
     })
   }
-  const main = [item('members', "project.menu.members", 'participants'), item('invite', "project.menu.invite", 'invite')]
+  const main: DropdownMenuItem[] = [item('members', "project.menu.members", 'participants'), item('invite', "project.menu.invite", 'invite')]
   if (p.can_rename) main.push(item('name', "project.menu.name", 'rename'))
   main.push(item('folder', "project.menu.folder", 'folder'))
+  if (!p.legacy) {
+    // Off by default: a message then waits for a session of this member.
+    main.push({
+      label: t("project.menu.auto_open"), type: 'checkbox', checked: !!p.auto_open,
+      onUpdateChecked: (on: boolean) => { void run(() => projects.bind(p.id, { auto_open: on })) },
+    })
+  }
   const leave = p.legacy ? item('leave', "project.menu.leave", 'leave', 'error') : item('leave', "project.menu.delete", 'delete', 'error')
   return [...(chat.length ? [chat] : []), main, [leave]]
 })

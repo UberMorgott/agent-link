@@ -44,6 +44,21 @@ describe('the project menu', () => {
     expect(legacy).toContain('project.menu.leave')
   })
 
+  it('lets other agents open a session here only once switched on (off by default)', async () => {
+    const { requests } = await open('/p/' + SITE)
+    await menu(SITE)
+    const toggle = () => $$('[role="menuitemcheckbox"]').find((i) => i.textContent!.includes('project.menu.auto_open'))
+    expect(toggle()!.getAttribute('aria-checked')).toBe('false')
+    toggle()!.click()
+    await settle()
+    const last = requests[requests.length - 1]!
+    expect(last.url).toBe('/ui/api/projects/' + SITE + '/binding')
+    expect(JSON.parse(String(last.init.body))).toEqual({ auto_open: true })
+    expect(useProjectsStore().byID(SITE)!.auto_open).toBe(true)
+    expect((await menu('legacy')).length).toBeGreaterThan(0)
+    expect(toggle()).toBeUndefined()
+  })
+
   it('removes a member from the project only after a confirmation', async () => {
     const { calls } = await open('/p/' + SITE)
     const projects = useProjectsStore()

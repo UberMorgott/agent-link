@@ -2,8 +2,11 @@ package node
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows/registry"
 )
@@ -34,6 +37,22 @@ func protocolRegistered(scheme string) bool {
 		}
 	}
 	return false
+}
+
+// killTree ends p and every process it started (taskkill /T), p alone when
+// taskkill fails.
+func killTree(ctx context.Context, p *os.Process) error {
+	if p == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	kill := exec.CommandContext(ctx, "taskkill.exe", "/T", "/F", "/PID", strconv.Itoa(p.Pid)) //nolint:gosec // G204: fixed program, a pid
+	hideWindow(kill)
+	if err := kill.Run(); err != nil {
+		return p.Kill()
+	}
+	return nil
 }
 
 // openURL opens a deep link in its registered app.

@@ -39,16 +39,92 @@ type sessionClaim struct {
 	// token (a wake only) is the one the wake prompt carries (WakeMarker): the
 	// hooks acknowledge the message only at a prompt that carries it.
 	token string
+	// launch: the node's for the first turn of a desktop launch (launchClaim);
+	// session is then launchOwner(area), no registered session.
+	launch bool
 }
 
+// launchHold bounds a launch claim: the first turn's own timeout, plus the
+// time to end it (runDirect drops or acknowledges it before that).
+const launchHold = desktopTurnTimeout + 5*time.Minute
+
 // held reports whether the claim still holds for a live session: claimTTL,
-// or inboxWakeGrace for a wake (then the session's waiter takes over).
+// or inboxWakeGrace for a wake (then the session's waiter takes over); a
+// launch claim holds for launchHold, no session being live yet.
 func (c sessionClaim) held(live map[string]bool) bool {
+	if c.launch {
+		return time.Since(c.at) < launchHold
+	}
 	ttl := claimTTL
 	if c.wake {
 		ttl = inboxWakeGrace
 	}
 	return live[c.session] && time.Since(c.at) < ttl
+}
+
+// launchOwner is the claim owner of a desktop launch in area: never a session
+// id (validSessionID refuses a space).
+func launchOwner(area string) string { return "launch " + area }
+
+// launchClaim claims msgs for the first turn of a desktop launch in area,
+// atomically, like a wake (claimLocked): not the ones a session's hook or
+// another launch holds. Until runDirect acknowledges or drops them, no
+// session's hooks deliver them (routeOf names the launch). It returns the ones
+// granted, in order.
+func (n *Node) launchClaim(area string, msgs []UnreadMessage) []UnreadMessage {
+	r := n.sess
+	r.claimMu.Lock()
+	defer r.claimMu.Unlock()
+	live := r.liveIDs(time.Now())
+	owner := launchOwner(area)
+	var want []string
+	for _, m := range msgs {
+		if c, ok := r.claims[m.ID]; ok && c.held(live) {
+			continue // a session's hook, a wake or a launch has it
+		}
+		want = append(want, m.ID)
+	}
+	granted := n.claimLocked(owner, want, true, "", live)
+	var out []UnreadMessage
+	for _, m := range msgs {
+		if slices.Contains(granted, m.ID) {
+			r.claims[m.ID] = sessionClaim{session: owner, at: time.Now(), launch: true}
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// routedTo maps each of ids to the live session it is for (routeOf), ""
+// for no session in particular.
+func (n *Node) routedTo(ids []string) map[string]string {
+	r := n.sess
+	r.claimMu.Lock()
+	defer r.claimMu.Unlock()
+	live := r.liveIDs(time.Now())
+	out := make(map[string]string, len(ids))
+	for _, id := range ids {
+		if rec, ok := n.chats.message(id); ok {
+			out[id] = n.routeOf(id, &rec, live)
+		} else {
+			out[id] = n.routeOf(id, nil, live)
+		}
+	}
+	return out
+}
+
+// launchHeld is the set of messages a desktop launch holds (launchClaim).
+func (n *Node) launchHeld() map[string]bool {
+	r := n.sess
+	r.claimMu.Lock()
+	defer r.claimMu.Unlock()
+	out := map[string]bool{}
+	for id, c := range r.claims {
+		if c.launch && c.held(nil) {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 // ClaimRequest is the body of POST /claim.

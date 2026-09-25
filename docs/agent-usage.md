@@ -337,6 +337,40 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   UTF-16 units are not queued. Without such a codex, or for 10 minutes after a
   failed `codex queue` (logged), the node gives the session `wake: "next-event"`: it hears of
   messages at its next event.
+- **One recipient per message.** A session in a turn (not idle) in the folder gets its
+  messages through its hooks, so the node wakes no idle session there for a message that is
+  for no session in particular. A message for one session (its claim, the session assigned to
+  answer it, or the chat's session: the one behind the chat's newest message it wrote) goes to
+  that one, woken if idle. Else the idle session seen last in the folder is woken, and only it.
+- **Opening a session (auto-open, off by default).** When a message asks this member and no
+  session at all (in a turn or idle) is live in the project's folder, the node opens a new
+  one there, only while the project's «Разрешить другим агентам создавать сессию в этом
+  проекте» (project menu «⋯», API `POST /ui/api/projects/{pid}/binding {"auto_open": true}`)
+  is on. Projects from before this setting, and new ones, have it off: the message then waits
+  until a session of the folder appears and gets it the usual way. The node always starts a
+  **new** session (never resumes an old one: nothing proves it is closed). Launch mode
+  `desktop` (default, when the agent's desktop app is installed) claims the messages for the
+  launch (no session's hooks take them meanwhile), runs the first turn headless with the
+  messages as its prompt (`claude -p --output-format stream-json`, or Codex `app-server`
+  `thread/start` + `turn/start`) and opens the session in the app (`claude://resume?session=`,
+  `codex://threads/`) as soon as its id is known. Only a turn that succeeded (Claude: a
+  `result` with `is_error: false`; Codex: `turn/completed` with status `completed`)
+  acknowledges the messages as that session's (`launch_confirmed`). A turn that fails, is
+  interrupted or runs out of its 60 minutes (its whole process tree is killed) drops the
+  claim, reports `launch_failed:<reason>` (`start_error`, `no_agent`, `turn_error`,
+  `interrupted`, `timeout`) and opens Windows Terminal once instead. Launch mode `terminal`
+  opens `wt -w new -d <folder> claude|codex "<prompt>"` and the session's hooks deliver the
+  messages; it counts as confirmed when a session of the folder registers within 90 s, else
+  it is retried once, then `launch_failed:timeout`.
+  **Permissions: an auto-opened session runs with full rights, like the owner's own** — Claude
+  `--permission-mode bypassPermissions`; Codex `approvalPolicy: "never"` and
+  `sandbox: "danger-full-access"` (Terminal: `--dangerously-bypass-approvals-and-sandbox`). It
+  acts on what other members' agents write, without asking anyone: switch auto-open on only for
+  projects whose members you trust, and off (per project) to stop it.
+- **Known gaps.** A session open in a desktop app whose hooks have not fired yet (nothing typed
+  since it opened) is invisible to the node: it may open another one. A closed session counts
+  as live until its registration lapses (900 s for Claude, 3600 s for Codex, when `SessionEnd`
+  never came): nothing opens meanwhile and its messages wait.
 - **Activity.** Only for chats whose batch the session accepted (requests that ask it):
   `PreToolUse` posts what it does to `POST /chats/{id}/activity` — «читает <path>», «правит
   <path>» (relative to the folder, else the file name), «запускает <program>» (no arguments),

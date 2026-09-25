@@ -16,15 +16,20 @@ import (
 
 // Opening a session in the agent's desktop app (DesktopLauncher). The node
 // runs the session's first turn itself, headless, with the messages as its
-// prompt, then shows the session in the desktop app by its deep link:
+// prompt, and shows the session in the desktop app by its deep link as soon
+// as its id is known (the person watches the turn live):
 //
 //   - Claude: `claude -p --output-format stream-json --verbose [--resume <id>]`
 //     in the folder, the prompt on stdin; its first event (system/init) names
-//     the session. Then claude://resume?session=<id>.
+//     the session (claude://resume?session=<id>). The turn succeeded at a
+//     result event with is_error false.
 //   - Codex: its own `codex app-server` over stdio: initialize, thread/start
-//     {cwd} (thread/resume {threadId} for a known last thread), turn/start;
-//     the process is kept until turn/completed (the turn runs in it). Then
-//     codex://threads/<id>.
+//     {cwd} (thread/resume {threadId} for a known last thread), turn/start
+//     (then codex://threads/<id>); the process is kept until turn/completed
+//     (the turn runs in it). Only status "completed" is a success.
+//
+// A turn that runs out of time (desktopTurnTimeout) ends with its whole
+// process tree (killTree).
 //
 // Later wakes go the usual way (the session's inbox, `codex queue`).
 
@@ -71,18 +76,28 @@ func (l DesktopLauncher) Run(ctx context.Context, spec LaunchSpec, started func(
 	// The turn is the person's session now: it outlives the node's context.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), desktopTurnTimeout)
 	defer cancel()
-	var id string
-	if spec.Provider == ProviderCodex {
-		id, err = l.runCodex(ctx, bin, spec, started)
-	} else {
-		id, err = runClaude(ctx, bin, spec, started)
-	}
-	if id != "" {
-		if oerr := openURL(ctx, DeepLink(spec.Provider, id)); oerr != nil && err == nil {
-			err = fmt.Errorf("open desktop app: %w", oerr)
+	// The app shows the session live, as soon as its id is known.
+	var openErr error
+	seen := func(id string) {
+		started(id)
+		if err := openURL(ctx, DeepLink(spec.Provider, id)); err != nil {
+			openErr = err
 		}
 	}
-	return err
+	if spec.Provider == ProviderCodex {
+		_, err = l.runCodex(ctx, bin, spec, seen)
+	} else {
+		_, err = runClaude(ctx, bin, spec, seen)
+	}
+	switch {
+	case err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return fmt.Errorf("%w: %w", ErrTurnTimeout, err)
+	case err != nil:
+		return err
+	case openErr != nil:
+		return fmt.Errorf("%w: %w", ErrOpenApp, openErr)
+	}
+	return nil
 }
 
 // DeepLink is the URL that shows session id in provider's desktop app.
@@ -93,10 +108,10 @@ func DeepLink(provider, id string) string {
 	return "claude://resume?session=" + url.QueryEscape(id)
 }
 
-// ClaudeArgs are the arguments of the headless first turn of spec (the prompt
-// goes on stdin: no command-line quoting).
+// ClaudeArgs are the arguments of the headless first turn of spec, with full
+// permissions (the prompt goes on stdin: no command-line quoting).
 func ClaudeArgs(spec LaunchSpec) []string {
-	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
+	args := []string{"-p", "--output-format", "stream-json", "--verbose", "--permission-mode", claudeFullAccess}
 	if spec.ResumeID != "" {
 		args = append(args, "--resume", spec.ResumeID)
 	}
@@ -111,6 +126,7 @@ func runClaude(ctx context.Context, bin string, spec LaunchSpec, started func(st
 	var stderr tailBuffer
 	cmd.Stderr = &stderr
 	hideWindow(cmd)
+	killTreeOnCancel(ctx, cmd)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err
@@ -121,13 +137,22 @@ func runClaude(ctx context.Context, bin string, spec LaunchSpec, started func(st
 	id, serr := ReadClaudeStream(out, started)
 	_, _ = io.Copy(io.Discard, out)
 	werr := cmd.Wait()
-	switch {
-	case serr != nil:
+	if serr != nil {
+		if werr != nil && stderr.Len() > 0 {
+			serr = fmt.Errorf("%w: %s", serr, stderr.String())
+		}
 		return id, serr
-	case werr != nil:
-		return id, fmt.Errorf("claude: %w: %s", werr, stderr.String())
 	}
+	// A successful result is the proof the turn took the prompt; how the
+	// process ended after it does not change that.
 	return id, nil
+}
+
+// killTreeOnCancel makes cmd's context end its whole process tree (the agent
+// runs tools as child processes), and not wait for their pipes forever.
+func killTreeOnCancel(ctx context.Context, cmd *exec.Cmd) {
+	cmd.Cancel = func() error { return killTree(context.WithoutCancel(ctx), cmd.Process) }
+	cmd.WaitDelay = 10 * time.Second
 }
 
 // ReadClaudeStream reads the events of `claude -p --output-format
@@ -175,6 +200,7 @@ func (l DesktopLauncher) runCodex(ctx context.Context, bin string, spec LaunchSp
 	var stderr tailBuffer
 	cmd.Stderr = &stderr
 	hideWindow(cmd)
+	killTreeOnCancel(ctx, cmd)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return "", err
@@ -196,7 +222,7 @@ func (l DesktopLauncher) runCodex(ctx context.Context, bin string, spec LaunchSp
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		_ = cmd.Process.Kill()
+		_ = killTree(context.WithoutCancel(ctx), cmd.Process)
 		<-done
 	}
 	if terr != nil && stderr.Len() > 0 {
@@ -282,6 +308,18 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 			}
 		}
 	}
+	// backlog keeps the notifications that came while a call awaited its
+	// answer (turn/completed may come before turn/start's): the turn loop
+	// reads them first.
+	var backlog []rpcMsg
+	notification := func() (rpcMsg, error) {
+		if len(backlog) > 0 {
+			m := backlog[0]
+			backlog = backlog[1:]
+			return m, nil
+		}
+		return recv()
+	}
 	call := func(method string, params any, result any) error {
 		next++
 		id := next
@@ -293,7 +331,11 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 			if err != nil {
 				return err
 			}
-			if string(m.ID) != fmt.Sprint(id) || m.Method != "" {
+			if m.Method != "" {
+				backlog = append(backlog, m)
+				continue
+			}
+			if string(m.ID) != fmt.Sprint(id) {
 				continue
 			}
 			if m.Error != nil {
@@ -314,14 +356,19 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
+	// Full permissions (the owner's choice): no approvals, no sandbox.
+	full := func(p map[string]any) map[string]any {
+		p["approvalPolicy"], p["sandbox"] = "never", "danger-full-access"
+		return p
+	}
 	err := errors.New("no thread")
 	if spec.ResumeID != "" {
 		// Refused while the desktop app has the thread open (it is its only
 		// writer): a new thread then.
-		err = call("thread/resume", map[string]any{"threadId": spec.ResumeID}, &th)
+		err = call("thread/resume", full(map[string]any{"threadId": spec.ResumeID}), &th)
 	}
 	if err != nil {
-		err = call("thread/start", map[string]any{"cwd": spec.Folder}, &th)
+		err = call("thread/start", full(map[string]any{"cwd": spec.Folder}), &th)
 	}
 	if err != nil {
 		return "", err
@@ -336,12 +383,13 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 		} `json:"turn"`
 	}
 	input := []map[string]any{{"type": "text", "text": spec.Prompt}}
-	if err := call("turn/start", map[string]any{"threadId": tid, "input": input}, &tr); err != nil {
+	if err := call("turn/start", map[string]any{"threadId": tid, "input": input, "approvalPolicy": "never",
+		"sandboxPolicy": map[string]any{"type": "dangerFullAccess"}}, &tr); err != nil {
 		return tid, err
 	}
 	started(tid)
 	for {
-		m, err := recv()
+		m, err := notification()
 		if err != nil {
 			return tid, err
 		}
@@ -361,14 +409,17 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 		if json.Unmarshal(m.Params, &done) != nil || done.ThreadID != tid || (tr.Turn.ID != "" && done.Turn.ID != tr.Turn.ID) {
 			continue
 		}
-		if done.Turn.Status == "failed" {
-			msg := ""
-			if done.Turn.Error != nil {
-				msg = done.Turn.Error.Message
-			}
-			return tid, fmt.Errorf("codex turn failed: %s", trimMsg(msg))
+		msg := ""
+		if done.Turn.Error != nil {
+			msg = done.Turn.Error.Message
 		}
-		return tid, nil
+		switch done.Turn.Status {
+		case "completed": // the only success
+			return tid, nil
+		case "interrupted":
+			return tid, fmt.Errorf("codex turn: %w: %s", ErrTurnInterrupted, trimMsg(msg))
+		}
+		return tid, fmt.Errorf("codex turn %s: %s", done.Turn.Status, trimMsg(msg))
 	}
 }
 

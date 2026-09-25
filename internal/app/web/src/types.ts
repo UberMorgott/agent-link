@@ -198,6 +198,10 @@ export interface ProjectView {
   can_rename: boolean
   has_invite: boolean
   busy: boolean
+  // auto_open: other agents' messages may open a new agent session in this
+  // member's folder when none is there (off by default); launch_mode: where.
+  auto_open?: boolean
+  launch_mode?: 'desktop' | 'terminal'
 }
 
 export interface InviteView { invite: string }

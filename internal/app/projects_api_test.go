@@ -125,18 +125,18 @@ func TestProjectsAPI(t *testing.T) {
 	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"dir": dir2}, &v); code != http.StatusOK || v.State != ProjectReady {
 		t.Fatalf("bind folder: %d %s", code, raw)
 	}
-	// Auto-open: on by default, off and on again, kept in the settings.
-	if !v.AutoOpen {
-		t.Fatalf("auto-open not on by default: %+v", v)
+	// Auto-open: off by default (no value), on and off again, kept in the settings.
+	if v.AutoOpen || h.app.Settings().Bindings[h.app.bindingIndex(site.ID)].AutoOpen != nil || h.app.projects[site.ID].n.AutoOpen() {
+		t.Fatalf("auto-open not off by default: %+v", v)
+	}
+	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"auto_open": true}, &v); code != http.StatusOK ||
+		!v.AutoOpen || !h.app.Settings().Bindings[h.app.bindingIndex(site.ID)].AutoOpenOn() || !h.app.projects[site.ID].n.AutoOpen() {
+		t.Fatalf("auto-open on: %d %s", code, raw)
 	}
 	v = ProjectView{}
 	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"auto_open": false}, &v); code != http.StatusOK ||
 		v.AutoOpen || h.app.Settings().Bindings[h.app.bindingIndex(site.ID)].AutoOpenOn() || h.app.projects[site.ID].n.AutoOpen() {
 		t.Fatalf("auto-open off: %d %s", code, raw)
-	}
-	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"auto_open": true}, &v); code != http.StatusOK ||
-		!v.AutoOpen || !h.app.projects[site.ID].n.AutoOpen() {
-		t.Fatalf("auto-open on: %d %s", code, raw)
 	}
 	// Launch mode: desktop by default, terminal kept in the settings and applied.
 	if v.LaunchMode != "desktop" {

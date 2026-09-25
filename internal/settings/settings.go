@@ -96,8 +96,11 @@ type ProjectBinding struct {
 	Alias  string   `json:"alias,omitempty"` // this member's own name for it, ≤ maxAlias runes
 	Dir    string   `json:"dir,omitempty"`   // bound folder; "" = none
 	Peers  []string `json:"peers,omitempty"` // bootstrap addresses typed by the user (host:port)
-	// AutoOpen opens a visible agent session in Dir when a message asks this
-	// member and no session is live there (node.SetAutoOpen); nil means on.
+	// AutoOpen opens a new visible agent session in Dir when a message asks
+	// this member and no session (active or idle) is live there
+	// (node.SetAutoOpen). nil means off: a project from before this setting,
+	// or one never switched on, only delivers to sessions already there. The
+	// opened session runs with the owner's own agent permissions.
 	AutoOpen *bool `json:"auto_open,omitempty"`
 	// LaunchMode is where such a session opens (node.SetLaunchMode):
 	// "desktop" (the default, "") the agent's desktop app when installed,
@@ -113,8 +116,8 @@ func (b ProjectBinding) LaunchModeOf() string {
 	return "desktop"
 }
 
-// AutoOpenOn reports whether the project opens sessions by itself (default on).
-func (b ProjectBinding) AutoOpenOn() bool { return b.AutoOpen == nil || *b.AutoOpen }
+// AutoOpenOn reports whether the project opens sessions by itself (default off).
+func (b ProjectBinding) AutoOpenOn() bool { return b.AutoOpen != nil && *b.AutoOpen }
 
 // Version is the settings file format this build writes. Version 2 added
 // Bindings; a file without a version is version 1.
