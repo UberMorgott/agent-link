@@ -116,6 +116,16 @@ export interface ChatMessage {
   unread?: boolean
   chat_id?: string
   participants?: string[] // on a chat_members message: the chat's new participants
+  attachments?: Attachment[]
+}
+
+// A file on a chat message: id is the sha256 of its content, mime its sniffed type.
+export interface Attachment {
+  id: string
+  name: string
+  mime: string
+  size: number
+  failed?: boolean // this node does not have the file (it did not arrive)
 }
 
 export interface ChatInfo {

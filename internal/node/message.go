@@ -245,6 +245,10 @@ type Message struct {
 	// Attempts are delivery attempt events of a KindReceipt message (at most
 	// maxAttemptsPerMessage); older peers ignore them.
 	Attempts []Attempt `json:"attempts,omitempty"`
+	// Attachments are the files of a chat message (attach.go); their blobs
+	// travel ahead of it to peers with CapAttachments. Older peers ignore them
+	// and read the body's fallback lines.
+	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
 // IsRequest reports whether m is a request outside chats: neither a reply, a

@@ -42,6 +42,12 @@ type SessionWaker interface {
 	Wake(ctx context.Context, home, session, text string) error
 }
 
+// ImageWaker is a SessionWaker that can also hand the agent image files
+// with the prompt (`codex queue --image`).
+type ImageWaker interface {
+	WakeImages(ctx context.Context, home, session, text string, images []string) error
+}
+
 // SetSessionWaker sets the waker of WakeQueue sessions. It must be set before
 // Serve or Run; without one such sessions get WakeNextEvent.
 func (n *Node) SetSessionWaker(w SessionWaker) { n.waker = w }
@@ -138,9 +144,14 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		}
 		text := WakePrompt(msgs, page.Total-len(msgs), s.Folder, token)
 		byInbox := d.inbox.socket != ""
-		if byInbox {
+		images := wakeImages(msgs)
+		iw, withImages := n.waker.(ImageWaker)
+		switch {
+		case byInbox:
 			err = n.poster.Post(ctx, d.inbox.socket, d.inbox.token, text)
-		} else {
+		case withImages && len(images) > 0:
+			err = iw.WakeImages(ctx, s.CodexHome, s.SessionID, text, images)
+		default:
 			err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, text)
 		}
 		if err != nil {
@@ -194,3 +205,18 @@ func (s Session) wakeDue(now time.Time) bool {
 
 // hookBatchIDs bounds the unread messages one wake looks at.
 const hookBatchIDs = 50
+
+// wakeImages are the image attachments of msgs, by absolute path: a waker that
+// can (ImageWaker, `codex queue --image`) hands them to the agent with the
+// prompt, which lists every attachment's path (FormatUnread).
+func wakeImages(msgs []UnreadMessage) []string {
+	var images []string
+	for _, m := range msgs {
+		for _, a := range m.Attachments {
+			if !a.Failed && a.Path != "" && a.IsImage() {
+				images = append(images, a.Path)
+			}
+		}
+	}
+	return images
+}

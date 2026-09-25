@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"net"
 	"slices"
@@ -48,6 +49,10 @@ func newPeerConn(h peerHello, dialer string, w *wire) *peerConn {
 }
 
 func (pc *peerConn) has(c string) bool { return slices.Contains(pc.caps, c) }
+
+// attKey names this session's attachment transfers: a session that replaces
+// another never loses its transfers when the old one ends.
+func (pc *peerConn) attKey() string { return fmt.Sprintf("%s#%p", pc.peer, pc) }
 
 func (pc *peerConn) write(f frame) error {
 	pc.wmu.Lock()
@@ -204,6 +209,7 @@ func (n *Node) runConn(ctx context.Context, pc *peerConn, dialed string) {
 	n.wg.Go(func() { n.writeLoop(pc) })
 	n.readLoop(pc)
 	pc.close()
+	n.atts.dropPeer(pc.attKey())
 	n.unregister(pc)
 }
 
@@ -254,6 +260,8 @@ func (n *Node) readLoop(pc *peerConn) {
 			n.receivePresence(pc, f.Presence)
 		case f.Type == frameProject:
 			n.mergeProjectMeta(f.ProjectMeta)
+		case f.Type == frameAtt:
+			n.receiveAttachment(pc.attKey(), f.Att)
 		default:
 			n.log.Debug("unknown frame type ignored", "peer", pc.peer, "type", f.Type)
 		}
@@ -271,6 +279,7 @@ func (n *Node) receive(pc *peerConn, m *Message) bool {
 		n.log.Warn("rejected message", "peer", pc.peer)
 		return true
 	}
+	n.cleanAttachments(m)
 	if strings.HasPrefix(m.ChatID, legacyPrefix) { // a legacy chat closed there: control only
 		if !n.receiveLegacyClose(pc.peer, *m) {
 			n.log.Warn("rejected legacy chat message", "peer", pc.peer, "id", m.ID)
@@ -316,7 +325,8 @@ func (n *Node) writeLoop(pc *peerConn) {
 		return
 	}
 	sentAt := map[string]time.Time{}
-	var told []AreaPresence // the presence last sent
+	pushed := map[string]bool{} // attachment blobs sent on this session
+	var told []AreaPresence     // the presence last sent
 	var toldAt time.Time
 	for {
 		// The presence is looked at on every pass (at least every resendTick),
@@ -346,6 +356,10 @@ func (n *Node) writeLoop(pc *peerConn) {
 			if t, ok := sentAt[m.ID]; ok && time.Since(t) < n.resendAfter {
 				live[m.ID] = t
 				continue
+			}
+			if err := n.pushAttachments(pc, &m, pushed); err != nil {
+				pc.close()
+				return
 			}
 			if err := pc.write(frame{Type: "msg", Msg: &m}); err != nil {
 				pc.close()

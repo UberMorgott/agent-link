@@ -69,6 +69,7 @@ type Node struct {
 	secret  []byte
 	store   *store
 	chats   *chatStore
+	atts    *attachStore
 	log     *slog.Logger
 	targets []*target
 	// open accepts any authenticated peer name: some peer has no configured
@@ -177,8 +178,12 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	atts, err := openAttachStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
 	n := &Node{
-		cfg: cfg, secret: secret, store: st, chats: chats, log: log.With("node", cfg.Node),
+		cfg: cfg, secret: secret, store: st, chats: chats, atts: atts, log: log.With("node", cfg.Node),
 		known: map[string]bool{}, conns: map[string]*peerConn{}, areas: map[string][]string{},
 		offline: map[string]time.Time{}, started: time.Now(),
 		members: map[string]*Member{}, dialing: map[string]bool{}, tried: map[string]time.Time{},

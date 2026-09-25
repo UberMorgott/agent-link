@@ -24,9 +24,12 @@ to start it.
 - `history {chat, limit?, before_seq?, after_seq?}`: messages of a chat; reads, changes nothing.
 - `unread {project?, folder?, limit?, after?}`: a page of unread messages, not acked; `next` is
   the cursor for `after`. Pass the ids you handled to `ack`.
-- `send {body, chat | to | new_chat_with, ask?, reply_to?}`: exactly one of `chat`, `to`,
-  `new_chat_with`; `ask` = members who must answer; `reply_to` = the message answered.
-  Returns `{id, chat}`.
+- `send {body, chat | to | new_chat_with, ask?, reply_to?, attachments?}`: exactly one of `chat`,
+  `to`, `new_chat_with`; `ask` = members who must answer; `reply_to` = the message answered;
+  `attachments` = absolute paths (images png/jpeg/gif/webp, pdf, text; <=10 MB each, <=10 files)
+  inside the project folder or the temp folder. Returns `{id, chat}`. Received files are listed by
+  absolute path (`<project>/.agentlink/attachments/...`): open images/PDFs with your file viewer,
+  text by reading the file.
 - `ack {ids, chat?, project?, session?}`: mark read; `session` defaults to this session.
 
 Results keep the node API's JSON field names. An MCP error is the API's error: fix the input from
@@ -56,6 +59,7 @@ agentlink chat history --chat <id> [--limit 50] [--after <seq>]
 agentlink send --chat <id> --ask nikita --body "<question>"      # ask in an existing chat; prints message id
 agentlink send --chat <id> --reply-to <msgid> --body "<answer>"  # answer a message
 agentlink send --to nikita --body "<question>"   # the one open chat with nikita in this folder's project (chat id on stderr)
+agentlink send --chat <id> --attach shot.png --body "<text>"   # with a file (--attach repeatable)
 agentlink chat new --with nikita[,olga]          # prints the chat id (the project's one chat; created when missing)
 agentlink wait --chat <id> --timeout 20m         # background: exit 0 = JSON lines, 2 = timeout, 1 = error
 ```

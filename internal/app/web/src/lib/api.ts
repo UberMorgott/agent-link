@@ -41,7 +41,11 @@ export function reloadOnNewVersion(resp: Pick<Response, 'headers'> | undefined):
 
 async function apiRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
   const opts: RequestInit & { headers: Record<string, string> } = { method, headers: { [TOKEN_HEADER]: runtime.token } }
-  if (body !== undefined) {
+  if (body instanceof Blob) {
+    // A file goes as it is: the raw body (uploadFile).
+    opts.headers['Content-Type'] = 'application/octet-stream'
+    opts.body = body
+  } else if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json'
     opts.body = JSON.stringify(body)
   }

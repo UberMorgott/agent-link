@@ -103,6 +103,12 @@ func (q *Queue) Binary() (exe, version string) {
 // ("": Codex's default, ~/.codex). A failure makes the queue not Ready for a
 // while; the caller falls back to delivery at the session's next event.
 func (q *Queue) Wake(ctx context.Context, home, thread, text string) error {
+	return q.WakeImages(ctx, home, thread, text, nil)
+}
+
+// WakeImages is Wake that also attaches image files to the prompt (`codex
+// queue --image <path>`, once per image).
+func (q *Queue) WakeImages(ctx context.Context, home, thread, text string, images []string) error {
 	q.mu.Lock()
 	exe := q.exe
 	q.mu.Unlock()
@@ -120,7 +126,14 @@ func (q *Queue) Wake(ctx context.Context, home, thread, text string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, runTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, "queue", "--thread", thread, "--message", text) //nolint:gosec // G204: the codex binary found by Check; the thread id is a registered session id
+	args := []string{"queue", "--thread", thread, "--message", text}
+	for _, img := range images {
+		if img == "" || strings.HasPrefix(img, "-") || !filepath.IsAbs(img) {
+			return fmt.Errorf("codex queue: bad image path %q", img)
+		}
+		args = append(args, "--image", img)
+	}
+	cmd := exec.CommandContext(ctx, exe, args...) //nolint:gosec // G204: the codex binary found by Check; the thread id is a registered session id, images are absolute paths
 	cmd.Env = os.Environ()
 	if home != "" {
 		cmd.Env = append(cmd.Env, "CODEX_HOME="+home)

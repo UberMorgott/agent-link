@@ -39,6 +39,11 @@ export const icons: Record<string, string> = {
   held: 'i-lucide-circle-alert',
   agent: 'i-lucide-bot',
   human: 'i-lucide-user',
+  // Attachments.
+  attach: 'i-lucide-paperclip',
+  file: 'i-lucide-file-text',
+  download: 'i-lucide-download',
+  failed: 'i-lucide-file-x',
 }
 
 export function icon(name: string): string {

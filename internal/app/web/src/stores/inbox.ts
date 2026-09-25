@@ -10,6 +10,7 @@ import { currentRoute, openChat, openProject } from '@/lib/nav'
 import { browser, fmt, t } from '@/lib/runtime'
 import { NARROW_QUERY } from '@/layout/composables/layout'
 import { useAppStore } from './app'
+import { useAttachmentsStore } from './attachments'
 import { useProjectsStore } from './projects'
 import type { ChatInfo, ChatMessage, SentMessage } from '@/types'
 
@@ -238,10 +239,13 @@ export const useInboxStore = defineStore('inbox', () => {
     try {
       const body: Record<string, unknown> = { chat_id: id, body: composer.value, ask: [...askFor(info)].sort() }
       if (replyTo.value) body.reply_to = replyTo.value.id
+      const files = useAttachmentsStore()
+      if (files.uploading) return // the send button waits for the uploads
+      if (files.ready.length) body.attachments = files.ready
       const sent = await api<SentMessage>('POST', projectPath(pid, 'send'), body)
       drafts.value = { ...drafts.value, [key]: '' }
       const here = openKey() === key
-      if (here) { composer.value = ''; setReply(null) }
+      if (here) { composer.value = ''; setReply(null); files.clear() }
       // A legacy chat continues elsewhere: in a real chat, or in the plain
       // message's own legacy chat.
       const next = info.legacy ? sent.chat_id || 'legacy-' + sent.id + '-' + info.peer : sent.chat_id || id
