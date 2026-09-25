@@ -53,7 +53,7 @@ const usage = `usage:
   agentlink close   (no longer here: only people close chats, in the app)
   agentlink inbox --config <path> [--limit 50] [--project <id>]
   agentlink members --config <path> [--project <id>]   (one JSON line per member, this node first)
-  agentlink projects [--config <path>]   (one JSON line per project of the desktop app)
+  agentlink projects [--config <path>]   (one JSON line per project of the desktop app; online/total count the other members, members lists this node too)
   agentlink mcp [--config <path>]   (stdio MCP server "agentlink" for an agent session: tools projects, members, chats, history, unread, send, ack)
   agentlink add    --config <path> --addr <ip[:port]> [--project <id>]   (dial a member's address; it spreads to all members)
   agentlink remove --config <path> --name <node> [--project <id>]   (remove a member from the whole network)
