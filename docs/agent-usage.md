@@ -179,6 +179,27 @@ answer yourself: it is posted to the chat automatically. To involve another memb
 counts one hop after the last message a person wrote; after 8 hops a request is kept with
 `held: true` / `paused: true` and waits for a person. Never close the chat.
 
+## MCP server: `agentlink mcp`
+
+`agentlink mcp` is a stdio MCP server (name `agentlink`) that an agent session starts once and
+keeps: its tools call the same local API as the CLI (same `--config` / `$AGENTLINK_API` /
+settings lookup, same `$AGENTLINK_PROJECT_ID` and folder project), no second daemon. The session
+is the agent's own (`CLAUDE_CODE_SESSION_ID`; Codex `CODEX_THREAD_ID`, else `CODEX_SESSION_ID`).
+Answers are JSON text with the CLI's fields; a list is one JSON array. An API error is a tool
+error whose text is the API's message.
+
+| tool | arguments | CLI equivalent |
+| --- | --- | --- |
+| `projects` | – | `agentlink projects` (the app's `GET /projects`) |
+| `members` | `project?` | `members` |
+| `chats` | `project?`, `archive?`, `legacy?` | `chat list` |
+| `history` | `chat`, `limit?` (50), `before_seq?`, `after_seq?` | `chat history` |
+| `unread` | `folder?`, `project?`, `limit?` (50), `after?` | `chat unread`, as one `{messages, total, next}` object; never marks read |
+| `send` | exactly one of `chat` / `to` / `new_chat_with[]`, `body`, `ask?[]`, `reply_to?` | `send` (`new_chat_with`: `chat new` first); answers `{id, chat}` |
+| `ack` | `ids[]`, `chat?`, `project?`, `session?` (default: this session) | `chat ack` |
+
+There is no wait tool: the hooks tell a live session about new messages.
+
 ## Live sessions on the node
 
 A Claude Code or Codex session open in a folder of this node registers itself (its hooks do

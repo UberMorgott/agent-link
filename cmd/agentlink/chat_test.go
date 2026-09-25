@@ -28,6 +28,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 	// Tests may run inside an agent session: never pick up (or touch) its id.
 	t.Setenv(envClaudeSession, "")
 	t.Setenv(envCodexThread, "")
+	t.Setenv(envCodexSession, "")
 	f := &fakeAPI{t: t}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.reqs = append(f.reqs, r.Method+" "+r.URL.RequestURI())
@@ -184,6 +185,10 @@ func TestSendNamesItsSession(t *testing.T) {
 	t.Setenv("AppData", dir)
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv("HOME", dir)
+	// Hermetic: the test itself may run inside a Claude or Codex session.
+	t.Setenv(envClaudeSession, "")
+	t.Setenv(envCodexThread, "")
+	t.Setenv(envCodexSession, "")
 	f.run("send", "--to", "b", "--body", "hi")
 	if f.send.SessionID != "" {
 		t.Fatalf("outside a session: %+v", f.send)
@@ -202,6 +207,12 @@ func TestSendNamesItsSession(t *testing.T) {
 	f.run("send", "--to", "b", "--body", "hi")
 	if f.send.SessionID != "thread-1" {
 		t.Fatalf("codex thread: %+v", f.send)
+	}
+	t.Setenv(envCodexThread, "")
+	t.Setenv(envCodexSession, "codex-sess")
+	f.run("send", "--to", "b", "--body", "hi")
+	if f.send.SessionID != "codex-sess" {
+		t.Fatalf("codex session fallback: %+v", f.send)
 	}
 	t.Setenv(envJobID, "j1")
 	f.run("send", "--to", "b", "--body", "hi")

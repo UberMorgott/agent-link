@@ -260,6 +260,7 @@ func (a *App) controlAPI() http.Handler {
 		mux.HandleFunc(p, byChat)
 	}
 	mux.HandleFunc("GET /chats", a.controlChats)
+	mux.HandleFunc("GET /projects", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.Projects()) })
 	// The rest names only a project: that context, else the one of the
 	// caller's folder, else the legacy network (route).
 	byProject := func(w http.ResponseWriter, r *http.Request) {

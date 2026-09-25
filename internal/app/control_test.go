@@ -109,6 +109,10 @@ func TestControlAPIRoutes(t *testing.T) {
 	if projects[legacyChat.ID] != LegacyProjectID || projects[projChat.ID] != p.ID {
 		t.Fatalf("chat projects %v", projects)
 	}
+	if code, body := call(t, srv, http.MethodGet, "/projects", ""); code != http.StatusOK ||
+		!strings.Contains(body, `"id":"`+p.ID+`"`) || !strings.Contains(body, `"id":"`+LegacyProjectID+`"`) {
+		t.Fatalf("GET /projects: %d %s", code, body)
+	}
 	if code, body := call(t, srv, http.MethodGet, "/chats?project="+p.ID, ""); code != http.StatusOK ||
 		!strings.Contains(body, projChat.ID) || strings.Contains(body, legacyChat.ID) {
 		t.Fatalf("GET /chats?project: %d %s", code, body)
