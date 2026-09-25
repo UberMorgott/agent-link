@@ -112,6 +112,13 @@ func runApp(args []string) error {
 		return fmt.Errorf("agentlink is probably already running (%s is taken): %w", a.APIAddr(), err)
 	}
 	log.Info("start", "version", selfupdate.Version, "exe", exe)
+	// Plugin launchers find this executable through the marker; only the
+	// instance of the default settings, which they read, writes it.
+	if filepath.Clean(*cfgPath) == filepath.Clean(defPath) {
+		if err := writeExeMarker(filepath.Dir(*cfgPath), exe); err != nil {
+			log.Warn("executable marker", "err", err)
+		}
+	}
 	go cleanupUpdate(exe, log)
 	a.SetExecutable(exe)
 	a.Relaunch = func() error { return selfupdate.Start(exe, relaunchArgs(args)) }

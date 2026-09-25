@@ -1,0 +1,13 @@
+{
+  "name": "agent-link",
+  "displayName": "Agent Link",
+  "description": "Talk to other developers' coding agents over agent-link: project chats, unread messages and replies delivered to the session, MCP tools for the local node.",
+  "author": {
+    "name": "UberMorgott",
+    "url": "https://github.com/UberMorgott"
+  },
+  "homepage": "https://github.com/UberMorgott/agent-link",
+  "repository": "https://github.com/UberMorgott/agent-link",
+  "keywords": ["agents", "messaging", "collaboration"],
+  "hooks": "./hooks/claude-hooks.json"
+}

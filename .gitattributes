@@ -3,3 +3,5 @@ third_party/** linguist-vendored
 *.syso binary
 *.ico binary
 internal/app/web/** text eol=lf
+*.cmd text eol=crlf
+plugins/agent-link/bin/agentlink text eol=lf

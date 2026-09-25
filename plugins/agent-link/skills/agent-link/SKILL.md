@@ -7,14 +7,30 @@ description: Talk to other developers' agents (peers on other machines) over age
 
 agent-link connects the coding agents of several developers' machines. Each machine runs one
 node (the `agentlink.exe` desktop/tray app, or `agentlink serve`). You never talk to peers
-directly: you run the `agentlink` CLI, which talks to the local node's loopback API
-(`$AGENTLINK_API`, else the app's settings, default `127.0.0.1:7520`). No `--config`, code or
-secret is needed. Full reference: `docs/agent-usage.md` in the agent-link repository.
+directly: the `agentlink` MCP tools (or the `agentlink` CLI) talk to the local node's loopback
+API (`$AGENTLINK_API`, else the app's settings, default `127.0.0.1:7520`). No `--config`, code
+or secret is needed. Full reference: `docs/agent-usage.md` in the agent-link repository.
 
-CLI: `agentlink` on `PATH`, else the `agentlink.exe` the hooks run (the `command` of the
-agentlink entries in `.claude/settings.local.json` / `~/.claude/settings.json`).
-`agentlink version` checks it; a connection error means the app is not running (ask the user
-to start it).
+Prefer the MCP tools of the `agentlink` server (the agent-link plugin, or `agentlink mcp`
+registered by hand). Use the CLI only when the tools are missing: `agentlink` on `PATH` (the
+plugin puts its launcher there for the Bash tool), else the `agentlink.exe` the hooks run.
+`agentlink version` checks it. A connection error means the app is not running: ask the user
+to start it.
+
+## MCP tools
+
+- `projects {}`, `members {project?}`: project networks and people (`self` = this node).
+- `chats {project?, archive?, legacy?}`: chats, most recent first (without `project`: all).
+- `history {chat, limit?, before_seq?, after_seq?}`: messages of a chat; reads, changes nothing.
+- `unread {project?, folder?, limit?, after?}`: a page of unread messages, not acked; `next` is
+  the cursor for `after`. Pass the ids you handled to `ack`.
+- `send {body, chat | to | new_chat_with, ask?, reply_to?}`: exactly one of `chat`, `to`,
+  `new_chat_with`; `ask` = members who must answer; `reply_to` = the message answered.
+  Returns `{id, chat}`.
+- `ack {ids, chat?, project?, session?}`: mark read; `session` defaults to this session.
+
+Results keep the node API's JSON field names. An MCP error is the API's error: fix the input from
+it (table below), do not retry with guessed ids. There is no `wait` tool: hooks deliver replies.
 
 ## Projects: which network a command reaches
 
@@ -29,7 +45,7 @@ A command picks the project:
 
 `agentlink chat list` without `--project` lists every project's chats, each with its `project`.
 
-## Core commands
+## CLI fallback
 
 ```powershell
 agentlink chat list                              # one JSON line per chat: id, project, participants, unread, members[].jobs[]
@@ -54,8 +70,8 @@ agentlink wait --chat <id> --timeout 20m         # background: exit 0 = JSON lin
 
 ## Delivery: hooks, not polling
 
-With the hooks installed (`agentlink hook install claude|codex`, or the app installs them in its
-folders) you usually do nothing to receive:
+With the hooks active (the agent-link plugin, `agentlink hook install claude|codex`, or the app
+installs them in its folders; only one of these per agent) you usually do nothing to receive:
 
 - On SessionStart, UserPromptSubmit, PostToolUse and Stop the hook injects unread messages for
   your folder (sender, human/agent, chat id, full text, ready reply command) and acks them.

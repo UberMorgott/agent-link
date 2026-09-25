@@ -315,14 +315,47 @@ machine.
 `docs/agent-usage.md` is the reference for a coding agent that wants to use the link itself:
 which project a command reaches, how to ask in a chat and read the answer, and what the hooks do.
 
-### Agent skill
+### Claude Code plugin
 
-`skills/agent-link/SKILL.md` teaches a coding agent the current CLI (projects, chats, `--project`,
-`--chat`, `--ask`, hooks, routing, common errors). Install it for Claude Code by copying the folder
-into your skills:
+`plugins/agent-link` is a Claude Code plugin: the hooks (the same entries `agentlink hook install
+claude` writes), the `agentlink` MCP server (`agentlink mcp`) and the skill, updated with the
+plugin. Install it from this repository's marketplace:
 
 ```powershell
-Copy-Item -Recurse -Force skills\agent-link "$env:USERPROFILE\.claude\skills\"
+claude plugin marketplace add UberMorgott/agent-link
+claude plugin install agent-link@agent-link
+```
+
+The plugin runs agentlink through its launcher `bin/agentlink.cmd` (cmd.exe built-ins only, no
+PowerShell or Git Bash needed), which takes the first of: `%AGENTLINK_EXE%`, the path the desktop
+app writes at every start to `%APPDATA%\agentlink\executable.path`, `agentlink.exe` on `PATH`.
+Start the desktop app once after installing it, or set `AGENTLINK_EXE`. The plugin's hooks and MCP
+server are Windows only (the launcher is a `.cmd`); elsewhere use `agentlink hook install claude`.
+The one `.mcp.json` serves Claude Code and Codex: it puts the plugin's `bin` first on `PATH` from
+the host's `PLUGIN_ROOT` or `CLAUDE_PLUGIN_ROOT` variable and runs `agentlink mcp`; a host that
+sets neither (Codex 0.155) puts the folder of the `agentlink.exe` named in
+`%APPDATA%\agentlink\executable.path` first on `PATH`, else gets `agentlink.exe` from `PATH`.
+So on Codex 0.155 `AGENTLINK_EXE` is not used for the MCP server: it needs the marker
+`%APPDATA%\agentlink\executable.path` naming a file called `agentlink.exe` (start the desktop app
+once), or `agentlink.exe` on `PATH`.
+
+**One source of hooks per session.** Claude Code runs a plugin's hooks and the settings' hooks
+side by side, so with the plugin enabled remove the others, or every message is handled twice:
+after `agentlink hook install claude` delete the agentlink entries (`… hook claude`) from `hooks`
+in `~/.claude/settings.json` (and `.claude/settings.json` for `--scope project`), and in the
+desktop app do not pick Claude Code in «Кто отвечает» for folders where you use the plugin (the app
+writes its own hook into `<folder>/.claude/settings.local.json`, see
+[Folder hooks](docs/agent-usage.md#folder-hooks-of-the-desktop-app)).
+
+### Agent skill
+
+`plugins/agent-link/skills/agent-link/SKILL.md` teaches a coding agent agent-link: the MCP tools
+first, the CLI as a fallback (projects, chats, `--project`, `--chat`, `--ask`, hooks, routing,
+common errors). The Claude Code plugin brings it; without the plugin copy the folder into your
+skills:
+
+```powershell
+Copy-Item -Recurse -Force plugins\agent-link\skills\agent-link "$env:USERPROFILE\.claude\skills\"
 ```
 
 Other agents (Codex): copy it wherever your agent loads skills, or point `AGENTS.md` at it.

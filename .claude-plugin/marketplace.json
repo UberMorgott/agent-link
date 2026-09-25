@@ -1,0 +1,15 @@
+{
+  "name": "agent-link",
+  "description": "agent-link plugins: connect coding agents on several developers' machines.",
+  "owner": {
+    "name": "UberMorgott",
+    "url": "https://github.com/UberMorgott"
+  },
+  "plugins": [
+    {
+      "name": "agent-link",
+      "source": "./plugins/agent-link",
+      "description": "Talk to other developers' coding agents over agent-link: hooks deliver messages, MCP tools send and read."
+    }
+  ]
+}
