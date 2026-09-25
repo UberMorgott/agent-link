@@ -59,36 +59,84 @@ func (h *hookSession) report(typ, text, phase string) {
 	}
 }
 
+// agentActivity is a subagent's last activity posted (hookState.AgentActivity).
+type agentActivity struct {
+	Text string    `json:"text"`
+	At   time.Time `json:"at"`
+}
+
 // subagent reports a child's lifecycle under its parent's registered session.
 func (h *hookSession) subagent(id, label string, stopped bool) {
 	if id == "" || len(id) > 128 {
 		return
 	}
-	chats := h.st.Active
+	var chats map[string]string
 	if stopped {
 		chats = h.st.Subagents[id]
 		delete(h.st.Subagents, id)
-	} else if len(chats) > 0 {
-		if h.st.Subagents == nil {
-			h.st.Subagents = map[string]map[string]string{}
-		}
-		chats = maps.Clone(chats)
-		h.st.Subagents[id] = chats
+		delete(h.st.AgentActivity, id)
+	} else {
+		chats = h.agentChats(id)
 	}
-	if len(chats) == 0 {
-		return
-	}
-	if len(label) > 128 {
-		label = ""
-	}
-	req := node.ActivityRequest{SessionID: h.sid, AgentID: id, Label: label, Type: "thinking", Text: "агент работает"}
+	req := node.ActivityRequest{Type: "thinking", Text: "агент работает"}
 	if stopped {
 		req.Phase, req.Text = node.PhaseIdle, "готово"
 	}
+	h.postAgent(chats, id, label, req)
+}
+
+// reportAgent posts what subagent id (of type label) is doing, coalesced per
+// agent like report is for the main agent.
+func (h *hookSession) reportAgent(id, label, typ, text string) {
+	if id == "" || len(id) > 128 || text == "" {
+		return
+	}
+	now := h.env.clock()
+	last := h.st.AgentActivity[id]
+	if since := now.Sub(last.At); since < hookMinActivity || text == last.Text && since < hookSameActivity {
+		return
+	}
+	if h.postAgent(h.agentChats(id), id, label, node.ActivityRequest{Type: typ, Text: text}) {
+		if h.st.AgentActivity == nil {
+			h.st.AgentActivity = map[string]agentActivity{}
+		}
+		h.st.AgentActivity[id] = agentActivity{Text: text, At: now}
+	}
+}
+
+// agentChats are the chats (chat -> request) subagent id works for: those the
+// session worked on when it started, kept even if the parent moves on. A
+// subagent first heard of now (its start missed) takes the current ones.
+func (h *hookSession) agentChats(id string) map[string]string {
+	if chats, ok := h.st.Subagents[id]; ok {
+		return chats
+	}
+	if len(h.st.Active) == 0 {
+		return nil
+	}
+	if h.st.Subagents == nil {
+		h.st.Subagents = map[string]map[string]string{}
+	}
+	chats := maps.Clone(h.st.Active)
+	h.st.Subagents[id] = chats
+	return chats
+}
+
+// postAgent posts req as subagent id's activity to chats; it reports whether
+// any post went through.
+func (h *hookSession) postAgent(chats map[string]string, id, label string, req node.ActivityRequest) bool {
+	if len(label) > 128 {
+		label = ""
+	}
+	req.SessionID, req.AgentID, req.Label = h.sid, id, label
+	posted := false
 	for chat, replyTo := range chats {
 		req.ReplyTo = replyTo
-		_ = hookCall(h.env.api, http.MethodPost, "/chats/"+url.PathEscape(chat)+"/activity", nil, req, nil, hookHTTPTimeout)
+		if hookCall(h.env.api, http.MethodPost, "/chats/"+url.PathEscape(chat)+"/activity", nil, req, nil, hookHTTPTimeout) == nil {
+			posted = true
+		}
 	}
+	return posted
 }
 
 // noteSent makes chatID, where session sid just wrote message msgID

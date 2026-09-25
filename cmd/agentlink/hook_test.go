@@ -458,6 +458,53 @@ func TestCodexSubagentStopAfterParentIdle(t *testing.T) {
 	}
 }
 
+// A Claude Code subagent's tool calls show as its own line (agent_id, its
+// type as label) under the parent session, throttled apart from the main
+// agent's; its PostToolUse delivers nothing (messages stay for the main agent).
+func TestClaudeSubagentActivity(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	noteSent(c.env, c.sid, "c1", "own1")
+	const sub = `,"agent_id":"a1b2c3","agent_type":"Explore"`
+	if out := c.run(hookClaude, evSubagentStart, sub); out != "" {
+		t.Fatalf("SubagentStart output %q", out)
+	}
+	n := len(c.f.activity)
+	c.run(hookClaude, evPreTool, sub+`,"tool_name":"Read","tool_input":{"file_path":"a.go"}`)
+	c.now = c.now.Add(-time.Second) // same instant: only a per-agent throttle lets both through
+	c.run(hookClaude, evPreTool, `,"tool_name":"Edit","tool_input":{"file_path":"b.go"}`)
+	got := c.f.activity[n:]
+	if len(got) != 2 || got[0].AgentID != "a1b2c3" || got[0].Label != "Explore" || got[0].Text != "читает a.go" || got[0].ReplyTo != "own1" ||
+		got[1].AgentID != "" || got[1].Text != "правит b.go" {
+		t.Fatalf("subagent/main activity: %+v", got)
+	}
+	if st := c.state(hookClaude); st.Activity != "правит b.go" || st.AgentActivity["a1b2c3"].Text != "читает a.go" {
+		t.Fatalf("throttle state: %+v", st)
+	}
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "for the main agent", true))
+	if out := c.run(hookClaude, evPostTool, sub+`,"tool_name":"Read"`); out != "" || len(c.f.ackedIDs()) != 0 {
+		t.Fatalf("subagent PostToolUse delivered: %q, acked %v", out, c.f.ackedIDs())
+	}
+	c.run(hookClaude, evSubagentStop, sub)
+	last := c.f.activity[len(c.f.activity)-1]
+	if last.AgentID != "a1b2c3" || last.Phase != node.PhaseIdle || len(c.state(hookClaude).Subagents) != 0 || len(c.state(hookClaude).AgentActivity) != 0 {
+		t.Fatalf("subagent stop: %+v", last)
+	}
+}
+
+// A subagent whose SubagentStart was missed takes the session's chats at its
+// first tool call.
+func TestClaudeSubagentWithoutStart(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	noteSent(c.env, c.sid, "c1", "own1")
+	c.run(hookClaude, evPreTool, `,"agent_id":"x9","agent_type":"Plan","tool_name":"Grep"`)
+	last := c.f.activity[len(c.f.activity)-1]
+	if last.AgentID != "x9" || last.Label != "Plan" || last.ReplyTo != "own1" || c.state(hookClaude).Subagents["x9"]["c1"] != "own1" {
+		t.Fatalf("late subagent: %+v", last)
+	}
+}
+
 func TestHookChainLimitIsInformational(t *testing.T) {
 	c := newHookCase(t)
 	m := chatMsg("c1", "KPECTIK", "agent", "deep reply", true)
@@ -776,7 +823,7 @@ func TestHookUnreachableNodeIsSilent(t *testing.T) {
 				t.Fatalf("%s %s took %v", client, ev, d)
 			}
 			want := ""
-			if client == hookCodex && ev == evStop {
+			if client == hookCodex && (ev == evStop || ev == evSubagentStop) {
 				want = "{}"
 			}
 			if strings.TrimSpace(out.String()) != want {

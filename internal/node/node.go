@@ -333,6 +333,7 @@ func (n *Node) Run(ctx context.Context, peerLn net.Listener) {
 	n.runMu.Unlock()
 	n.wg.Go(func() { n.acceptLoop(ctx, peerLn) })
 	n.wg.Go(func() { n.meshLoop(ctx) }) // also dials the configured peers
+	n.wg.Go(func() { n.activityLoop(ctx) })
 	if n.waker != nil {
 		n.wg.Go(func() { n.wakeLoop(ctx) })
 	}

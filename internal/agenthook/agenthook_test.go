@@ -111,8 +111,8 @@ func TestInstall(t *testing.T) {
 		t.Fatalf("codex entry:\n%s", data)
 	}
 	for _, ev := range []string{SubagentStart, SubagentStop} {
-		if !strings.Contains(string(data), `"`+ev+`"`) || strings.Contains(got, `"`+ev+`"`) {
-			t.Fatalf("%s must be installed for Codex only", ev)
+		if !strings.Contains(string(data), `"`+ev+`"`) || !strings.Contains(got, `"`+ev+`"`) {
+			t.Fatalf("%s must be installed for both clients", ev)
 		}
 	}
 	if _, err := os.Stat(cpath + ".agentlink.bak"); err == nil {

@@ -162,6 +162,10 @@
   .act-spin { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-on); animation: act-pulse 1.4s ease-in-out infinite; align-self: center; }
   .act-row.queued .act-spin, .act-row.waiting .act-spin, .act-row.presence .act-spin { background: var(--app-muted); animation: none; }
   .act-row.stale .act-spin { background: var(--app-off); animation: none; }
+  .act-row.idle .act-spin { background: var(--app-muted); animation: none; opacity: 0.5; }
+  .act-node { display: flex; flex-direction: column; gap: 0.15rem; }
+  .act-row.act-sub { padding-left: 1.1rem; }
+  .act-row.act-sub .act-who { font-weight: 500; }
   @keyframes act-pulse { 50% { opacity: 0.3; } }
 
   .choice { color: var(--who); }

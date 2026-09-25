@@ -49,6 +49,13 @@ export interface ActivityInfo {
   started_at?: string
   // session: the reporting live session's short id (none for the worker).
   session?: string
+  // Optional agent-tree fields (newer hooks): role "main" or "subagent"; a
+  // subagent names its parent's full session id, its own agent id, and its
+  // agent type as label.
+  role?: string
+  label?: string
+  parent_session?: string
+  agent_id?: string
 }
 
 export interface Job {
