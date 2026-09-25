@@ -171,18 +171,13 @@ describe('the open chat', () => {
     expect(text(bubble('m199').querySelector('.msg-author'))).toBe('bob')
     expect(text(bubble('m198').querySelector('.msg-author'))).toBe('inbox.you')
 
-    // A project has one chat: it goes by the project's name.
+    // A project has one chat: it goes by the project's name, and it has no
+    // header — the project's row and its menu stand for it.
     expect(text($('#conversation_title'))).toBe('Сайт')
-    // Members and sessions live in the chat's info popover.
-    inbox.infoOpen = true
-    await settle()
-    const chips = $$('#chat_members > li')
-    expect(chips).toHaveLength(3)
-    expect($('#chat_archive')).not.toBeNull()
-    expect($('#chat_close')).toBeNull()
+    expect($('#conversation_title')!.className).toContain('sr-only')
+    expect($('#conversation_panel header')).toBeNull()
+    expect($('#chat_archive')).toBeNull()
     expect($('#send')).not.toBeNull()
-    expect(chips[2]!.className).toContain('away')
-    expect(text(chips[2]!)).toContain('в очереди 2')
     // A group chat asks nobody by default and says so.
     expect($('#ask_row')).not.toBeNull()
     expect(ticked('#ask_choices')).toEqual([])
@@ -340,12 +335,9 @@ describe('the chat list and the ways into a chat', () => {
     // not taken says why it waits.
     app.sessions = [{ session_id: 's', provider: 'claude', folder: 'W:/work', area: '', wake: 'next-event' }]
     await inbox.selectChat(P, 'c4', '')
-    inbox.infoOpen = true
     await settle()
     expect($('#ask_row')).toBeNull()
     expect(text($('#chat_activity'))).toContain('inbox.activity.waiting_session')
-    expect(text($('#chat_sessions'))).toContain('claude')
-    expect(text($('#chat_sessions'))).toContain('inbox.session.next_event')
     app.sessions = []
     await settle()
     expect(text($('#chat_activity'))).toContain('inbox.activity.no_session')
@@ -355,7 +347,6 @@ describe('the chat list and the ways into a chat', () => {
     app.sessions = [{ session_id: 's', provider: 'codex', folder: 'W:/work', area: '', wake: 'queue' }]
     await settle()
     expect($('#chat_activity')).toBeNull()
-    expect(text($('#chat_sessions'))).toContain('inbox.session.queue')
 
     // The peer's session, under an own message it has but has not read: one muted line.
     const cases: [Presence, string][] = [
@@ -389,7 +380,7 @@ describe('the chat list and the ways into a chat', () => {
     projects.chats = { [P]: [chats.c4!.info] }
     await settle()
     const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(true)
-    $<HTMLButtonElement>('#chat_archive')!.click()
+    await inbox.confirmArchive(P)
     await settle()
     expect(confirm).toHaveBeenCalledWith('inbox.archive_history.confirm')
     expect(projects.chats[P]!.some((c) => c.id === 'c4')).toBe(false)

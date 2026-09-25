@@ -234,6 +234,15 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     if (!String(req.addr || '').trim()) throw apiError('addr')
     return p
   }
+  if (method === 'POST' && rest.join('/') === 'members/remove') {
+    const name = String(req.name || '').trim()
+    if (!name) throw apiError('bad_request')
+    if (name === SELF) throw apiError('remove_self')
+    if (!p.members.some((m) => m.name === name)) throw apiError('unknown_member')
+    const members = p.members.filter((m) => m.name !== name)
+    const others = members.filter((m) => !m.self)
+    return setView(b, { ...p, members, total: others.length, online: others.filter((m) => m.online).length })
+  }
   if (method === 'POST' && rest[0] === 'leave') {
     if (p.busy) throw apiError('project_busy')
     b.projects = b.projects.filter((x) => x.id !== pid)

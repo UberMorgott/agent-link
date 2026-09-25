@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { browser } from '@/lib/runtime'
 import { LEGACY_CODE, SITE, fixture } from '@/test/backend'
 import { fakeBackend, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
@@ -26,19 +27,41 @@ async function menu(pid: string): Promise<HTMLElement[]> {
 }
 
 describe('the project menu', () => {
-  it('offers members, invite, name, folder and leave; the legacy network has no name', async () => {
+  it('offers archiving the history, members, invite, name, folder and delete; the legacy network has no name', async () => {
     await open('/p/' + SITE)
     const items = await menu(SITE)
     expect(items.map((i) => i.textContent!.trim())).toEqual([
-      'project.menu.members', 'project.menu.invite', 'project.menu.name', 'project.menu.folder', 'project.menu.leave',
+      'inbox.archive_history', 'project.menu.members', 'project.menu.invite', 'project.menu.name', 'project.menu.folder', 'project.menu.delete',
     ])
-    items[1]!.click()
+    items[2]!.click()
     await settle()
     expect(useProjectsStore().dialog).toBe('invite')
     useProjectsStore().closeDialog()
     await settle()
-    const legacy = await menu('legacy')
-    expect(legacy.map((i) => i.textContent!.trim())).not.toContain('project.menu.name')
+    const legacy = (await menu('legacy')).map((i) => i.textContent!.trim())
+    expect(legacy).not.toContain('project.menu.name')
+    expect(legacy).not.toContain('inbox.archive_history')
+    expect(legacy).toContain('project.menu.leave')
+  })
+
+  it('removes a member from the project only after a confirmation', async () => {
+    const { calls } = await open('/p/' + SITE)
+    const projects = useProjectsStore()
+    projects.openDialog('members', SITE)
+    await settle()
+    expect($('#member_remove_alice')).toBeNull()
+    const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(false)
+    $<HTMLButtonElement>('#member_remove_bob')!.click()
+    await settle()
+    expect(confirm).toHaveBeenCalledWith('project.members.remove_confirm')
+    expect(calls).not.toContain('POST projects/' + SITE + '/members/remove')
+    confirm.mockReturnValue(true)
+    $<HTMLButtonElement>('#member_remove_bob')!.click()
+    await settle()
+    expect(calls).toContain('POST projects/' + SITE + '/members/remove')
+    expect(projects.byID(SITE)!.members.map((m) => m.name)).not.toContain('bob')
+    expect($('#member_remove_bob')).toBeNull()
+    expect(document.body.textContent).toContain('project.members.removed')
   })
 
   it('masks the invite, reveals it once on the eye, copies it and forgets it on close', async () => {
@@ -101,7 +124,7 @@ describe('the project menu', () => {
     backend.projects = backend.projects.map((p) => (p.id === SITE ? { ...p, busy: false } : p))
     projects.openDialog('leave', SITE)
     await settle()
-    expect(document.body.textContent).toContain('project.leave.text')
+    expect(document.body.textContent).toContain('project.delete.text')
     $<HTMLButtonElement>('#leave_confirm')!.click()
     await settle()
     expect(calls).toContain('POST projects/' + SITE + '/leave')

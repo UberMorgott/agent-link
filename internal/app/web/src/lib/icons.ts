@@ -14,6 +14,8 @@ export const icons: Record<string, string> = {
   rename: 'i-lucide-pencil',
   folder: 'i-lucide-folder',
   leave: 'i-lucide-log-out',
+  delete: 'i-lucide-trash-2',
+  remove: 'i-lucide-user-minus',
   eye: 'i-lucide-eye',
   eyeoff: 'i-lucide-eye-off',
   copy: 'i-lucide-copy',

@@ -66,7 +66,6 @@ export const useInboxStore = defineStore('inbox', () => {
   const subtitleError = ref('')
   const sending = ref(false)
   const closing = ref(false)
-  const infoOpen = ref(false)
   const focusComposer = ref(0)
   const askState = ref<Record<string, string[]>>({}) // chatKey -> names asked to answer
 
@@ -212,7 +211,6 @@ export const useInboxStore = defineStore('inbox', () => {
       setReply(null)
       sendResult.value = ''
       subtitleError.value = ''
-      infoOpen.value = false
     }
     if (project.value !== pid) newChatOpen.value = false
     project.value = pid
@@ -300,9 +298,14 @@ export const useInboxStore = defineStore('inbox', () => {
     else showNewChat(pid, [peer])
   }
 
+  // activeChat is a project's one active chat, if it has one.
+  function activeChat(pid: string): ChatInfo | null {
+    return (projects.chats[pid] || []).find((c) => !c.legacy && !c.closed && !c.archived) || null
+  }
+
   // openActive opens a project's one active chat, or starts it.
   function openActive(pid: string) {
-    const found = (projects.chats[pid] || []).find((c) => !c.legacy && !c.closed && !c.archived)
+    const found = activeChat(pid)
     if (found) openChat(pid, found.id)
     else showNewChat(pid)
   }
@@ -311,22 +314,21 @@ export const useInboxStore = defineStore('inbox', () => {
 
   const membersBusy = ref(false)
 
-  async function setMembers(add: string[], remove: string[] = []) {
-    const info = chat.value
-    const pid = project.value
-    if (!info || membersBusy.value) return
+  // setMembers changes who is in chat id of project pid; it throws on failure.
+  async function setMembers(pid: string, id: string, add: string[], remove: string[] = []) {
+    if (membersBusy.value) return
     membersBusy.value = true
-    subtitleError.value = ''
     try {
-      chat.value = await api<ChatInfo>('POST', chatPath(pid, info.id, 'members'), { add, remove })
+      const info = await api<ChatInfo>('POST', chatPath(pid, id, 'members'), { add, remove })
+      if (openKey() === chatKey(pid, id)) chat.value = info
+      projects.chats = { ...projects.chats, [pid]: (projects.chats[pid] || []).map((c) => (c.id === id ? info : c)) }
       void projects.refreshChats(pid)
-    } catch (error) { subtitleError.value = (error as Error).message }
-    finally { membersBusy.value = false }
+    } finally { membersBusy.value = false }
   }
 
-  function confirmRemove(name: string) {
+  function confirmRemove(pid: string, id: string, name: string) {
     if (!browser.confirm(fmt("inbox.members.remove_confirm", { name }))) return
-    return setMembers([], [name])
+    return setMembers(pid, id, [], [name])
   }
 
   // --- closing: the chat leaves the list at once and the view moves on ---
@@ -362,26 +364,28 @@ export const useInboxStore = defineStore('inbox', () => {
   // --- archiving a project chat's history: a fresh chat with the same members
   // takes its place at once and the view moves to it ---
 
-  async function archiveChat() {
-    const info = chat.value
-    const pid = project.value
+  // archiveChat archives the history of project pid's active chat; the view
+  // moves to the fresh chat when the archived one was on screen. It throws
+  // on failure.
+  async function archiveChat(pid: string) {
+    const info = activeChat(pid)
     if (!info || closing.value) return
     closing.value = true
     try {
       const fresh = await api<ChatInfo>('POST', chatPath(pid, info.id, 'archive'))
+      const here = openKey() === chatKey(pid, info.id)
       projects.chats = { ...projects.chats, [pid]: [fresh, ...(projects.chats[pid] || []).filter((c) => c.id !== info.id && c.id !== fresh.id)] }
-      openChat(pid, fresh.id)
-      focusComposer.value++
+      if (here) {
+        openChat(pid, fresh.id)
+        focusComposer.value++
+      }
       void projects.refreshChats(pid)
-    } catch (error) {
-      sendResult.value = (error as Error).message
-      subtitleError.value = (error as Error).message
     } finally { closing.value = false }
   }
 
-  function confirmArchive() {
+  function confirmArchive(pid: string) {
     if (!browser.confirm(t("inbox.archive_history.confirm"))) return
-    return archiveChat()
+    return archiveChat(pid)
   }
 
   function legacyPeerOldOf(info: ChatInfo) {
@@ -464,9 +468,9 @@ export const useInboxStore = defineStore('inbox', () => {
 
   return {
     project, selectedChat, selectedMessage, chat, messages, hasOlder, scrollIntent, drafts, composer, replyTo, sendResult,
-    subtitleError, sending, closing, infoOpen, focusComposer, askState, reads, toasts,
+    subtitleError, sending, closing, focusComposer, askState, reads, toasts,
     newChatOpen, newChatPeople, newChatChosen, newChatResult, newChatBusy, focusNewChat,
     askFor, setAsk, loadChat, loadOlder, saveDraft, setReply, selectChat, submitMessage, showNewChat, hideNewChat,
-    createChat, openPeer, openActive, closeChat, confirmClose, archiveChat, confirmArchive, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, openKey,
+    createChat, openPeer, activeChat, openActive, closeChat, confirmClose, archiveChat, confirmArchive, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, openKey,
   }
 })
