@@ -1,7 +1,45 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { ACTIVITY_EXPIRE_MS, CONCURRENT_MS, activityLines, activityText, agentTree, keepLastKnown, liveJobs, type ActivityLine } from './chat'
+import {
+  ACTIVITY_EXPIRE_MS, CONCURRENT_MS, activityLines, activityText, agentTree, attemptText, keepLastKnown, liveJobs, presenceLines, ticksFor,
+  type ActivityLine,
+} from './chat'
 import { runtime } from './runtime'
-import type { ChatInfo, ChatMember, Job } from '@/types'
+import type { ChatInfo, ChatMember, ChatMessage, Delivery, Job } from '@/types'
+
+describe('delivery attempts', () => {
+  beforeEach(() => {
+    runtime.strings = {
+      'inbox.tick.delivered': 'доставлено', 'inbox.tick.read': 'прочитано',
+      'inbox.attempt.wake_requested': 'разбужена', 'inbox.attempt.launch_requested': 'открывается',
+      'inbox.attempt.launch_failed': 'не открылась ({reason})', 'inbox.attempt.needs_human': 'нужен человек',
+    }
+  })
+  const out = (d: Delivery): ChatMessage => ({ id: 'm1', direction: 'out', from: 'me', created_at: '', delivery: [d] }) as unknown as ChatMessage
+
+  it('names the latest attempt until the message is read', () => {
+    expect(attemptText({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'wake_requested' })).toBe('разбужена')
+    expect(attemptText({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'launch_failed:no_agent' })).toBe('не открылась (no_agent)')
+    expect(attemptText({ peer: 'bob', status: 'sent', state: 'read', attempt: 'wake_requested' })).toBe('')
+    expect(attemptText({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'future_event' })).toBe('')
+  })
+
+  it('shows a failed attempt as a hold, not a delivered tick', () => {
+    const waking = ticksFor(out({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'launch_requested' }), null)!
+    expect(waking.state).toBe('delivered')
+    expect(waking.label).toBe('bob: доставлено — открывается')
+    const failed = ticksFor(out({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'launch_failed:timeout' }), null)!
+    expect(failed.state).toBe('held')
+    expect(failed.label).toBe('bob: доставлено — не открылась (timeout)')
+    expect(ticksFor(out({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'needs_human' }), null)!.state).toBe('held')
+    expect(ticksFor(out({ peer: 'bob', status: 'sent', state: 'read', attempt: 'needs_human' }), null)!.state).toBe('read')
+  })
+
+  it('puts the attempt under the chat instead of presence', () => {
+    const info = { id: 'c', members: [{ name: 'bob', connected: true, presence: { session: 'rewake' } }] } as unknown as ChatInfo
+    expect(presenceLines(info, [out({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'wake_requested' })]))
+      .toEqual([{ name: 'bob', text: 'разбужена' }])
+  })
+})
 
 const job = (type: string, text: string): Job => ({ reply_to: 'm1', job_status: 'running', activity_info: { type, text } }) as Job
 const count = (s: string, word: string) => s.split(word).length - 1
