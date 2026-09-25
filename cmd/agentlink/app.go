@@ -85,7 +85,7 @@ func runApp(args []string) error {
 	a.Worker.IdleTimeout = *idle
 	a.Waker = codexqueue.New()
 	a.Poster = node.PipePoster{}
-	a.Launcher = node.TerminalLauncher{}
+	a.Launcher = node.DesktopLauncher{Terminal: node.TerminalLauncher{}, Version: selfupdate.Version}
 	if *apiAddr != "" {
 		if err := a.SetAPIAddr(*apiAddr); err != nil {
 			return err

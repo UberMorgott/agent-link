@@ -106,6 +106,8 @@ type Node struct {
 	launcher SessionLauncher
 	autoOpen atomic.Bool
 	deliv    *deliveryState
+	// directWG counts the desktop-app first turns running (runDirect).
+	directWG sync.WaitGroup
 
 	selfAddrs []string // this node's own peer addresses, set by Run
 

@@ -99,6 +99,18 @@ type ProjectBinding struct {
 	// AutoOpen opens a visible agent session in Dir when a message asks this
 	// member and no session is live there (node.SetAutoOpen); nil means on.
 	AutoOpen *bool `json:"auto_open,omitempty"`
+	// LaunchMode is where such a session opens (node.SetLaunchMode):
+	// "desktop" (the default, "") the agent's desktop app when installed,
+	// "terminal" Windows Terminal.
+	LaunchMode string `json:"launch_mode,omitempty"`
+}
+
+// LaunchModeOf is b's launch mode: "terminal" or "desktop".
+func (b ProjectBinding) LaunchModeOf() string {
+	if b.LaunchMode == "terminal" {
+		return "terminal"
+	}
+	return "desktop"
 }
 
 // AutoOpenOn reports whether the project opens sessions by itself (default on).

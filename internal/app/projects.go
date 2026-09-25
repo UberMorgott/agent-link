@@ -45,6 +45,9 @@ type ProjectView struct {
 	// AutoOpen: a message that asks this member opens a visible agent session
 	// in Dir when none is live there (settings.ProjectBinding.AutoOpen).
 	AutoOpen bool `json:"auto_open,omitempty"`
+	// LaunchMode: where such a session opens, "desktop" or "terminal"
+	// (settings.ProjectBinding.LaunchMode).
+	LaunchMode string `json:"launch_mode,omitempty"`
 }
 
 // InviteView is the answer of the invite reveal endpoint, the only way a

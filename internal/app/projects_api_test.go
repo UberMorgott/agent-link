@@ -138,6 +138,16 @@ func TestProjectsAPI(t *testing.T) {
 		!v.AutoOpen || !h.app.projects[site.ID].n.AutoOpen() {
 		t.Fatalf("auto-open on: %d %s", code, raw)
 	}
+	// Launch mode: desktop by default, terminal kept in the settings and applied.
+	if v.LaunchMode != "desktop" {
+		t.Fatalf("launch mode not desktop by default: %+v", v)
+	}
+	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"launch_mode": "terminal"}, &v); code != http.StatusOK ||
+		v.LaunchMode != "terminal" || h.app.Settings().Bindings[h.app.bindingIndex(site.ID)].LaunchMode != "terminal" ||
+		h.app.projects[site.ID].n.LaunchMode() != node.LaunchTerminal {
+		t.Fatalf("launch mode terminal: %d %s", code, raw)
+	}
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"launch_mode": "window"}, http.StatusBadRequest, "bad_request")
 	h.wantError(t, http.MethodPost, "projects/"+bare.ID+"/binding", map[string]any{"dir": dir2}, http.StatusBadRequest, "dir_taken")
 	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"dir": "relative"}, http.StatusBadRequest, "dir")
 	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"alias": "a\x01"}, http.StatusBadRequest, "alias")

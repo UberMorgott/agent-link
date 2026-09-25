@@ -15,7 +15,15 @@ import (
 // The launch ladder. A message that asks this node must be seen by an agent
 // session. When an area of this node has eligible unread messages and no live
 // session at all, the node opens a visible session in the area's folder
-// (SessionLauncher: Windows Terminal), while auto-open is on (SetAutoOpen):
+// (SessionLauncher), while auto-open is on (SetAutoOpen).
+//
+// In the agent's desktop app (DirectLauncher, launch mode LaunchDesktop, the
+// app installed): the node runs the session's first turn headless with the
+// messages themselves as its prompt (startDirect), acknowledges them as that
+// session's once the turn has them (launch_confirmed) and shows the session in
+// the app; a launch that never starts is launch_failed:<reason>.
+//
+// Else in Windows Terminal:
 //
 //  1. It resumes the last session seen in the area (LastSession: `claude
 //     --resume <id>` / `codex resume <id>`), else starts a new one, with a
@@ -65,6 +73,45 @@ type LaunchSpec struct {
 // SessionLauncher opens a visible agent session.
 type SessionLauncher interface {
 	Launch(ctx context.Context, spec LaunchSpec) error
+}
+
+// DirectLauncher is a SessionLauncher that can also open a session in the
+// agent's desktop app (DesktopLauncher): it runs the session's first turn
+// itself, with the messages as its prompt.
+type DirectLauncher interface {
+	SessionLauncher
+	// Direct reports whether provider's sessions can open this way.
+	Direct(provider string) bool
+	// Run runs spec's first turn and shows the session; started gets the
+	// session id once the turn has the prompt. It returns after the turn.
+	Run(ctx context.Context, spec LaunchSpec, started func(session string)) error
+}
+
+// Launch modes of a project (SetLaunchMode).
+const (
+	// LaunchDesktop opens sessions in the agent's desktop app when it is
+	// installed, in Terminal otherwise (the default).
+	LaunchDesktop = "desktop"
+	// LaunchTerminal opens sessions in Terminal.
+	LaunchTerminal = "terminal"
+)
+
+// SetLaunchMode sets how sessions open (LaunchDesktop when not
+// LaunchTerminal); it may change while the node runs.
+func (n *Node) SetLaunchMode(mode string) {
+	if mode != LaunchTerminal {
+		mode = LaunchDesktop
+	}
+	n.deliv.mu.Lock()
+	n.deliv.mode = mode
+	n.deliv.mu.Unlock()
+}
+
+// LaunchMode reports how sessions open (LaunchDesktop or LaunchTerminal).
+func (n *Node) LaunchMode() string {
+	n.deliv.mu.Lock()
+	defer n.deliv.mu.Unlock()
+	return n.deliv.mode
 }
 
 // SetLauncher sets how the node opens a session when none is live, and the
@@ -145,6 +192,7 @@ func launchSafe(s string) string {
 type deliveryState struct {
 	mu       sync.Mutex
 	provider string
+	mode     string // LaunchDesktop or LaunchTerminal
 	// sent: attempt events already reported, by message id and event.
 	sent map[string]bool
 	// woken: messages a wake was reported for, awaiting their ack.
@@ -162,10 +210,12 @@ type pendingLaunch struct {
 	tries int
 	spec  LaunchSpec
 	ids   []string
+	// direct: a desktop-app launch running its first turn (runDirect ends it).
+	direct bool
 }
 
 func newDeliveryState() *deliveryState {
-	return &deliveryState{provider: ProviderClaude, sent: map[string]bool{}, woken: map[string]bool{}, spent: map[string]bool{},
+	return &deliveryState{provider: ProviderClaude, mode: LaunchDesktop, sent: map[string]bool{}, woken: map[string]bool{}, spent: map[string]bool{},
 		pending: map[string]*pendingLaunch{}, last: map[string]time.Time{}}
 }
 
@@ -285,6 +335,9 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 	d.mu.Lock()
 	p := d.pending[area]
 	d.mu.Unlock()
+	if p != nil && p.direct {
+		return // its first turn is running
+	}
 	if n.areaLive(area, now) {
 		if p != nil {
 			d.mu.Lock()
@@ -326,7 +379,7 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 	}
 	d.mu.Lock()
 	recent, debounced := d.last[area], now.Sub(d.last[area]) < launchDebounce
-	provider := d.provider
+	provider, mode := d.provider, d.mode
 	d.mu.Unlock()
 	if debounced {
 		n.log.Debug("launch debounced", "area", area, "last", recent)
@@ -342,7 +395,81 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 			spec.Provider, spec.Folder, spec.ResumeID = ls.Provider, ls.Folder, ls.SessionID
 		}
 	}
+	if dl, ok := n.launcher.(DirectLauncher); ok && mode != LaunchTerminal && dl.Direct(spec.Provider) {
+		n.startDirect(ctx, dl, area, spec, eligible, now)
+		return
+	}
 	n.startLaunch(ctx, area, spec, eligible, 1, now)
+}
+
+// startDirect opens spec in the desktop app (dl) for eligible: its first
+// turn's prompt is the messages themselves (WakePrompt, as many as fit), and
+// they are acknowledged as the opened session's once the turn has them. A
+// headless turn runs no agent-link hooks, so nothing else delivers them to it.
+func (n *Node) startDirect(ctx context.Context, dl DirectLauncher, area string, spec LaunchSpec, eligible []UnreadMessage, now time.Time) {
+	msgs := eligible[:FitUnread(eligible)]
+	spec.Prompt = WakePrompt(msgs, len(eligible)-len(msgs), spec.Folder, randomHex(8))
+	p := &pendingLaunch{at: now, tries: 1, spec: spec, ids: ids(msgs), direct: true}
+	d := n.deliv
+	d.mu.Lock()
+	d.last[area] = now
+	d.pending[area] = p
+	d.mu.Unlock()
+	n.report(p.ids, AttemptLaunchRequested)
+	n.log.Info("opening a session in the desktop app for unread messages", "area", area, "provider", spec.Provider,
+		"folder", spec.Folder, "resume", spec.ResumeID, "messages", len(p.ids))
+	n.directWG.Go(func() { n.runDirect(ctx, dl, area, p) })
+}
+
+// runDirect runs p's first turn and ends p: launch_confirmed once the turn has
+// the messages (launchStarted), launch_failed:<reason> when it never started.
+func (n *Node) runDirect(ctx context.Context, dl DirectLauncher, area string, p *pendingLaunch) {
+	started := false
+	err := dl.Run(ctx, p.spec, func(session string) {
+		if !started {
+			started = true
+			n.launchStarted(area, p, session)
+		}
+	})
+	d := n.deliv
+	d.mu.Lock()
+	if d.pending[area] == p {
+		delete(d.pending, area)
+	}
+	for _, id := range p.ids {
+		d.spent[id] = true
+	}
+	d.mu.Unlock()
+	switch {
+	case err != nil && !started:
+		reason := "start_error"
+		if errors.Is(err, ErrNoAgent) {
+			reason = ErrNoAgent.Error()
+		}
+		n.log.Warn("opening a session in the desktop app failed", "area", area, "provider", p.spec.Provider, "err", err)
+		n.report(p.ids, AttemptLaunchFailed+":"+reason)
+	case err != nil:
+		n.log.Warn("the opened session's first turn failed", "area", area, "provider", p.spec.Provider, "err", err)
+	default:
+		n.log.Info("opened session's first turn done", "area", area, "provider", p.spec.Provider)
+	}
+}
+
+// launchStarted acknowledges p's messages as session's (its prompt has them),
+// keeps session as the area's last one and reports launch_confirmed.
+func (n *Node) launchStarted(area string, p *pendingLaunch, session string) {
+	if _, err := n.Ack("", AckRequest{IDs: p.ids, SessionID: session}); err != nil {
+		n.log.Warn("acknowledging the opened session's messages", "session", session, "err", err)
+	}
+	r := n.sess
+	r.mu.Lock()
+	r.recent[area] = LastSession{SessionID: session, Provider: p.spec.Provider, Folder: p.spec.Folder, At: time.Now().UTC()}
+	if err := writeJSON(r.recentPath, r.recent); err != nil {
+		n.log.Warn("save last sessions", "err", err)
+	}
+	r.mu.Unlock()
+	n.log.Info("opened session started", "area", area, "provider", p.spec.Provider, "session", session)
+	n.report(p.ids, AttemptLaunchConfirmed)
 }
 
 // startLaunch opens spec for msgs (try number tries) and records it pending.
