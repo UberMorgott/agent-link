@@ -234,10 +234,10 @@ func TestLaunchCommand(t *testing.T) {
 		spec LaunchSpec
 		want string
 	}{
-		{LaunchSpec{Provider: ProviderClaude, Folder: `C:\p`, Prompt: "read; now"}, `wt.exe -w new -d C:\p claude read now`},
-		{LaunchSpec{Provider: ProviderClaude, Folder: `C:\p`, ResumeID: "abc", Prompt: "go"}, `wt.exe -w new -d C:\p claude --resume abc go`},
-		{LaunchSpec{Provider: ProviderCodex, Folder: `C:\p`, Prompt: "go"}, `wt.exe -w new -d C:\p codex -C C:\p go`},
-		{LaunchSpec{Provider: ProviderCodex, Folder: `C:\p`, ResumeID: "t-1", Prompt: "go"}, `wt.exe -w new -d C:\p codex resume t-1 go`},
+		{LaunchSpec{Provider: ProviderClaude, Folder: `C:\p`, Prompt: "read; now"}, `wt.exe -w new -d C:\p claude --permission-mode bypassPermissions read now`},
+		{LaunchSpec{Provider: ProviderClaude, Folder: `C:\p`, ResumeID: "abc", Prompt: "go"}, `wt.exe -w new -d C:\p claude --permission-mode bypassPermissions --resume abc go`},
+		{LaunchSpec{Provider: ProviderCodex, Folder: `C:\p`, Prompt: "go"}, `wt.exe -w new -d C:\p codex --dangerously-bypass-approvals-and-sandbox -C C:\p go`},
+		{LaunchSpec{Provider: ProviderCodex, Folder: `C:\p`, ResumeID: "t-1", Prompt: "go"}, `wt.exe -w new -d C:\p codex resume --dangerously-bypass-approvals-and-sandbox t-1 go`},
 	} {
 		got := LaunchCommand(c.spec)
 		if strings.Join(got, " ") != c.want {
@@ -284,14 +284,15 @@ func TestLaunchLadderConfirmed(t *testing.T) {
 	a.launchDue(ctx, later.Add(2*time.Second))
 	waitAttempts(t, b, m, AttemptLaunchRequested, AttemptLaunchConfirmed)
 
-	// The next launch resumes the last session of the folder, in its agent.
+	// The next launch is a new session (never a resume), in the agent of the
+	// folder's last session.
 	if err := a.EndSession("s-new"); err != nil {
 		t.Fatal(err)
 	}
 	ask(t, a, b, "more")
 	next := later.Add(launchDebounce + launchGrace + time.Minute)
 	a.launchDue(ctx, next)
-	if specs := l.all(); len(specs) != 2 || specs[1].Provider != ProviderCodex || specs[1].ResumeID != "s-new" ||
+	if specs := l.all(); len(specs) != 2 || specs[1].Provider != ProviderCodex || specs[1].ResumeID != "" ||
 		!strings.Contains(specs[1].Prompt, "(1)") { // the confirmed launch's message is not launched for again
 		t.Fatalf("resume %+v", specs)
 	}
@@ -316,7 +317,7 @@ func TestLaunchLadderTimeout(t *testing.T) {
 	a.launchDue(ctx, t0.Add(launchConfirm+time.Second))
 	a.launchDue(ctx, t0.Add(launchConfirm+2*time.Second)) // pending again
 	specs := l.all()
-	if len(specs) != 2 || specs[0].ResumeID != "old" || specs[1].ResumeID != "" {
+	if len(specs) != 2 || specs[0].ResumeID != "" || specs[1].ResumeID != "" {
 		t.Fatalf("tries %+v", specs)
 	}
 	a.launchDue(ctx, t0.Add(2*launchConfirm+3*time.Second))
@@ -410,5 +411,92 @@ func TestReceiveAttempts(t *testing.T) {
 	i := slices.IndexFunc(msgs, func(cm ChatMessage) bool { return cm.ID == m.ID })
 	if d := msgs[i].Delivery[0]; d.Attempt != AttemptWakeRequested || !d.Attempts[len(d.Attempts)-1].At.Equal(base.Add(time.Duration(maxAttemptsKept+2)*time.Second)) {
 		t.Fatalf("delivery %+v", d)
+	}
+}
+
+// One recipient per message: no idle session is woken while a session of the
+// area is in a turn (its hooks deliver); then only the idle one seen last.
+func TestWakeIdlePriority(t *testing.T) {
+	p := &fakePoster{}
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, p, nil)
+	const (
+		sockOld = `\\.\pipe\LOCAL\cc-msg-4f99f28c24f33ee84c6dd8f59791167e`
+		sockNew = `\\.\pipe\LOCAL\cc-msg-0123456789abcdef0123456789abcde0`
+	)
+	reg := func(id, sock string, idle bool) {
+		t.Helper()
+		if _, err := a.RegisterSession(SessionRequest{SessionID: id, Provider: "claude", Folder: dir, Wake: WakeRewake,
+			Idle: idle, InboxSocket: sock, InboxToken: testToken}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reg("s-act", testSocket, false)
+	reg("s-old", sockOld, true)
+	reg("s-new", sockNew, true)
+	a.sess.mu.Lock()
+	a.sess.sessions["s-old"].LastSeen = time.Now().Add(-time.Minute)
+	a.sess.mu.Unlock()
+	m := ask(t, a, b, "who takes it")
+	a.wakeIdle(context.Background())
+	if p.count() != 0 {
+		t.Fatalf("an idle session woken while one is in a turn: %v", p.calls)
+	}
+	if err := a.EndSession("s-act"); err != nil {
+		t.Fatal(err)
+	}
+	a.wakeIdle(context.Background())
+	a.wakeIdle(context.Background())
+	if p.count() != 1 || !strings.HasPrefix(p.calls[0], sockNew+"|") || !strings.Contains(p.calls[0], "id "+m.ID) {
+		t.Fatalf("posts %v", p.calls)
+	}
+}
+
+// Active wins over chat affinity: the chat's session is idle while another
+// session of the folder is in a turn, so the message is the active one's
+// (its hooks take it) and the idle one is not woken; once no session is in a
+// turn, affinity names the idle one again and it is woken.
+func TestWakeIdleAffinityActiveWins(t *testing.T) {
+	p := &fakePoster{}
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, p, nil)
+	reg := func(id, sock string, idle bool) {
+		t.Helper()
+		if _, err := a.RegisterSession(SessionRequest{SessionID: id, Provider: "claude", Folder: dir, Wake: WakeRewake,
+			Idle: idle, InboxSocket: sock, InboxToken: testToken}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reg("s-idle", testSocket, true)
+	reg("s-act", `\\.\pipe\LOCAL\cc-msg-4f99f28c24f33ee84c6dd8f59791167e`, false)
+	q, err := a.SendRequest(SendRequest{To: "b", Body: "check it", AuthorKind: AuthorAgent, SessionID: "s-idle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the request", func() bool { p, _ := b.Unread("", "", 10); return p.Total == 1 })
+	m, err := b.SendRequest(SendRequest{ChatID: q.ChatID, Body: "new topic", Ask: []string{"a"}, AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has it", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 1 })
+	if to := a.routedTo([]string{m.ID})[m.ID]; to != "" {
+		t.Fatalf("routed to %q while a session is in a turn", to)
+	}
+	a.wakeIdle(context.Background())
+	if p.count() != 0 {
+		t.Fatalf("the idle chat session was woken while one is active: %v", p.calls)
+	}
+	if page, _ := a.UnreadFor(dir, "s-act", "", 10); page.Total != 1 {
+		t.Fatalf("the active session does not see it: %+v", page)
+	}
+	a.sess.mu.Lock()
+	a.sess.sessions["s-act"].Idle = true
+	a.sess.mu.Unlock()
+	if to := a.routedTo([]string{m.ID})[m.ID]; to != "s-idle" {
+		t.Fatalf("both idle: routed to %q, want the chat's session", to)
+	}
+	a.wakeIdle(context.Background())
+	if p.count() != 1 || !strings.HasPrefix(p.calls[0], testSocket+"|") {
+		t.Fatalf("posts %v", p.calls)
 	}
 }

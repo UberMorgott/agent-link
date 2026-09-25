@@ -26,6 +26,13 @@ import (
 // claim, and one the session never took lapses after inboxWakeGrace, and the
 // hooks deliver them as always. Each woken message's author hears of it
 // (AttemptWakeRequested, then AttemptWokenConfirmed at the ack).
+//
+// One recipient per message, by priority: a session in a turn (not Idle)
+// gets it through its hooks, so no idle session of its area is woken for a
+// message for no session in particular; a message routed to an idle session
+// (its claim, assignment or chat affinity, routeOf; affinity never names an
+// idle session while one of its area is in a turn) wakes that one; else the
+// area's wakeable idle session seen last is woken, and only it.
 // The same loop runs the launch ladder (launch.go).
 
 // wakePoll is how often the node looks for idle sessions to wake.
@@ -69,6 +76,7 @@ func (n *Node) wakeLoop(ctx context.Context) {
 			n.syncQueueWake()
 		}
 		n.wakeIdle(ctx)
+		n.launchMaintain(ctx, time.Now())
 		n.launchDue(ctx, time.Now())
 		select {
 		case <-ctx.Done():
@@ -120,7 +128,17 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		inbox inboxAddr
 	}
 	var list []due
+	// active: areas with a live session in a turn (its hooks deliver);
+	// first: per area, the wakeable idle session seen last, the one a message
+	// for no session in particular wakes.
+	active := map[string]bool{}
+	first := map[string]Session{}
 	r.mu.Lock()
+	for _, s := range r.sessions {
+		if s.live(now) && !s.Idle {
+			active[s.Area] = true
+		}
+	}
 	for _, s := range r.sessions {
 		if !s.Idle || !s.live(now) || !s.wakeDue(now) {
 			continue
@@ -129,6 +147,11 @@ func (n *Node) wakeIdle(ctx context.Context) {
 			list = append(list, due{s: *s, inbox: a})
 		} else if s.Wake == WakeQueue && queue {
 			list = append(list, due{s: *s})
+		} else {
+			continue
+		}
+		if f, ok := first[s.Area]; !ok || s.LastSeen.After(f.LastSeen) || (s.LastSeen.Equal(f.LastSeen) && s.SessionID < f.SessionID) {
+			first[s.Area] = *s
 		}
 	}
 	r.mu.Unlock()
@@ -138,11 +161,25 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		if err != nil || len(page.Messages) == 0 {
 			continue
 		}
-		msgs, token := n.wakeClaim(s.SessionID, page.Messages[:FitUnread(page.Messages)])
+		// One recipient per message: the session it is routed to (its claim,
+		// assignment or chat), else, while no session of the area is in a turn,
+		// the area's first idle session.
+		anyone := !active[s.Area] && first[s.Area].SessionID == s.SessionID
+		mine := n.routedTo(ids(page.Messages))
+		take := page.Messages[:0:0]
+		for _, m := range page.Messages {
+			if to := mine[m.ID]; to == s.SessionID || (to == "" && anyone) {
+				take = append(take, m)
+			}
+		}
+		if len(take) == 0 {
+			continue
+		}
+		msgs, token := n.wakeClaim(s.SessionID, take[:FitUnread(take)])
 		if len(msgs) == 0 {
 			continue
 		}
-		text := WakePrompt(msgs, page.Total-len(msgs), s.Folder, token)
+		text := WakePrompt(msgs, len(take)-len(msgs)+page.Total-len(page.Messages), s.Folder, token)
 		byInbox := d.inbox.socket != ""
 		images := wakeImages(msgs)
 		iw, withImages := n.waker.(ImageWaker)

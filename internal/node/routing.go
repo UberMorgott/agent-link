@@ -20,7 +20,10 @@ import (
 //     newest message a session of this node wrote (chatRecord.Session,
 //     recorded by agentlink send inside the session) or was assigned. A
 //     session that never took part in a chat does not get its messages while
-//     one that did lives;
+//     one that did lives. An active session (in a turn) wins over an idle
+//     one of its area: while one lives, affinity picks among the active ones
+//     only, and a chat whose session is idle is for no session in particular
+//     (the active one's hooks take it, no idle session is woken);
 //   - else no session in particular: the first session to Claim it takes it.
 //
 // Only live sessions count: a message for a session that is gone is anyone's.
@@ -39,16 +42,99 @@ type sessionClaim struct {
 	// token (a wake only) is the one the wake prompt carries (WakeMarker): the
 	// hooks acknowledge the message only at a prompt that carries it.
 	token string
+	// launch: the node's for the first turn of a desktop launch (launchClaim);
+	// session is then launchOwner(area), no registered session.
+	launch bool
+	// ackOnly: the messages a desktop launch's session took whose ack is
+	// pending (holdForAck); held until acknowledged, delivered to nobody.
+	ackOnly bool
 }
 
+// launchHold bounds a launch claim: the first turn's own timeout, plus the
+// time to end it (runDirect drops or acknowledges it before that).
+const launchHold = desktopTurnTimeout + 5*time.Minute
+
 // held reports whether the claim still holds for a live session: claimTTL,
-// or inboxWakeGrace for a wake (then the session's waiter takes over).
+// or inboxWakeGrace for a wake (then the session's waiter takes over); a
+// launch claim holds for launchHold, no session being live yet.
 func (c sessionClaim) held(live map[string]bool) bool {
+	if c.ackOnly {
+		return true
+	}
+	if c.launch {
+		return time.Since(c.at) < launchHold
+	}
 	ttl := claimTTL
 	if c.wake {
 		ttl = inboxWakeGrace
 	}
 	return live[c.session] && time.Since(c.at) < ttl
+}
+
+// launchOwner is the claim owner of a desktop launch in area: never a session
+// id (validSessionID refuses a space).
+func launchOwner(area string) string { return "launch " + area }
+
+// launchClaim claims msgs for the first turn of a desktop launch in area,
+// atomically, like a wake (claimLocked): not the ones a session's hook or
+// another launch holds. Until runDirect acknowledges or drops them, no
+// session's hooks deliver them (routeOf names the launch). It returns the ones
+// granted, in order.
+func (n *Node) launchClaim(area string, msgs []UnreadMessage) []UnreadMessage {
+	r := n.sess
+	r.claimMu.Lock()
+	defer r.claimMu.Unlock()
+	live := r.liveIDs(time.Now())
+	owner := launchOwner(area)
+	var want []string
+	for _, m := range msgs {
+		if c, ok := r.claims[m.ID]; ok && c.held(live) {
+			continue // a session's hook, a wake or a launch has it
+		}
+		want = append(want, m.ID)
+	}
+	granted := n.claimLocked(owner, want, true, "", live)
+	var out []UnreadMessage
+	for _, m := range msgs {
+		if slices.Contains(granted, m.ID) {
+			r.claims[m.ID] = sessionClaim{session: owner, at: time.Now(), launch: true}
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// routedTo maps each of ids to the live session it is for (routeOf), ""
+// for no session in particular.
+func (n *Node) routedTo(ids []string) map[string]string {
+	r := n.sess
+	r.claimMu.Lock()
+	defer r.claimMu.Unlock()
+	live := r.liveIDs(time.Now())
+	out := make(map[string]string, len(ids))
+	for _, id := range ids {
+		if rec, ok := n.chats.message(id); ok {
+			out[id] = n.routeOf(id, &rec, live)
+		} else {
+			out[id] = n.routeOf(id, nil, live)
+		}
+	}
+	return out
+}
+
+// launchHeld is the set of messages a desktop launch holds (launchClaim), or
+// its session does while their ack is pending (holdForAck).
+func (n *Node) launchHeld() map[string]bool {
+	r := n.sess
+	r.claimMu.Lock()
+	defer r.claimMu.Unlock()
+	out := map[string]bool{}
+	for id, c := range r.claims {
+		if (c.launch || c.ackOnly) && c.held(nil) {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 // ClaimRequest is the body of POST /claim.
@@ -84,7 +170,37 @@ func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string 
 	if s := assignedSession(*rec); live[s] {
 		return s
 	}
-	return n.chats.affinity(rec.Message.ChatID, n.cfg.Node, live)
+	aff := n.chats.affinity(rec.Message.ChatID, n.cfg.Node, live)
+	if busy := n.sess.busyBeside(aff, live); busy != nil {
+		// The chat's session is idle while another of its area is in a turn:
+		// the active one wins (no wake), affinity only picks among them.
+		return n.chats.affinity(rec.Message.ChatID, n.cfg.Node, busy)
+	}
+	return aff
+}
+
+// busyBeside is, when session id is idle, the set of the live sessions of its
+// area in a turn (not Idle); nil when it is not idle or there are none.
+func (r *sessionRegistry) busyBeside(id string, live map[string]bool) map[string]bool {
+	if id == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := r.sessions[id]
+	if s == nil || !s.Idle {
+		return nil
+	}
+	var out map[string]bool
+	for oid, o := range r.sessions {
+		if live[oid] && !o.Idle && o.Area == s.Area {
+			if out == nil {
+				out = map[string]bool{}
+			}
+			out[oid] = true
+		}
+	}
+	return out
 }
 
 // assignedSession is the session a record is assigned to ("session:<id>").
@@ -133,6 +249,9 @@ func (n *Node) claimLocked(session string, want []string, wake bool, token strin
 		plain[p.Message.ID] = true
 	}
 	for _, id := range want {
+		if c, ok := r.claims[id]; ok && c.ackOnly {
+			continue // taken by a launched session, its ack pending: nobody's to deliver
+		}
 		var to string
 		if rec, ok := n.chats.message(id); ok {
 			if !rec.Unread || !rec.ReadAt.IsZero() || rec.Message.Kind != "" {

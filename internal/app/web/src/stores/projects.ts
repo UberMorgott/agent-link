@@ -183,7 +183,7 @@ export const useProjectsStore = defineStore('projects', () => {
   }
 
   // bind changes this member's own alias and folder; an absent field is kept.
-  async function bind(pid: string, body: { alias?: string; dir?: string }) {
+  async function bind(pid: string, body: { alias?: string; dir?: string; auto_open?: boolean }) {
     const view = await api<ProjectView>('POST', projectPath(pid, 'binding'), body)
     upsert(view)
     return view

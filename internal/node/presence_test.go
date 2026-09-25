@@ -43,9 +43,7 @@ func TestPresencePropagates(t *testing.T) {
 	if p := memberPresence(); p == nil || *p != (AreaPresence{Area: "dev", AutoAnswer: true}) {
 		t.Fatalf("chat member presence %+v", p)
 	}
-	if _, ok := b.PeerPresence("a", ""); !ok {
-		t.Fatal("b has no presence of a")
-	}
+	eventually(t, "b has the presence of a", func() bool { _, ok := b.PeerPresence("a", ""); return ok })
 
 	if _, err := b.RegisterSession(SessionRequest{SessionID: "s1", Provider: "claude", Folder: proj, Wake: WakeRewake}); err != nil {
 		t.Fatal(err)

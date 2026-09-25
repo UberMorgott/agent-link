@@ -106,6 +106,12 @@ type Node struct {
 	launcher SessionLauncher
 	autoOpen atomic.Bool
 	deliv    *deliveryState
+	// directWG counts the desktop-app first turns running (runDirect).
+	directWG sync.WaitGroup
+	// occupied replaces folderOccupied, launchAck the ack of a desktop
+	// launch's messages (tests); nil: the real ones.
+	occupied  func(dir string, now time.Time) bool
+	launchAck func(req AckRequest) error
 
 	selfAddrs []string // this node's own peer addresses, set by Run
 
@@ -260,6 +266,9 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		return nil, err
 	}
 	n.deliv = newDeliveryState()
+	if err := n.loadLaunchState(); err != nil {
+		return nil, err
+	}
 	if err := n.repairChats(); err != nil {
 		return nil, err
 	}

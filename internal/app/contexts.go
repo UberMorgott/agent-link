@@ -193,6 +193,7 @@ func (a *App) newProjectContext(b settings.ProjectBinding) (*appContext, error) 
 		return c, nil
 	}
 	n.SetAutoOpen(b.AutoOpenOn())
+	n.SetLaunchMode(b.LaunchModeOf())
 	opt, hasHandler := a.workerOptions(b.ID, n)
 	if c.w, err = worker.New(nil, n.SendMessage, cfg.DataDir, b.Dir, opt, a.log); err != nil {
 		return nil, err

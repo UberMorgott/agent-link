@@ -222,6 +222,7 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     const next = { ...p }
     if (typeof req.alias === 'string') next.alias = req.alias.trim()
     if (typeof req.dir === 'string') next.dir = req.dir.trim()
+    if (typeof req.auto_open === 'boolean') next.auto_open = req.auto_open
     next.display = next.alias || next.name
     next.state = stateOf(next)
     return setView(b, next)

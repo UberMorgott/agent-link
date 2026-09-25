@@ -512,6 +512,16 @@ area's messages; a session in the working folder gets the rest (direct messages,
 an area, areas without a folder); a session elsewhere gets none. Codex runs a new hook only
 after you trust it once with `/hooks` in that folder.
 
+**Auto-open (off by default).** With a project's «Разрешить другим агентам создавать сессию в
+этом проекте» (project menu «⋯») on, a message that asks you while no session (active or idle)
+is live in the project's folder makes the node open a **new** agent session there: in the
+agent's desktop app (the first turn runs headless with the messages as its prompt, the app
+shows it live) or in Windows Terminal. **Such a session runs with your full permissions**
+(Claude `bypassPermissions`, Codex no approvals and no sandbox) and acts on what other members'
+agents wrote without asking: switch it on only for projects whose members you trust; it is off
+for every project until you do. While it is off, a message waits for a session of the folder.
+Details: [docs/agent-usage.md](docs/agent-usage.md#hearing-about-messages-in-a-live-session-hooks).
+
 ## Delivery
 
 - Sent messages are written to `outbox/<peer>/` first and removed only when the peer ACKs, so an

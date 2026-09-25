@@ -125,19 +125,29 @@ func TestProjectsAPI(t *testing.T) {
 	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"dir": dir2}, &v); code != http.StatusOK || v.State != ProjectReady {
 		t.Fatalf("bind folder: %d %s", code, raw)
 	}
-	// Auto-open: on by default, off and on again, kept in the settings.
-	if !v.AutoOpen {
-		t.Fatalf("auto-open not on by default: %+v", v)
+	// Auto-open: off by default (no value), on and off again, kept in the settings.
+	if v.AutoOpen || h.app.Settings().Bindings[h.app.bindingIndex(site.ID)].AutoOpen != nil || h.app.projects[site.ID].n.AutoOpen() {
+		t.Fatalf("auto-open not off by default: %+v", v)
+	}
+	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"auto_open": true}, &v); code != http.StatusOK ||
+		!v.AutoOpen || !h.app.Settings().Bindings[h.app.bindingIndex(site.ID)].AutoOpenOn() || !h.app.projects[site.ID].n.AutoOpen() {
+		t.Fatalf("auto-open on: %d %s", code, raw)
 	}
 	v = ProjectView{}
 	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"auto_open": false}, &v); code != http.StatusOK ||
 		v.AutoOpen || h.app.Settings().Bindings[h.app.bindingIndex(site.ID)].AutoOpenOn() || h.app.projects[site.ID].n.AutoOpen() {
 		t.Fatalf("auto-open off: %d %s", code, raw)
 	}
-	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"auto_open": true}, &v); code != http.StatusOK ||
-		!v.AutoOpen || !h.app.projects[site.ID].n.AutoOpen() {
-		t.Fatalf("auto-open on: %d %s", code, raw)
+	// Launch mode: desktop by default, terminal kept in the settings and applied.
+	if v.LaunchMode != "desktop" {
+		t.Fatalf("launch mode not desktop by default: %+v", v)
 	}
+	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"launch_mode": "terminal"}, &v); code != http.StatusOK ||
+		v.LaunchMode != "terminal" || h.app.Settings().Bindings[h.app.bindingIndex(site.ID)].LaunchMode != "terminal" ||
+		h.app.projects[site.ID].n.LaunchMode() != node.LaunchTerminal {
+		t.Fatalf("launch mode terminal: %d %s", code, raw)
+	}
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"launch_mode": "window"}, http.StatusBadRequest, "bad_request")
 	h.wantError(t, http.MethodPost, "projects/"+bare.ID+"/binding", map[string]any{"dir": dir2}, http.StatusBadRequest, "dir_taken")
 	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"dir": "relative"}, http.StatusBadRequest, "dir")
 	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"alias": "a\x01"}, http.StatusBadRequest, "alias")
