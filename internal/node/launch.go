@@ -20,7 +20,11 @@ import (
 //  1. It resumes the last session seen in the area (LastSession: `claude
 //     --resume <id>` / `codex resume <id>`), else starts a new one, with a
 //     prompt that tells it to read the messages; the session's hooks deliver
-//     them as always.
+//     them as always, in that same first turn. Unlike a wake, the prompt does
+//     not carry the messages: it goes through wt's command line (launchSafe
+//     strips newlines and quotes), and nothing can claim them before the
+//     session exists and registers (a new session's id is unknown until
+//     then; a launch that never starts would hold them hidden).
 //  2. The launch is confirmed when a session of the area registers
 //     (SessionStart) within launchConfirm; else it is tried once more as a new
 //     session, then given up (launch_failed:timeout).

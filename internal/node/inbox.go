@@ -29,8 +29,8 @@ import (
 // The auth line is required on Windows and proves the message comes from the
 // session's own child (a hook), so Claude Code delivers it unless the
 // session's crossSessionInbound setting says otherwise. An idle session starts
-// a turn with the prompt; its UserPromptSubmit hook then delivers the unread
-// messages as always. Claude Code closes a connection that sends no complete
+// a turn with the prompt, which carries the messages (WakePrompt); its
+// UserPromptSubmit hook acknowledges them. Claude Code closes a connection that sends no complete
 // line within 30 s, so the connection is opened only when the lines are ready.
 
 // Providers of agent sessions the node wakes or opens.
@@ -116,7 +116,8 @@ func writeInbox(w io.Writer, token, text string) error {
 
 // InboxWakes reports whether the node wakes session sid through its inbox
 // (so its background waiter must not wake it too): it holds the inbox, and
-// the session did not stay idle past inboxWakeGrace after the node woke it.
+// the session did not stay idle past inboxWakeGrace after the node's last
+// wake (a retry, maxIdleWakes, holds the waiter off again for its grace).
 func (n *Node) InboxWakes(sid string) bool {
 	if n.poster == nil {
 		return false

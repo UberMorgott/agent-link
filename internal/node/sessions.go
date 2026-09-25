@@ -86,8 +86,12 @@ type Session struct {
 	Asked     string `json:"asked_wake,omitempty"`
 	Idle      bool   `json:"idle,omitempty"`
 	CodexHome string `json:"codex_home,omitempty"`
-	// Woken: the node queued a wake in this idle period (once per period).
-	Woken bool `json:"woken,omitempty"`
+	// Woken: the node queued a wake in this idle period; Wakes of them (at
+	// most maxIdleWakes), the last at WokeAt. A wake the session never took
+	// is retried once its claim lapses (wakeIdle).
+	Woken  bool      `json:"woken,omitempty"`
+	Wakes  int       `json:"wakes,omitempty"`
+	WokeAt time.Time `json:"woke_at,omitzero"`
 	// Inbox: the node holds a usable inbox of the session (InboxSocket) and
 	// wakes it there when idle. Not persisted: the address lives in memory.
 	Inbox bool `json:"inbox,omitempty"`
@@ -247,6 +251,9 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	s.Provider, s.Folder, s.Area, s.Wake, s.TTLSec, s.LastSeen = req.Provider, filepath.Clean(req.Folder), area, req.Wake, ttl, now
 	// A new idle period (or none) may be woken again.
 	s.Woken = s.Woken && s.Idle && req.Idle
+	if !s.Woken {
+		s.Wakes, s.WokeAt = 0, time.Time{}
+	}
 	s.Asked, s.Idle, s.CodexHome = asked, req.Idle, req.CodexHome
 	if req.InboxSocket != "" {
 		a := inboxAddr{socket: req.InboxSocket, token: req.InboxToken}

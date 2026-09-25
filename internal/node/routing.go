@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -12,7 +13,9 @@ import (
 // must not land in the others as a task. A message is for:
 //
 //   - the session that claimed it (Claim) and has not acknowledged it within
-//     claimTTL, or the session assigned to answer it (Ack);
+//     claimTTL, or the session assigned to answer it (Ack); or the session
+//     the node woke with it (wakeClaim) for inboxWakeGrace, whose hooks
+//     acknowledge it instead of delivering it (UnreadPage.Woken);
 //   - else the chat's session (chat affinity): the one behind the chat's
 //     newest message a session of this node wrote (chatRecord.Session,
 //     recorded by agentlink send inside the session) or was assigned. A
@@ -27,10 +30,25 @@ import (
 // message goes back to its route.
 const claimTTL = time.Minute
 
-// sessionClaim is one session's claim of an unread message (Claim).
+// sessionClaim is one session's claim of an unread message (Claim), or, with
+// wake, the node's for the prompt that woke the session with it (wakeClaim).
 type sessionClaim struct {
 	session string
 	at      time.Time
+	wake    bool
+	// token (a wake only) is the one the wake prompt carries (WakeMarker): the
+	// hooks acknowledge the message only at a prompt that carries it.
+	token string
+}
+
+// held reports whether the claim still holds for a live session: claimTTL,
+// or inboxWakeGrace for a wake (then the session's waiter takes over).
+func (c sessionClaim) held(live map[string]bool) bool {
+	ttl := claimTTL
+	if c.wake {
+		ttl = inboxWakeGrace
+	}
+	return live[c.session] && time.Since(c.at) < ttl
 }
 
 // ClaimRequest is the body of POST /claim.
@@ -57,7 +75,7 @@ func (r *sessionRegistry) liveIDs(now time.Time) map[string]bool {
 // session in particular. rec is its chat record (nil for a plain message).
 // The caller holds n.sess.claimMu.
 func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string {
-	if c, ok := n.sess.claims[id]; ok && live[c.session] && time.Since(c.at) < claimTTL {
+	if c, ok := n.sess.claims[id]; ok && c.held(live) {
 		return c.session
 	}
 	if rec == nil {
@@ -81,7 +99,8 @@ func assignedSession(r chatRecord) string {
 // Claim takes unread messages for delivery to one live session, atomically:
 // it returns the ids granted, those still unread and not for another live
 // session (routeOf); none to a session that is not registered. A granted message stays that session's while it lives,
-// until it is acknowledged; claiming again is granted again.
+// until it is acknowledged; claiming again is granted again, but not what the
+// prompt that woke the session holds (wakeClaim).
 func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 	switch {
 	case !validSessionID(req.SessionID):
@@ -93,17 +112,27 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 	r.claimMu.Lock()
 	defer r.claimMu.Unlock()
 	live := r.liveIDs(time.Now())
-	granted := []string{}
 	if !live[req.SessionID] {
 		// Only a registered session takes messages: a hook of a run that never
 		// registered (a headless claude -p) must not steal them.
-		return granted, nil
+		return []string{}, nil
 	}
+	return n.claimLocked(req.SessionID, req.IDs, false, "", live), nil
+}
+
+// claimLocked grants session the ids of want still unread, not for another
+// live session and not held by its own wake claim, as a wake claim with wake
+// (carrying token). A wake never takes a message a hook claimed (a normal
+// claim that holds, even of the same session): that hook delivers it.
+// The caller holds n.sess.claimMu.
+func (n *Node) claimLocked(session string, want []string, wake bool, token string, live map[string]bool) []string {
+	r := n.sess
+	granted := []string{}
 	plain := map[string]bool{}
 	for _, p := range n.store.unreadPlain() {
 		plain[p.Message.ID] = true
 	}
-	for _, id := range req.IDs {
+	for _, id := range want {
 		var to string
 		if rec, ok := n.chats.message(id); ok {
 			if !rec.Unread || !rec.ReadAt.IsZero() || rec.Message.Kind != "" {
@@ -115,10 +144,61 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 		} else {
 			continue
 		}
-		if to == "" || to == req.SessionID {
-			r.claims[id] = sessionClaim{session: req.SessionID, at: time.Now()}
-			granted = append(granted, id)
+		if to != "" && to != session {
+			continue
+		}
+		if _, woke := n.wokeWith(id, session, live); woke {
+			continue // the wake prompt has it: not delivered again
+		}
+		if c, ok := r.claims[id]; wake && ok && !c.wake && c.held(live) {
+			continue // a hook is delivering it: waking with it too delivers it twice
+		}
+		r.claims[id] = sessionClaim{session: session, at: time.Now(), wake: wake, token: token}
+		granted = append(granted, id)
+	}
+	return granted
+}
+
+// wakeClaim claims msgs for the wake prompt of session (claimLocked) under a
+// new wake token and returns the ones granted, in order, with the token.
+func (n *Node) wakeClaim(session string, msgs []UnreadMessage) ([]UnreadMessage, string) {
+	r := n.sess
+	r.claimMu.Lock()
+	defer r.claimMu.Unlock()
+	live := r.liveIDs(time.Now())
+	if !live[session] {
+		return nil, ""
+	}
+	token := randomHex(8)
+	granted := n.claimLocked(session, ids(msgs), true, token, live)
+	var out []UnreadMessage
+	for _, m := range msgs {
+		if slices.Contains(granted, m.ID) {
+			out = append(out, m)
 		}
 	}
-	return granted, nil
+	return out, token
+}
+
+// unclaim drops session's claims of ids (a wake that failed): the messages go
+// back to their route and the hooks deliver them.
+func (n *Node) unclaim(session string, ids []string) {
+	r := n.sess
+	r.claimMu.Lock()
+	defer r.claimMu.Unlock()
+	for _, id := range ids {
+		if c, ok := r.claims[id]; ok && c.session == session {
+			delete(r.claims, id)
+		}
+	}
+}
+
+// wokeWith reports whether id is held by a wake claim of session, and the
+// token of that wake.
+func (n *Node) wokeWith(id, session string, live map[string]bool) (string, bool) {
+	c, ok := n.sess.claims[id]
+	if ok && c.wake && c.session == session && c.held(live) {
+		return c.token, true
+	}
+	return "", false
 }

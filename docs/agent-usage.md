@@ -310,11 +310,21 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   when its next event comes (`idle: false`). While the node finds a codex 0.149 or later (on
   `PATH`, the npm package's native `codex.exe`, a standalone install, or the copy the desktop
   app runs from `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>`), it checks every 2 s: an idle live session with unread
-  messages it may take gets one `codex queue --thread <session_id> --message "agent-link: N
-  новых сообщений — прочитай их"` per idle period. A Codex app-server that holds that thread
+  messages it may take gets one `codex queue --thread <session_id> --message "<the messages>"`
+  per idle period. A Codex app-server that holds that thread
   loaded and idle (the CLI, the desktop app sharing that `CODEX_HOME`) starts a turn with it
-  within about 10 s, and `UserPromptSubmit` delivers the batch as always. A thread nobody has
-  open keeps the prompt until it is opened. Without such a codex, or for 10 minutes after a
+  within about 10 s. A thread nobody has open keeps the prompt until it is opened.
+  The wake prompt (Codex queue and Claude inbox alike) is the messages themselves, formatted
+  as the hooks inject them (sender, chat, id, body, reply command), as many as fit 4500 runes,
+  then «Ещё N непрочитанных: agentlink chat unread --folder …». The node claims exactly those
+  for the session first: its hooks leave them out (`GET /unread?session=` lists them under
+  `woken`, each with the wake's random `wake_token`), and `UserPromptSubmit` acknowledges only
+  the ones whose prompt carries that wake's marker `[agent-link wake <token>]` and their id (a
+  hook without the prompt text acknowledges none). A wake never takes a message a hook has
+  claimed. A failed wake drops the claim; one the session never took lapses after 2 minutes,
+  and the hooks deliver them as usual; a session still idle then is woken once more (at most 2
+  wakes per idle period; a Claude session's waiter may take over too). Messages over 12000
+  UTF-16 units are not queued. Without such a codex, or for 10 minutes after a
   failed `codex queue` (logged), the node gives the session `wake: "next-event"`: it hears of
   messages at its next event.
 - **Activity.** Only for chats whose batch the session accepted (requests that ask it):

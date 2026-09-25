@@ -82,8 +82,12 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 			_ = hookCall(env.api, http.MethodDelete, "/sessions/"+url.PathEscape(in.SessionID), nil, nil, nil, hookHTTPTimeout)
 			return 0
 		}
-		if time.Since(lastBeat) >= o.heartbeat {
-			req := sessionRequest(client, in.SessionID, folder, !waiterBusy(st, env.clock(), o.busyFor))
+		// Only an idle session's heartbeat: a busy one's hooks keep it
+		// registered, and the Stop hook that started this waiter may not have
+		// saved its state yet, so "busy" here may be stale and must not undo
+		// the idle it just registered (the node would not wake the session).
+		if time.Since(lastBeat) >= o.heartbeat && !waiterBusy(st, env.clock(), o.busyFor) {
+			req := sessionRequest(client, in.SessionID, folder, true)
 			if hookCall(env.api, http.MethodPost, "/sessions", nil, req, nil, hookHTTPTimeout) == nil {
 				lastBeat = time.Now()
 			}
@@ -130,7 +134,7 @@ func wakeWith(client, sid, folder, path string, stderr io.Writer, env hookEnv, b
 		return 0, st.Ended
 	}
 	h := &hookSession{env: env, st: &st, sid: sid, folder: folder}
-	b, err := h.collect(false, true)
+	b, err := h.collect(false, true, false, "")
 	if err != nil || b.empty() {
 		return 0, false
 	}

@@ -3,7 +3,10 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -97,7 +100,10 @@ func TestWakeIdleQueueSession(t *testing.T) {
 		t.Fatalf("a busy session was woken: %v", w.calls)
 	}
 	reg(true)
-	if s := wake(); !s.Woken || w.count() != 1 || w.calls[0] != home+"|s-q|agent-link: 1 новое сообщение — прочитай их" {
+	first, _ := a.Unread("", "", 10)
+	if s := wake(); !s.Woken || w.count() != 1 || !strings.HasPrefix(w.calls[0], home+"|s-q|agent-link: новые сообщения (1).") ||
+		!strings.Contains(w.calls[0], "wake up") || !strings.Contains(w.calls[0], "id "+first.Messages[0].ID) ||
+		!strings.Contains(w.calls[0], "Просит ответа от вас") || strings.Contains(w.calls[0], "прочитай их") {
 		t.Fatalf("idle session: %+v %v", s, w.calls)
 	}
 	reg(true) // a heartbeat of the same idle period
@@ -105,12 +111,42 @@ func TestWakeIdleQueueSession(t *testing.T) {
 	if w.count() != 1 {
 		t.Fatalf("woken twice in one idle period: %v", w.calls)
 	}
-	reg(false) // its next turn (the hooks deliver), then idle again
+	// Its next turn did not acknowledge it yet, and a new message came: the
+	// next idle period's wake carries the new one only.
+	if _, err := b.SendRequest(SendRequest{To: "a", Body: "second one", AuthorKind: AuthorAgent}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has both", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 2 })
+	reg(false)
 	reg(true)
 	wake()
-	if w.count() != 2 {
-		t.Fatalf("new idle period not woken: %v", w.calls)
+	if w.count() != 2 || !strings.Contains(w.calls[1], "second one") || strings.Contains(w.calls[1], "wake up") {
+		t.Fatalf("new idle period: %v", w.calls)
 	}
+	if page, _ := a.UnreadFor(dir, "s-q", "", 10); page.Total != 0 || len(page.Woken) != 2 {
+		t.Fatalf("hooks would deliver the woken again: %+v", page)
+	}
+	// The session acknowledges them at the prompt (its hook): read.
+	var all []string
+	for _, m := range first.Messages {
+		all = append(all, m.ID)
+	}
+	p2, _ := a.UnreadFor(dir, "s-q", "", 10)
+	for _, m := range p2.Woken {
+		if !slices.Contains(all, m.ID) {
+			all = append(all, m.ID)
+		}
+	}
+	if _, err := a.Ack("", AckRequest{IDs: all, SessionID: "s-q"}); err != nil {
+		t.Fatal(err)
+	}
+	if page, _ := a.UnreadFor(dir, "s-q", "", 10); page.Total != 0 || len(page.Woken) != 0 {
+		t.Fatalf("after the ack: %+v", page)
+	}
+	if _, err := b.SendRequest(SendRequest{To: "a", Body: "third", AuthorKind: AuthorAgent}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the third", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 1 })
 
 	// A failed wake falls back to the next event.
 	w.mu.Lock()
@@ -123,6 +159,9 @@ func TestWakeIdleQueueSession(t *testing.T) {
 		if s.SessionID == "s-q" && s.Wake != WakeNextEvent {
 			t.Fatalf("after a failed wake: %+v", s)
 		}
+	}
+	if page, _ := a.UnreadFor(dir, "s-q", "", 10); page.Total != 1 || len(page.Woken) != 0 {
+		t.Fatalf("a failed wake kept its claim: %+v", page)
 	}
 
 	// An ended session is never woken.
@@ -170,15 +209,139 @@ func TestWakeIgnoresGuardedMessage(t *testing.T) {
 	}
 }
 
-func TestWakeText(t *testing.T) {
-	for n, want := range map[int]string{
-		1: "agent-link: 1 новое сообщение — прочитай их", 2: "agent-link: 2 новых сообщения — прочитай их",
-		5: "agent-link: 5 новых сообщений — прочитай их", 11: "agent-link: 11 новых сообщений — прочитай их",
-		21: "agent-link: 21 новое сообщение — прочитай их", 22: "agent-link: 22 новых сообщения — прочитай их",
-	} {
-		if got := WakeText(n); got != want {
-			t.Errorf("WakeText(%d) = %q, want %q", n, got, want)
+// A wake carries as many messages as fit FormatBudget and points at the rest;
+// only those it carries are claimed. Its claim lapses after inboxWakeGrace
+// (the session never took the prompt) and the hooks get them again.
+func TestWakePromptCapAndLapse(t *testing.T) {
+	w := &fakeWaker{ready: true}
+	a, b := wakePair(t, w)
+	dir := t.TempDir()
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-q", Provider: "codex", Folder: dir, Wake: WakeQueue, Idle: true}); err != nil {
+		t.Fatal(err)
+	}
+	long := strings.Repeat("x", 1500)
+	for i := range 4 {
+		if _, err := b.SendRequest(SendRequest{To: "a", Body: fmt.Sprintf("m%d %s", i, long), AuthorKind: AuthorAgent}); err != nil {
+			t.Fatal(err)
 		}
+	}
+	eventually(t, "a has 4", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 4 })
+	a.wakeIdle(context.Background())
+	if w.count() != 1 {
+		t.Fatalf("wakes %v", w.calls)
+	}
+	text := w.calls[0]
+	if !strings.Contains(text, "новые сообщения (2)") || !strings.Contains(text, "m0 ") || !strings.Contains(text, "m1 ") ||
+		strings.Contains(text, "m2 ") || !strings.Contains(text, "Ещё 2 непрочитанных: agentlink chat unread --folder") {
+		t.Fatalf("text %q", text)
+	}
+	page, _ := a.UnreadFor(dir, "s-q", "", 10)
+	if page.Total != 2 || len(page.Woken) != 2 {
+		t.Fatalf("claimed %+v", page)
+	}
+	// Another session cannot take the woken ones either.
+	if granted, _ := a.Claim(ClaimRequest{SessionID: "s-q", IDs: ids(page.Woken)}); len(granted) != 0 {
+		t.Fatalf("hook re-claimed woken: %v", granted)
+	}
+	for _, m := range page.Woken {
+		if m.WakeToken == "" || !strings.Contains(text, WakeMarker(m.WakeToken)) {
+			t.Fatalf("woken %s without the prompt's token %q", m.ID, m.WakeToken)
+		}
+	}
+	lapse := func() {
+		t.Helper()
+		past := time.Now().Add(-inboxWakeGrace - time.Second)
+		a.sess.claimMu.Lock()
+		for id, c := range a.sess.claims {
+			c.at = past
+			a.sess.claims[id] = c
+		}
+		a.sess.claimMu.Unlock()
+		a.sess.mu.Lock()
+		a.sess.sessions["s-q"].WokeAt = past
+		a.sess.mu.Unlock()
+	}
+	lapse()
+	if page, _ := a.UnreadFor(dir, "s-q", "", 10); page.Total != 4 || len(page.Woken) != 0 {
+		t.Fatalf("after the lapse: %+v", page)
+	}
+	// Still idle, never took it: one retry in this idle period, then no more.
+	a.wakeIdle(context.Background())
+	if w.count() != 2 || !strings.Contains(w.calls[1], "m0 ") {
+		t.Fatalf("no retry after the lapse: %v", w.calls)
+	}
+	a.wakeIdle(context.Background())
+	lapse()
+	a.wakeIdle(context.Background())
+	a.wakeIdle(context.Background())
+	if w.count() != 2 {
+		t.Fatalf("more than %d wakes in one idle period: %d", maxIdleWakes, w.count())
+	}
+	// A new idle period may be woken again.
+	for _, idle := range []bool{false, true} {
+		if _, err := a.RegisterSession(SessionRequest{SessionID: "s-q", Provider: "codex", Folder: dir, Wake: WakeQueue, Idle: idle}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.wakeIdle(context.Background())
+	if w.count() != 3 {
+		t.Fatalf("new idle period not woken: %d", w.count())
+	}
+}
+
+func TestWakePromptFormat(t *testing.T) {
+	m := UnreadMessage{AsksYou: true}
+	m.ID, m.ChatID, m.From, m.AuthorKind, m.Body, m.Participants = "id1", "c1", "KPECTIK", "agent", "hello", []string{"KPECTIK", "me"}
+	got := WakePrompt([]UnreadMessage{m}, 0, `C:\p`, "tok1")
+	want := "agent-link: новые сообщения (1). Вся переписка остаётся в истории чата. [agent-link wake tok1]\n\n" + FormatUnread(m)
+	if got != strings.TrimRight(want, "\n") || !strings.Contains(got, "agentlink send --chat c1 --reply-to id1") {
+		t.Fatalf("got %q", got)
+	}
+	// Only the prompt of that wake acknowledges the message.
+	m.WakeToken = "tok1"
+	other := m
+	other.WakeToken = "tok2"
+	for _, c := range []struct {
+		prompt string
+		m      UnreadMessage
+		want   bool
+	}{
+		{got, m, true},
+		{"", m, false},                                          // the agent did not say
+		{"see message id id1 please", m, false},                 // a foreign prompt naming the id
+		{got, other, false},                                     // an earlier or later wake
+		{"[agent-link wake tok1] id id2", m, false},             // that wake, but not this message
+		{got, UnreadMessage{ChatMessage: m.ChatMessage}, false}, // no token
+	} {
+		if WokenBy(c.prompt, c.m) != c.want {
+			t.Errorf("WokenBy(%q, token %q) != %v", c.prompt, c.m.WakeToken, c.want)
+		}
+	}
+}
+
+// A wake never takes a message a hook claimed (it is being delivered), even
+// for the same session: no double delivery.
+func TestWakeSkipsHookClaimed(t *testing.T) {
+	w := &fakeWaker{ready: true}
+	a, b := wakePair(t, w)
+	dir := t.TempDir()
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-q", Provider: "codex", Folder: dir, Wake: WakeQueue, Idle: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.SendRequest(SendRequest{To: "a", Body: "claimed", AuthorKind: AuthorAgent}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has it", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 1 })
+	page, _ := a.UnreadFor(dir, "s-q", "", 10)
+	if granted, _ := a.Claim(ClaimRequest{SessionID: "s-q", IDs: ids(page.Messages)}); len(granted) != 1 {
+		t.Fatalf("hook claim %v", granted)
+	}
+	a.wakeIdle(context.Background())
+	if w.count() != 0 {
+		t.Fatalf("woke with a hook-claimed message: %v", w.calls)
+	}
+	if msgs, _ := a.wakeClaim("s-q", page.Messages); len(msgs) != 0 {
+		t.Fatalf("wake claim over a hook claim: %v", msgs)
 	}
 }
 

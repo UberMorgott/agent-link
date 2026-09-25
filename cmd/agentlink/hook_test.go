@@ -44,11 +44,13 @@ type fakeNode struct {
 	// inboxWakes: like a node that wakes the session through its inbox, a
 	// waiter's GET /unread (waiter=1) gets nothing.
 	inboxWakes bool
+	// woken: ids the node woke the session with (UnreadPage.Woken).
+	woken map[string]bool
 }
 
 func newFakeNode(t *testing.T, folder string) *fakeNode {
 	f := &fakeNode{folder: folder, sessions: map[string]node.SessionRequest{}, acked: map[string]string{}, worker: map[string]bool{},
-		claims: map[string]string{}}
+		claims: map[string]string{}, woken: map[string]bool{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	f.api = strings.TrimPrefix(srv.URL, "http://")
@@ -93,6 +95,11 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if q.Get("actionable") == "1" && m.Paused {
+				continue
+			}
+			if f.woken[m.ID] && q.Get("session") != "" {
+				m.WakeToken = "tok-" + m.ID
+				page.Woken = append(page.Woken, m)
 				continue
 			}
 			page.Total++
@@ -398,6 +405,49 @@ func TestHookDeliversOnlyClaimedMessages(t *testing.T) {
 	}
 }
 
+// The node woke the idle session with the messages themselves (UnreadPage.Woken):
+// the prompt that carries them acknowledges them, and no hook delivers them
+// again; a prompt that does not carry them (the wake still on the way) leaves
+// them.
+func TestHookAcksWokenAtPrompt(t *testing.T) {
+	c := newHookCase(t)
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "woken body", true))
+	c.f.woken["m1"] = true
+	c.run(hookClaude, evSessionStart)
+	if out := c.run(hookClaude, evPostTool, `,"tool_name":"Read"`); out != "" || len(c.f.acked) != 0 {
+		t.Fatalf("woken message delivered again: %q %v", out, c.f.acked)
+	}
+	for _, p := range []string{
+		`,"prompt":"hello there"`,
+		`,"prompt":"what was in message id m1?"`, // a foreign prompt naming it
+		`,"prompt":""`,                           // the agent does not say
+		"",                                       // no prompt at all
+		`,"prompt":"[agent-link wake tok-m9] id m1"`, // another wake's token
+	} {
+		if out := c.run(hookClaude, evPrompt, p); out != "" || len(c.f.acked) != 0 {
+			t.Fatalf("prompt %s took the woken message: %q %v", p, out, c.f.acked)
+		}
+	}
+	c.f.add(chatMsg("c2", "bob", "agent", "plain body", true))
+	v := parseOut(t, c.run(hookClaude, evPrompt, `,"prompt":`+strconv.Quote("agent-link: новые сообщения (1). [agent-link wake tok-m1]\n\nОт KPECTIK (агент) в чате c1, id m1:\nwoken body")))
+	ctx := v.HookSpecificOutput.AdditionalContext
+	if strings.Contains(ctx, "woken body") || !strings.Contains(ctx, "plain body") {
+		t.Fatalf("context %q", ctx)
+	}
+	if got := c.f.ackedIDs(); !slices.Equal(got, []string{"m1", "m2"}) || c.f.acked["m1"] != c.sid {
+		t.Fatalf("acked %v", c.f.acked)
+	}
+	if st := c.state(hookClaude); st.Active["c1"] != "m1" || st.Active["c2"] != "m2" {
+		t.Fatalf("active %v", st.Active)
+	}
+	// Only a woken message: no output, still acknowledged at its prompt.
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "second", true))
+	c.f.woken["m3"] = true
+	if out := c.run(hookCodex, evPrompt, `,"prompt":"[agent-link wake tok-m3] ... id m3 ..."`); out != "" || c.f.acked["m3"] != c.sid {
+		t.Fatalf("codex prompt: %q %v", out, c.f.acked)
+	}
+}
+
 // The chat shows what this node's own agent does too: a session that wrote in
 // a chat (agentlink send) or read a message of it (a reply, not only a request
 // to it) reports its activity there until its turn ends.
@@ -638,7 +688,7 @@ func TestHookSessionEndEndsActivity(t *testing.T) {
 
 func TestHookPagesLargeBatches(t *testing.T) {
 	c := newHookCase(t)
-	c.f.add(chatMsg("c1", "KPECTIK", "agent", strings.Repeat("я", hookMaxBody+100), true))
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", strings.Repeat("я", node.FormatMaxBody+100), true))
 	for range 3 {
 		c.f.add(chatMsg("c1", "KPECTIK", "agent", strings.Repeat("ы", 1500), true))
 	}
@@ -807,9 +857,20 @@ func TestHookWaitLeavesBusySessionAndEnds(t *testing.T) {
 	env.now = func() time.Time { return c.now }
 	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 200 * time.Millisecond, busyFor: time.Hour, stale: time.Minute}
 	var errw bytes.Buffer
+	// The state still says busy (the Stop hook that started the waiter has not
+	// saved yet) while the node already has it idle: the waiter's heartbeat
+	// must not undo that.
+	idleReq := c.f.sessions[c.sid]
+	idleReq.Idle = true
+	c.f.sessions[c.sid] = idleReq
+	o.heartbeat = 0
 	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &errw, env, o); code != 0 || errw.Len() != 0 || len(c.f.ackedIDs()) != 0 {
 		t.Fatalf("busy: code %d stderr %q acked %v", code, errw.String(), c.f.ackedIDs())
 	}
+	if !c.f.sessions[c.sid].Idle {
+		t.Fatal("a busy waiter's heartbeat reported the idle session busy")
+	}
+	o.heartbeat = time.Hour
 	// One waiter per session.
 	path := hookStatePath(c.env.dir, hookClaude, c.sid) + ".wait"
 	release, ok := takeWaitLock(path, time.Minute)

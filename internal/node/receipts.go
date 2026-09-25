@@ -99,6 +99,9 @@ type UnreadMessage struct {
 	AsksYou bool `json:"asks_you,omitempty"`
 	// Paused: past MaxAutoDepth; shown as information on the next human turn.
 	Paused bool `json:"paused,omitempty"`
+	// WakeToken (UnreadPage.Woken only): the token of the wake prompt that
+	// carried the message (WakeMarker); only a prompt with it acknowledges it.
+	WakeToken string `json:"wake_token,omitempty"`
 }
 
 // UnreadPage is one page of Unread.
@@ -106,6 +109,10 @@ type UnreadPage struct {
 	Messages []UnreadMessage `json:"messages"`
 	Total    int             `json:"total"`          // unread messages matching, all pages
 	Next     string          `json:"next,omitempty"` // cursor of the next page, if any
+	// Woken (for a session only): its unread messages the prompt that woke it
+	// carried (wakeIdle), kept out of Messages and Total: its hook acknowledges
+	// them at that prompt instead of delivering them again.
+	Woken []UnreadMessage `json:"woken,omitempty"`
 }
 
 // Unread lists this node's unread messages, oldest first, of every age:
@@ -152,7 +159,15 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 		to := n.routeOf(id, rec, live)
 		return to == "" || to == session
 	}
-	var all []UnreadMessage
+	var all, woken []UnreadMessage
+	wake := func(um *UnreadMessage) bool {
+		if session == "" {
+			return false
+		}
+		token, ok := n.wokeWith(um.ID, session, live)
+		um.WakeToken = token
+		return ok
+	}
 	for _, u := range n.chats.unread() {
 		if filter && n.localArea(u.chat.Area) != area {
 			continue
@@ -166,6 +181,10 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 		if actionable && um.Paused {
 			continue
 		}
+		if wake(&um) {
+			woken = append(woken, um)
+			continue
+		}
 		all = append(all, um)
 	}
 	for _, r := range n.store.unreadPlain() {
@@ -175,14 +194,19 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 		if !mine(r.Message.ID, nil) {
 			continue
 		}
-		all = append(all, UnreadMessage{Direction: "in", Unread: true, Message: r.Message,
-			ReceivedAt: r.ReceivedAt, AsksYou: r.Message.IsRequest()})
+		um := UnreadMessage{Direction: "in", Unread: true, Message: r.Message,
+			ReceivedAt: r.ReceivedAt, AsksYou: r.Message.IsRequest()}
+		if wake(&um) {
+			woken = append(woken, um)
+			continue
+		}
+		all = append(all, um)
 	}
 	for i := range all {
 		all[i].Cursor = fmt.Sprintf("%020d-%s", all[i].ReceivedAt.UnixNano(), all[i].ID)
 	}
 	slices.SortFunc(all, func(a, b UnreadMessage) int { return strings.Compare(a.Cursor, b.Cursor) })
-	page := UnreadPage{Messages: []UnreadMessage{}, Total: len(all)}
+	page := UnreadPage{Messages: []UnreadMessage{}, Total: len(all), Woken: woken}
 	for _, m := range all {
 		if after != "" && m.Cursor <= after {
 			continue
