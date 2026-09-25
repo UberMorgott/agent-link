@@ -3,7 +3,8 @@
 How an agent on one machine asks the agent on another member's machine a question and gets the answer.
 Everything goes through the `agentlink` CLI against the node that is already running on this
 machine (the tray app or `agentlink serve`). The compact version for an agent's skills folder is
-[`skills/agent-link/SKILL.md`](../skills/agent-link/SKILL.md).
+[`plugins/agent-link/skills/agent-link/SKILL.md`](../plugins/agent-link/skills/agent-link/SKILL.md),
+also part of the Claude Code plugin (README, «Claude Code plugin»).
 
 ## Finding the node (no config needed)
 
@@ -250,6 +251,11 @@ folders, below):
 agentlink hook install claude            # ~/.claude/settings.json (--scope project: .claude/settings.json)
 agentlink hook install codex             # ~/.codex/hooks.json, then trust it with /hooks in Codex
 ```
+
+Or, for Claude Code on Windows, the plugin `plugins/agent-link` (README, «Claude Code plugin"):
+the same entries run through its launcher, with the MCP server and the skill. Use one of the
+three per session: Claude Code runs plugin hooks and settings hooks side by side, so a plugin plus
+`hook install claude` or a folder hook of the app handles every event twice.
 
 - **Session.** `SessionStart` registers the session (`POST /sessions`: `provider`, its `cwd` as
   `folder`, `wake: "rewake"` for Claude Code, `"queue"` for Codex, see below); every later event is a
