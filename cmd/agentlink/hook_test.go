@@ -98,6 +98,7 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if f.woken[m.ID] && q.Get("session") != "" {
+				m.WakeToken = "tok-" + m.ID
 				page.Woken = append(page.Woken, m)
 				continue
 			}
@@ -416,11 +417,19 @@ func TestHookAcksWokenAtPrompt(t *testing.T) {
 	if out := c.run(hookClaude, evPostTool, `,"tool_name":"Read"`); out != "" || len(c.f.acked) != 0 {
 		t.Fatalf("woken message delivered again: %q %v", out, c.f.acked)
 	}
-	if out := c.run(hookClaude, evPrompt, `,"prompt":"hello there"`); out != "" || len(c.f.acked) != 0 {
-		t.Fatalf("another prompt took the woken message: %q %v", out, c.f.acked)
+	for _, p := range []string{
+		`,"prompt":"hello there"`,
+		`,"prompt":"what was in message id m1?"`, // a foreign prompt naming it
+		`,"prompt":""`,                           // the agent does not say
+		"",                                       // no prompt at all
+		`,"prompt":"[agent-link wake tok-m9] id m1"`, // another wake's token
+	} {
+		if out := c.run(hookClaude, evPrompt, p); out != "" || len(c.f.acked) != 0 {
+			t.Fatalf("prompt %s took the woken message: %q %v", p, out, c.f.acked)
+		}
 	}
 	c.f.add(chatMsg("c2", "bob", "agent", "plain body", true))
-	v := parseOut(t, c.run(hookClaude, evPrompt, `,"prompt":`+strconv.Quote("agent-link: новые сообщения (1).\n\nОт KPECTIK (агент) в чате c1, id m1:\nwoken body")))
+	v := parseOut(t, c.run(hookClaude, evPrompt, `,"prompt":`+strconv.Quote("agent-link: новые сообщения (1). [agent-link wake tok-m1]\n\nОт KPECTIK (агент) в чате c1, id m1:\nwoken body")))
 	ctx := v.HookSpecificOutput.AdditionalContext
 	if strings.Contains(ctx, "woken body") || !strings.Contains(ctx, "plain body") {
 		t.Fatalf("context %q", ctx)
@@ -434,7 +443,7 @@ func TestHookAcksWokenAtPrompt(t *testing.T) {
 	// Only a woken message: no output, still acknowledged at its prompt.
 	c.f.add(chatMsg("c1", "KPECTIK", "agent", "second", true))
 	c.f.woken["m3"] = true
-	if out := c.run(hookCodex, evPrompt, `,"prompt":"... id m3 ..."`); out != "" || c.f.acked["m3"] != c.sid {
+	if out := c.run(hookCodex, evPrompt, `,"prompt":"[agent-link wake tok-m3] ... id m3 ..."`); out != "" || c.f.acked["m3"] != c.sid {
 		t.Fatalf("codex prompt: %q %v", out, c.f.acked)
 	}
 }

@@ -20,10 +20,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 )
 
 // MinVersion is the first Codex CLI with `codex queue`.
 var MinVersion = [3]int{0, 149, 0}
+
+// MaxMessage is the longest text Wake queues, in UTF-16 units: escaped, it
+// still fits a Windows command line (32767) with the rest of the arguments.
+const MaxMessage = 12000
 
 // Timings.
 const (
@@ -106,6 +111,12 @@ func (q *Queue) Wake(ctx context.Context, home, thread, text string) error {
 	}
 	if thread == "" || strings.HasPrefix(thread, "-") {
 		return fmt.Errorf("codex queue: bad thread %q", thread)
+	}
+	// The text goes as one argv entry (quoted by exec for CommandLineToArgvW
+	// on Windows, whose whole command line is at most 32767 UTF-16 units, and
+	// escaping may double it): refuse, without marking codex down, what may not fit.
+	if n := len(utf16.Encode([]rune(text))); n > MaxMessage {
+		return fmt.Errorf("codex queue: message of %d UTF-16 units, at most %d", n, MaxMessage)
 	}
 	ctx, cancel := context.WithTimeout(ctx, runTimeout)
 	defer cancel()

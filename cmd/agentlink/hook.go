@@ -531,10 +531,12 @@ func (h *hookSession) collect(stop, actionable, atPrompt bool, prompt string) (h
 }
 
 // takeWoken adds to the batch, to acknowledge, the woken messages prompt
-// carries (all of them when the agent does not say what the prompt was).
+// verifiably carries (node.WokenBy: that wake's token and the id). Nothing
+// when the agent does not say what the prompt was: they stay the wake's
+// until it lapses, and the hooks deliver them then.
 func (b *hookBatch) takeWoken(woken []node.UnreadMessage, prompt string) {
 	for _, m := range woken {
-		if prompt != "" && !strings.Contains(prompt, m.ID) {
+		if !node.WokenBy(prompt, m) {
 			continue // another prompt: its wake is still on the way
 		}
 		b.ids = append(b.ids, m.ID)

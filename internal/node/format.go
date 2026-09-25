@@ -71,10 +71,11 @@ func FitUnread(msgs []UnreadMessage) int {
 
 // WakePrompt is the prompt that wakes an idle session for msgs (the ones it
 // was granted, at most FitUnread of its unread): the messages themselves, as
-// the hooks deliver them; rest more unread stay for its hooks.
-func WakePrompt(msgs []UnreadMessage, rest int, folder string) string {
+// the hooks deliver them; rest more unread stay for its hooks. It carries
+// the wake's token (WakeMarker), by which the hooks know the prompt.
+func WakePrompt(msgs []UnreadMessage, rest int, folder, token string) string {
 	var t strings.Builder
-	fmt.Fprintf(&t, "agent-link: новые сообщения (%d). Вся переписка остаётся в истории чата.\n", len(msgs))
+	fmt.Fprintf(&t, "agent-link: новые сообщения (%d). Вся переписка остаётся в истории чата. %s\n", len(msgs), WakeMarker(token))
 	for _, m := range msgs {
 		t.WriteString("\n")
 		t.WriteString(FormatUnread(m))
@@ -83,6 +84,16 @@ func WakePrompt(msgs []UnreadMessage, rest int, folder string) string {
 		fmt.Fprintf(&t, "\nЕщё %d непрочитанных: agentlink chat unread --folder %q\n", rest, folder)
 	}
 	return strings.TrimRight(t.String(), "\n")
+}
+
+// WakeMarker is the line part by which a wake prompt with token is known.
+func WakeMarker(token string) string { return "[agent-link wake " + token + "]" }
+
+// WokenBy reports whether prompt is the wake prompt that carried woken
+// message m (UnreadPage.Woken): it has m's wake token and m's id. An empty
+// prompt (the agent did not say) or another prompt is not.
+func WokenBy(prompt string, m UnreadMessage) bool {
+	return m.WakeToken != "" && strings.Contains(prompt, WakeMarker(m.WakeToken)) && strings.Contains(prompt, "id "+m.ID)
 }
 
 func authorKind(k string) string {

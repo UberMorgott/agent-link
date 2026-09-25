@@ -36,6 +36,9 @@ type sessionClaim struct {
 	session string
 	at      time.Time
 	wake    bool
+	// token (a wake only) is the one the wake prompt carries (WakeMarker): the
+	// hooks acknowledge the message only at a prompt that carries it.
+	token string
 }
 
 // held reports whether the claim still holds for a live session: claimTTL,
@@ -114,13 +117,15 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 		// registered (a headless claude -p) must not steal them.
 		return []string{}, nil
 	}
-	return n.claimLocked(req.SessionID, req.IDs, false, live), nil
+	return n.claimLocked(req.SessionID, req.IDs, false, "", live), nil
 }
 
 // claimLocked grants session the ids of want still unread, not for another
-// live session and not held by its own wake claim, as a wake claim with wake.
+// live session and not held by its own wake claim, as a wake claim with wake
+// (carrying token). A wake never takes a message a hook claimed (a normal
+// claim that holds, even of the same session): that hook delivers it.
 // The caller holds n.sess.claimMu.
-func (n *Node) claimLocked(session string, want []string, wake bool, live map[string]bool) []string {
+func (n *Node) claimLocked(session string, want []string, wake bool, token string, live map[string]bool) []string {
 	r := n.sess
 	granted := []string{}
 	plain := map[string]bool{}
@@ -142,33 +147,37 @@ func (n *Node) claimLocked(session string, want []string, wake bool, live map[st
 		if to != "" && to != session {
 			continue
 		}
-		if n.wokeWith(id, session, live) {
+		if _, woke := n.wokeWith(id, session, live); woke {
 			continue // the wake prompt has it: not delivered again
 		}
-		r.claims[id] = sessionClaim{session: session, at: time.Now(), wake: wake}
+		if c, ok := r.claims[id]; wake && ok && !c.wake && c.held(live) {
+			continue // a hook is delivering it: waking with it too delivers it twice
+		}
+		r.claims[id] = sessionClaim{session: session, at: time.Now(), wake: wake, token: token}
 		granted = append(granted, id)
 	}
 	return granted
 }
 
-// wakeClaim claims msgs for the wake prompt of session (claimLocked) and
-// returns the ones granted, in order.
-func (n *Node) wakeClaim(session string, msgs []UnreadMessage) []UnreadMessage {
+// wakeClaim claims msgs for the wake prompt of session (claimLocked) under a
+// new wake token and returns the ones granted, in order, with the token.
+func (n *Node) wakeClaim(session string, msgs []UnreadMessage) ([]UnreadMessage, string) {
 	r := n.sess
 	r.claimMu.Lock()
 	defer r.claimMu.Unlock()
 	live := r.liveIDs(time.Now())
 	if !live[session] {
-		return nil
+		return nil, ""
 	}
-	granted := n.claimLocked(session, ids(msgs), true, live)
+	token := randomHex(8)
+	granted := n.claimLocked(session, ids(msgs), true, token, live)
 	var out []UnreadMessage
 	for _, m := range msgs {
 		if slices.Contains(granted, m.ID) {
 			out = append(out, m)
 		}
 	}
-	return out
+	return out, token
 }
 
 // unclaim drops session's claims of ids (a wake that failed): the messages go
@@ -184,8 +193,12 @@ func (n *Node) unclaim(session string, ids []string) {
 	}
 }
 
-// wokeWith reports whether id is held by a wake claim of session.
-func (n *Node) wokeWith(id, session string, live map[string]bool) bool {
+// wokeWith reports whether id is held by a wake claim of session, and the
+// token of that wake.
+func (n *Node) wokeWith(id, session string, live map[string]bool) (string, bool) {
 	c, ok := n.sess.claims[id]
-	return ok && c.wake && c.session == session && c.held(live)
+	if ok && c.wake && c.session == session && c.held(live) {
+		return c.token, true
+	}
+	return "", false
 }

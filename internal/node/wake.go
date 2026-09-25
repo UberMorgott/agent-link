@@ -6,7 +6,8 @@ import (
 )
 
 // Waking idle sessions. The node wakes a live session that ended its turn
-// (Idle) and has actionable unread messages to take, once per idle period:
+// (Idle) and has actionable unread messages to take, once per idle period
+// plus one retry of a wake it never took (maxIdleWakes):
 //
 //   - Codex (WakeQueue): it queues one prompt in the session's agent
 //     (`codex queue`, SessionWaker); the agent starts a turn with it. A session
@@ -115,7 +116,7 @@ func (n *Node) wakeIdle(ctx context.Context) {
 	var list []due
 	r.mu.Lock()
 	for _, s := range r.sessions {
-		if !s.Idle || s.Woken || !s.live(now) {
+		if !s.Idle || !s.live(now) || !s.wakeDue(now) {
 			continue
 		}
 		if a, ok := r.inbox[s.SessionID]; ok && n.poster != nil {
@@ -131,11 +132,11 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		if err != nil || len(page.Messages) == 0 {
 			continue
 		}
-		msgs := n.wakeClaim(s.SessionID, page.Messages[:FitUnread(page.Messages)])
+		msgs, token := n.wakeClaim(s.SessionID, page.Messages[:FitUnread(page.Messages)])
 		if len(msgs) == 0 {
 			continue
 		}
-		text := WakePrompt(msgs, page.Total-len(msgs), s.Folder)
+		text := WakePrompt(msgs, page.Total-len(msgs), s.Folder, token)
 		byInbox := d.inbox.socket != ""
 		if byInbox {
 			err = n.poster.Post(ctx, d.inbox.socket, d.inbox.token, text)
@@ -149,7 +150,8 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		if cur := r.sessions[s.SessionID]; cur != nil {
 			switch {
 			case err == nil:
-				cur.Woken = true
+				cur.Woken, cur.WokeAt = true, time.Now()
+				cur.Wakes++
 				if a, ok := r.inbox[s.SessionID]; ok && byInbox {
 					a.woke = time.Now()
 					r.inbox[s.SessionID] = a
@@ -171,6 +173,23 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		n.log.Info("idle session woken", "session", s.SessionID, "provider", s.Provider, "inbox", byInbox, "messages", len(msgs), "unread", page.Total)
 		n.noteWoken(msgs)
 	}
+}
+
+// maxIdleWakes bounds the node's wakes of one idle period: the first, and one
+// retry after it lapsed untaken (inboxWakeGrace; its claim lapses with it and
+// the messages are unread again). A lapsed wake also frees the session's
+// waiter (Claude, InboxWakes); a message goes to one of them only (claims).
+// After that the waiter or the session's next event takes them.
+const maxIdleWakes = 2
+
+// wakeDue reports whether the node may wake the idle session now: not woken
+// in this idle period yet, or its last wake lapsed untaken (a session that
+// took it left the idle period) and a retry is left.
+func (s Session) wakeDue(now time.Time) bool {
+	if !s.Woken {
+		return true
+	}
+	return s.Wakes < maxIdleWakes && now.Sub(s.WokeAt) >= inboxWakeGrace
 }
 
 // hookBatchIDs bounds the unread messages one wake looks at.

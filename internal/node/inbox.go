@@ -116,7 +116,8 @@ func writeInbox(w io.Writer, token, text string) error {
 
 // InboxWakes reports whether the node wakes session sid through its inbox
 // (so its background waiter must not wake it too): it holds the inbox, and
-// the session did not stay idle past inboxWakeGrace after the node woke it.
+// the session did not stay idle past inboxWakeGrace after the node's last
+// wake (a retry, maxIdleWakes, holds the waiter off again for its grace).
 func (n *Node) InboxWakes(sid string) bool {
 	if n.poster == nil {
 		return false

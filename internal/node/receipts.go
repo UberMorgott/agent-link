@@ -99,6 +99,9 @@ type UnreadMessage struct {
 	AsksYou bool `json:"asks_you,omitempty"`
 	// Paused: past MaxAutoDepth; shown as information on the next human turn.
 	Paused bool `json:"paused,omitempty"`
+	// WakeToken (UnreadPage.Woken only): the token of the wake prompt that
+	// carried the message (WakeMarker); only a prompt with it acknowledges it.
+	WakeToken string `json:"wake_token,omitempty"`
 }
 
 // UnreadPage is one page of Unread.
@@ -157,7 +160,14 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 		return to == "" || to == session
 	}
 	var all, woken []UnreadMessage
-	wake := func(id string) bool { return session != "" && n.wokeWith(id, session, live) }
+	wake := func(um *UnreadMessage) bool {
+		if session == "" {
+			return false
+		}
+		token, ok := n.wokeWith(um.ID, session, live)
+		um.WakeToken = token
+		return ok
+	}
 	for _, u := range n.chats.unread() {
 		if filter && n.localArea(u.chat.Area) != area {
 			continue
@@ -171,7 +181,7 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 		if actionable && um.Paused {
 			continue
 		}
-		if wake(um.ID) {
+		if wake(&um) {
 			woken = append(woken, um)
 			continue
 		}
@@ -186,7 +196,7 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 		}
 		um := UnreadMessage{Direction: "in", Unread: true, Message: r.Message,
 			ReceivedAt: r.ReceivedAt, AsksYou: r.Message.IsRequest()}
-		if wake(um.ID) {
+		if wake(&um) {
 			woken = append(woken, um)
 			continue
 		}
