@@ -285,9 +285,10 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		quiet()
 		return nil
 	}
-	h := &hookSession{env: env, st: &st, sid: in.SessionID, folder: folder}
+	h := &hookSession{env: env, st: &st, sid: in.SessionID, folder: folder, client: client}
 	if event == evSubagentStart || event == evSubagentStop {
 		h.subagent(in.AgentID, in.AgentType, event == evSubagentStop)
+		h.reportCodexAgentState()
 		quiet()
 		return nil
 	}
@@ -303,7 +304,7 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	}
 	if event == evPreTool {
 		typ, text := toolActivity(folder, in.ToolName, in.ToolInput)
-		h.report(typ, text, "")
+		h.reportMain(typ, text, "")
 		writeHookJSON(stdout, takeNotice(&st), nil)
 		return nil
 	}
@@ -338,7 +339,7 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		return nil
 	}
 	if event == evPrompt {
-		h.report("thinking", "думает", "")
+		h.reportMain("thinking", "думает", "")
 	}
 	text := withNotes(notes, b.text)
 	notice := joinNotice(takeNotice(&st), b.notice)
@@ -467,6 +468,7 @@ type hookSession struct {
 	st     *hookState
 	sid    string
 	folder string
+	client string
 }
 
 // hookBatch is the unread messages one event delivers.
@@ -564,7 +566,7 @@ func (h *hookSession) accept(b hookBatch) {
 	}
 	maps.Copy(h.st.Active, b.chats)
 	h.st.Activity = "" // a new batch always shows
-	h.report("read", "читает сообщения", "")
+	h.reportMain("read", "читает сообщения", "")
 }
 
 // formatBatch turns an unread page into the text for the model and the line

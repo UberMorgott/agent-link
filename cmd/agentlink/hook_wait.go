@@ -128,7 +128,7 @@ func wakeWith(client, sid, folder, path string, stderr io.Writer, env hookEnv, b
 	if st.Ended || waiterBusy(st, env.clock(), busyFor) {
 		return 0, st.Ended
 	}
-	h := &hookSession{env: env, st: &st, sid: sid, folder: folder}
+	h := &hookSession{env: env, st: &st, sid: sid, folder: folder, client: client}
 	b, err := h.collect(false, true)
 	if err != nil || b.empty() {
 		return 0, false
