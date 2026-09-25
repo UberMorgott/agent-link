@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -388,6 +389,31 @@ func TestProjectsJoinFlow(t *testing.T) {
 		t.Fatalf("close: %d %s", code, raw)
 	}
 	alice.wantError(t, http.MethodPost, "projects/"+p.ID+"/send", map[string]any{"chat_id": chat.ID, "body": "ещё"}, http.StatusConflict, "chat_closed")
+
+	// A removal whose settings cannot be saved changes nothing: bob keeps
+	// alice as a member and her address in his binding.
+	peers := bob.app.Settings().Bindings[bob.app.bindingIndex(p.ID)].Peers
+	if !slices.Contains(peers, addr) {
+		t.Fatalf("bob's binding peers %v, want %s", peers, addr)
+	}
+	saved, err := os.ReadFile(bob.app.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bob.app.path, []byte(`{"version": 999}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, raw := bob.api(t, http.MethodPost, "projects/"+p.ID+"/members/remove", map[string]any{"name": "alice"}, nil); code != http.StatusInternalServerError {
+		t.Fatalf("remove with a failing save: %d %s", code, raw)
+	}
+	if err := os.WriteFile(bob.app.path, saved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bob.api(t, http.MethodGet, "projects/"+p.ID, nil, &v)
+	if !slices.ContainsFunc(v.Members, func(m node.MemberInfo) bool { return m.Name == "alice" }) ||
+		!slices.Equal(bob.app.Settings().Bindings[bob.app.bindingIndex(p.ID)].Peers, peers) {
+		t.Fatalf("a failed save changed the member list %+v or peers %v", v.Members, bob.app.Settings().Bindings[bob.app.bindingIndex(p.ID)].Peers)
+	}
 
 	// Removing bob: gone from alice's members; a second removal knows no bob.
 	if code, raw := alice.api(t, http.MethodPost, "projects/"+p.ID+"/members/remove", map[string]any{"name": "bob"}, &v); code != http.StatusOK ||

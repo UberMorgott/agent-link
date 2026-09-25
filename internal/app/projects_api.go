@@ -692,20 +692,25 @@ func (a *App) removeBindingMember(pid, name string) error {
 			addrs = m.Addrs
 		}
 	}
-	if err := c.n.RemoveMember(name); err != nil {
-		return err
-	}
+	// The settings are saved first: a failed save leaves the member in place,
+	// a failed removal puts the saved settings back.
 	peers := slices.DeleteFunc(slices.Clone(a.s.Bindings[i].Peers), func(p string) bool { return slices.Contains(addrs, p) })
 	if len(peers) == len(a.s.Bindings[i].Peers) {
-		return nil
+		return c.n.RemoveMember(name)
 	}
 	if len(peers) == 0 {
 		peers = nil
 	}
-	s := a.s
+	old, s := a.s, a.s
 	s.Bindings = slices.Clone(s.Bindings)
 	s.Bindings[i].Peers = peers
 	if err := settings.Save(a.path, s); err != nil {
+		return err
+	}
+	if err := c.n.RemoveMember(name); err != nil {
+		if rerr := settings.Save(a.path, old); rerr != nil {
+			return errors.Join(err, rerr)
+		}
 		return err
 	}
 	a.s = s
