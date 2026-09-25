@@ -3,7 +3,12 @@
     "agentlink": {
       "type": "stdio",
       "command": "cmd",
-      "args": ["/d", "/c", "${CLAUDE_PLUGIN_ROOT}\\bin\\agentlink.cmd", "mcp"]
+      "args": [
+        "/v:on", "/d", "/c",
+        "(if", "defined", "PLUGIN_ROOT", "(set", "PATH=!PLUGIN_ROOT!\\bin;!PATH!)",
+        "else", "if", "defined", "CLAUDE_PLUGIN_ROOT", "(set", "PATH=!CLAUDE_PLUGIN_ROOT!\\bin;!PATH!))",
+        "&", "agentlink", "mcp"
+      ]
     }
   }
 }
