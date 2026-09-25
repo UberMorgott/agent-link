@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -20,9 +24,19 @@ type seatLauncher struct {
 	n      int
 	err    error
 	during func(spec LaunchSpec)
+	// open: the seats' sessions are open in the agent's app (seatOccupied).
+	open atomic.Bool
 }
 
 func (l *seatLauncher) Direct(string) bool { return true }
+
+func (l *seatLauncher) busy(Seat, time.Time) bool { return l.open.Load() }
+
+func (l *seatLauncher) set(err error, during func(LaunchSpec)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.err, l.during = err, during
+}
 
 func (l *seatLauncher) Run(_ context.Context, spec LaunchSpec, started func(string)) error {
 	l.mu.Lock()
@@ -59,6 +73,7 @@ func seatNodeOf(t *testing.T, p testProject, dataDir, dir string, l *seatLaunche
 	a.SetFolders(dir, nil)
 	a.SetLauncher(l, ProviderClaude)
 	a.wakeEvery = time.Hour // the tests run seatsDue themselves
+	a.seatBusy = l.busy
 	a.start(t)
 	return a
 }
@@ -349,5 +364,354 @@ func TestCodexServerArgs(t *testing.T) {
 	want := []string{"app-server", "-c", `shell_environment_policy.set={AGENTLINK_SEAT='seat-1',PATH='C:\bin;C:\x'}`}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// A seat whose session is open in the agent's app is not resumed (two
+// writers of one session): it waits as busy, and runs once the app left it.
+func TestSeatBusySessionNotResumed(t *testing.T) {
+	l := &seatLauncher{}
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	_, codex := addSeats(t, a)
+	chat, _ := a.NewProjectChat(nil)
+	if _, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "hi", AuthorKind: AuthorHuman, AskSeats: []string{codex.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	l.open.Store(true)
+	before := len(l.all())
+	a.seatsDue(context.Background(), time.Now())
+	time.Sleep(100 * time.Millisecond)
+	if s := seatByLabel(t, a, "Codex"); len(l.all()) != before || s.Status != SeatBusy || len(s.Pending) != 1 {
+		t.Fatalf("an open session was resumed: runs %d -> %d, %+v", before, len(l.all()), s)
+	}
+	l.open.Store(false)
+	a.seatsDue(context.Background(), time.Now())
+	eventually(t, "the turn after the app left it", func() bool { return len(seatByLabel(t, a, "Codex").Pending) == 0 })
+	if s := seatByLabel(t, a, "Codex"); s.Status != SeatOffline || s.LastTurn.IsZero() {
+		t.Fatalf("after the turn %+v", s)
+	}
+}
+
+// sessionOccupied: the session's own transcript, written after the node's
+// last turn of it and lately.
+func TestSessionOccupied(t *testing.T) {
+	claudeHome, codexHome, dir := t.TempDir(), t.TempDir(), t.TempDir()
+	now := time.Now()
+	sid := "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+	write := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cp := filepath.Join(claudeHome, "projects", claudeProjectDir(filepath.Clean(dir)), sid+".jsonl")
+	write(cp)
+	if !sessionOccupied(ProviderClaude, claudeHome, codexHome, dir, sid, now.Add(-time.Minute), now) {
+		t.Fatal("a transcript written after the last turn is not occupied")
+	}
+	if sessionOccupied(ProviderClaude, claudeHome, codexHome, dir, sid, now.Add(time.Minute), now) {
+		t.Fatal("the node's own turn counts as another writer")
+	}
+	if sessionOccupied(ProviderClaude, claudeHome, codexHome, dir, "other", time.Time{}, now) || sessionOccupied(ProviderCodex, claudeHome, codexHome, dir, sid, time.Time{}, now) {
+		t.Fatal("another session or provider is occupied")
+	}
+	if err := os.Chtimes(cp, now.Add(-2*occupiedWithin), now.Add(-2*occupiedWithin)); err != nil {
+		t.Fatal(err)
+	}
+	if sessionOccupied(ProviderClaude, claudeHome, codexHome, dir, sid, time.Time{}, now) {
+		t.Fatal("an old transcript is occupied")
+	}
+	// A resumed Codex thread writes to the rollout of its first day.
+	write(filepath.Join(codexHome, "sessions", "2026", "01", "02", "rollout-2026-01-02T10-00-00-"+sid+".jsonl"))
+	if !sessionOccupied(ProviderCodex, claudeHome, codexHome, dir, sid, time.Time{}, now) {
+		t.Fatal("an old day's rollout written now is not occupied")
+	}
+}
+
+// The node's turn claims its messages: a hook of the seat's session that
+// registers meanwhile neither sees nor takes them; a failed turn frees them.
+func TestSeatTurnClaimsItsMessages(t *testing.T) {
+	l := &seatLauncher{}
+	dir := t.TempDir()
+	a := seatNode(t, t.TempDir(), dir, l)
+	_, codex := addSeats(t, a)
+	chat, _ := a.NewProjectChat(nil)
+	m, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "review", AuthorKind: AuthorHuman, AskSeats: []string{codex.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var granted []string
+	seen := -1
+	l.set(errors.New("boom"), func(spec LaunchSpec) {
+		if spec.Seat != codex.ID {
+			return
+		}
+		if _, err := a.RegisterSession(SessionRequest{SessionID: codex.SessionID, Provider: ProviderCodex, Folder: dir}); err != nil {
+			t.Error(err)
+		}
+		granted, _ = a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: codex.SessionID})
+		p, _ := a.UnreadFor(dir, codex.SessionID, "", 10)
+		seen = len(p.Messages)
+		if err := a.EndSession(codex.SessionID); err != nil {
+			t.Error(err)
+		}
+	})
+	a.seatsDue(context.Background(), time.Now())
+	eventually(t, "the failed turn", func() bool { s := seatByLabel(t, a, "Codex"); return s.Fails == 1 && s.Status != SeatRunning })
+	if len(granted) != 0 || seen != 0 {
+		t.Fatalf("a hook took the turn's message: granted %v, unread %d", granted, seen)
+	}
+	l.set(nil, nil)
+	if _, err := a.RegisterSession(SessionRequest{SessionID: codex.SessionID, Provider: ProviderCodex, Folder: dir}); err != nil {
+		t.Fatal(err)
+	}
+	if g, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: codex.SessionID}); !slices.Equal(g, []string{m.ID}) {
+		t.Fatalf("the failed turn kept its claim: %v", g)
+	}
+}
+
+// A peer's reply to a seat's message goes to that seat, asked when it asks
+// this node, and to it alone: not the worker's, not unread for the others.
+func TestSeatGetsPeerReply(t *testing.T) {
+	p := newTestProject(t)
+	lnA, lnB := listen(t), listen(t)
+	l := &seatLauncher{}
+	a := newProjectNode(t, "a", p, lnA, map[string]net.Listener{"b": lnB})
+	a.SetFolders(t.TempDir(), nil)
+	a.SetLauncher(l, ProviderClaude)
+	a.wakeEvery, a.seatBusy = time.Hour, l.busy
+	b := newProjectNode(t, "b", p, lnB, nil)
+	a.start(t)
+	b.start(t)
+	eventually(t, "a<->b connected", func() bool { return a.Connected("b") && b.Connected("a") })
+	_, codex := addSeats(t, a)
+	chat, err := a.NewProjectChat([]string{"b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "b, which port?", Ask: []string{"b"}, Seat: codex.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the question", func() bool { return slices.Contains(chatIDs(b, chat.ID), q.ID) })
+	ans, err := b.SendChat(ChatSend{ChatID: chat.ID, Body: "8080; why?", ReplyTo: q.ID, Ask: []string{"a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the seat has the reply", func() bool { return slices.Contains(pendingIDs(seatByLabel(t, a, "Codex")), ans.ID) })
+	if s := seatByLabel(t, a, "Codex"); !s.Pending[len(s.Pending)-1].Ask {
+		t.Fatalf("a reply that asks this node does not ask the seat: %+v", s.Pending)
+	}
+	rec, _ := a.chats.message(ans.ID)
+	if rec.Assigned != "seat:"+codex.ID {
+		t.Fatalf("assigned %q", rec.Assigned)
+	}
+	if run, _, _ := a.ClaimRun(rec.Message); run {
+		t.Fatal("the worker takes the seat's message")
+	}
+	if u, _ := a.Unread("", "", 10); slices.Contains(ids(u.Messages), ans.ID) {
+		t.Fatal("the seat's message is unread for every session")
+	}
+	a.seatsDue(context.Background(), time.Now())
+	eventually(t, "the seat's turn", func() bool { return len(seatByLabel(t, a, "Codex").Pending) == 0 })
+	if last := l.all()[len(l.all())-1]; !strings.Contains(last.Prompt, "8080; why?") {
+		t.Fatalf("turn %+v", last)
+	}
+}
+
+// Seats asking each other without --reply-to continue the chain of the
+// message they were asked by: past MaxAutoDepth the ask pauses, and a turn
+// leaves a paused message out of its prompt.
+func TestSeatAsksWithoutReplyToCountDepth(t *testing.T) {
+	l := &seatLauncher{}
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	claude, codex := addSeats(t, a)
+	chat, _ := a.NewProjectChat(nil)
+	start, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "talk", AuthorKind: AuthorHuman, AskSeats: []string{claude.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev, from, to := start, codex, claude
+	for prev.AutoDepth <= MaxAutoDepth {
+		from, to = to, from
+		next, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: fmt.Sprintf("hop %d", prev.AutoDepth+1), Seat: from.ID, AskSeats: []string{to.ID}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next.AutoDepth != prev.AutoDepth+1 || next.RootID != start.ID {
+			t.Fatalf("hop after %d: depth %d root %s", prev.AutoDepth, next.AutoDepth, next.RootID)
+		}
+		prev = next
+	}
+	paused := prev
+	fresh, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "fresh question", AuthorKind: AuthorHuman, AskSeats: []string{to.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.seatsDue(context.Background(), time.Now())
+	eventually(t, "the turn", func() bool {
+		s := seatByLabel(t, a, to.Label)
+		return !slices.Contains(pendingIDs(s), fresh.ID) && s.Status != SeatRunning
+	})
+	var last LaunchSpec
+	for _, r := range l.all() {
+		if r.Seat == to.ID {
+			last = r
+		}
+	}
+	if !strings.Contains(last.Prompt, "fresh question") || strings.Contains(last.Prompt, paused.Body) {
+		t.Fatalf("prompt %q", last.Prompt)
+	}
+	if !slices.Contains(pendingIDs(seatByLabel(t, a, to.Label)), paused.ID) {
+		t.Fatal("the paused message left without a person")
+	}
+}
+
+// A turn never starts for a seat stopped or removed after it was due.
+func TestSeatTurnSkipsStoppedOrRemoved(t *testing.T) {
+	l := &seatLauncher{}
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	_, codex := addSeats(t, a)
+	chat, _ := a.NewProjectChat(nil)
+	if _, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "x", AuthorKind: AuthorHuman, AskSeats: []string{codex.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(l.all())
+	if _, err := a.StopSeat(codex.ID); err != nil {
+		t.Fatal(err)
+	}
+	a.seatTurn(context.Background(), l, codex.ID, false, false)
+	if err := a.RemoveSeat(codex.ID); err != nil {
+		t.Fatal(err)
+	}
+	a.seatTurn(context.Background(), l, codex.ID, false, false)
+	if n := len(l.all()); n != before {
+		t.Fatalf("turns ran: %d -> %d", before, n)
+	}
+	if _, ok := a.claimTurn(context.Background(), codex.ID, nil, false); ok {
+		t.Fatal("a removed seat's turn may start")
+	}
+}
+
+// A failed turn is tried again after each of seatRetry, then waits for a
+// person (needs_human) until a new message.
+func TestSeatRetriesFailedTurn(t *testing.T) {
+	l := &seatLauncher{}
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	_, codex := addSeats(t, a)
+	chat, _ := a.NewProjectChat(nil)
+	l.set(errors.New("transient"), nil)
+	if _, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "x", AuthorKind: AuthorHuman, AskSeats: []string{codex.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	fails := func(n int) {
+		t.Helper()
+		eventually(t, fmt.Sprintf("failure %d", n), func() bool { s := seatByLabel(t, a, "Codex"); return s.Fails == n && s.Status != SeatRunning })
+	}
+	base := len(l.all())
+	a.seatsDue(ctx, time.Now())
+	fails(1)
+	s := seatByLabel(t, a, "Codex")
+	if d := s.RetryAt.Sub(s.LastTurn); d < seatRetry[0]-time.Second || d > seatRetry[0]+time.Second {
+		t.Fatalf("first retry after %v", d)
+	}
+	a.seatsDue(ctx, time.Now().Add(seatRetry[0]/2))
+	time.Sleep(100 * time.Millisecond)
+	if n := len(l.all()); n != base+1 {
+		t.Fatalf("retried before its time: %d runs", n-base)
+	}
+	for i := range seatRetry {
+		a.seatsDue(ctx, seatByLabel(t, a, "Codex").RetryAt.Add(time.Second))
+		fails(i + 2)
+	}
+	if s := seatByLabel(t, a, "Codex"); s.Status != SeatNeedsHuman || len(s.Pending) != 1 || s.Error == "" {
+		t.Fatalf("after the retries %+v", s)
+	}
+	a.seatsDue(ctx, time.Now().Add(24*time.Hour))
+	time.Sleep(100 * time.Millisecond)
+	if n := len(l.all()); n != base+1+len(seatRetry) {
+		t.Fatalf("ran past its retries: %d runs", n-base)
+	}
+	l.set(nil, nil)
+	if _, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "again", AuthorKind: AuthorHuman, AskSeats: []string{codex.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	a.seatsDue(ctx, time.Now())
+	eventually(t, "answered after a new message", func() bool { return len(seatByLabel(t, a, "Codex").Pending) == 0 })
+}
+
+// A send whose seats' queue cannot be saved reports it, and the queue reaches
+// the disk later.
+func TestSeatQueueSaveFailure(t *testing.T) {
+	l := &seatLauncher{}
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	_, codex := addSeats(t, a)
+	chat, _ := a.NewProjectChat(nil)
+	st := a.seats
+	st.mu.Lock()
+	good := st.path
+	st.path = filepath.Join(t.TempDir(), "missing", "seats.json")
+	st.mu.Unlock()
+	m, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "x", AuthorKind: AuthorHuman, AskSeats: []string{codex.ID}})
+	if err == nil || m.ID == "" {
+		t.Fatalf("send %+v %v", m, err)
+	}
+	st.mu.Lock()
+	st.path = good
+	st.mu.Unlock()
+	l.open.Store(true) // no turn: the message stays pending
+	a.seatsDue(context.Background(), time.Now())
+	var saved []*Seat
+	if err := readJSON(good, &saved); err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(saved, func(s *Seat) bool { return s.ID == codex.ID })
+	if i < 0 || !slices.ContainsFunc(saved[i].Pending, func(p SeatPending) bool { return p.ID == m.ID }) {
+		t.Fatalf("not saved: %+v", saved)
+	}
+}
+
+// The setup turn of a new seat posts nothing; a turn with messages may.
+func TestSeatSetupTurnPostsNothing(t *testing.T) {
+	l := &seatLauncher{}
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	var setupErr, askErr error
+	var setupPrompt string
+	chatOf := func(spec LaunchSpec) string {
+		for _, e := range spec.Env {
+			if v, ok := strings.CutPrefix(e, "AGENTLINK_CHAT_ID="); ok {
+				return v
+			}
+		}
+		return ""
+	}
+	l.set(nil, func(spec LaunchSpec) {
+		if strings.Contains(spec.Prompt, "question") {
+			_, askErr = a.SendRequest(SendRequest{ChatID: chatOf(spec), Body: "answer", Seat: spec.Seat})
+			return
+		}
+		setupPrompt = spec.Prompt
+		_, setupErr = a.SendRequest(SendRequest{ChatID: chatOf(spec), Body: "hi Codex", Seat: spec.Seat})
+	})
+	if _, err := a.AddSeat(SeatRequest{Provider: ProviderClaude}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "setup turn", func() bool { s := seatByLabel(t, a, "Claude"); return s.SessionID != "" && s.Status != SeatRunning })
+	if !errors.Is(setupErr, ErrSeatSetup) || !strings.Contains(setupPrompt, "ничего не отправляйте") {
+		t.Fatalf("setup turn sent: %v; prompt %q", setupErr, setupPrompt)
+	}
+	claude := seatByLabel(t, a, "Claude")
+	chat, _ := a.NewProjectChat(nil)
+	if _, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "a question", AuthorKind: AuthorHuman, AskSeats: []string{claude.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	a.seatsDue(context.Background(), time.Now())
+	eventually(t, "answered", func() bool { return len(seatByLabel(t, a, "Claude").Pending) == 0 })
+	if askErr != nil {
+		t.Fatalf("a turn with a message may not send: %v", askErr)
 	}
 }

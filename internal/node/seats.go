@@ -25,23 +25,41 @@ import (
 //     --ask-seat): each asked seat gets it (Seat.Pending), never another
 //     session. A reply (ReplyTo) to a seat's message goes back to that seat: a
 //     person's reply asks it, an agent's informs it.
+//   - A message from a peer that replies to a seat's message goes to that
+//     seat (receiveChat, seatsForIncoming), assigned to it so no other session
+//     or the worker answers it too.
 //   - A seat whose session is live gets its messages through the session's
 //     hooks and wakes (unreadFor, claimLocked, Ack); one that is not is run by
 //     the node (seatsDue): a headless turn resuming its session with the
-//     messages as the prompt (WakePrompt), acknowledged when the turn succeeds.
+//     messages as the prompt (WakePrompt). The turn claims them first (a hook
+//     of the session registering meanwhile does not take them too), acknowledges
+//     them when it succeeds and frees them when it fails.
+//   - A session that is not live but open in the agent's app (its transcript
+//     written since the node's last turn of it, seatOccupied) is not resumed:
+//     two writers of one session. Its messages wait for its hooks (SeatBusy).
+//   - A failed turn is tried again after seatRetry; after the last it waits
+//     for a person (SeatNeedsHuman: a new message or Start).
 //   - Agents asking each other form an automatic chain like any other
-//     (inheritChain): past MaxAutoDepth a request waits for a person (Paused),
-//     so two seats never talk forever.
+//     (inheritChain; a seat's message continues the one it was asked by):
+//     past MaxAutoDepth a request waits for a person (Paused), so two seats
+//     never talk forever.
+//   - The setup turn of a new seat (its introduction alone) posts nothing: the
+//     node refuses its sends (senderAgent).
 //   - Stop ends a running turn and holds the seat's messages; Start resumes.
 
 // Seat statuses (SeatView.Status).
 const (
-	SeatActive  = "active"  // its session is live and in a turn
-	SeatIdle    = "idle"    // its session is live and waits
-	SeatRunning = "running" // the node runs a turn of it
-	SeatOffline = "closed"  // no live session: the node runs it for a message
-	SeatStopped = "stopped" // stopped by the person
+	SeatActive     = "active"      // its session is live and in a turn
+	SeatIdle       = "idle"        // its session is live and waits
+	SeatRunning    = "running"     // the node runs a turn of it
+	SeatOffline    = "closed"      // no live session: the node runs it for a message
+	SeatStopped    = "stopped"     // stopped by the person
+	SeatBusy       = "busy"        // open in the agent's app: its messages wait for its hooks
+	SeatNeedsHuman = "needs_human" // its turns kept failing: a new message or Start runs it again
 )
+
+// seatRetry are the waits before the automatic tries of a seat's failed turn.
+var seatRetry = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute}
 
 // maxSeats bounds the seats of a node.
 const maxSeats = 8
@@ -59,7 +77,15 @@ type Seat struct {
 	Stopped   bool      `json:"stopped,omitempty"`
 	// Pending are the messages for it not yet acknowledged, oldest first.
 	Pending []SeatPending `json:"pending,omitempty"`
+	// LastTurn is when the node's last turn of it ended (seatOccupied); Fails
+	// its failed turns in a row, RetryAt when the next is tried (seatRetry).
+	LastTurn time.Time `json:"last_turn,omitempty"`
+	Fails    int       `json:"fails,omitempty"`
+	RetryAt  time.Time `json:"retry_at,omitempty"`
 }
+
+// needsHuman reports whether s's turns failed past its automatic tries.
+func (s *Seat) needsHuman() bool { return s.Fails > len(seatRetry) }
 
 // SeatPending is one message for a seat: Ask when it asks the seat to answer
 // (else it informs, e.g. a reply to the seat's own message).
@@ -73,8 +99,8 @@ type SeatPending struct {
 type SeatView struct {
 	Seat
 	Status string `json:"status"`
-	// Error is why the node's last turn of it failed; it runs again for a new
-	// message or at Start.
+	// Error is why the node's last turn of it failed; it runs again at RetryAt,
+	// for a new message or at Start.
 	Error string `json:"error,omitempty"`
 }
 
@@ -91,19 +117,24 @@ type seatStore struct {
 
 	mu    sync.Mutex
 	seats []*Seat
-	// run: the node's running turn per seat; errs: its last failure;
-	// blocked: a failed turn waits for a new message or Start.
-	run     map[string]context.CancelFunc
-	errs    map[string]string
-	blocked map[string]bool
-	// marks: per seat and message (seatKey), a hook's claim or the node's
-	// wake of the seat's session with it (claimLocked).
+	// run: the node's running turn per seat; errs: its last failure; busy:
+	// its session is open in the agent's app (seatOccupied); quiet: its turn
+	// is its setup alone, which posts nothing.
+	run   map[string]context.CancelFunc
+	errs  map[string]string
+	busy  map[string]bool
+	quiet map[string]bool
+	// marks: per seat and message (seatKey), a hook's claim, the node's wake
+	// of the seat's session with it (claimLocked) or the node's turn of it.
 	marks map[string]seatMark
+	// dirty: the last save failed; seatsDue saves again.
+	dirty bool
 }
 
 type seatMark struct {
 	at    time.Time
 	wake  bool
+	turn  bool
 	token string
 }
 
@@ -111,18 +142,22 @@ func seatKey(seat, id string) string { return seat + "/" + id }
 
 func openSeats(dir string) (*seatStore, error) {
 	st := &seatStore{path: filepath.Join(dir, "seats.json"), run: map[string]context.CancelFunc{}, errs: map[string]string{},
-		blocked: map[string]bool{}, marks: map[string]seatMark{}}
+		busy: map[string]bool{}, quiet: map[string]bool{}, marks: map[string]seatMark{}}
 	if err := readJSON(st.path, &st.seats); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	return st, nil
 }
 
+// saveLocked writes seats.json; a failure leaves the store dirty, saved again
+// by seatsDue, so what is in memory reaches the disk.
 func (st *seatStore) saveLocked() error {
 	if st.seats == nil {
 		st.seats = []*Seat{}
 	}
-	return writeJSON(st.path, st.seats)
+	err := writeJSON(st.path, st.seats)
+	st.dirty = err != nil
+	return err
 }
 
 func (st *seatStore) getLocked(id string) *Seat {
@@ -177,6 +212,10 @@ func (n *Node) Seats() []SeatView {
 			v.Status = SeatIdle
 		case l.ok:
 			v.Status = SeatActive
+		case s.needsHuman():
+			v.Status = SeatNeedsHuman
+		case st.busy[s.ID] && len(s.Pending) > 0:
+			v.Status = SeatBusy
 		default:
 			v.Status = SeatOffline
 		}
@@ -266,8 +305,7 @@ func (n *Node) StartSeat(id string, open bool) (SeatView, error) {
 		st.mu.Unlock()
 		return SeatView{}, fmt.Errorf("%w %s", ErrUnknownSeat, id)
 	}
-	s.Stopped = false
-	delete(st.blocked, id)
+	s.Stopped, s.Fails, s.RetryAt = false, 0, time.Time{}
 	delete(st.errs, id)
 	err := st.saveLocked()
 	seat, running := *s, st.run[id] != nil
@@ -278,7 +316,7 @@ func (n *Node) StartSeat(id string, open bool) (SeatView, error) {
 	switch {
 	case running:
 	case seat.SessionID == "":
-		if !n.startSeatTurn(seat, true, open) {
+		if !n.startSeatTurn(seat.ID, true, open) {
 			return SeatView{}, fmt.Errorf("%w: the node is not running", ErrBadRequest)
 		}
 	case open:
@@ -326,7 +364,7 @@ func (n *Node) RemoveSeat(id string) error {
 	}
 	st.seats = slices.Delete(st.seats, i, i+1)
 	delete(st.errs, id)
-	delete(st.blocked, id)
+	delete(st.busy, id)
 	for k := range st.marks {
 		if strings.HasPrefix(k, id+"/") {
 			delete(st.marks, k)
@@ -347,8 +385,12 @@ func (n *Node) seatView(id string) (SeatView, error) {
 	return SeatView{}, fmt.Errorf("%w %s", ErrUnknownSeat, id)
 }
 
+// ErrSeatSetup: a seat's setup turn tried to post.
+var ErrSeatSetup = errors.New("a seat's setup turn posts nothing")
+
 // senderAgent is who sends req on this node: its seat (req.Seat, else the
 // seat of req.SessionID) and provider; nil for a person or an unknown session.
+// A seat in its setup turn may not send (ErrSeatSetup).
 func (n *Node) senderAgent(req SendRequest) (*AgentRef, error) {
 	if req.AuthorKind == AuthorHuman {
 		return nil, nil
@@ -366,6 +408,10 @@ func (n *Node) senderAgent(req SendRequest) (*AgentRef, error) {
 	}
 	var ref *AgentRef
 	if s != nil {
+		if st.quiet[s.ID] {
+			st.mu.Unlock()
+			return nil, fmt.Errorf("%w: %w (%s)", ErrBadRequest, ErrSeatSetup, s.Label)
+		}
 		ref = &AgentRef{Seat: s.ID, Label: s.Label, Provider: s.Provider}
 	}
 	st.mu.Unlock()
@@ -406,45 +452,120 @@ func (n *Node) resolveSeats(names []string, except string) ([]string, error) {
 	return slices.Compact(out), nil
 }
 
+// seatTo is a seat a message goes to: asked, else informed.
+type seatTo struct {
+	seat string
+	ask  bool
+}
+
+// repliedSeat is the seat of this node that wrote the message id, "" for none.
+func (n *Node) repliedSeat(id string) string {
+	if id == "" {
+		return ""
+	}
+	if r, ok := n.chats.message(id); ok && r.Message.From == n.cfg.Node && r.Message.Agent != nil {
+		return r.Message.Agent.Seat
+	}
+	return ""
+}
+
 // deliverToSeats hands m, just sent by this node, to the seats it is for: the
 // asked ones (m.AskSeats), and the author seat of the message m replies to
-// (informed; asked when a person replies, see SendRequest).
-func (n *Node) deliverToSeats(m Message, sender string) {
-	type to struct {
-		seat string
-		ask  bool
-	}
-	var list []to
+// (informed; asked when a person replies, see SendRequest). An error means
+// the seats' queue is not saved yet (seatsDue saves it again).
+func (n *Node) deliverToSeats(m Message, sender string) error {
+	var list []seatTo
 	for _, id := range m.AskSeats {
-		list = append(list, to{id, true})
+		list = append(list, seatTo{id, true})
 	}
-	if m.ReplyTo != "" {
-		if r, ok := n.chats.message(m.ReplyTo); ok && r.Message.From == n.cfg.Node && r.Message.Agent != nil {
-			if s := r.Message.Agent.Seat; s != "" && s != sender && !slices.Contains(m.AskSeats, s) {
-				list = append(list, to{s, false})
-			}
+	if s := n.repliedSeat(m.ReplyTo); s != "" && s != sender && !slices.Contains(m.AskSeats, s) {
+		list = append(list, seatTo{s, false})
+	}
+	_, err := n.queueSeats(m.ID, list)
+	return err
+}
+
+// seatsForIncoming hands m, a new message from a peer, to the seat whose
+// message it replies to: asked when it asks this node or a person wrote it,
+// else informed. It returns that seat ("" for none). The seat answers it
+// alone: pending for it, neither the worker (ClaimRun) nor another session
+// (claimLocked) takes it, and once stored it is assigned to it
+// (assignToSeat). A peer's AskSeats name its own seats, never this node's.
+func (n *Node) seatsForIncoming(m Message) string {
+	seat := n.repliedSeat(m.ReplyTo)
+	if seat == "" || m.Kind != "" {
+		return ""
+	}
+	queued, err := n.queueSeats(m.ID, []seatTo{{seat, m.AuthorKind == AuthorHuman || m.Asks(n.cfg.Node)}})
+	if err != nil {
+		n.log.Warn("save seats; saved again later", "id", m.ID, "err", err)
+	}
+	if !queued {
+		return ""
+	}
+	return seat
+}
+
+// seatHas reports whether message id is pending for a seat of this node.
+func (n *Node) seatHas(id string) bool {
+	st := n.seats
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, s := range st.seats {
+		if slices.ContainsFunc(s.Pending, func(p SeatPending) bool { return p.ID == id }) {
+			return true
 		}
 	}
-	if len(list) == 0 {
+	return false
+}
+
+// assignToSeat assigns stored message m to seat (seatsForIncoming; "" does
+// nothing): read for this node's other sessions, its author told it is read.
+func (n *Node) assignToSeat(m Message, seat string) {
+	if seat == "" {
 		return
+	}
+	ok, wasUnread, err := n.chats.claim(m.ID, "seat:"+seat)
+	if err != nil {
+		n.log.Warn("assign a message to its seat", "id", m.ID, "seat", seat, "err", err)
+		return
+	}
+	if ok && wasUnread {
+		n.sendReceipts(map[string][]string{m.From: {m.ID}}, StateRead)
+		n.changed("messages")
+	}
+}
+
+// queueSeats adds message id to the pending messages of the seats of list
+// and saves them. queued reports whether any seat has it now; err that the
+// save failed (the queue stays in memory and seatsDue saves it again).
+func (n *Node) queueSeats(id string, list []seatTo) (queued bool, err error) {
+	if len(list) == 0 {
+		return false, nil
 	}
 	now := time.Now().UTC()
 	st := n.seats
 	st.mu.Lock()
 	for _, t := range list {
 		s := st.getLocked(t.seat)
-		if s == nil || slices.ContainsFunc(s.Pending, func(p SeatPending) bool { return p.ID == m.ID }) {
+		if s == nil {
 			continue
 		}
-		s.Pending = append(s.Pending, SeatPending{ID: m.ID, Ask: t.ask, At: now})
-		delete(st.blocked, s.ID) // a new message: a failed seat runs again
+		queued = true
+		if slices.ContainsFunc(s.Pending, func(p SeatPending) bool { return p.ID == id }) {
+			continue
+		}
+		s.Pending = append(s.Pending, SeatPending{ID: id, Ask: t.ask, At: now})
+		s.Fails, s.RetryAt = 0, time.Time{} // a new message: a failed seat runs again
 	}
-	err := st.saveLocked()
+	if queued {
+		err = st.saveLocked()
+	}
 	st.mu.Unlock()
-	if err != nil {
-		n.log.Warn("save seats", "err", err)
+	if queued {
+		n.changed("seats")
 	}
-	n.changed("seats")
+	return queued, err
 }
 
 // seatPaused reports whether a seat's pending message waits for a person: it
@@ -468,7 +589,11 @@ func (n *Node) seatUnread(sid string, filter bool, area string, actionable bool)
 		if !ok || (filter && n.localArea(chatArea) != area) || (actionable && um.Paused) {
 			continue
 		}
-		if token, ok := st.woke(seat, p.ID); ok {
+		token, woke, turn := st.held(seat, p.ID)
+		switch {
+		case turn:
+			continue // the node's turn of the seat has it
+		case woke:
 			um.WakeToken = token
 			woken = append(woken, um)
 			continue
@@ -497,16 +622,21 @@ func (n *Node) seatMessage(seat string, p SeatPending) (UnreadMessage, string, b
 	return um, c.Area, true
 }
 
-// woke reports the token of the wake of seat's session with message id, while
-// it holds (inboxWakeGrace).
-func (st *seatStore) woke(seat, id string) (string, bool) {
+// held reports whether message id of seat is held by the wake of its session
+// (woke, with the wake's token, while it holds: inboxWakeGrace) or by the
+// node's turn of it (turn).
+func (st *seatStore) held(seat, id string) (token string, woke, turn bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	m, ok := st.marks[seatKey(seat, id)]
-	if ok && m.wake && time.Since(m.at) < inboxWakeGrace {
-		return m.token, true
+	switch {
+	case !ok:
+	case m.turn:
+		return "", false, true
+	case m.wake && time.Since(m.at) < inboxWakeGrace:
+		return m.token, true, false
 	}
-	return "", false
+	return "", false, false
 }
 
 // seatClaim is claimLocked for a message pending for the seat of session:
@@ -523,6 +653,8 @@ func (n *Node) seatClaim(session, id string, wake bool, token string) (handled, 
 	k := seatKey(s.ID, id)
 	if m, ok := st.marks[k]; ok {
 		switch {
+		case m.turn:
+			return true, false // the node's turn of the seat has it
 		case m.wake && time.Since(m.at) < inboxWakeGrace:
 			return true, false // the wake prompt has it
 		case wake && !m.wake && time.Since(m.at) < claimTTL:
@@ -540,7 +672,9 @@ func (n *Node) seatUnclaim(session string, ids []string) {
 	defer st.mu.Unlock()
 	if s := st.bySessionLocked(session); s != nil {
 		for _, id := range ids {
-			delete(st.marks, seatKey(s.ID, id))
+			if k := seatKey(s.ID, id); !st.marks[k].turn {
+				delete(st.marks, k)
+			}
 		}
 	}
 }
@@ -585,7 +719,9 @@ func (n *Node) seatAck(session, seat string, ids []string) map[string]bool {
 
 // seatsDue starts a turn of every seat that has messages to answer and no
 // live session to take them (its hooks and wakes do then): not stopped, not
-// running, not blocked by a failed turn.
+// running, not waiting to retry a failed turn or for a person, and its session
+// not open in the agent's app (seatOccupied: SeatBusy, its hooks deliver).
+// It also saves a seats.json whose last save failed.
 func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 	dl, ok := n.launcher.(DirectLauncher)
 	if !ok {
@@ -594,12 +730,20 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 	live := n.sess.liveIDs(now)
 	st := n.seats
 	st.mu.Lock()
+	if st.dirty {
+		if err := st.saveLocked(); err != nil {
+			n.log.Warn("save seats", "err", err)
+		}
+	}
 	var due []Seat
 	for _, s := range st.seats {
-		if s.Stopped || st.run[s.ID] != nil || st.blocked[s.ID] || len(s.Pending) == 0 || (s.SessionID != "" && live[s.SessionID]) {
+		if s.Stopped || st.run[s.ID] != nil || len(s.Pending) == 0 || (s.SessionID != "" && live[s.SessionID]) ||
+			s.needsHuman() || (s.Fails > 0 && now.Before(s.RetryAt)) {
 			continue
 		}
-		due = append(due, *s)
+		c := *s
+		c.Pending = slices.Clone(s.Pending)
+		due = append(due, c)
 	}
 	st.mu.Unlock()
 	for _, s := range due {
@@ -610,54 +754,150 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 				break
 			}
 		}
-		if ready {
-			n.wg.Go(func() { n.seatTurn(ctx, dl, s, s.SessionID == "", false) })
+		if !ready {
+			continue
 		}
+		busy := s.SessionID != "" && n.seatOccupied(s, now)
+		st.mu.Lock()
+		was := st.busy[s.ID]
+		if busy {
+			st.busy[s.ID] = true
+		} else {
+			delete(st.busy, s.ID)
+		}
+		st.mu.Unlock()
+		if was != busy {
+			n.changed("seats")
+		}
+		if busy {
+			continue
+		}
+		id, intro := s.ID, s.SessionID == ""
+		n.wg.Go(func() { n.seatTurn(ctx, dl, id, intro, false) })
 	}
 }
 
-// startSeatTurn runs one turn of seat in the background: its introduction
+// startSeatTurn runs one turn of seat id in the background: its introduction
 // first when intro, then its pending messages (as many as fit), resuming its
 // session (a new one when it has none). It reports false when the node does
 // not run or has no DirectLauncher.
-func (n *Node) startSeatTurn(seat Seat, intro, open bool) bool {
+func (n *Node) startSeatTurn(id string, intro, open bool) bool {
 	dl, ok := n.launcher.(DirectLauncher)
 	if !ok {
 		return false
 	}
-	return n.spawn(func(ctx context.Context) { n.seatTurn(ctx, dl, seat, intro, open) })
+	return n.spawn(func(ctx context.Context) { n.seatTurn(ctx, dl, id, intro, open) })
 }
 
-// seatTurn runs one turn of seat unless one runs already; StopSeat ends it.
-func (n *Node) seatTurn(ctx context.Context, dl DirectLauncher, seat Seat, intro, open bool) {
+// seatTurn runs one turn of seat id unless one runs already or the seat is
+// gone or stopped; StopSeat and RemoveSeat end it.
+func (n *Node) seatTurn(ctx context.Context, dl DirectLauncher, id string, intro, open bool) {
 	st := n.seats
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	st.mu.Lock()
-	if st.run[seat.ID] != nil {
+	s := st.getLocked(id)
+	if s == nil || s.Stopped || st.run[id] != nil {
 		st.mu.Unlock()
 		return
 	}
-	st.run[seat.ID] = cancel
+	st.run[id] = cancel
+	seat := *s
+	seat.Pending = slices.Clone(s.Pending)
 	st.mu.Unlock()
 	n.changed("seats")
 	n.runSeatTurn(ctx, dl, seat, intro, open)
 	st.mu.Lock()
-	delete(st.run, seat.ID)
+	delete(st.run, id)
+	delete(st.quiet, id)
 	st.mu.Unlock()
 	n.changed("seats")
 }
 
+// claimTurn claims msgs of seat for the node's turn of it (a hook or wake of
+// its session does not take them meanwhile), leaving out the ones no longer
+// pending or held by a hook's claim or a wake. ok is false when the seat is
+// gone or stopped (or ctx done): no turn starts. A turn of the introduction
+// alone is quiet: the seat's sends are refused (senderAgent).
+func (n *Node) claimTurn(ctx context.Context, seat string, msgs []UnreadMessage, intro bool) (out []UnreadMessage, ok bool) {
+	st := n.seats
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	s := st.getLocked(seat)
+	if s == nil || s.Stopped || ctx.Err() != nil {
+		return nil, false
+	}
+	now := time.Now()
+	for _, m := range msgs {
+		if !slices.ContainsFunc(s.Pending, func(p SeatPending) bool { return p.ID == m.ID }) {
+			continue
+		}
+		k := seatKey(seat, m.ID)
+		if mk, held := st.marks[k]; held && (mk.turn || (mk.wake && now.Sub(mk.at) < inboxWakeGrace) || (!mk.wake && now.Sub(mk.at) < claimTTL)) {
+			continue
+		}
+		st.marks[k] = seatMark{at: now, turn: true}
+		out = append(out, m)
+	}
+	if intro && len(out) == 0 {
+		st.quiet[seat] = true
+	}
+	return out, true
+}
+
+// endTurn records the end of the node's turn of seat: its messages msgs leave
+// the turn's claim (acknowledged by the caller when it succeeded), and a
+// failure (err, not a stop) counts toward seatRetry.
+func (n *Node) endTurn(seat string, msgs []UnreadMessage, err error, stopped bool) {
+	st := n.seats
+	st.mu.Lock()
+	for _, m := range msgs {
+		if k := seatKey(seat, m.ID); st.marks[k].turn {
+			delete(st.marks, k)
+		}
+	}
+	if err != nil {
+		st.errs[seat] = trimMsg(err.Error())
+	} else {
+		delete(st.errs, seat)
+	}
+	var serr error
+	if s := st.getLocked(seat); s != nil {
+		s.LastTurn = time.Now().UTC()
+		switch {
+		case err == nil:
+			s.Fails, s.RetryAt = 0, time.Time{}
+		case !stopped:
+			s.Fails++
+			if !s.needsHuman() {
+				s.RetryAt = time.Now().UTC().Add(seatRetry[s.Fails-1])
+			}
+		}
+		serr = st.saveLocked()
+	}
+	st.mu.Unlock()
+	if serr != nil {
+		n.log.Warn("save seats", "err", serr)
+	}
+}
+
 func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, intro, open bool) {
 	folder := n.folders.work
+	// A paused message (past MaxAutoDepth) waits for a person, never in a turn.
 	var msgs []UnreadMessage
 	for _, p := range seat.Pending {
-		if um, _, ok := n.seatMessage(seat.ID, p); ok {
+		if um, _, ok := n.seatMessage(seat.ID, p); ok && !um.Paused {
 			msgs = append(msgs, um)
 		}
 	}
+	ready := len(msgs)
 	if len(msgs) > 0 {
 		msgs = msgs[:FitUnread(msgs)]
+	}
+	msgs, ok := n.claimTurn(ctx, seat.ID, msgs, intro)
+	if !ok || (!intro && len(msgs) == 0) {
+		n.endTurnClaims(seat.ID, msgs)
+		return
 	}
 	chat := ""
 	if len(msgs) > 0 {
@@ -667,40 +907,48 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 	}
 	var prompt strings.Builder
 	if intro {
-		prompt.WriteString(n.seatIntro(seat, chat))
+		prompt.WriteString(n.seatIntro(seat, chat, len(msgs) == 0))
 	}
 	if len(msgs) > 0 {
 		if prompt.Len() > 0 {
 			prompt.WriteString("\n\n")
 		}
-		prompt.WriteString(WakePrompt(msgs, len(seat.Pending)-len(msgs), folder, randomHex(8)))
-	}
-	if prompt.Len() == 0 {
-		return
+		prompt.WriteString(WakePrompt(msgs, ready-len(msgs), folder, randomHex(8)))
 	}
 	spec := LaunchSpec{Provider: seat.Provider, Folder: folder, ResumeID: seat.SessionID, Prompt: prompt.String(),
 		Seat: seat.ID, NoOpen: !open, Env: n.seatEnv(seat, chat)}
 	n.log.Info("running a seat's turn", "seat", seat.ID, "provider", seat.Provider, "resume", seat.SessionID, "messages", len(msgs))
 	err := dl.Run(ctx, spec, func(id string) { n.bindSeat(seat.ID, id) })
-	st := n.seats
-	if err != nil && !errors.Is(err, ErrOpenApp) {
-		if ctx.Err() != nil {
-			err = fmt.Errorf("stopped: %w", err)
-		}
-		n.log.Warn("a seat's turn failed", "seat", seat.ID, "err", err)
-		st.mu.Lock()
-		st.errs[seat.ID] = trimMsg(err.Error())
-		st.blocked[seat.ID] = true
-		st.mu.Unlock()
-		return
+	if errors.Is(err, ErrOpenApp) {
+		err = nil
 	}
-	st.mu.Lock()
-	delete(st.errs, seat.ID)
-	st.mu.Unlock()
-	if len(msgs) > 0 {
+	stopped := err != nil && ctx.Err() != nil
+	if stopped {
+		err = fmt.Errorf("stopped: %w", err)
+	}
+	if err != nil {
+		n.log.Warn("a seat's turn failed", "seat", seat.ID, "err", err)
+	}
+	if err == nil && len(msgs) > 0 {
+		// Acknowledged under the turn's claim: no hook takes them in between.
 		n.seatAck("", seat.ID, ids(msgs))
 		n.changed("messages")
 	}
+	n.endTurn(seat.ID, msgs, err, stopped)
+}
+
+// endTurnClaims drops the turn's claims of msgs of seat (a turn that did not
+// start).
+func (n *Node) endTurnClaims(seat string, msgs []UnreadMessage) {
+	st := n.seats
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, m := range msgs {
+		if k := seatKey(seat, m.ID); st.marks[k].turn {
+			delete(st.marks, k)
+		}
+	}
+	delete(st.quiet, seat)
 }
 
 // bindSeat keeps session id as seat's session.
@@ -739,8 +987,9 @@ func (n *Node) seatEnv(seat Seat, chat string) []string {
 	return append(env, n.seatExtra...)
 }
 
-// seatIntro is the first prompt of a seat's session.
-func (n *Node) seatIntro(seat Seat, chat string) string {
+// seatIntro is the first prompt of a seat's session; setup when it is the
+// whole prompt (no message yet: the turn posts nothing).
+func (n *Node) seatIntro(seat Seat, chat string, setup bool) string {
 	var others []string
 	st := n.seats
 	st.mu.Lock()
@@ -755,10 +1004,15 @@ func (n *Node) seatIntro(seat Seat, chat string) string {
 		with = strings.Join(others, ", ")
 	}
 	name := n.ProjectMeta().Name
-	return fmt.Sprintf("agent-link: вы — агент «%s» (%s) в разговоре проекта «%s» на машине %s, чат %s. "+
+	intro := fmt.Sprintf("agent-link: вы — агент «%s» (%s) в разговоре проекта «%s» на машине %s, чат %s. "+
 		"Другие локальные агенты этого разговора: %s. Сообщения вам приходят сами. "+
 		"Спросить другого агента: agentlink send --chat %s --ask-seat <имя> --body \"<текст>\" "+
 		"(список агентов: agentlink seats). Ответить на сообщение: agentlink send --chat %s --reply-to <id> --body \"<текст>\". "+
-		"Отвечайте только когда вас просят; ответ на ваш вопрос придёт сам.",
+		"Никогда не пишите в чат по своей инициативе (ни приветствий, ни представлений): только ответ на сообщение, "+
+		"которое просит ответа от вас, или вопрос, без которого эту работу не сделать. Ответ на ваш вопрос придёт сам.",
 		seat.Label, ProviderName(seat.Provider), name, n.cfg.Node, chat, with, chat, chat)
+	if setup {
+		intro += " Сейчас сообщений нет: ничего не отправляйте и ничего не делайте, просто завершите ход."
+	}
+	return intro
 }

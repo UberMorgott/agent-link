@@ -92,8 +92,11 @@ func (n *Node) SendRequest(req SendRequest) (Message, error) {
 		req.Body = withFallback(req.Body, atts)
 	}
 	m, err := n.sendRequest(req, atts, agent, asked)
+	var qerr error
 	if err == nil && m.ChatID != "" {
-		n.deliverToSeats(m, sender)
+		if qerr = n.deliverToSeats(m, sender); qerr != nil {
+			qerr = fmt.Errorf("message %s sent, but the seats' queue was not saved (retried): %w", m.ID, qerr)
+		}
 	}
 	if err == nil && m.ChatID != "" && validSessionID(req.SessionID) {
 		if serr := n.chats.setSession(m.ID, req.SessionID); serr != nil {
@@ -102,6 +105,9 @@ func (n *Node) SendRequest(req SendRequest) (Message, error) {
 	}
 	if err == nil && req.ReplyTo != "" && req.Parent != req.ReplyTo && n.onLocalReply != nil {
 		n.onLocalReply(req.ReplyTo)
+	}
+	if err == nil {
+		err = qerr
 	}
 	return m, err
 }

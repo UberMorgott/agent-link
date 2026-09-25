@@ -115,6 +115,8 @@ type Node struct {
 	// launch's messages (tests); nil: the real ones.
 	occupied  func(dir string, now time.Time) bool
 	launchAck atomic.Pointer[func(req AckRequest) error]
+	// seatBusy replaces seatOccupied (tests); nil: the real one.
+	seatBusy func(s Seat, now time.Time) bool
 
 	selfAddrs []string // this node's own peer addresses, set by Run
 

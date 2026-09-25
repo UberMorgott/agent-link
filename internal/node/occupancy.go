@@ -38,6 +38,46 @@ func (n *Node) folderOccupied(dir string, now time.Time) bool {
 	return agentOccupied(agentHome("CLAUDE_CONFIG_DIR", ".claude"), agentHome("CODEX_HOME", ".codex"), dir, now)
 }
 
+// seatOccupied reports whether seat s's session is open in the agent's app:
+// its transcript (see above, for that session alone) was written after the
+// node's last turn of it (Seat.LastTurn) and within occupiedWithin. The node
+// does not resume it then (two writers of one session). n.seatBusy replaces
+// the check in tests.
+func (n *Node) seatOccupied(s Seat, now time.Time) bool {
+	if n.seatBusy != nil {
+		return n.seatBusy(s, now)
+	}
+	return sessionOccupied(s.Provider, agentHome("CLAUDE_CONFIG_DIR", ".claude"), agentHome("CODEX_HOME", ".codex"),
+		n.folders.work, s.SessionID, s.LastTurn, now)
+}
+
+// sessionOccupied is the check of seatOccupied with explicit agent homes: a
+// Claude Code transcript <claude home>/projects/<encoded dir>/<sid>.jsonl, a
+// Codex rollout <codex home>/sessions/YYYY/MM/DD/rollout-*-<sid>.jsonl (of
+// any day: a resumed thread writes to its first day's rollout).
+func sessionOccupied(provider, claudeHome, codexHome, dir, sid string, since, now time.Time) bool {
+	if !validSessionID(sid) {
+		return false
+	}
+	var paths []string
+	switch provider {
+	case ProviderClaude:
+		if claudeHome != "" && dir != "" {
+			paths = []string{filepath.Join(claudeHome, "projects", claudeProjectDir(filepath.Clean(dir)), sid+".jsonl")}
+		}
+	case ProviderCodex:
+		if codexHome != "" {
+			paths, _ = filepath.Glob(filepath.Join(codexHome, "sessions", "*", "*", "*", "rollout-*"+sid+".jsonl"))
+		}
+	}
+	for _, p := range paths {
+		if info, err := os.Stat(p); err == nil && recentFile(info, now) && info.ModTime().After(since) {
+			return true
+		}
+	}
+	return false
+}
+
 // agentHome is the agent's home: env when set, else ~/<dir>; "" when unknown.
 func agentHome(env, dir string) string {
 	if d := os.Getenv(env); d != "" {

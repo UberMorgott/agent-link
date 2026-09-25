@@ -255,6 +255,9 @@ func (n *Node) claimLocked(session string, want []string, wake bool, token strin
 			}
 			continue
 		}
+		if n.seatHas(id) {
+			continue // another seat's (seatsForIncoming): not for this session
+		}
 		if c, ok := r.claims[id]; ok && c.ackOnly {
 			continue // taken by a launched session, its ack pending: nobody's to deliver
 		}
