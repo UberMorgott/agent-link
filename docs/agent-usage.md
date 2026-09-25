@@ -325,8 +325,8 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   session is never stalled. A headless run registers nothing and takes no messages; the node
   grants claims only to a registered live session.
 - `install` is idempotent: it keeps the file's other settings and key order, adds one entry per
-  event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SessionEnd`;
-  `SessionEnd` with a 3 s timeout) or replaces the entries of an older version, and saves the
+  event (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SessionEnd`,
+  `SubagentStart`, `SubagentStop`; `SessionEnd` with a 3 s timeout) or replaces the entries of an older version, and saves the
   old file as `*.agentlink.bak`. Claude Code gets exec-form entries (`command` = this program,
   `args` = `["hook","claude"]`, no shell); Codex a shell command. Re-run it after moving
   `agentlink.exe`.

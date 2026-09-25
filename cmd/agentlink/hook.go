@@ -119,6 +119,9 @@ type hookState struct {
 	Active map[string]string `json:"active,omitempty"`
 	// Subagents keep the chat/request seen at start, even if the parent moves on.
 	Subagents map[string]map[string]string `json:"subagents,omitempty"`
+	// AgentActivity is each subagent's last activity posted, for coalescing
+	// per agent (the main agent's is Activity).
+	AgentActivity map[string]agentActivity `json:"agent_activity,omitempty"`
 	// Activity is the last activity posted, for coalescing.
 	Activity   string    `json:"activity,omitempty"`
 	ActivityAt time.Time `json:"activity_at,omitzero"`
@@ -250,8 +253,7 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	if event == "" || event == "auto" {
 		event = in.HookEventName
 	}
-	supported := slices.Contains(agenthook.Events, event) || client == hookCodex && (event == evSubagentStart || event == evSubagentStop)
-	if !supported || in.SessionID == "" {
+	if !slices.Contains(agenthook.Events, event) || in.SessionID == "" {
 		return nil
 	}
 	quiet := func() {
@@ -287,6 +289,16 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	if event == evSubagentStart || event == evSubagentStop {
 		h.subagent(in.AgentID, in.AgentType, event == evSubagentStop)
 		quiet()
+		return nil
+	}
+	if in.AgentID != "" && (event == evPreTool || event == evPostTool) {
+		// A subagent's tool call: its own line under the session. Its messages
+		// stay for the main agent (none are delivered to the subagent).
+		if event == evPreTool {
+			typ, text := toolActivity(folder, in.ToolName, in.ToolInput)
+			h.reportAgent(in.AgentID, in.AgentType, typ, text)
+		}
+		writeHookJSON(stdout, takeNotice(&st), nil)
 		return nil
 	}
 	if event == evPreTool {
