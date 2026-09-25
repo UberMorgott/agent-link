@@ -74,7 +74,7 @@ func newMCPServer(cfg config.Config) *mcp.Server {
 	proj := func(p string) string { return cmp.Or(p, os.Getenv(envProjectID)) }
 	limit := func(n int) int { return cmp.Or(n, 50) }
 
-	addTool(s, "projects", "List the projects of the agentlink app.", func(mcpNone) (any, error) {
+	addTool(s, "projects", "List the projects of the agentlink app; online/total count the other members, members lists this node too (self: true).", func(mcpNone) (any, error) {
 		return listProjects(cfg)
 	})
 	addTool(s, "members", "List the members of a project, this node first.", func(in mcpProject) (any, error) {

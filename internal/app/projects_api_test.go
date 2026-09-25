@@ -267,6 +267,24 @@ func TestProjectsAPIRefusals(t *testing.T) {
 
 // Two apps on loopback through the web API: create, invite, join with the
 // address, the name arrives, bind a folder, a new chat, messages both ways.
+// The project counts leave out this node wherever the list puts it, and
+// count every other member once.
+func TestPeerCounts(t *testing.T) {
+	for _, tc := range []struct {
+		members       []node.MemberInfo
+		online, total int
+	}{
+		{[]node.MemberInfo{{Name: "me", Self: true, Online: true}}, 0, 0},
+		{[]node.MemberInfo{{Name: "me", Self: true, Online: true}, {Name: "KPECTIK", Online: true}}, 1, 1},
+		{[]node.MemberInfo{{Name: "me", Self: true, Online: true}, {Name: "bob", Online: true}, {Name: "carl"}}, 1, 2},
+		{[]node.MemberInfo{{Name: "bob", Online: true}, {Name: "me", Self: true, Online: true}}, 1, 1},
+	} {
+		if online, total := peerCounts(tc.members); online != tc.online || total != tc.total {
+			t.Errorf("%+v: online=%d total=%d, want %d/%d", tc.members, online, total, tc.online, tc.total)
+		}
+	}
+}
+
 func TestProjectsJoinFlow(t *testing.T) {
 	addr := freeAddr(t)
 	alice := projectsHarness(t, "alice", addr)
@@ -287,6 +305,11 @@ func TestProjectsJoinFlow(t *testing.T) {
 		bob.api(t, http.MethodGet, "projects/"+p.ID, nil, &v)
 		return v.Name == "Сайт" && v.State == ProjectNeedsFolder && v.Online == 1
 	})
+	// Two members, both online (bob himself and alice): the counts are of the
+	// other members, the list has this node too.
+	if v.Total != 1 || len(v.Members) != 2 || !v.Members[0].Self || !v.Members[1].Online {
+		t.Fatalf("counts online=%d total=%d, members %+v", v.Online, v.Total, v.Members)
+	}
 	if code, raw := bob.api(t, http.MethodPost, "projects/"+p.ID+"/binding", map[string]any{"dir": t.TempDir()}, &v); code != http.StatusOK || v.State != ProjectReady {
 		t.Fatalf("bind: %d %s", code, raw)
 	}

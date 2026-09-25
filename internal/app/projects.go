@@ -33,7 +33,9 @@ type ProjectView struct {
 	Dir     string `json:"dir"`     // bound folder; "" = none
 	State   string `json:"state"`
 	// Problem is "" or a code: unknown_project, auth, name_taken, removed.
-	Problem   string            `json:"problem"`
+	Problem string `json:"problem"`
+	// Online and Total count the other members: Members lists this node too
+	// (self: true), so Total is len(Members)-1.
 	Online    int               `json:"online"` // other members with a session
 	Total     int               `json:"total"`  // other members, not removed
 	Members   []node.MemberInfo `json:"members"`

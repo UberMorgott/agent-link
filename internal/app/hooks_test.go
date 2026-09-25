@@ -13,6 +13,7 @@ import (
 )
 
 func TestFolderHooksFollowSettings(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir()) // no agent-link plugin
 	root := t.TempDir()
 	work, work2, dev := filepath.Join(root, "work"), filepath.Join(root, "work2"), filepath.Join(root, "dev")
 	for _, d := range []string{work, work2, dev} {
@@ -101,6 +102,77 @@ func TestFolderHooksFollowSettings(t *testing.T) {
 	t.Cleanup(a.Stop)
 	if !has(work, "claude") {
 		t.Fatal("start did not install the hook")
+	}
+}
+
+// With Claude Code's agent-link plugin enabled the plugin brings the hooks:
+// the app writes no folder entries and takes out the ones it wrote before,
+// keeping the folder's other hooks; turning the plugin off brings them back.
+func TestNoFolderHooksWithPlugin(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	setPlugin := func(on bool) {
+		t.Helper()
+		settings := `{"enabledPlugins":{"agent-link@agent-link":false}}`
+		if on {
+			settings = `{"enabledPlugins":{"agent-link@agent-link":true}}`
+		}
+		files := map[string]string{
+			filepath.Join(cfg, "settings.json"):                     settings,
+			filepath.Join(cfg, "plugins", "installed_plugins.json"): `{"version":2,"plugins":{"agent-link@agent-link":[{"scope":"user"}]}}`,
+		}
+		for path, data := range files {
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	work := t.TempDir()
+	file := agenthook.ProjectFile(work, "claude")
+	exe := filepath.Join(t.TempDir(), "agentlink.exe")
+	h := newHarness(t, func(a *App) { a.HookExe, a.Agents, a.s.Code = exe, settings.Finder{}, "" })
+	s := settings.Settings{Node: "alice", Handler: "claude", AgentPath: fakeAgentFile(t), WorkDir: work}
+	apply := func() {
+		t.Helper()
+		if _, err := h.app.Apply(t.Context(), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() string {
+		data, _ := os.ReadFile(filepath.Clean(file))
+		return string(data)
+	}
+
+	// Someone else's hook in the same file stays throughout.
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	other := `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"notify"}]}]}}`
+	if err := os.WriteFile(file, []byte(other), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setPlugin(false)
+	apply()
+	if got := read(); !strings.Contains(got, "agentlink.exe") || !strings.Contains(got, `"notify"`) {
+		t.Fatalf("plugin off: folder file\n%s", got)
+	}
+
+	setPlugin(true)
+	apply()
+	if got := read(); strings.Contains(got, "agentlink") || !strings.Contains(got, `"notify"`) {
+		t.Fatalf("plugin on: folder file\n%s", got)
+	}
+	if h.app.HookStatus().Client != "" {
+		t.Fatal("plugin on: status still reports folder hooks")
+	}
+
+	setPlugin(false)
+	apply()
+	if got := read(); !strings.Contains(got, "agentlink.exe") || !strings.Contains(got, `"notify"`) {
+		t.Fatalf("plugin off again: folder file\n%s", got)
 	}
 }
 

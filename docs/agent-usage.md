@@ -193,7 +193,7 @@ error whose text is the API's message.
 
 | tool | arguments | CLI equivalent |
 | --- | --- | --- |
-| `projects` | – | `agentlink projects` (the app's `GET /projects`) |
+| `projects` | – | `agentlink projects` (the app's `GET /projects`); `online`/`total` count the other members, `members` lists this node too (`self: true`) |
 | `members` | `project?` | `members` |
 | `chats` | `project?`, `archive?`, `legacy?` | `chat list` |
 | `history` | `chat`, `limit?` (50), `before_seq?`, `after_seq?` | `chat history` |

@@ -47,13 +47,19 @@ func (a *App) installedHooksPath() string {
 // syncHooksLocked makes the hooks match the settings: the chosen agent's hook
 // in the working folder and every project folder, and none of agentlink's
 // entries left in folders (or for an agent) no longer chosen. A missing folder
-// is skipped. Without HookExe the app manages no hooks.
+// is skipped. Without HookExe the app manages no hooks, and none while the
+// agent's agent-link plugin is enabled (checked at every sync).
 func (a *App) syncHooksLocked() {
 	if a.HookExe == "" {
 		return
 	}
 	client := a.s.Handler
 	if client != worker.HandlerClaude && client != worker.HandlerCodex {
+		client = ""
+	}
+	if client != "" && agenthook.PluginEnabled(client) {
+		// The agent-link plugin brings the hooks to every session: folder
+		// entries would fire each hook twice, so the ones written before go.
 		client = ""
 	}
 	want := map[string]bool{}

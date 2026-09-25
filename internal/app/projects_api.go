@@ -95,12 +95,7 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 		v.Problem = problemCode(c.n.Problem())
 		v.Busy = c.w != nil && c.w.Busy()
 	}
-	for _, m := range v.Members[1:] {
-		v.Total++
-		if m.Online {
-			v.Online++
-		}
-	}
+	v.Online, v.Total = peerCounts(v.Members)
 	switch {
 	case v.Problem != "":
 		v.State = ProjectError
@@ -112,6 +107,22 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 		v.State = ProjectReady
 	}
 	return v, true
+}
+
+// peerCounts counts the other members of a member list: this node (Self,
+// always online) is left out, so a project whose members are you and one
+// online peer reads "online 1 of 1" and its dot goes on only with a peer.
+func peerCounts(members []node.MemberInfo) (online, total int) {
+	for _, m := range members {
+		if m.Self {
+			continue
+		}
+		total++
+		if m.Online {
+			online++
+		}
+	}
+	return online, total
 }
 
 // problemCode is the ProjectView problem of a node's last handshake failure;
