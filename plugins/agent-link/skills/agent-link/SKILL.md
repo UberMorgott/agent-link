@@ -56,7 +56,7 @@ agentlink chat history --chat <id> [--limit 50] [--after <seq>]
 agentlink send --chat <id> --ask nikita --body "<question>"      # ask in an existing chat; prints message id
 agentlink send --chat <id> --reply-to <msgid> --body "<answer>"  # answer a message
 agentlink send --to nikita --body "<question>"   # the one open chat with nikita in this folder's project (chat id on stderr)
-agentlink chat new --with nikita[,olga]          # prints the chat id (the open one; created when missing)
+agentlink chat new --with nikita[,olga]          # prints the chat id (the project's one chat; created when missing)
 agentlink wait --chat <id> --timeout 20m         # background: exit 0 = JSON lines, 2 = timeout, 1 = error
 ```
 

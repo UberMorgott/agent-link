@@ -1,10 +1,20 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
-  ACTIVITY_EXPIRE_MS, CONCURRENT_MS, activityLines, activityText, agentTree, attemptText, keepLastKnown, liveJobs, presenceLines, ticksFor,
+  ACTIVITY_EXPIRE_MS, CONCURRENT_MS, activityLines, activityText, agentTree, attemptText, chatName, keepLastKnown, liveJobs, presenceLines, ticksFor,
   type ActivityLine,
 } from './chat'
 import { runtime } from './runtime'
 import type { ChatInfo, ChatMember, ChatMessage, Delivery, Job } from '@/types'
+
+describe('chat names', () => {
+  it('a project chat goes by the project name, an archived one adds when it began', () => {
+    const info: ChatInfo = { id: 'c', project: 'P', mode: 'project', participants: ['bob', 'me'], title: 'first words', created_at: '2026-01-02T03:04:05Z' }
+    expect(chatName(info, 'me', 'Сайт')).toBe('Сайт')
+    expect(chatName({ ...info, archived: true }, 'me', 'Сайт')).toMatch(/^Сайт · \d\d\.\d\d \d\d:\d\d$/)
+    expect(chatName(info, 'me')).toBe('bob')
+    expect(chatName({ ...info, project: 'legacy', legacy: true, peer: 'bob' }, 'me', 'Сайт')).toBe('bob')
+  })
+})
 
 describe('delivery attempts', () => {
   beforeEach(() => {

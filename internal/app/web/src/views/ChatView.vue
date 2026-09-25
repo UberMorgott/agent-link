@@ -38,7 +38,9 @@ const self = computed(() => app.self)
 
 // --- header ---
 
-const title = computed(() => chatName(info.value, self.value))
+const project = computed(() => projects.byID(pid.value))
+// A project has one chat: it goes by the project's name.
+const title = computed(() => chatName(info.value, self.value, project.value?.legacy ? '' : project.value?.display))
 // The subtitle: who is reachable right now, and the chat's project area.
 const presence = computed(() => (info.value?.members || []).filter((m) => !m.self).map((member) => {
   const state = memberState(member)
@@ -62,8 +64,12 @@ const invitable = computed(() => (projects.byID(pid.value)?.members || [])
   .map((m) => ({ name: m.name, online: !!m.online })))
 const sessions = computed(() => chatSessionList(info.value, app.sessions, app.settings).map((s) =>
   [s.provider || '', s.folder || '', t(s.wake === 'rewake' ? "inbox.session.rewake" : s.wake === 'queue' ? "inbox.session.queue" : "inbox.session.next_event")].filter(Boolean).join(' · ')))
-// Closing is the only way into the archive (a legacy chat's peer archives it too).
-const canClose = computed(() => !!info.value && !info.value.closed && !info.value.archived)
+// A project chat's history goes to the archive and a fresh chat with the same
+// members opens at once; a chat of the network from before projects is closed
+// (a legacy chat's peer archives it too).
+const inProject = computed(() => !!info.value && !info.value.legacy && pid.value !== 'legacy')
+const canArchive = computed(() => inProject.value && !info.value?.closed && !info.value?.archived)
+const canClose = computed(() => !inProject.value && !!info.value && !info.value.closed && !info.value.archived)
 
 // --- live activity, one line per running or queued job ---
 
@@ -116,10 +122,10 @@ const note = computed(() => {
     }
     return { text, invite: [] as string[] }
   }
-  return {
-    text: fmt("inbox.closed_note", { name: authorName(i.closed_by || '', self.value), when: i.closed_at ? when(i.closed_at) : '' }),
-    invite: others(i, self.value),
-  }
+  const closed = { name: authorName(i.closed_by || '', self.value), when: i.closed_at ? when(i.closed_at) : '' }
+  // A project's archived history: the conversation goes on in its one chat.
+  if (inProject.value) return { text: fmt("inbox.archived_note", closed), invite: [] as string[], current: true }
+  return { text: fmt("inbox.closed_note", closed), invite: others(i, self.value) }
 })
 
 // One checkbox per person: a name in the list is a ticked box.
@@ -292,6 +298,19 @@ function back() {
             </template>
           </UPopover>
           <UButton
+            v-if="canArchive"
+            id="chat_archive"
+            :icon="icon('archive')"
+            :label="isNarrow ? undefined : t('inbox.archive_history')"
+            :aria-label="t('inbox.archive_history')"
+            :title="t('inbox.archive_history.title')"
+            color="neutral"
+            variant="ghost"
+            size="sm"
+            :disabled="inbox.closing"
+            @click="inbox.confirmArchive"
+          />
+          <UButton
             v-if="canClose"
             id="chat_close"
             :icon="icon(info?.legacy ? 'archive' : 'finish')"
@@ -457,6 +476,14 @@ function back() {
               size="sm"
               variant="link"
               @click="inbox.showNewChat(pid, note.invite)"
+            />
+            <UButton
+              v-if="note.current"
+              id="chat_note_current"
+              :label="t('inbox.archived_note.open')"
+              size="sm"
+              variant="link"
+              @click="inbox.openActive(pid)"
             />
           </p>
         </div>

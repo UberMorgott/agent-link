@@ -360,6 +360,25 @@ func TestProjectsJoinFlow(t *testing.T) {
 		bob.api(t, http.MethodGet, "projects/"+p.ID, nil, &v)
 		return v.Name == "Сайт 2"
 	})
+	// A project has one active chat: a new one is that chat.
+	var again ChatInfoView
+	if code, raw := alice.api(t, http.MethodPost, "projects/"+p.ID+"/chats", map[string]any{"participants": []string{"bob"}}, &again); code != http.StatusOK ||
+		again.ID != chat.ID {
+		t.Fatalf("second new chat: %d %s", code, raw)
+	}
+	// Archiving its history opens a fresh chat with the same members at once.
+	var fresh ChatInfoView
+	if code, raw := alice.api(t, http.MethodPost, "projects/"+p.ID+"/chats/"+chat.ID+"/archive", nil, &fresh); code != http.StatusOK ||
+		fresh.ID == chat.ID || fresh.Prev != chat.ID || fresh.Archived || !slices.Equal(fresh.Participants, []string{"alice", "bob"}) {
+		t.Fatalf("archive: %d %s", code, raw)
+	}
+	var list []ChatInfoView
+	eventuallyLong(t, "bob has the fresh chat only", func() bool {
+		code, _ := bob.api(t, http.MethodGet, "projects/"+p.ID+"/chats", nil, &list)
+		return code == http.StatusOK && len(list) == 1 && list[0].ID == fresh.ID
+	})
+	alice.wantError(t, http.MethodPost, "projects/legacy/chats/"+chat.ID+"/archive", nil, http.StatusNotFound, "not_found")
+	chat = fresh
 	var closed ChatInfoView
 	if code, raw := alice.api(t, http.MethodPost, "projects/"+p.ID+"/chats/"+chat.ID+"/close", nil, &closed); code != http.StatusOK || !closed.Closed {
 		t.Fatalf("close: %d %s", code, raw)

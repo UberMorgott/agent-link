@@ -127,6 +127,8 @@ export interface ChatInfo {
   removed?: boolean // project chat: the owner took this node out
   count?: number
   title?: string
+  created_at?: string
+  prev?: string // project chat: the chat whose history it took over (archived)
   closed?: boolean
   archived?: boolean
   legacy?: boolean

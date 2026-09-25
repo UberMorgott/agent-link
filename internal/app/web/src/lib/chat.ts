@@ -10,11 +10,16 @@ export function others(info: ChatInfo | null | undefined, self: string): string[
   return (info?.participants || []).filter((name) => name !== self)
 }
 
-export function chatName(info: ChatInfo | null | undefined, self: string): string {
+// chatName names a chat in lists and its header. A project has one chat, so
+// its chat goes by the project's name (an archived one adds when it began);
+// projectName is that name, empty for the network from before projects.
+export function chatName(info: ChatInfo | null | undefined, self: string, projectName = ''): string {
   if (!info) return ''
   if (info.legacy && info.peer) return info.peer
-  // A project's own chat goes by its title, its first words.
-  if (info.mode === 'project' && info.title) return info.title
+  if (projectName && info.project !== 'legacy') {
+    const began = info.archived ? clock(info.created_at) : ''
+    return began ? projectName + ' · ' + began : projectName
+  }
   const names = others(info, self)
   return names.length ? names.join(', ') : self
 }

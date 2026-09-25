@@ -269,6 +269,14 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
       if ((p.legacy && !names.some((n) => n !== SELF)) || names.some((n) => !members.has(n) && n !== SELF)) throw apiError('chat_participants')
       const participants = [...new Set([SELF, ...names])].sort()
       const online = new Set(p.members.filter((m) => m.online || m.self).map((m) => m.name))
+      // A project has one active chat: asking for a new one returns it, with the
+      // members asked for added.
+      const active = p.legacy ? undefined : (b.chats[pid] || []).find((c) => !c.archived && !c.legacy)
+      if (active) {
+        const all = [...new Set([...(active.participants || []), ...participants])].sort()
+        Object.assign(active, { participants: all, members: all.map((name) => ({ name, self: name === SELF, connected: online.has(name), compatible: true, queued: 0 })) })
+        return active
+      }
       const at = new Date().toISOString()
       const info: ChatInfo = {
         id: newID(), project: pid, mode: p.legacy ? undefined : 'project', owner: p.legacy ? undefined : SELF, participants, title: '', closed: false, archived: false,
@@ -299,6 +307,22 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
       })
       b.changed(['project:' + pid])
       return info
+    }
+    if (rest[2] === 'archive' && method === 'POST') {
+      if (p.legacy) throw apiError('bad_request')
+      const now = new Date().toISOString()
+      const active = (b.chats[pid] || []).find((c) => !c.archived && !c.legacy)
+      if (!active) throw apiError('unknown_chat')
+      if (active.id !== info.id) return active
+      Object.assign(info, { closed: true, archived: true, closed_by: SELF, closed_at: now })
+      const fresh: ChatInfo = {
+        ...info, id: newID(), prev: info.id, closed: false, archived: false, closed_by: undefined, closed_at: undefined,
+        count: 0, last_seq: 0, last_at: now, created_at: now, last_message: undefined, title: '',
+      }
+      b.chats[pid] = [fresh, ...(b.chats[pid] || [])]
+      b.messages[fresh.id] = []
+      b.changed(['project:' + pid])
+      return fresh
     }
     if (rest[2] === 'close' && method === 'POST') {
       Object.assign(info, { closed: true, archived: true, closed_by: SELF, closed_at: new Date().toISOString() })

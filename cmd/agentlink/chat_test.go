@@ -89,6 +89,9 @@ func TestChatCommands(t *testing.T) {
 		t.Fatalf("chat unread printed %q", out)
 	}
 	f.run("wait", "--chat", "c1", "--timeout", "1")
+	if out := f.run("chat", "archive", "--project", "P1"); strings.TrimSpace(out) != "c1" {
+		t.Fatalf("chat archive printed %q", out)
+	}
 	want := []string{
 		"POST /chats?" + url.Values{"cwd": {cwd(t)}}.Encode(),
 		"GET /chats?archive=1",
@@ -97,6 +100,7 @@ func TestChatCommands(t *testing.T) {
 		"POST /ack",
 		"GET /unread?" + url.Values{"after": {"0-x"}, "cwd": {cwd(t)}, "limit": {"1"}}.Encode(),
 		"GET /wait?" + url.Values{"chat": {"c1"}, "folder": {cwd(t)}, "timeout": {"1s"}}.Encode(),
+		"POST /chats/archive?project=P1",
 	}
 	if strings.Join(f.reqs, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests:\n%s\nwant:\n%s", strings.Join(f.reqs, "\n"), strings.Join(want, "\n"))
