@@ -31,6 +31,7 @@ var contractErrors = map[string]int{
 	"chat_legacy": http.StatusConflict, "chat_closed": http.StatusConflict, "work_dir": http.StatusBadRequest,
 	"project_needs_folder": http.StatusConflict, "folder_not_in_project": http.StatusConflict,
 	"not_found": http.StatusNotFound, "unknown_chat": http.StatusNotFound, "chat_owner": http.StatusForbidden,
+	"remove_self": http.StatusBadRequest, "unknown_member": http.StatusNotFound,
 	"internal": http.StatusInternalServerError,
 }
 

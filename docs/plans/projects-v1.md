@@ -359,6 +359,7 @@ Participants are identified by **name** in the UI (unique inside a context);
 | POST | `projects/{pid}/binding` | `{alias?, dir?}` (absent = keep; `""` clears) | `ProjectView` | 400 `alias`/`dir`/`dir_taken`, 404, 409 `project_busy` |
 | POST | `projects/{pid}/invite` | – | `InviteView` (the only way to read a secret) | 404, 409 `legacy_invite_unavailable` |
 | POST | `projects/{pid}/members/add` | `{addr}` | `ProjectView` | 400 `addr`, 404 |
+| POST | `projects/{pid}/members/remove` | `{name}` (tombstone for every member; its addresses leave the binding) | `ProjectView` | 400 `bad_request`/`remove_self`, 404 / 404 `unknown_member` |
 | POST | `projects/{pid}/leave` | – | `204` | 404, 409 `project_busy` |
 | GET | `projects/{pid}/chats?archive=1` | – | `ChatInfo[]` (legacy adds pre-chat history) | 404 |
 | POST | `projects/{pid}/chats` | `{participants: string[]}` (names, ≥1 other) | `ChatInfo` (project → `mode: "project"`) | 400 `chat_participants`, 404 |

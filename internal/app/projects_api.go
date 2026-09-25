@@ -35,6 +35,7 @@ func (a *App) projectRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST "+p+"/{pid}/binding", a.bindProject)
 	api.HandleFunc("POST "+p+"/{pid}/invite", a.revealInvite)
 	api.HandleFunc("POST "+p+"/{pid}/members/add", a.addProjectMember)
+	api.HandleFunc("POST "+p+"/{pid}/members/remove", a.removeProjectMember)
 	api.HandleFunc("POST "+p+"/{pid}/leave", a.leave)
 	api.HandleFunc("GET "+p+"/{pid}/chats", a.projectChats)
 	api.HandleFunc("POST "+p+"/{pid}/chats", a.newProjectChat)
@@ -630,6 +631,84 @@ func (a *App) addBindingPeer(pid, addr string) error {
 	if c := a.projects[pid]; c != nil {
 		return c.n.AddPeer(addr)
 	}
+	return nil
+}
+
+// removeProjectMember removes a member from the project (the tombstone every
+// member applies, node.RemoveMember) and drops its addresses from the binding
+// (the legacy network's peers): body {"name"}.
+func (a *App) removeProjectMember(w http.ResponseWriter, r *http.Request) {
+	pid := r.PathValue("pid")
+	var req node.MemberRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	a.mu.Lock()
+	_, known := a.projectViewLocked(pid)
+	a.mu.Unlock()
+	var err error
+	switch {
+	case !known:
+		writeCodedError(w, http.StatusNotFound, "not_found")
+		return
+	case name == "":
+		writeCodedError(w, http.StatusBadRequest, "bad_request")
+		return
+	case pid == LegacyProjectID:
+		err = a.RemoveMember(name)
+	default:
+		err = a.removeBindingMember(pid, name)
+	}
+	switch {
+	case errors.Is(err, node.ErrSelf):
+		writeCodedError(w, http.StatusBadRequest, "remove_self")
+		return
+	case errors.Is(err, node.ErrUnknownPeer):
+		writeCodedError(w, http.StatusNotFound, "unknown_member")
+		return
+	case err != nil:
+		a.failed(w, "remove member", err)
+		return
+	}
+	a.changed(pid)
+	a.writeView(w, pid)
+}
+
+func (a *App) removeBindingMember(pid, name string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	i := a.bindingIndex(pid)
+	c := a.projects[pid]
+	switch {
+	case i < 0:
+		return ErrUnknownProject
+	case c == nil:
+		return ErrNotRunning
+	}
+	var addrs []string
+	for _, m := range c.n.Members() {
+		if m.Name == name {
+			addrs = m.Addrs
+		}
+	}
+	if err := c.n.RemoveMember(name); err != nil {
+		return err
+	}
+	peers := slices.DeleteFunc(slices.Clone(a.s.Bindings[i].Peers), func(p string) bool { return slices.Contains(addrs, p) })
+	if len(peers) == len(a.s.Bindings[i].Peers) {
+		return nil
+	}
+	if len(peers) == 0 {
+		peers = nil
+	}
+	s := a.s
+	s.Bindings = slices.Clone(s.Bindings)
+	s.Bindings[i].Peers = peers
+	if err := settings.Save(a.path, s); err != nil {
+		return err
+	}
+	a.s = s
 	return nil
 }
 
