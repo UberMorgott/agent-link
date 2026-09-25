@@ -1,6 +1,8 @@
 # Node data directories and build output
 /.data/
 bin/
+# the plugin's launchers are source
+!/plugins/agent-link/bin/
 *.exe
 
 # Third-party read-only reference checkout (see README)

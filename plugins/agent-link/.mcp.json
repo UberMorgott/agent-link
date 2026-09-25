@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agentlink": {
+      "type": "stdio",
+      "command": "cmd",
+      "args": ["/d", "/c", "${CLAUDE_PLUGIN_ROOT}\\bin\\agentlink.cmd", "mcp"]
+    }
+  }
+}

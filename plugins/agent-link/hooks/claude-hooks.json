@@ -1,0 +1,50 @@
+{
+  "description": "agent-link: deliver project chat messages to this Claude Code session; the same entries `agentlink hook install claude` writes, run through bin/agentlink.cmd",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "cmd", "args": ["/d", "/c", "${CLAUDE_PLUGIN_ROOT}\\bin\\agentlink.cmd", "hook", "claude"], "timeout": 10 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "cmd", "args": ["/d", "/c", "${CLAUDE_PLUGIN_ROOT}\\bin\\agentlink.cmd", "hook", "claude"], "timeout": 10 }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "cmd", "args": ["/d", "/c", "${CLAUDE_PLUGIN_ROOT}\\bin\\agentlink.cmd", "hook", "claude"], "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "cmd", "args": ["/d", "/c", "${CLAUDE_PLUGIN_ROOT}\\bin\\agentlink.cmd", "hook", "claude"], "timeout": 10 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "cmd", "args": ["/d", "/c", "${CLAUDE_PLUGIN_ROOT}\\bin\\agentlink.cmd", "hook", "claude"], "timeout": 10 },
+          { "type": "command", "command": "cmd", "args": ["/d", "/c", "${CLAUDE_PLUGIN_ROOT}\\bin\\agentlink.cmd", "hook", "claude", "--wait"], "asyncRewake": true, "timeout": 86400 }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "cmd", "args": ["/d", "/c", "${CLAUDE_PLUGIN_ROOT}\\bin\\agentlink.cmd", "hook", "claude"], "timeout": 3 }
+        ]
+      }
+    ]
+  }
+}

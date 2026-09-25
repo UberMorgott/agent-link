@@ -1,0 +1,39 @@
+#!/bin/sh
+# Copyright (c) 2026 Morgott
+# Runs agentlink with this script's arguments; stdin, stdout, stderr and the exit
+# code pass through. The executable is, in order: $AGENTLINK_EXE, the path the
+# desktop app records at start in <config dir>/agentlink/executable.path, agentlink
+# on PATH (this script's own folder skipped). POSIX sh: macOS, Linux, Git Bash.
+if [ -n "${AGENTLINK_EXE:-}" ]; then
+	if [ -f "$AGENTLINK_EXE" ]; then
+		exec "$AGENTLINK_EXE" "$@"
+	fi
+	echo "agentlink: AGENTLINK_EXE is set but \"$AGENTLINK_EXE\" does not exist: fix or unset it." >&2
+	exit 1
+fi
+if [ -n "${APPDATA:-}" ]; then
+	marker="$APPDATA/agentlink/executable.path"
+elif [ "$(uname -s)" = Darwin ]; then
+	marker="$HOME/Library/Application Support/agentlink/executable.path"
+else
+	marker="${XDG_CONFIG_HOME:-$HOME/.config}/agentlink/executable.path"
+fi
+if [ -f "$marker" ]; then
+	exe=
+	IFS= read -r exe <"$marker" || true # the app writes no final newline
+	if [ -n "$exe" ] && [ -f "$exe" ]; then
+		exec "$exe" "$@"
+	fi
+fi
+self=$(cd "${0%/*}" && pwd)
+IFS=:
+for dir in $PATH; do
+	[ "$(cd "$dir" 2>/dev/null && pwd)" = "$self" ] && continue
+	for name in agentlink.exe agentlink; do
+		if [ -f "$dir/$name" ] && [ -x "$dir/$name" ]; then
+			exec "$dir/$name" "$@"
+		fi
+	done
+done
+echo "agentlink: agentlink not found. Start the agentlink desktop app once (it records its path in $marker), put agentlink on PATH, or set AGENTLINK_EXE to its full path. Download: https://github.com/UberMorgott/agent-link/releases" >&2
+exit 1
