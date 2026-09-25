@@ -110,21 +110,79 @@ export function liveJobs(jobs: Job[] | undefined, now: number): Job[] {
   })
 }
 
+// --- agent tree: one main agent per session, its subagents under it ---
+
+// CONCURRENT_MS: a member's session other than its latest one shows only while
+// heard of this recently, so an older session's leftover jobs make no row.
+export const CONCURRENT_MS = 2 * 60 * 1000
+
+export interface SubAgent { key: string; label: string; job: Job }
+// AgentGroup: one session of a member: its latest main job (none when only its
+// subagents were heard of), its subagents (latest job each) and its last news.
+export interface AgentGroup { session: string; job?: Job; subs: SubAgent[]; at: number }
+
+function jobTime(job: Job): number {
+  const at = Date.parse(job.heard_at || job.updated_at || '')
+  return Number.isNaN(at) ? 0 : at
+}
+function newer(old: Job | undefined, job: Job): boolean { return !old || jobTime(job) >= jobTime(old) }
+
+// agentTree folds a member's live jobs into its agents: the jobs of one session
+// collapse into one main agent, a subagent (role "subagent") nests under its
+// parent session by agent id. A job without a role is a main agent's. The
+// latest session always shows; another only while it is concurrently active.
+export function agentTree(jobs: Job[] | undefined, now: number): AgentGroup[] {
+  const live = liveJobs(jobs, now)
+  const groups = new Map<string, AgentGroup>()
+  const group = (session: string) => {
+    let g = groups.get(session)
+    if (!g) groups.set(session, g = { session, subs: [], at: 0 })
+    return g
+  }
+  for (const job of live) {
+    if (job.activity_info?.role === 'subagent') continue
+    const g = group(job.activity_info?.session || '')
+    if (newer(g.job, job)) g.job = job
+  }
+  for (const job of live) {
+    const info = job.activity_info
+    if (info?.role !== 'subagent') continue
+    // The parent's full session id starts with the short one its main reports.
+    const parent = info.parent_session || ''
+    const known = [...groups.keys()].find((s) => s && parent.startsWith(s))
+    const g = group(info.session || known || parent)
+    const key = info.agent_id || info.label || ''
+    const entry = { key, label: info.label || '', job }
+    const at = g.subs.findIndex((s) => s.key === key)
+    if (at < 0) g.subs.push(entry)
+    else if (newer(g.subs[at]!.job, job)) g.subs[at] = entry
+  }
+  for (const g of groups.values()) g.at = Math.max(g.job ? jobTime(g.job) : 0, ...g.subs.map((s) => jobTime(s.job)))
+  const all = [...groups.values()].sort((a, b) => b.at - a.at)
+  return all.filter((g, i) => i === 0 || concurrent(g, now))
+}
+
+function concurrent(g: AgentGroup, now: number): boolean {
+  if (g.job?.job_status === 'queued') return true
+  if (g.job?.stale && !g.subs.length) return false
+  return !g.at || now - g.at < CONCURRENT_MS
+}
+
+// groupAgent names a main agent: with its session when the member shows more
+// than one, and with its label when its hook gives one.
+function groupAgent(name: string, self: string, g: AgentGroup, several: boolean): string {
+  const notes = [several ? g.session : '', g.job?.activity_info?.label || ''].filter(Boolean)
+  return agentName(name, self) + (notes.length ? ' (' + notes.join(', ') + ')' : '')
+}
+function groupText(g: AgentGroup): string { return g.job ? activityText(g.job) : t("inbox.activity.working") }
+
 export function workingLines(chat: ChatInfo, self: string): string[] {
   const out: string[] = []
   for (const m of chat.members || []) {
-    const jobs = liveJobs(m.jobs, Date.now())
-    for (const job of jobs) out.push(jobAgent(m.name, self, job, jobs) + ' ' + activityText(job))
+    const groups = agentTree(m.jobs, Date.now())
+    for (const g of groups) out.push(groupAgent(m.name, self, g, groups.length > 1) + ' ' + groupText(g))
   }
   return out
-}
-
-// jobAgent names the agent of a job: with its session when the member's live
-// jobs come from more than one session, so each session reads as its own line.
-export function jobAgent(name: string, self: string, job: Job, jobs: Job[]): string {
-  const sessions = new Set(jobs.map((j) => j.activity_info?.session || ''))
-  const session = job.activity_info?.session
-  return agentName(name, self) + (session && sessions.size > 1 ? ' (' + session + ')' : '')
 }
 
 export type MemberState = 'on' | 'old' | 'away'
@@ -211,7 +269,7 @@ export function continues(prev: ChatMessage | undefined, m: ChatMessage): boolea
 
 export interface ActivityLine {
   key: string
-  cls: 'running' | 'queued' | 'stale' | 'waiting' | 'presence'
+  cls: 'running' | 'queued' | 'stale' | 'waiting' | 'presence' | 'idle'
   name: string
   who: string
   text: string
@@ -219,6 +277,8 @@ export interface ActivityLine {
   // news (running and stale lines), which is what their time shows.
   since: string
   heard?: string
+  // children: a main agent's subagents, one line each.
+  children?: ActivityLine[]
 }
 
 function jobStart(job: Job, messages: ChatMessage[]): string {
@@ -263,16 +323,24 @@ export function presenceLines(info: ChatInfo | null, messages: ChatMessage[], no
 
 export function activityLines(info: ChatInfo | null, messages: ChatMessage[], self: string, sessions: Session[], settings: AppSettings | null, now = Date.now()): ActivityLine[] {
   const rows: ActivityLine[] = []
+  const line = (job: Job, key: string, name: string, who: string, text: string): ActivityLine => {
+    const queued = job.job_status === 'queued'
+    return {
+      key, cls: job.stale ? 'stale' : queued ? 'queued' : 'running', name, who, text, since: jobStart(job, messages),
+      heard: queued ? undefined : job.heard_at || job.updated_at,
+    }
+  }
   for (const member of info?.members || []) {
-    const jobs = liveJobs(member.jobs, now)
-    for (const job of jobs) {
-      const queued = job.job_status === 'queued'
-      rows.push({
-        key: member.name + '\n' + job.reply_to + '\n' + (job.activity_info?.session || ''),
-        cls: job.stale ? 'stale' : queued ? 'queued' : 'running',
-        name: member.name, who: jobAgent(member.name, self, job, jobs), text: activityText(job), since: jobStart(job, messages),
-        heard: queued ? undefined : job.heard_at || job.updated_at,
-      })
+    const groups = agentTree(member.jobs, now)
+    for (const g of groups) {
+      const key = member.name + '\n' + g.session
+      // A session heard of only through its subagents times by the latest one.
+      const lead = g.job || [...g.subs].sort((a, b) => jobTime(b.job) - jobTime(a.job))[0]!.job
+      const row = line(lead, key, member.name, groupAgent(member.name, self, g, groups.length > 1), groupText(g))
+      if (g.subs.length) {
+        row.children = g.subs.map((s) => line(s.job, key + '\n' + s.key, member.name, s.label || t("inbox.activity.subagent"), activityText(s.job)))
+      }
+      rows.push(row)
     }
   }
   const waiting = waitingLine(info, messages, self, sessions, settings, now)
@@ -281,6 +349,30 @@ export function activityLines(info: ChatInfo | null, messages: ChatMessage[], se
     rows.push({ key: '\npresence\n' + line.name, cls: 'presence', name: line.name, who: line.name + ':', text: line.text, since: '' })
   }
   return rows
+}
+
+// keepLastKnown: a member still connected whose agent has no line now keeps
+// its last running line, idle, as «последнее: …» with its age, so a finished
+// job's row never just vanishes. memory is the view's own, across refreshes.
+export function keepLastKnown(rows: ActivityLine[], info: ChatInfo | null, memory: Map<string, ActivityLine>): ActivityLine[] {
+  const idle: ActivityLine[] = []
+  for (const member of info?.members || []) {
+    const key = info!.id + '\n' + member.name
+    if (memberState(member) === 'away') { memory.delete(key); continue }
+    const mine = rows.filter((r) => r.name === member.name && (r.cls === 'running' || r.cls === 'queued' || r.cls === 'stale'))
+    const running = mine.find((r) => r.cls === 'running')
+    if (running) { memory.set(key, running); continue }
+    const last = memory.get(key)
+    if (!last || mine.length) continue
+    idle.push({
+      key: last.key + '\nidle', cls: 'idle', name: last.name, who: last.who,
+      text: fmt("inbox.activity.last", { text: last.text }), since: last.since, heard: last.heard,
+    })
+  }
+  const at = rows.findIndex((r) => r.cls === 'waiting' || r.cls === 'presence')
+  const out = [...rows]
+  out.splice(at < 0 ? out.length : at, 0, ...idle)
+  return out
 }
 
 // legacyPeerOld: the legacy chat's peer is connected without chats, so it

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { ACTIVITY_EXPIRE_MS, activityLines, activityText, liveJobs } from './chat'
+import { ACTIVITY_EXPIRE_MS, CONCURRENT_MS, activityLines, activityText, agentTree, keepLastKnown, liveJobs, type ActivityLine } from './chat'
 import { runtime } from './runtime'
 import type { ChatInfo, ChatMember, Job } from '@/types'
 
@@ -81,5 +81,69 @@ describe('every agent of the chat, own ones too', () => {
     expect(new Set(rows.map((r) => r.key)).size).toBe(3)
     const one = { ...info, members: [{ name: 'me', self: true, connected: true, compatible: true, jobs: [sjob('682d3b39', 'правит x.go')] }] } as unknown as ChatInfo
     expect(activityLines(one, [], 'me', [], null, at).map((r) => r.who)).toEqual(['ваш агент'])
+  })
+})
+
+describe('agent tree', () => {
+  const at = Date.parse('2026-09-24T15:00:00Z')
+  const ago = (ms: number) => new Date(at - ms).toISOString()
+  const tjob = (reply: string, heard: number, info: Job['activity_info']): Job =>
+    ({ reply_to: reply, job_status: 'running', heard_at: ago(heard), activity_info: { type: 'edit', ...info } }) as Job
+  const chat = (jobs: Job[], connected = true): ChatInfo => ({
+    id: 'c1', participants: ['bob', 'me'], members: [{ name: 'bob', connected, compatible: true, jobs }],
+  }) as unknown as ChatInfo
+  beforeEach(() => {
+    runtime.strings = {
+      'inbox.author.agent': 'агент {name}', 'inbox.activity.type.edit': 'правит', 'inbox.activity.subagent': 'субагент',
+      'inbox.activity.last': 'последнее: {text}',
+    }
+  })
+
+  it('collapses the jobs of one session into one main row, the latest', () => {
+    const jobs = [tjob('m1', 30_000, { text: 'a.go', session: 's1' }), tjob('m2', 5_000, { text: 'b.go', session: 's1' }), tjob('m3', 20_000, { text: 'c.go', session: 's1' })]
+    const tree = agentTree(jobs, at)
+    expect(tree).toHaveLength(1)
+    expect(tree[0]!.job).toBe(jobs[1])
+    const rows = activityLines(chat(jobs), [], 'me', [], null, at)
+    expect(rows.map((r) => r.who + ' ' + r.text)).toEqual(['агент bob правит b.go'])
+  })
+
+  it('without role fields keeps the old lines, deduped', () => {
+    const jobs = [tjob('m1', 5_000, { text: 'a.go' }), tjob('m2', 8_000, { text: 'b.go' })]
+    expect(activityLines(chat(jobs), [], 'me', [], null, at).map((r) => r.who + ' ' + r.text)).toEqual(['агент bob правит a.go'])
+  })
+
+  it('nests subagents under their parent session, one per agent id', () => {
+    const jobs = [
+      tjob('m1', 5_000, { text: 'main.go', session: 'abcd1234', role: 'main' }),
+      tjob('m1', 9_000, { text: 'x.go', parent_session: 'abcd1234-ffff', agent_id: 'A', role: 'subagent', label: 'Explore' }),
+      tjob('m1', 3_000, { text: 'y.go', parent_session: 'abcd1234-ffff', agent_id: 'A', role: 'subagent', label: 'Explore' }),
+      tjob('m1', 4_000, { text: 'z.go', session: 'abcd1234', parent_session: 'abcd1234-ffff', agent_id: 'B', role: 'subagent' }),
+    ]
+    const rows = activityLines(chat(jobs), [], 'me', [], null, at)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.text).toBe('правит main.go')
+    expect(rows[0]!.children!.map((c) => c.who + ' ' + c.text)).toEqual(['Explore правит y.go', 'субагент правит z.go'])
+  })
+
+  it('shows another session only while it is concurrently active', () => {
+    const old = tjob('m1', CONCURRENT_MS + 1_000, { text: 'old.go', session: 's1' })
+    const cur = tjob('m2', 2_000, { text: 'new.go', session: 's2' })
+    expect(agentTree([old, cur], at).map((g) => g.session)).toEqual(['s2'])
+    const both = tjob('m1', 10_000, { text: 'old.go', session: 's1' })
+    expect(activityLines(chat([both, cur]), [], 'me', [], null, at).map((r) => r.who)).toEqual(['агент bob (s2)', 'агент bob (s1)'])
+  })
+
+  it('keeps the last running line as idle while the member stays connected', () => {
+    const memory = new Map<string, ActivityLine>()
+    const running = chat([tjob('m1', 5_000, { text: 'a.go', session: 's1' })])
+    expect(keepLastKnown(activityLines(running, [], 'me', [], null, at), running, memory)).toHaveLength(1)
+    const done = chat([])
+    const [idle] = keepLastKnown(activityLines(done, [], 'me', [], null, at), done, memory)
+    expect(idle!.cls).toBe('idle')
+    expect(idle!.text).toBe('последнее: правит a.go')
+    expect(idle!.heard).toBe(ago(5_000))
+    expect(keepLastKnown([], chat([], false), memory)).toEqual([])
+    expect(memory.size).toBe(0)
   })
 })

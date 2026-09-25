@@ -9,7 +9,7 @@ import ChatTimeline from '@/components/ChatTimeline.vue'
 import { isNarrow } from '@/layout/composables/layout'
 import { icon } from '@/lib/icons'
 import {
-  activityLines, authorLabel, authorName, chatName, chatSessionList, clock, elapsed, legacyPeerOld, memberState, others, preview,
+  activityLines, keepLastKnown, authorLabel, authorName, chatName, chatSessionList, clock, elapsed, legacyPeerOld, memberState, others, preview,
   when, whoColor, type ActivityLine,
 } from '@/lib/chat'
 import { openProject } from '@/lib/nav'
@@ -73,8 +73,11 @@ let ticker: ReturnType<typeof setInterval> | undefined
 onMounted(() => { ticker = setInterval(() => { now.value = Date.now() }, 1000) })
 onBeforeUnmount(() => clearInterval(ticker))
 
-const activity = computed(() => activityLines(info.value, inbox.messages, self.value,
-  chatSessionList(info.value, app.sessions, app.settings), app.settings, now.value))
+// lastKnown: each connected member's last running line, kept (plain, not
+// reactive) so its row stays as idle after the job is gone.
+const lastKnown = new Map<string, ActivityLine>()
+const activity = computed(() => keepLastKnown(activityLines(info.value, inbox.messages, self.value,
+  chatSessionList(info.value, app.sessions, app.settings), app.settings, now.value), info.value, lastKnown))
 // A running line's time is how long ago its agent was last heard of («0:12
 // назад»); the tooltip adds when it took the request. A waiting or queued
 // line's time is how long it has waited.
@@ -313,23 +316,30 @@ function back() {
             <li
               v-for="row in activity"
               :key="row.key"
-              class="act-row"
+              class="act-node"
               :class="row.cls"
               :style="{ '--who': whoColor(row.name) }"
             >
-              <span
-                class="act-spin"
-                aria-hidden="true"
-              />
-              <strong class="act-who">{{ row.who }}</strong>
-              <span
-                class="act-text"
-                :title="row.text"
-              >{{ row.text }}</span>
-              <span
-                class="act-time"
-                :title="sinceTitle(row)"
-              >{{ since(row) }}</span>
+              <div
+                v-for="line in [row, ...(row.children || [])]"
+                :key="line.key"
+                class="act-row"
+                :class="[line.cls, { 'act-sub': line !== row }]"
+              >
+                <span
+                  class="act-spin"
+                  aria-hidden="true"
+                />
+                <strong class="act-who">{{ line.who }}</strong>
+                <span
+                  class="act-text"
+                  :title="line.text"
+                >{{ line.text }}</span>
+                <span
+                  class="act-time"
+                  :title="sinceTitle(line)"
+                >{{ since(line) }}</span>
+              </div>
             </li>
           </ul>
           <form

@@ -337,6 +337,8 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"inbox.activity.no_session":      "нет открытой сессии — сообщение ждёт",
 	"inbox.activity.stale":           "нет связи",
 	"inbox.activity.ago":             "{t} назад",
+	"inbox.activity.last":            "последнее: {text}",
+	"inbox.activity.subagent":        "субагент",
 	"inbox.activity.heard_title":     "последние новости от агента в {heard}",
 	"inbox.activity.since_title":     "взял сообщение от {start}",
 	"inbox.presence.rewake":          "сессия открыта — прочитает сразу",
