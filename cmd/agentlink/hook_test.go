@@ -414,6 +414,60 @@ func TestHookActivityOfTheWritingSession(t *testing.T) {
 	}
 }
 
+func TestCodexSubagentActivity(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookCodex, evSessionStart)
+	noteSent(c.env, c.sid, "c1", "own1")
+	start := c.run(hookCodex, evSubagentStart, `,"agent_id":"child-1","agent_type":"reviewer"`)
+	if got := c.state(hookCodex).Subagents["child-1"]["c1"]; got != "own1" {
+		t.Fatalf("child start snapshot %q", got)
+	}
+	noteSent(c.env, c.sid, "c1", "own2") // parent moves to another request in the same chat
+	stop := c.run(hookCodex, evSubagentStop, `,"agent_id":"child-1","agent_type":"reviewer"`)
+	if start != "" || stop != "{}" {
+		t.Fatalf("subagent hook output: start %q, stop %q", start, stop)
+	}
+	got := c.f.activity
+	if len(got) != 4 || got[1].SessionID != c.sid || got[1].AgentID != "child-1" || got[1].Label != "reviewer" || got[1].Phase != "" ||
+		got[1].ReplyTo != "own1" || got[3].AgentID != "child-1" || got[3].Phase != node.PhaseIdle || got[3].ReplyTo != "own1" ||
+		len(c.state(hookCodex).Subagents) != 0 {
+		t.Fatalf("subagent lifecycle: %+v", got)
+	}
+}
+
+func TestCodexSubagentStopAfterParentIdle(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookCodex, evSessionStart)
+	noteSent(c.env, c.sid, "c1", "own1")
+	c.run(hookCodex, evSubagentStart, `,"agent_id":"child-1"`)
+	c.run(hookCodex, evStop)
+	if len(c.state(hookCodex).Active) != 0 || !c.f.sessions[c.sid].Idle {
+		t.Fatal("parent did not become idle")
+	}
+	if out := c.run(hookCodex, evSubagentStop, `,"agent_id":"child-1"`); out != "{}" {
+		t.Fatalf("subagent stop output %q", out)
+	}
+	got := c.f.activity[len(c.f.activity)-1]
+	if got.AgentID != "child-1" || got.ReplyTo != "own1" || got.Phase != node.PhaseIdle ||
+		len(c.state(hookCodex).Subagents) != 0 || !c.f.sessions[c.sid].Idle {
+		t.Fatalf("subagent stop after parent idle: %+v", got)
+	}
+}
+
+func TestHookChainLimitIsInformational(t *testing.T) {
+	c := newHookCase(t)
+	m := chatMsg("c1", "KPECTIK", "agent", "deep reply", true)
+	m.Paused = true
+	c.f.add(m)
+	out := parseOut(t, c.run(hookCodex, evSessionStart))
+	if strings.Contains(out.HookSpecificOutput.AdditionalContext, "Пауза") ||
+		strings.Contains(out.HookSpecificOutput.AdditionalContext, "Просит ответа") ||
+		!strings.Contains(out.HookSpecificOutput.AdditionalContext, "К сведению, ответ не требуется") ||
+		len(c.f.ackedIDs()) != 1 {
+		t.Fatalf("chain limit output: %+v, acked %v", out, c.f.ackedIDs())
+	}
+}
+
 func TestHookOwnHumanIsInformation(t *testing.T) {
 	c := newHookCase(t)
 	m := chatMsg("c1", "me", "human", "I told everyone: ship on Friday", false)

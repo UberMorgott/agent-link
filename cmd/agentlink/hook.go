@@ -59,12 +59,14 @@ const (
 
 // Hook events this command answers; others are ignored.
 const (
-	evSessionStart = agenthook.SessionStart
-	evPrompt       = agenthook.Prompt
-	evPreTool      = agenthook.PreTool
-	evPostTool     = agenthook.PostTool
-	evStop         = agenthook.Stop
-	evSessionEnd   = agenthook.SessionEnd
+	evSessionStart  = agenthook.SessionStart
+	evPrompt        = agenthook.Prompt
+	evPreTool       = agenthook.PreTool
+	evPostTool      = agenthook.PostTool
+	evStop          = agenthook.Stop
+	evSessionEnd    = agenthook.SessionEnd
+	evSubagentStart = agenthook.SubagentStart
+	evSubagentStop  = agenthook.SubagentStop
 )
 
 // Limits and timings of the hook.
@@ -94,6 +96,8 @@ type hookInput struct {
 	Cwd            string          `json:"cwd"`
 	ToolName       string          `json:"tool_name"`
 	ToolInput      json.RawMessage `json:"tool_input"`
+	AgentID        string          `json:"agent_id"`
+	AgentType      string          `json:"agent_type"`
 }
 
 // hookState is what the hooks of one session keep between events.
@@ -113,6 +117,8 @@ type hookState struct {
 	// Active: chats this session read a batch of or wrote in this turn, with
 	// the message activity is reported for.
 	Active map[string]string `json:"active,omitempty"`
+	// Subagents keep the chat/request seen at start, even if the parent moves on.
+	Subagents map[string]map[string]string `json:"subagents,omitempty"`
 	// Activity is the last activity posted, for coalescing.
 	Activity   string    `json:"activity,omitempty"`
 	ActivityAt time.Time `json:"activity_at,omitzero"`
@@ -244,11 +250,12 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	if event == "" || event == "auto" {
 		event = in.HookEventName
 	}
-	if !slices.Contains(agenthook.Events, event) || in.SessionID == "" {
+	supported := slices.Contains(agenthook.Events, event) || client == hookCodex && (event == evSubagentStart || event == evSubagentStop)
+	if !supported || in.SessionID == "" {
 		return nil
 	}
 	quiet := func() {
-		if client == hookCodex && event == evStop {
+		if client == hookCodex && (event == evStop || event == evSubagentStop) {
 			_, _ = io.WriteString(stdout, "{}\n") // Codex wants JSON from a Stop hook that exits 0
 		}
 	}
@@ -273,11 +280,16 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	defer func() { _ = saveHookState(path, st) }()
 	// Every event but Stop is part of a turn: the session is not idle. A Stop
 	// tells the node it is only once it lets the session stop (below).
-	if !heartbeat(env, &st, client, in.SessionID, folder, event == evSessionStart, event == evStop && st.Idle) {
+	if !heartbeat(env, &st, client, in.SessionID, folder, event == evSessionStart, (event == evStop || event == evSubagentStop) && st.Idle) {
 		quiet()
 		return nil
 	}
 	h := &hookSession{env: env, st: &st, sid: in.SessionID, folder: folder}
+	if event == evSubagentStart || event == evSubagentStop {
+		h.subagent(in.AgentID, in.AgentType, event == evSubagentStop)
+		quiet()
+		return nil
+	}
 	if event == evPreTool {
 		typ, text := toolActivity(folder, in.ToolName, in.ToolInput)
 		h.report(typ, text, "")
@@ -396,7 +408,11 @@ func endSession(env hookEnv, path, sid string) {
 		defer unlock()
 	}
 	st := loadHookState(path)
-	(&hookSession{env: env, st: &st, sid: sid, folder: st.Folder}).idle()
+	h := &hookSession{env: env, st: &st, sid: sid, folder: st.Folder}
+	for id := range st.Subagents {
+		h.subagent(id, "", true)
+	}
+	h.idle()
 	st.Ended, st.Active = true, nil
 	_ = saveHookState(path, st)
 	_ = hookCall(env.api, http.MethodDelete, "/sessions/"+url.PathEscape(sid), nil, nil, nil, hookHTTPTimeout)
@@ -609,7 +625,7 @@ func formatUnread(m node.UnreadMessage) string {
 	case m.Assigned == "worker":
 		b.WriteString("Это уже обрабатывает агент-обработчик этого узла — не отвечайте.\n")
 	case m.Paused:
-		b.WriteString("Пауза: агенты ответили друг другу слишком много раз подряд, нужен человек — не отвечайте автоматически.\n")
+		b.WriteString("К сведению, ответ не требуется.\n")
 	case m.AsksYou:
 		fmt.Fprintf(&b, "Просит ответа от вас. Ответить: %s\n", reply)
 	default:

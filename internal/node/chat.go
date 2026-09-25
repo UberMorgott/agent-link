@@ -1190,7 +1190,7 @@ func (n *Node) ChatMessages(id string, before, after uint64, limit int) ([]ChatM
 }
 
 func (n *Node) chatMessage(c Chat, r chatRecord) ChatMessage {
-	cm := ChatMessage{Seq: r.Seq, Direction: "in", Held: r.Message.Held(), Message: r.Message,
+	cm := ChatMessage{Seq: r.Seq, Direction: "in", Message: r.Message,
 		Unread: r.Unread && r.ReadAt.IsZero(), Assigned: r.Assigned}
 	if r.Message.From == n.cfg.Node {
 		cm.Direction = "out"
@@ -1293,6 +1293,9 @@ func (n *Node) chatInfo(s chatSnapshot, queued map[string]map[string]int) ChatIn
 		case JobQueued:
 			jobs[m.From] = append(jobs[m.From], a)
 		case JobHeld:
+			if m.HoldReason == HoldAutoLimit {
+				continue // old nodes stored this status; it no longer means a visible pause
+			}
 			a.HoldReason, a.ActivityInfo = m.HoldReason, nil
 			if a.Activity == "" {
 				a.Activity = HoldText(m.HoldReason)

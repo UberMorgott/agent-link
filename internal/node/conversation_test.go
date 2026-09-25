@@ -225,12 +225,24 @@ func TestAuthorKindAndOwnHuman(t *testing.T) {
 	}
 	// Past MaxAutoDepth a request is paused for a person.
 	deep := Message{ChatID: h.ChatID, Body: "one more round", Responders: []string{"a"}, RootID: h.ID, AutoDepth: MaxAutoDepth + 1}
-	if _, err := b.SendMessage(deep); err != nil {
+	if deep, err = b.SendMessage(deep); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "a sees it paused", func() bool {
 		p, _ := a.Unread("", "", 10)
 		return slices.ContainsFunc(p.Messages, func(m UnreadMessage) bool { return m.Body == "one more round" && m.Paused })
+	})
+	if _, err := a.Ack("", AckRequest{IDs: []string{deep.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "sender sees a read receipt without a hold", func() bool {
+		msgs, _ := b.ChatMessages(h.ChatID, 0, 0, 20)
+		for _, m := range msgs {
+			if m.ID == deep.ID {
+				return !m.Held && len(m.Delivery) == 1 && m.Delivery[0].State == StateRead
+			}
+		}
+		return false
 	})
 }
 

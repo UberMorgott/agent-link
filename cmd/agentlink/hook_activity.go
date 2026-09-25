@@ -9,6 +9,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -55,6 +56,38 @@ func (h *hookSession) report(typ, text, phase string) {
 	}
 	if posted {
 		h.st.Activity, h.st.ActivityAt = text, now
+	}
+}
+
+// subagent reports a child's lifecycle under its parent's registered session.
+func (h *hookSession) subagent(id, label string, stopped bool) {
+	if id == "" || len(id) > 128 {
+		return
+	}
+	chats := h.st.Active
+	if stopped {
+		chats = h.st.Subagents[id]
+		delete(h.st.Subagents, id)
+	} else if len(chats) > 0 {
+		if h.st.Subagents == nil {
+			h.st.Subagents = map[string]map[string]string{}
+		}
+		chats = maps.Clone(chats)
+		h.st.Subagents[id] = chats
+	}
+	if len(chats) == 0 {
+		return
+	}
+	if len(label) > 128 {
+		label = ""
+	}
+	req := node.ActivityRequest{SessionID: h.sid, AgentID: id, Label: label, Type: "thinking", Text: "агент работает"}
+	if stopped {
+		req.Phase, req.Text = node.PhaseIdle, "готово"
+	}
+	for chat, replyTo := range chats {
+		req.ReplyTo = replyTo
+		_ = hookCall(h.env.api, http.MethodPost, "/chats/"+url.PathEscape(chat)+"/activity", nil, req, nil, hookHTTPTimeout)
 	}
 }
 

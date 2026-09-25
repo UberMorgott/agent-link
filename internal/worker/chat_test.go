@@ -416,7 +416,6 @@ func TestChatHeldReasons(t *testing.T) {
 	}{
 		{name: "agent program missing", want: node.HoldNoAgent,
 			opt: Options{Agent: func() Command { return Command{Name: filepath.Join(t.TempDir(), "gone-agent.exe")} }}},
-		{name: "chain limit", want: node.HoldAutoLimit, run: echoRunner, setup: func(f *fakeChats) { f.deny = true }},
 		{name: "chat closed", want: node.HoldChatClosed, run: echoRunner, setup: func(f *fakeChats) { f.chat.CloseID = id3 }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -481,7 +480,7 @@ func TestChatAnsweredStatusSaysWhy(t *testing.T) {
 }
 
 // Without a handler (auto-answer off) a chat request waits unread for a
-// session: no job, no status; only a request past the chain limit is held.
+// session: no job or status, including past the automatic chain limit.
 // With a handler, a live session for the area takes the request instead.
 func TestChatLeftToSessions(t *testing.T) {
 	t.Run("auto-answer off", func(t *testing.T) {
@@ -502,9 +501,19 @@ func TestChatLeftToSessions(t *testing.T) {
 		if err := w.ChatsOnly(deep); err != nil {
 			t.Fatal(err)
 		}
-		held := rec.filter(func(m node.Message) bool { return m.JobStatus == node.JobHeld })
-		if len(held) != 1 || held[0].ReplyTo != id2 || held[0].HoldReason != node.HoldAutoLimit || held[0].Activity != "пауза — нужен человек" {
-			t.Fatalf("held %+v", held)
+		if all := rec.filter(func(node.Message) bool { return true }); len(all) != 0 || chats.claims != 0 {
+			t.Fatalf("chain limit published status or ran: %+v (claims %d)", all, chats.claims)
+		}
+	})
+	t.Run("chain limit with handler", func(t *testing.T) {
+		chats := newFakeChats()
+		rec, send := chatRecorder(chats)
+		w := chatWorker(t, chats, send, t.TempDir(), t.TempDir(), Options{Agent: func() Command { return fakeAgent(t, "echo") }})
+		deep := ask(chats, id1, "peer", "again")
+		deep.AutoDepth = node.MaxAutoDepth + 1
+		accept(t, w, deep)
+		if _, ok := w.Job(id1); ok || chats.claims != 0 || len(rec.filter(func(node.Message) bool { return true })) != 0 {
+			t.Fatal("automatic chain continued or published a hold")
 		}
 	})
 	t.Run("live session", func(t *testing.T) {

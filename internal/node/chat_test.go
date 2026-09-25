@@ -327,6 +327,46 @@ func TestSessionActivityOneLinePerSession(t *testing.T) {
 	eventually(t, "a sees b's agent after it wrote", func() bool { return slices.Equal(sessions(a), []string{"sess-one:запускает go"}) })
 }
 
+func TestSubagentActivityKeepsParentLine(t *testing.T) {
+	a, b, _ := trio(t)
+	info, err := a.CreateChat([]string{"b"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b knows the chat", func() bool { _, ok := b.ChatOf(info.ID); return ok })
+	const sid = "parent-session-1"
+	if _, err := b.RegisterSession(SessionRequest{SessionID: sid, Provider: "codex", Folder: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	q, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "review", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the request", func() bool { return slices.Contains(chatIDs(b, info.ID), q.ID) })
+	for _, req := range []ActivityRequest{
+		{SessionID: sid, ReplyTo: q.ID, Text: "main works"},
+		{SessionID: sid, ReplyTo: q.ID, AgentID: "child-1", Label: "reviewer", Text: "child works"},
+	} {
+		if _, err := b.SessionActivity(info.ID, req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobs := func() []JobActivity { got, _ := a.Chat(info.ID); return got.Members[1].Jobs }
+	eventually(t, "parent and child show separately", func() bool { return len(jobs()) == 2 })
+	for _, j := range jobs() {
+		if x := j.ActivityInfo; x != nil && x.AgentID == "child-1" && (x.ParentSession != sid || x.Role != "subagent" || x.Label != "reviewer") {
+			t.Fatalf("child metadata: %+v", x)
+		}
+	}
+	if _, err := b.SessionActivity(info.ID, ActivityRequest{SessionID: sid, ReplyTo: q.ID, AgentID: "child-1", Phase: PhaseIdle}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "child ended, parent remains", func() bool {
+		js := jobs()
+		return len(js) == 1 && js[0].ActivityInfo != nil && js[0].ActivityInfo.Role == "main"
+	})
+}
+
 func TestChatCloseRace(t *testing.T) {
 	a, b, c := trio(t)
 	info, err := a.CreateChat([]string{"b", "c"}, "")

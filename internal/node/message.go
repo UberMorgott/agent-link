@@ -89,7 +89,11 @@ type ActivityState struct {
 	// Session names the live session reporting (a short id), so several
 	// sessions of one node show one line each; empty for the worker. Older
 	// peers ignore it and show one line per node and request.
-	Session string `json:"session,omitempty"`
+	Session       string `json:"session,omitempty"`
+	AgentID       string `json:"agent_id,omitempty"`
+	ParentSession string `json:"parent_session,omitempty"`
+	Role          string `json:"role,omitempty"`
+	Label         string `json:"label,omitempty"`
 }
 
 // Job statuses carried in Message.JobStatus.

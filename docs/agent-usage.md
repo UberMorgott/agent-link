@@ -131,9 +131,9 @@ answered, the `answer` text).
   `status` stays the transport (`queued`/`sent`).
 - A message a person on **this** node wrote to the others is unread here too, with
   `own_human: true`: your person told the others this. It never asks you (`asks_you` false).
-- In `chat unread` every entry has `asks_you` (it asks this node to answer), `paused` (it does,
-  but the agents have gone back and forth without a person too long: «пауза — нужен человек»,
-  answer only when a person says so), `cursor`, `received_at`.
+- In `chat unread` every entry has `asks_you` (it asks this node to answer), `paused` (the
+  automatic chain limit was reached: acknowledge it as information, without an automatic
+  reply), `cursor`, `received_at`.
 
 ### Status message or real answer
 
@@ -177,8 +177,9 @@ from a chat also `AGENTLINK_CHAT_ID` and `AGENTLINK_JOB_ID`. `send` without `--t
 goes to that chat, and `chat history` without `--chat` reads it. Do **not** send your final
 answer yourself: it is posted to the chat automatically. To involve another member, send
 `--ask <name>` with a complete question. Every agent message (a worker's, a live session's)
-counts one hop after the last message a person wrote; after 8 hops a request is kept with
-`held: true` / `paused: true` and waits for a person. Never close the chat.
+counts one hop after the last message a person wrote; after 8 hops the automatic handler
+stops replying. A live session receives the message as information and acknowledges it.
+Never close the chat.
 
 ## MCP server: `agentlink mcp`
 
@@ -269,8 +270,8 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   2500 characters is cut, with `agentlink chat history --chat <id>` for the rest) and the answer
   command `agentlink send --chat <id> --reply-to <id> --body "…"`. Your own person's messages
   (`own_human`) come as «Ваш человек написал всем …» — information, do not answer. A request
-  the worker took (`assigned: "worker"`) says «не отвечайте»; a paused one (`paused`) waits for
-  a person. A batch holds about 4500 characters; the rest stays unread and comes at the next
+  the worker took (`assigned: "worker"`) says «не отвечайте»; one past the automatic chain
+  limit (`paused`) is informational. A batch holds about 4500 characters; the rest stays unread and comes at the next
   event (or now: the printed `agentlink chat unread --folder … --after …`, then `agentlink chat
   ack --ids … --session …`).
 - **Read.** Right after printing a batch the hook acknowledges it (`POST /ack` with the

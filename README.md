@@ -245,8 +245,9 @@ with the message as the prompt, up to `max_jobs` requests at a time (default 2; 
 and start in arrival order, answers may come back in any order), and sends the agent's final
 answer back as a reply. A request goes to the worker or to a session, never both. With it off,
 messages wait unread until a session opens (the sender sees «доставлено», then «прочитано»).
-Agents talking to each other without a person pause after 8 hops (a request past that is held:
-«пауза — нужен человек»).
+After 8 agent-to-agent hops without a person's message, the automatic handler stops
+replying to that chain. The message still reaches the session as information and can be
+marked read; the sender sees normal delivery and read ticks.
 
 Jobs are durable. Each request is recorded in `data\jobs\<id>.json` before it is acknowledged
 and moves `queued` → `running` → `completed` | `failed` (with attempts, timestamps and the
