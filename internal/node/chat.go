@@ -880,6 +880,9 @@ type ChatSend struct {
 	// Attachments are stored blobs (resolveAttachments); Body already has
 	// their fallback lines.
 	Attachments []Attachment
+	// Agent is the local agent that writes it, AskSeats the seats asked (seats.go).
+	Agent    *AgentRef
+	AskSeats []string
 }
 
 // SendChat posts a message to a chat. Without Ask it only informs. A closed
@@ -903,7 +906,8 @@ func (n *Node) SendChat(s ChatSend) (Message, error) {
 		}
 		s.ChatID = open.ID
 	}
-	m := Message{ChatID: s.ChatID, Body: s.Body, ReplyTo: s.ReplyTo, AuthorKind: s.AuthorKind, Attachments: s.Attachments}
+	m := Message{ChatID: s.ChatID, Body: s.Body, ReplyTo: s.ReplyTo, AuthorKind: s.AuthorKind, Attachments: s.Attachments,
+		Agent: s.Agent, AskSeats: s.AskSeats}
 	for _, a := range s.Ask {
 		for p := range strings.SplitSeq(a, ",") {
 			if p = strings.TrimSpace(p); p != "" {
@@ -950,9 +954,11 @@ func (n *Node) continueLegacy(peer string, s ChatSend) (Message, error) {
 // inheritChain sets m's automatic chain (RootID, AutoDepth) when it has none
 // yet. A person's message starts a new chain at itself. Any other message
 // continues the chain of its base, one hop further: the message it replies to,
-// else the newest message of chat c from another node or by a person here. So the depth counts
-// the agent hops since a person last wrote, whichever nodes and sessions the
-// agents run in, and MaxAutoDepth bounds a conversation of agents alone.
+// else the newest message of chat c from another node or by a person here or,
+// for a seat's message, for that seat (it asked or answered it: the message
+// its turn is about, seats.go). So the depth counts the agent hops since a
+// person last wrote, whichever nodes, sessions and seats the agents run in,
+// and MaxAutoDepth bounds a conversation of agents alone.
 func (n *Node) inheritChain(c Chat, m *Message) {
 	if m.RootID != "" {
 		return
@@ -967,10 +973,17 @@ func (n *Node) inheritChain(c Chat, m *Message) {
 			base = &r.Message
 		}
 	}
+	seat := ""
+	if m.Agent != nil {
+		seat = m.Agent.Seat
+	}
+	forSeat := func(r Message) bool {
+		return seat != "" && (slices.Contains(r.AskSeats, seat) || n.repliedSeat(r.ReplyTo) == seat)
+	}
 	if base == nil {
 		if s, ok := n.chats.snapshot(c.ID); ok {
 			for _, rec := range slices.Backward(s.msgs) {
-				if r := rec.Message; r.Kind == "" && r.ID != m.ID && (r.From != n.cfg.Node || r.AuthorKind == AuthorHuman) {
+				if r := rec.Message; r.Kind == "" && r.ID != m.ID && (r.From != n.cfg.Node || r.AuthorKind == AuthorHuman || forSeat(r)) {
 					base = &r
 					break
 				}
@@ -1034,7 +1047,7 @@ func (n *Node) postChat(c Chat, m Message) error {
 	c.stamp(&m)
 	if m.Kind == KindStatus {
 		n.chats.noteStatus(m)
-	} else if _, isNew, _, err := n.chats.put(m, m.AuthorKind == AuthorHuman); err != nil {
+	} else if _, isNew, _, err := n.chats.put(m, m.AuthorKind == AuthorHuman && len(m.AskSeats) == 0); err != nil {
 		return err
 	} else if isNew && m.Kind == "" && m.ReplyTo != "" {
 		// Replying reads what it answers: the reply tells its author.
@@ -1238,6 +1251,12 @@ func (n *Node) receiveChat(peer, peerID string, m Message) bool {
 			n.changed("messages")
 		}
 	default:
+		// A reply to a seat's message is its seat's, queued before it is
+		// stored so the worker never takes it first (ClaimRun).
+		seat := ""
+		if _, known := n.chats.message(m.ID); !known {
+			seat = n.seatsForIncoming(m)
+		}
 		_, isNew, c, err := n.chats.put(m, true)
 		if err != nil {
 			n.log.Error("persist chat message", "chat", m.ChatID, "id", m.ID, "err", err)
@@ -1245,6 +1264,7 @@ func (n *Node) receiveChat(peer, peerID string, m Message) bool {
 		}
 		closed = c
 		if isNew {
+			n.assignToSeat(m, seat)
 			n.changed("messages")
 		}
 	}
@@ -1340,7 +1360,7 @@ func (n *Node) ClaimRun(m Message) (run bool, hold string, err error) {
 	if r.Assigned == WorkerOwner {
 		return true, "", nil
 	}
-	if n.LiveSession(c.Area) {
+	if n.LiveSession(c.Area) || n.seatHas(m.ID) {
 		return false, "", nil
 	}
 	ok, wasUnread, err := n.chats.claim(m.ID, WorkerOwner)

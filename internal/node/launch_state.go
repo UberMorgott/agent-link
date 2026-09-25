@@ -144,8 +144,8 @@ func (n *Node) holdForAck(area string, ids []string, session string, now time.Ti
 
 // launchAckFunc is the ack of a desktop launch's messages.
 func (n *Node) launchAckFunc() func(AckRequest) error {
-	if n.launchAck != nil {
-		return n.launchAck
+	if f := n.launchAck.Load(); f != nil {
+		return *f
 	}
 	return func(req AckRequest) error { _, err := n.Ack("", req); return err }
 }

@@ -167,6 +167,25 @@ function saveFolder() {
   })
 }
 
+// --- this member's local agents (seats): Claude Code and Codex ---
+
+const agentsOpen = openFor('agents')
+watch(() => [projects.dialog, projects.dialogProject] as const, ([kind, pid]) => {
+  if (kind === 'agents' && pid) void run(() => projects.refreshSeats(pid))
+})
+const seatRows = computed(() => (projects.seats[projects.dialogProject] || []).map((s) => ({
+  ...s,
+  statusText: t('project.agents.status.' + s.status),
+  pendingText: s.pending?.length ? fmt("project.agents.pending", { n: s.pending.length }) : '',
+})))
+function seat(action: 'add' | 'start' | 'stop' | 'remove', arg: string) {
+  return run(() => projects.seatAction(projects.dialogProject, action, arg))
+}
+function removeSeat(id: string, label: string) {
+  if (!browser.confirm(fmt("project.agents.remove_confirm", { name: label }))) return
+  return seat('remove', id)
+}
+
 // --- leaving ---
 
 function leave() {
@@ -268,6 +287,104 @@ function leave() {
             {{ t("participants.add.hint") }}
           </p>
         </form>
+        <p
+          class="dialog-result text-sm"
+          role="status"
+        >
+          {{ result }}
+        </p>
+      </div>
+    </template>
+  </UModal>
+
+  <UModal
+    v-model:open="agentsOpen"
+    :title="t('project.agents.title')"
+    :description="name"
+  >
+    <template #body>
+      <div class="flex flex-col gap-4">
+        <p class="hint">
+          {{ t("project.agents.hint") }}
+        </p>
+        <ul
+          id="project_seats"
+          class="flex flex-col gap-2"
+        >
+          <li
+            v-if="!seatRows.length"
+            class="text-sm text-muted"
+          >
+            {{ t("project.agents.empty") }}
+          </li>
+          <li
+            v-for="s in seatRows"
+            :key="s.id"
+            :data-seat="s.id"
+            class="flex items-start gap-2"
+          >
+            <span
+              class="project-dot mt-2"
+              :class="s.status === 'active' || s.status === 'running' || s.status === 'idle' ? 'on' : 'away'"
+            />
+            <span class="flex min-w-0 flex-1 flex-col">
+              <strong class="text-sm text-highlighted">{{ s.label }}</strong>
+              <span class="text-xs break-all text-muted">{{ [s.statusText, s.pendingText].filter(Boolean).join(' · ') }}</span>
+              <span
+                v-if="s.error"
+                class="text-xs break-all text-error"
+              >{{ s.error }}</span>
+            </span>
+            <UButton
+              v-if="s.status === 'stopped' || s.error || !s.session_id"
+              :id="'seat_start_' + s.id"
+              :label="t('project.agents.start')"
+              size="xs"
+              variant="soft"
+              :disabled="busy"
+              @click="seat('start', s.id)"
+            />
+            <UButton
+              v-else
+              :id="'seat_stop_' + s.id"
+              :label="t('project.agents.stop')"
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              :disabled="busy"
+              @click="seat('stop', s.id)"
+            />
+            <UButton
+              :id="'seat_remove_' + s.id"
+              :icon="icon('remove')"
+              :aria-label="t('project.agents.remove') + ': ' + s.label"
+              :title="t('project.agents.remove')"
+              size="xs"
+              color="error"
+              variant="ghost"
+              :disabled="busy"
+              @click="removeSeat(s.id, s.label)"
+            />
+          </li>
+        </ul>
+        <span class="flex flex-wrap gap-2">
+          <UButton
+            id="seat_add_claude"
+            :label="t('project.agents.add_claude')"
+            color="neutral"
+            variant="outline"
+            :disabled="busy"
+            @click="seat('add', 'claude')"
+          />
+          <UButton
+            id="seat_add_codex"
+            :label="t('project.agents.add_codex')"
+            color="neutral"
+            variant="outline"
+            :disabled="busy"
+            @click="seat('add', 'codex')"
+          />
+        </span>
         <p
           class="dialog-result text-sm"
           role="status"

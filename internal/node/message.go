@@ -249,6 +249,19 @@ type Message struct {
 	// travel ahead of it to peers with CapAttachments. Older peers ignore them
 	// and read the body's fallback lines.
 	Attachments []Attachment `json:"attachments,omitempty"`
+	// Agent names the local agent session that wrote the message (its seat and
+	// provider), shown as "Morgott · Codex"; AskSeats are the seats of the
+	// author's node asked to answer (seats.go). Older peers ignore both.
+	Agent    *AgentRef `json:"agent,omitempty"`
+	AskSeats []string  `json:"ask_seats,omitempty"`
+}
+
+// AgentRef is the agent session of a node that wrote a message: its seat
+// (Seat, Label; empty for a session that is no seat) and Provider.
+type AgentRef struct {
+	Seat     string `json:"seat,omitempty"`
+	Label    string `json:"label,omitempty"`
+	Provider string `json:"provider,omitempty"`
 }
 
 // IsRequest reports whether m is a request outside chats: neither a reply, a

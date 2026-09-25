@@ -102,6 +102,9 @@ type UnreadMessage struct {
 	// WakeToken (UnreadPage.Woken only): the token of the wake prompt that
 	// carried the message (WakeMarker); only a prompt with it acknowledges it.
 	WakeToken string `json:"wake_token,omitempty"`
+	// ForSeat: the seat (seats.go) the message is for; it goes to that seat's
+	// session only.
+	ForSeat string `json:"for_seat,omitempty"`
 }
 
 // UnreadPage is one page of Unread.
@@ -204,6 +207,19 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 		}
 		all = append(all, um)
 	}
+	if session != "" {
+		seen := map[string]bool{}
+		for _, m := range all {
+			seen[m.ID] = true
+		}
+		msgs, w := n.seatUnread(session, filter, area, actionable)
+		for _, m := range msgs {
+			if !seen[m.ID] {
+				all = append(all, m)
+			}
+		}
+		woken = append(woken, w...)
+	}
 	for i := range all {
 		all[i].Cursor = fmt.Sprintf("%020d-%s", all[i].ReceivedAt.UnixNano(), all[i].ID)
 	}
@@ -265,6 +281,8 @@ func (n *Node) Ack(chat string, req AckRequest) ([]AckResult, error) {
 	out := make([]AckResult, 0, len(req.IDs))
 	receipts := map[string][]string{}
 	changed := false
+	// A seat's messages are read by its session alone (seats.go).
+	seat := n.seatAck(req.SessionID, "", req.IDs)
 	for _, id := range req.IDs {
 		res := AckResult{ID: id}
 		if r, ok := n.chats.message(id); ok && (chat == "" || r.Message.ChatID == chat) && r.Message.Kind == "" {
@@ -273,6 +291,9 @@ func (n *Node) Ack(chat string, req AckRequest) ([]AckResult, error) {
 				return out, err
 			}
 			res.Found, res.WasUnread, res.Assigned = true, wasUnread, rec.Assigned
+			if seat[id] {
+				res.WasUnread, res.Assigned = true, owner
+			}
 			if wasUnread && rec.Message.From != n.cfg.Node {
 				receipts[rec.Message.From] = append(receipts[rec.Message.From], id)
 			}

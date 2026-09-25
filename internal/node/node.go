@@ -92,7 +92,10 @@ type Node struct {
 
 	ensureMu sync.Mutex // serializes EnsureOpenChat
 	sess     *sessionRegistry
-	folders  folderMap
+	seats    *seatStore
+	// seatExtra is added to the environment of seat turns (SetSeatEnv).
+	seatExtra []string
+	folders   folderMap
 	// autoAnswer: the worker answers requests no live session takes (presence).
 	autoAnswer bool
 	// waker wakes idle WakeQueue sessions (wake.go) every wakeEvery (0:
@@ -111,7 +114,9 @@ type Node struct {
 	// occupied replaces folderOccupied, launchAck the ack of a desktop
 	// launch's messages (tests); nil: the real ones.
 	occupied  func(dir string, now time.Time) bool
-	launchAck func(req AckRequest) error
+	launchAck atomic.Pointer[func(req AckRequest) error]
+	// seatBusy replaces seatOccupied (tests); nil: the real one.
+	seatBusy func(s Seat, now time.Time) bool
 
 	selfAddrs []string // this node's own peer addresses, set by Run
 
@@ -263,6 +268,9 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		}
 	}
 	if n.sess, err = openSessions(cfg.DataDir); err != nil {
+		return nil, err
+	}
+	if n.seats, err = openSeats(cfg.DataDir); err != nil {
 		return nil, err
 	}
 	n.deliv = newDeliveryState()

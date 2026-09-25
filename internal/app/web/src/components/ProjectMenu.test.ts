@@ -31,7 +31,7 @@ describe('the project menu', () => {
     await open('/p/' + SITE)
     const items = await menu(SITE)
     expect(items.map((i) => i.textContent!.trim())).toEqual([
-      'inbox.archive_history', 'project.menu.members', 'project.menu.invite', 'project.menu.name', 'project.menu.folder', 'project.menu.delete',
+      'inbox.archive_history', 'project.menu.members', 'project.menu.invite', 'project.menu.agents', 'project.menu.name', 'project.menu.folder', 'project.menu.delete',
     ])
     items[2]!.click()
     await settle()
@@ -40,6 +40,7 @@ describe('the project menu', () => {
     await settle()
     const legacy = (await menu('legacy')).map((i) => i.textContent!.trim())
     expect(legacy).not.toContain('project.menu.name')
+    expect(legacy).not.toContain('project.menu.agents')
     expect(legacy).not.toContain('inbox.archive_history')
     expect(legacy).toContain('project.menu.leave')
   })

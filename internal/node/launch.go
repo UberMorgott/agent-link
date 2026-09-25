@@ -90,6 +90,12 @@ type LaunchSpec struct {
 	Folder   string
 	ResumeID string
 	Prompt   string
+	// Seat is the seat whose turn this is (seats.go): the turn ends with ctx
+	// (StopSeat) instead of outliving it. NoOpen keeps the desktop app closed.
+	// Env is added to the agent's environment.
+	Seat   string
+	NoOpen bool
+	Env    []string
 }
 
 // SessionLauncher opens a visible agent session.

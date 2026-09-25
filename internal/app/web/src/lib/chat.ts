@@ -34,7 +34,12 @@ export function isAgent(m: ChatMessage): boolean { return m.author_kind === 'age
 export function agentName(name: string, self: string): string {
   return name === self ? t("inbox.author.own_agent") : fmt("inbox.author.agent", { name })
 }
-export function authorLabel(m: ChatMessage, self: string): string { return isAgent(m) ? agentName(m.from, self) : authorName(m.from, self) }
+// A local agent (seat) names itself: "Morgott · Codex".
+export function providerName(p: string | undefined): string { return p === 'codex' ? 'Codex' : p === 'claude' ? 'Claude' : p || '' }
+export function authorLabel(m: ChatMessage, self: string): string {
+  if (m.agent && (m.agent.label || m.agent.provider)) return m.from + ' · ' + (m.agent.label || providerName(m.agent.provider))
+  return isAgent(m) ? agentName(m.from, self) : authorName(m.from, self)
+}
 
 // whoIndex gives every name one of six stable colours, so a group chat can be
 // followed by colour as well as by name.
@@ -285,6 +290,7 @@ export function messageTick(m: ChatMessage, info: ChatInfo | null): Tick | null 
 // continues: m follows prev by the same author and kind, soon after.
 export function continues(prev: ChatMessage | undefined, m: ChatMessage): boolean {
   if (!prev || prev.kind || m.kind || prev.from !== m.from || isAgent(prev) !== isAgent(m) || m.reply_to) return false
+  if ((prev.agent?.seat || prev.agent?.provider || '') !== (m.agent?.seat || m.agent?.provider || '')) return false
   const gap = Date.parse(m.created_at) - Date.parse(prev.created_at)
   return gap >= 0 && gap < GROUP_MS
 }

@@ -42,6 +42,8 @@ const items = computed<DropdownMenuItem[][]>(() => {
     })
   }
   const main: DropdownMenuItem[] = [item('members', "project.menu.members", 'participants'), item('invite', "project.menu.invite", 'invite')]
+  // This member's local agents (Claude Code, Codex) in the project's conversation.
+  if (!p.legacy) main.push(item('agents', "project.menu.agents", 'agent'))
   if (p.can_rename) main.push(item('name', "project.menu.name", 'rename'))
   main.push(item('folder', "project.menu.folder", 'folder'))
   if (!p.legacy) {

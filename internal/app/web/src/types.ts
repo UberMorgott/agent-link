@@ -117,6 +117,28 @@ export interface ChatMessage {
   chat_id?: string
   participants?: string[] // on a chat_members message: the chat's new participants
   attachments?: Attachment[]
+  // agent: the local agent of its node that wrote it (a seat: Claude, Codex…);
+  // ask_seats: the seats of the author's node it asks.
+  agent?: AgentRef
+  ask_seats?: string[]
+}
+
+export interface AgentRef {
+  seat?: string
+  label?: string
+  provider?: string
+}
+
+// SeatView is one local agent (seat) of this member in a project
+// (GET projects/{pid}/seats): status active | idle | running | closed | stopped.
+export interface SeatView {
+  id: string
+  provider: 'claude' | 'codex'
+  label: string
+  session_id?: string
+  status: string
+  error?: string
+  pending?: { id: string; ask?: boolean }[]
 }
 
 // A file on a chat message: id is the sha256 of its content, mime its sniffed type.

@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef, watch } from 'vue'
 import { api, projectPath } from '@/lib/api'
-import type { ChatInfo, InviteView, JoinResult, ProjectView } from '@/types'
+import type { ChatInfo, InviteView, JoinResult, ProjectView, SeatView } from '@/types'
 
 export const LEGACY = 'legacy'
 // The project opened last, so /ui/inbox comes back to it.
@@ -28,13 +28,15 @@ export function sortProjects(list: ProjectView[]): ProjectView[] {
 export type JoinStep = 'invite' | 'connecting' | 'folder'
 
 // The dialogs of a project's menu, and those that make or join a project.
-export type ProjectDialog = '' | 'members' | 'invite' | 'name' | 'folder' | 'leave' | 'create' | 'join'
+export type ProjectDialog = '' | 'members' | 'agents' | 'invite' | 'name' | 'folder' | 'leave' | 'create' | 'join'
 
 export const useProjectsStore = defineStore('projects', () => {
   const list = shallowRef<ProjectView[] | null>(null)
   const chats = shallowRef<Record<string, ChatInfo[]>>({})
   const archives = shallowRef<Record<string, ChatInfo[]>>({})
   const archiveOpen = ref<Record<string, boolean>>({})
+  // seats: each project's local agents, once read (the agents dialog, a chat).
+  const seats = shallowRef<Record<string, SeatView[]>>({})
   // The project on screen (a project page or one of its chats); "" elsewhere.
   const current = ref('')
 
@@ -145,6 +147,23 @@ export const useProjectsStore = defineStore('projects', () => {
     if (left.has(pid)) return
     await refreshProject(pid)
     if (byID(pid)) await refreshChats(pid)
+    if (byID(pid) && Object.hasOwn(seats.value, pid)) await refreshSeats(pid)
+  }
+
+  // --- the local agents (seats) of a project ---
+
+  async function refreshSeats(pid: string) {
+    if (pid === LEGACY) return
+    const list = await api<SeatView[]>('GET', projectPath(pid, 'seats'))
+    seats.value = { ...seats.value, [pid]: Array.isArray(list) ? list : [] }
+  }
+
+  // seatAction adds a seat (provider) or starts, stops or removes one; the list
+  // is read again after it.
+  async function seatAction(pid: string, action: 'add' | 'start' | 'stop' | 'remove', arg: string) {
+    if (action === 'add') await api('POST', projectPath(pid, 'seats'), { provider: arg, open: true })
+    else await api('POST', projectPath(pid, 'seats/' + encodeURIComponent(arg) + '/' + action), action === 'start' ? { open: true } : undefined)
+    await refreshSeats(pid)
   }
 
   function toggleArchive(pid: string) {
@@ -294,7 +313,7 @@ export const useProjectsStore = defineStore('projects', () => {
   watch(list, joinProgress)
 
   return {
-    list, chats, archives, archiveOpen, current, currentProject, hasLegacy, loaded, invite, inviteFor,
+    list, chats, archives, archiveOpen, seats, refreshSeats, seatAction, current, currentProject, hasLegacy, loaded, invite, inviteFor,
     joinStep, joinProject, joinCreated,
     byID, upsert, listSettled, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped, toggleArchive,
     open, landing, create, rename, bind, addMember, removeMember, leave, createChat, revealInvite, hideInvite,
