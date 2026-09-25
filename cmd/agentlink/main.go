@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UberMorgott/agent-link/internal/app"
 	"github.com/UberMorgott/agent-link/internal/codexqueue"
 	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
@@ -52,6 +53,8 @@ const usage = `usage:
   agentlink close   (no longer here: only people close chats, in the app)
   agentlink inbox --config <path> [--limit 50] [--project <id>]
   agentlink members --config <path> [--project <id>]   (one JSON line per member, this node first)
+  agentlink projects [--config <path>]   (one JSON line per project of the desktop app)
+  agentlink mcp [--config <path>]   (stdio MCP server "agentlink" for an agent session: tools projects, members, chats, history, unread, send, ack)
   agentlink add    --config <path> --addr <ip[:port]> [--project <id>]   (dial a member's address; it spreads to all members)
   agentlink remove --config <path> --name <node> [--project <id>]   (remove a member from the whole network)
   agentlink hook <claude|codex> [--event auto]   (run by an agent's hooks: tells the session about new messages; never claims them)
@@ -180,6 +183,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmd = func(c config.Config) (int, error) { return 0, inbox(c, *limit, proj(), stdout) }
 	case "members":
 		cmd = func(c config.Config) (int, error) { return 0, members(c, "", nil, proj(), stdout) }
+	case "projects":
+		cmd = func(c config.Config) (int, error) { return 0, projects(c, stdout) }
+	case "mcp":
+		cmd = func(c config.Config) (int, error) { return 0, runMCP(c) }
 	case "add":
 		addr := fs.String("addr", "", "IP or host of a member, port optional")
 		cmd = func(c config.Config) (int, error) {
@@ -307,6 +314,7 @@ type sendArgs struct{ to, body, replyTo, chat, ask, area, project, session strin
 const (
 	envClaudeSession = "CLAUDE_CODE_SESSION_ID"
 	envCodexThread   = "CODEX_THREAD_ID"
+	envCodexSession  = "CODEX_SESSION_ID" // older Codex builds
 )
 
 // agentSession is the id of the agent session this command runs in, and its
@@ -318,7 +326,7 @@ func agentSession() (id, client string) {
 	if id := os.Getenv(envClaudeSession); id != "" {
 		return id, hookClaude
 	}
-	if id := os.Getenv(envCodexThread); id != "" {
+	if id := cmp.Or(os.Getenv(envCodexThread), os.Getenv(envCodexSession)); id != "" {
 		return id, hookCodex
 	}
 	return "", ""
@@ -331,39 +339,13 @@ func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 	if a.chat == "" && a.to == "" {
 		a.chat = os.Getenv(envChatID)
 	}
-	if a.session == "" {
-		a.session, _ = agentSession()
-	}
-	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat, Area: a.area, SessionID: a.session}
-	if wd, err := os.Getwd(); err == nil {
-		r.Folder = wd // the node picks the project of this folder
-	}
+	var ask []string
 	if a.ask != "" {
-		r.Ask = []string{a.ask}
+		ask = []string{a.ask}
 	}
-	// A job's agent names its request: in a chat that continues its chain, and
-	// its own reply to it never counts as answered by someone else.
-	r.Parent = os.Getenv(envJobID)
-	req, err := json.Marshal(r)
+	m, err := sendMessage(cfg, a, ask)
 	if err != nil {
 		return err
-	}
-	resp, err := apiDo(http.MethodPost, apiURL(cfg, "/send", withProject(nil, a.project)), req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if err := checkStatus(resp, http.StatusOK); err != nil {
-		return err
-	}
-	var m node.Message
-	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
-		return err
-	}
-	if m.ChatID != "" && r.SessionID != "" {
-		if p, err := settings.DefaultPath(); err == nil {
-			noteSent(hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks")}, r.SessionID, m.ChatID, m.ID)
-		}
 	}
 	if m.ChatID != "" && a.chat == "" {
 		// send --to continued the chat with that member; stdout stays the id alone.
@@ -371,6 +353,31 @@ func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 	}
 	_, err = fmt.Fprintln(stdout, m.ID)
 	return err
+}
+
+// sendMessage posts one message (to a.chat, else a.to) for send and the MCP
+// send tool; the session defaults to the agent's own and learns the chat.
+func sendMessage(cfg config.Config, a sendArgs, ask []string) (node.Message, error) {
+	if a.session == "" {
+		a.session, _ = agentSession()
+	}
+	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat, Area: a.area, SessionID: a.session, Ask: ask}
+	if wd, err := os.Getwd(); err == nil {
+		r.Folder = wd // the node picks the project of this folder
+	}
+	// A job's agent names its request: in a chat that continues its chain, and
+	// its own reply to it never counts as answered by someone else.
+	r.Parent = os.Getenv(envJobID)
+	var m node.Message
+	if err := apiJSON(http.MethodPost, apiURL(cfg, "/send", withProject(nil, a.project)), r, &m); err != nil {
+		return node.Message{}, err
+	}
+	if m.ChatID != "" && r.SessionID != "" {
+		if p, err := settings.DefaultPath(); err == nil {
+			noteSent(hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks")}, r.SessionID, m.ChatID, m.ID)
+		}
+	}
+	return m, nil
 }
 
 func wait(cfg config.Config, timeout, chat, project string, stdout, stderr io.Writer) (int, error) {
@@ -417,15 +424,30 @@ func chatNew(cfg config.Config, with, area, project string, stdout io.Writer) er
 	if strings.TrimSpace(with) == "" {
 		return errors.New("--with is required")
 	}
-	var info node.ChatInfo
-	if err := apiJSON(http.MethodPost, apiURL(cfg, "/chats", inFolder(nil, project)), node.CreateChatRequest{Participants: []string{with}, Area: area}, &info); err != nil {
+	info, err := createChat(cfg, []string{with}, area, project)
+	if err != nil {
 		return err
 	}
-	_, err := fmt.Fprintln(stdout, info.ID)
+	_, err = fmt.Fprintln(stdout, info.ID)
 	return err
 }
 
+// createChat opens a chat with the participants (names, comma lists allowed).
+func createChat(cfg config.Config, with []string, area, project string) (node.ChatInfo, error) {
+	var info node.ChatInfo
+	err := apiJSON(http.MethodPost, apiURL(cfg, "/chats", inFolder(nil, project)), node.CreateChatRequest{Participants: with, Area: area}, &info)
+	return info, err
+}
+
 func chatList(cfg config.Config, archive, legacy bool, project string, stdout io.Writer) error {
+	chats, err := listChats(cfg, archive, legacy, project)
+	if err != nil {
+		return err
+	}
+	return encodeLines(stdout, chats)
+}
+
+func listChats(cfg config.Config, archive, legacy bool, project string) ([]node.ChatInfo, error) {
 	q := withProject(nil, project)
 	if archive {
 		q.Set("archive", "1")
@@ -434,10 +456,8 @@ func chatList(cfg config.Config, archive, legacy bool, project string, stdout io
 		q.Set("legacy", "1")
 	}
 	var chats []node.ChatInfo
-	if err := apiJSON(http.MethodGet, apiURL(cfg, "/chats", q), nil, &chats); err != nil {
-		return err
-	}
-	return encodeLines(stdout, chats)
+	err := apiJSON(http.MethodGet, apiURL(cfg, "/chats", q), nil, &chats)
+	return chats, err
 }
 
 func chatHistory(cfg config.Config, chat string, limit int, before, after uint64, project string, stdout io.Writer) error {
@@ -447,6 +467,14 @@ func chatHistory(cfg config.Config, chat string, limit int, before, after uint64
 	if chat == "" {
 		return errors.New("--chat is required")
 	}
+	msgs, err := history(cfg, chat, limit, before, after, project)
+	if err != nil {
+		return err
+	}
+	return encodeLines(stdout, msgs)
+}
+
+func history(cfg config.Config, chat string, limit int, before, after uint64, project string) ([]node.ChatMessage, error) {
 	q := withProject(url.Values{"limit": {strconv.Itoa(limit)}}, project)
 	if before > 0 {
 		q.Set("before", strconv.FormatUint(before, 10))
@@ -455,28 +483,15 @@ func chatHistory(cfg config.Config, chat string, limit int, before, after uint64
 		q.Set("after", strconv.FormatUint(after, 10))
 	}
 	var msgs []node.ChatMessage
-	if err := apiJSON(http.MethodGet, apiURL(cfg, "/chats/"+url.PathEscape(chat)+"/messages", q), nil, &msgs); err != nil {
-		return err
-	}
-	return encodeLines(stdout, msgs)
+	err := apiJSON(http.MethodGet, apiURL(cfg, "/chats/"+url.PathEscape(chat)+"/messages", q), nil, &msgs)
+	return msgs, err
 }
 
 // chatUnread prints this node's unread messages, one JSON line each, and a
 // last line {"next": cursor, "total": n} when more pages follow.
 func chatUnread(cfg config.Config, folder, after string, limit int, project string, stdout io.Writer) error {
-	q := inFolder(url.Values{"limit": {strconv.Itoa(limit)}}, project)
-	if folder != "" {
-		abs, err := filepath.Abs(folder)
-		if err != nil {
-			return err
-		}
-		q.Set("folder", abs)
-	}
-	if after != "" {
-		q.Set("after", after)
-	}
-	var page node.UnreadPage
-	if err := apiJSON(http.MethodGet, apiURL(cfg, "/unread", q), nil, &page); err != nil {
+	page, err := unread(cfg, folder, after, limit, project)
+	if err != nil {
 		return err
 	}
 	if err := encodeLines(stdout, page.Messages); err != nil {
@@ -488,26 +503,66 @@ func chatUnread(cfg config.Config, folder, after string, limit int, project stri
 	return encodeLines(stdout, []map[string]any{{"next": page.Next, "total": page.Total}})
 }
 
+// unread reads one page of unread messages; it never marks them read.
+func unread(cfg config.Config, folder, after string, limit int, project string) (node.UnreadPage, error) {
+	q := inFolder(url.Values{"limit": {strconv.Itoa(limit)}}, project)
+	if folder != "" {
+		abs, err := filepath.Abs(folder)
+		if err != nil {
+			return node.UnreadPage{}, err
+		}
+		q.Set("folder", abs)
+	}
+	if after != "" {
+		q.Set("after", after)
+	}
+	var page node.UnreadPage
+	err := apiJSON(http.MethodGet, apiURL(cfg, "/unread", q), nil, &page)
+	return page, err
+}
+
 // chatAck marks messages read and prints one JSON line per id (node.AckResult).
 func chatAck(cfg config.Config, chat, ids, session, project string, stdout io.Writer) error {
-	req := node.AckRequest{SessionID: session}
+	var list []string
 	for id := range strings.SplitSeq(ids, ",") {
 		if id = strings.TrimSpace(id); id != "" {
-			req.IDs = append(req.IDs, id)
+			list = append(list, id)
 		}
 	}
-	if len(req.IDs) == 0 {
+	if len(list) == 0 {
 		return errors.New("--ids is required")
 	}
+	res, err := ack(cfg, chat, list, session, project)
+	if err != nil {
+		return err
+	}
+	return encodeLines(stdout, res)
+}
+
+// ack marks ids read, in chat when named, for the reading session.
+func ack(cfg config.Config, chat string, ids []string, session, project string) ([]node.AckResult, error) {
 	path := "/ack"
 	if chat != "" {
 		path = "/chats/" + url.PathEscape(chat) + "/ack"
 	}
 	var res []node.AckResult
-	if err := apiJSON(http.MethodPost, apiURL(cfg, path, withProject(nil, project)), req, &res); err != nil {
+	err := apiJSON(http.MethodPost, apiURL(cfg, path, withProject(nil, project)), node.AckRequest{IDs: ids, SessionID: session}, &res)
+	return res, err
+}
+
+// projects prints the projects of the desktop app, one JSON line each.
+func projects(cfg config.Config, stdout io.Writer) error {
+	list, err := listProjects(cfg)
+	if err != nil {
 		return err
 	}
-	return encodeLines(stdout, res)
+	return encodeLines(stdout, list)
+}
+
+func listProjects(cfg config.Config) ([]app.ProjectView, error) {
+	var list []app.ProjectView
+	err := apiJSON(http.MethodGet, apiURL(cfg, "/projects", nil), nil, &list)
+	return list, err
 }
 
 // apiJSON calls the local API with req as the JSON body (nil: none) and
@@ -533,28 +588,26 @@ func apiJSON(method, u string, req, out any) error {
 
 // members lists the member table, after posting req to path when req is set.
 func members(cfg config.Config, path string, req *node.MemberRequest, project string, stdout io.Writer) error {
-	var resp *http.Response
+	var list []node.MemberInfo
 	var err error
 	if req == nil {
-		resp, err = apiDo(http.MethodGet, apiURL(cfg, "/members", inFolder(nil, project)), nil)
+		list, err = listMembers(cfg, project)
 	} else {
 		if req.Addr == "" && req.Name == "" {
 			return errors.New("--addr or --name is required")
 		}
-		body, merr := json.Marshal(req)
-		if merr != nil {
-			return merr
-		}
-		resp, err = apiDo(http.MethodPost, apiURL(cfg, path, inFolder(nil, project)), body)
+		err = apiJSON(http.MethodPost, apiURL(cfg, path, inFolder(nil, project)), req, &list)
 	}
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if err := checkStatus(resp, http.StatusOK); err != nil {
-		return err
-	}
-	return printLines[node.MemberInfo](resp.Body, stdout)
+	return encodeLines(stdout, list)
+}
+
+func listMembers(cfg config.Config, project string) ([]node.MemberInfo, error) {
+	var list []node.MemberInfo
+	err := apiJSON(http.MethodGet, apiURL(cfg, "/members", inFolder(nil, project)), nil, &list)
+	return list, err
 }
 
 // update reports the latest release and, unless check, installs it over this
@@ -632,8 +685,14 @@ func checkStatus(resp *http.Response, want int) error {
 		return nil
 	}
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return fmt.Errorf("api %s: %s", resp.Status, bytes.TrimSpace(msg))
+	return &apiError{status: resp.Status, msg: string(bytes.TrimSpace(msg))}
 }
+
+// apiError is a local API answer other than the expected status; msg is the
+// API's own error text.
+type apiError struct{ status, msg string }
+
+func (e *apiError) Error() string { return "api " + e.status + ": " + e.msg }
 
 // printLines decodes a JSON array and prints one compact JSON object per line.
 func printLines[T any](r io.Reader, w io.Writer) error {
