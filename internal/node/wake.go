@@ -139,6 +139,10 @@ func (n *Node) wakeIdle(ctx context.Context) {
 			switch {
 			case err == nil:
 				cur.Woken = true
+				if a, ok := r.inbox[s.SessionID]; ok && byInbox {
+					a.woke = time.Now()
+					r.inbox[s.SessionID] = a
+				}
 			case byInbox:
 				delete(r.inbox, s.SessionID) // its waiter wakes it from now on
 			default:

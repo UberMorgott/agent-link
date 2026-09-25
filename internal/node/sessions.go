@@ -249,7 +249,11 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	s.Woken = s.Woken && s.Idle && req.Idle
 	s.Asked, s.Idle, s.CodexHome = asked, req.Idle, req.CodexHome
 	if req.InboxSocket != "" {
-		r.inbox[req.SessionID] = inboxAddr{socket: req.InboxSocket, token: req.InboxToken}
+		a := inboxAddr{socket: req.InboxSocket, token: req.InboxToken}
+		if old, ok := r.inbox[req.SessionID]; ok && old.socket == a.socket && old.token == a.token {
+			a.woke = old.woke // a heartbeat keeps the time of the last wake
+		}
+		r.inbox[req.SessionID] = a
 	}
 	if req.Provider == ProviderClaude || req.Provider == ProviderCodex {
 		ls := LastSession{SessionID: req.SessionID, Provider: req.Provider, Folder: s.Folder, At: now}

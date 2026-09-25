@@ -24,8 +24,8 @@ import (
 //  2. The launch is confirmed when a session of the area registers
 //     (SessionStart) within launchConfirm; else it is tried once more as a new
 //     session, then given up (launch_failed:timeout).
-//  3. One launch per area per launchDebounce; a message whose launch failed is
-//     not launched for again (a newer one is).
+//  3. One launch per area per launchDebounce; a message a launch was confirmed
+//     or failed for is not launched for again (a newer one is).
 //
 // Eligible: unread, asking this node, not taken by the worker, not paused by
 // the loop guard (those report AttemptNeedsHuman instead), and older than
@@ -145,8 +145,10 @@ type deliveryState struct {
 	sent map[string]bool
 	// woken: messages a wake was reported for, awaiting their ack.
 	woken map[string]bool
-	// failed: messages whose launch failed; not launched for again.
-	failed  map[string]bool
+	// spent: messages a launch was already confirmed or given up for; not
+	// launched for again (a session that took them and ended, or a window the
+	// person closed, must not reopen every launchDebounce).
+	spent   map[string]bool
 	pending map[string]*pendingLaunch // by area
 	last    map[string]time.Time      // last launch per area
 }
@@ -159,7 +161,7 @@ type pendingLaunch struct {
 }
 
 func newDeliveryState() *deliveryState {
-	return &deliveryState{provider: ProviderClaude, sent: map[string]bool{}, woken: map[string]bool{}, failed: map[string]bool{},
+	return &deliveryState{provider: ProviderClaude, sent: map[string]bool{}, woken: map[string]bool{}, spent: map[string]bool{},
 		pending: map[string]*pendingLaunch{}, last: map[string]time.Time{}}
 }
 
@@ -254,7 +256,7 @@ func (n *Node) launchable(dir string, now time.Time) (eligible, paused []UnreadM
 		case !m.AsksYou || m.OwnHuman || m.Assigned != "":
 		case m.Paused:
 			paused = append(paused, m)
-		case d.failed[m.ID] || now.Sub(m.ReceivedAt) < launchGrace:
+		case d.spent[m.ID] || now.Sub(m.ReceivedAt) < launchGrace:
 		default:
 			eligible = append(eligible, m)
 		}
@@ -283,6 +285,9 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 		if p != nil {
 			d.mu.Lock()
 			delete(d.pending, area)
+			for _, id := range p.ids {
+				d.spent[id] = true
+			}
 			d.mu.Unlock()
 			n.log.Info("opened session confirmed", "area", area, "provider", p.spec.Provider, "tries", p.tries)
 			n.report(p.ids, AttemptLaunchConfirmed)
@@ -297,7 +302,7 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 			d.mu.Lock()
 			delete(d.pending, area)
 			for _, id := range p.ids {
-				d.failed[id] = true
+				d.spent[id] = true
 			}
 			d.mu.Unlock()
 			if len(eligible) > 0 {
@@ -358,7 +363,7 @@ func (n *Node) startLaunch(ctx context.Context, area string, spec LaunchSpec, ms
 		d.mu.Lock()
 		delete(d.pending, area)
 		for _, id := range list {
-			d.failed[id] = true
+			d.spent[id] = true
 		}
 		d.mu.Unlock()
 		n.report(list, AttemptLaunchFailed+":"+reason)

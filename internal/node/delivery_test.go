@@ -185,6 +185,19 @@ func TestWakeIdleClaudeInbox(t *testing.T) {
 		t.Fatalf("posts %v", p.calls)
 	}
 	waitAttempts(t, b, m, AttemptWakeRequested)
+	if !a.InboxWakes("s-c") {
+		t.Fatal("waiter not held off right after the wake")
+	}
+	// Still idle long after the wake (the post was dropped): the waiter takes over.
+	a.sess.mu.Lock()
+	ia := a.sess.inbox["s-c"]
+	ia.woke = time.Now().Add(-inboxWakeGrace - time.Second)
+	a.sess.inbox["s-c"] = ia
+	a.sess.mu.Unlock()
+	reg(true, testSocket, testToken) // a heartbeat keeps the wake time
+	if a.InboxWakes("s-c") {
+		t.Fatal("waiter still held off after an ignored wake")
+	}
 	if _, err := a.Ack("", AckRequest{IDs: []string{m.ID}, SessionID: "s-c"}); err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +282,8 @@ func TestLaunchLadderConfirmed(t *testing.T) {
 	ask(t, a, b, "more")
 	next := later.Add(launchDebounce + launchGrace + time.Minute)
 	a.launchDue(ctx, next)
-	if specs := l.all(); len(specs) != 2 || specs[1].Provider != ProviderCodex || specs[1].ResumeID != "s-new" {
+	if specs := l.all(); len(specs) != 2 || specs[1].Provider != ProviderCodex || specs[1].ResumeID != "s-new" ||
+		!strings.Contains(specs[1].Prompt, "(1)") { // the confirmed launch's message is not launched for again
 		t.Fatalf("resume %+v", specs)
 	}
 }

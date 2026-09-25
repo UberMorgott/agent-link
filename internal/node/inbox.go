@@ -39,10 +39,17 @@ const (
 	ProviderCodex  = "codex"
 )
 
-// inboxAddr is a Claude session's inbox, in memory only.
+// inboxAddr is a Claude session's inbox, in memory only; woke is when the
+// node last posted a wake there.
 type inboxAddr struct {
 	socket, token string
+	woke          time.Time
 }
+
+// inboxWakeGrace: a session still idle this long after a successful inbox
+// wake did not take it (its crossSessionInbound setting may drop posts, or
+// it sits in a dialog); its background waiter wakes it from then on.
+const inboxWakeGrace = 2 * time.Minute
 
 // inboxPostTimeout bounds one post to an inbox.
 const inboxPostTimeout = 5 * time.Second
@@ -107,21 +114,20 @@ func writeInbox(w io.Writer, token, text string) error {
 	return err
 }
 
-// inboxOf returns session sid's inbox, if the node holds one.
-func (n *Node) inboxOf(sid string) (inboxAddr, bool) {
-	r := n.sess
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	a, ok := r.inbox[sid]
-	return a, ok
-}
-
 // InboxWakes reports whether the node wakes session sid through its inbox
-// (so its background waiter must not wake it too).
+// (so its background waiter must not wake it too): it holds the inbox, and
+// the session did not stay idle past inboxWakeGrace after the node woke it.
 func (n *Node) InboxWakes(sid string) bool {
 	if n.poster == nil {
 		return false
 	}
-	_, ok := n.inboxOf(sid)
-	return ok
+	r := n.sess
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a, ok := r.inbox[sid]
+	if !ok {
+		return false
+	}
+	s := r.sessions[sid]
+	return s == nil || !s.Woken || !s.Idle || a.woke.IsZero() || time.Since(a.woke) <= inboxWakeGrace
 }
