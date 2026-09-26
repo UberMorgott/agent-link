@@ -173,6 +173,11 @@ func (r *sessionRegistry) liveIDs(now time.Time) map[string]bool {
 // session in particular. rec is its chat record (nil for a plain message).
 // The caller holds n.sess.claimMu.
 func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string {
+	if q := n.leases.queuedOwner(id); q != "" && live[q] {
+		// Its wake prompt sits in that session's queue or inbox: it stays that
+		// session's until proof or the session's end (no second handler).
+		return q
+	}
 	if c, ok := n.sess.claims[id]; ok && c.held(live) {
 		return c.session
 	}
@@ -300,7 +305,7 @@ func (n *Node) waiterSpentMsg(key string, now time.Time) bool {
 	if !ok {
 		return false
 	}
-	return l.State == LeaseFailed || (l.WaiterWakes >= maxWaiterWakes && now.Sub(l.WaiterAt) <= waiterWakeKeep)
+	return l.Failed || (l.WaiterWakes >= maxWaiterWakes && now.Sub(l.WaiterAt) <= waiterWakeKeep)
 }
 
 // waiterWakesLeft splits ids into those the waiter of session may still wake

@@ -549,7 +549,7 @@ func TestAffinityLapsesWithoutEvents(t *testing.T) {
 		t.Fatalf("posts %v, want the active session woken", p.calls)
 	}
 	// A hook event makes the old session active again: its chat is its own.
-	a.unclaim("s-new", []string{m.ID})
+	a.LeaseRevoke("s-new", []string{m.ID}, "inbox_dropped")
 	reg("s-old", testSocket, false)
 	if to := a.routedTo([]string{m.ID})[m.ID]; to != "s-old" {
 		t.Fatalf("after an event: routed to %q", to)

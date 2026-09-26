@@ -357,7 +357,7 @@ func (n *Node) launchable(dir string, now time.Time) (eligible, paused []UnreadM
 	defer d.mu.Unlock()
 	for _, m := range page.Messages {
 		l, leased := book[m.ID]
-		leased = leased && (l.State == LeaseLeased || l.State == LeaseRunning || l.State == LeaseFailed)
+		leased = leased && (l.State == LeaseLeased || l.State == LeaseRunning || l.Failed)
 		switch {
 		case !m.AsksYou || m.OwnHuman || m.Assigned != "" || held[m.ID] || leased:
 		case m.Paused:

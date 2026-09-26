@@ -154,6 +154,9 @@ func (n *Node) leaseSweep(now time.Time) {
 		// instead of delivering twice. A gone session's claims go.
 		n.revokeLeases(g.owner, list, g.reason, g.reason != "deadline")
 	}
+	for _, e := range n.leases.staleHolds(now) {
+		n.releaseHold(e.owner, []string{e.id}, now)
+	}
 	if err := n.leases.flush(); err != nil {
 		n.log.Warn("save leases", "err", err)
 	}
@@ -184,6 +187,37 @@ func (n *Node) leaseSweep(now time.Time) {
 	if err := n.leases.prune(now, func(key string) bool { return unread[key] }); err != nil {
 		n.log.Warn("save leases", "err", err)
 	}
+}
+
+// releaseHold gives up session's held messages ids whose ack kept failing for
+// leaseHoldMax (holdForAck): their lease is failed (needs_human), their ack
+// job and ackOnly claims go, and the hooks may show them to a person again;
+// nothing launches for them (spent, failed).
+func (n *Node) releaseHold(session string, ids []string, now time.Time) {
+	if err := n.leases.fail(session, ids, "ack_stuck", now); err != nil {
+		n.log.Warn("save leases", "err", err)
+	}
+	d := n.deliv
+	d.mu.Lock()
+	for _, j := range d.acks {
+		if j.Session == session {
+			j.IDs = slices.DeleteFunc(j.IDs, func(id string) bool { return slices.Contains(ids, id) })
+		}
+	}
+	d.acks = slices.DeleteFunc(d.acks, func(j *ackJob) bool { return len(j.IDs) == 0 })
+	n.saveLaunchStateLocked()
+	d.mu.Unlock()
+	r := n.sess
+	r.claimMu.Lock()
+	for _, id := range ids {
+		if c, ok := r.claims[id]; ok && c.ackOnly && c.session == session {
+			delete(r.claims, id)
+		}
+	}
+	r.claimMu.Unlock()
+	n.log.Warn("an opened session's messages were never acknowledged; a person decides", "session", session, "messages", len(ids))
+	n.report(ids, AttemptNeedsHuman)
+	n.changed("leases")
 }
 
 // restoreLeases picks up the book after a restart: a session's wake lease

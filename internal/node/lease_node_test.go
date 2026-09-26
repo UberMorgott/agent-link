@@ -154,10 +154,13 @@ func TestLeaseRevoked(t *testing.T) {
 	}
 }
 
-// A lease that passed its deadline without proof goes to another idle
-// session (fewest failed leases first, then the one active last), and the
-// first session's hooks do not deliver it too.
-func TestLeaseDeadlineReassigns(t *testing.T) {
+// A wake that put the message into a session's inbox (or queue) stays that
+// session's past its deadline (a slow turn is no failure): no other session
+// is woken for it or takes it, it may only be woken again. Evidence the
+// channel dropped it revokes it; the next idle session (fewest failed leases,
+// then active last) gets it, and the first session's hooks do not deliver it
+// too; its late proof still counts.
+func TestLeaseQueuedStaysWithOwner(t *testing.T) {
 	p := &fakePoster{}
 	dir := t.TempDir()
 	a, b := deliveryPair(t, dir, p, nil)
@@ -171,20 +174,37 @@ func TestLeaseDeadlineReassigns(t *testing.T) {
 	}
 	lapse(a, m.ID)
 	a.leaseSweep(time.Now())
-	if v := leaseViewOf(t, a, m.ID); v.State != LeaseRetry || v.Reason != "deadline" {
+	if v := leaseViewOf(t, a, m.ID); v.State != LeaseLeased || v.Owner != "s-2" {
 		t.Fatalf("lapsed: %+v", v)
 	}
 	a.wakeIdle(context.Background())
-	if p.count() != 1 {
-		t.Fatalf("woken within the backoff: %v", p.calls)
+	if v := leaseViewOf(t, a, m.ID); p.count() != 2 || !strings.HasPrefix(p.calls[1], testSocket2) || v.Owner != "s-2" || a.leases.fails(m.ID, "s-2") != 0 {
+		t.Fatalf("after the deadline: %+v %v", v, p.calls)
 	}
+	if page, _ := a.UnreadFor(dir, "s-1", "", 10); page.Total != 0 {
+		t.Fatalf("another session would take it: %+v", page)
+	}
+	if got, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-1"}); len(got) != 0 {
+		t.Fatalf("another session claimed it: %v", got)
+	}
+
+	a.LeaseRevoke("s-2", []string{m.ID}, "inbox_dropped")
 	backoffOver(a, m.ID)
 	a.wakeIdle(context.Background())
-	if v := leaseViewOf(t, a, m.ID); v.Owner != "s-1" || v.Attempts != 2 || p.count() != 2 || !strings.HasPrefix(p.calls[1], testSocket+"|") {
+	if v := leaseViewOf(t, a, m.ID); v.Owner != "s-1" || v.Attempts != 3 || p.count() != 3 || !strings.HasPrefix(p.calls[2], testSocket+"|") {
 		t.Fatalf("reassigned: %+v %v", v, p.calls)
 	}
 	if page, _ := a.UnreadFor(dir, "s-2", "", 10); page.Total != 0 {
 		t.Fatalf("the first session would get it too: %+v", page)
+	}
+	if got := a.LeaseStart("s-2", "", []string{m.ID}); len(got) != 1 {
+		t.Fatalf("late proof refused: %v", got)
+	}
+	if _, err := a.Ack("", AckRequest{IDs: []string{m.ID}, SessionID: "s-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := a.leases.get(m.ID); l.State != LeaseAcked || l.Owner != "s-2" {
+		t.Fatalf("acked: %+v", l)
 	}
 }
 
@@ -198,15 +218,20 @@ func TestLeaseOrphanLaunches(t *testing.T) {
 	a.occupied = func(string, time.Time) bool { return false }
 	regClaude(t, a, dir, "s-1", testSocket, true)
 	m := ask(t, a, b, "anyone there")
+	p.mu.Lock()
+	p.err = errors.New("pipe gone")
+	p.mu.Unlock()
 	for i := range maxOwnerFails {
+		regClaude(t, a, dir, "s-1", testSocket, true) // its inbox again
 		a.wakeIdle(context.Background())
 		if p.count() != i+1 {
 			t.Fatalf("wake %d: %v", i+1, p.calls)
 		}
-		lapse(a, m.ID)
-		a.leaseSweep(time.Now())
 		backoffOver(a, m.ID)
 	}
+	p.mu.Lock()
+	p.err = nil
+	p.mu.Unlock()
 	for range 3 {
 		regClaude(t, a, dir, "s-1", testSocket, false)
 		regClaude(t, a, dir, "s-1", testSocket, true)
@@ -227,10 +252,10 @@ func TestLeaseOrphanLaunches(t *testing.T) {
 	// s-1's heartbeat does not confirm the launch; a new session does.
 	regClaude(t, a, dir, "s-1", testSocket, true)
 	a.launchDue(context.Background(), later.Add(time.Second))
-	waitAttempts(t, b, m, AttemptWakeRequested, AttemptLaunchRequested)
+	waitAttempts(t, b, m, AttemptLaunchRequested)
 	regClaude(t, a, dir, "s-new", testSocket2, false)
 	a.launchDue(context.Background(), later.Add(2*time.Second))
-	waitAttempts(t, b, m, AttemptWakeRequested, AttemptLaunchRequested, AttemptLaunchConfirmed)
+	waitAttempts(t, b, m, AttemptLaunchRequested, AttemptLaunchConfirmed)
 }
 
 // The book survives a restart: a wake's claim comes back with its token (a
@@ -286,5 +311,36 @@ func TestLeaseRestart(t *testing.T) {
 	}
 	if !a.waiterSpentMsg("x-waiter", time.Now()) {
 		t.Fatalf("waiter cap lost: %+v", book["x-waiter"])
+	}
+}
+
+// A held lease whose ack keeps failing is bounded: after leaseHoldMax it is
+// failed (needs_human), its ack job and ackOnly claim go, so it blocks no
+// session forever; nothing launches for it.
+func TestLeaseHoldReleased(t *testing.T) {
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, nil, nil)
+	m := ask(t, a, b, "held")
+	now := time.Now()
+	a.holdForAck("", []string{m.ID}, "sess-h", now)
+	if len(a.launchHeld()) != 1 {
+		t.Fatal("not held")
+	}
+	a.leases.mu.Lock()
+	a.leases.m[m.ID].At = now.Add(-leaseHoldMax - time.Second)
+	a.leases.mu.Unlock()
+	a.leaseSweep(now)
+	a.deliv.mu.Lock()
+	jobs, spent := len(a.deliv.acks), a.deliv.isSpent(m.ID)
+	a.deliv.mu.Unlock()
+	if l, _ := a.leases.get(m.ID); l.State != LeaseFailed || !l.Failed || jobs != 0 || !spent || len(a.launchHeld()) != 0 {
+		t.Fatalf("lease %+v jobs %d spent %v held %v", l, jobs, spent, a.launchHeld())
+	}
+	waitAttempts(t, b, m, AttemptNeedsHuman)
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-h", Provider: "claude", Folder: dir}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-h"}); len(got) != 1 {
+		t.Fatalf("hooks cannot show it: %v", got)
 	}
 }

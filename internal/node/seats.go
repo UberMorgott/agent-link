@@ -773,6 +773,9 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 	for _, s := range due {
 		ready := false
 		for _, p := range s.Pending {
+			if l, _ := n.leases.get(leaseKey(s.ID, p.ID)); l.Failed {
+				continue // a person decides
+			}
 			if rec, ok := n.chats.message(p.ID); ok && !seatPaused(p, rec.Message) {
 				ready = true
 				break
@@ -924,11 +927,37 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 		return
 	}
 	owner, now := seatOwner(seat.ID), time.Now()
+	var leased, refused []UnreadMessage
 	for _, m := range msgs {
-		// The seat keeps its own retry (seatRetry): the lease records the turn.
-		if _, err := n.leases.take(m.ID, seat.ID, owner, ViaSeat, "", now.Add(launchHold), now); err != nil {
+		// The seat keeps its own retry (seatRetry); a message whose lease is
+		// failed (or acked) is not in the turn, like a launch's.
+		took, err := n.leases.take(m.ID, seat.ID, owner, ViaSeat, "", now.Add(launchHold), now)
+		if err != nil {
 			n.log.Warn("save leases", "err", err)
 		}
+		if took {
+			leased = append(leased, m)
+		} else {
+			refused = append(refused, m)
+		}
+	}
+	msgs = leased
+	if len(refused) > 0 {
+		st := n.seats
+		st.mu.Lock()
+		for _, m := range refused {
+			if k := seatKey(seat.ID, m.ID); st.marks[k].turn {
+				delete(st.marks, k)
+			}
+		}
+		if intro && len(msgs) == 0 {
+			st.quiet[seat.ID] = true // its introduction alone posts nothing
+		}
+		st.mu.Unlock()
+	}
+	if !intro && len(msgs) == 0 {
+		n.endTurnClaims(seat.ID, nil)
+		return
 	}
 	chat := ""
 	if len(msgs) > 0 {

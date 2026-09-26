@@ -30,13 +30,22 @@ Persisted in `leases.json` (data dir) next to `sessions.json`.
 | pending/retry -> leased | a claim is granted (`claimLocked`: hook claim, waiter claim, node wake), `launchClaim`, `claimTurn` (seat) |
 | leased -> running | proof: the owner acks it (hook saw its wake token in prompt/transcript, PR #16), a desktop/seat first turn reports its session (`started`), or `LeaseStart` (Codex app-server `turn/started`, PR-D) |
 | running -> acked | ack of the message (`Ack`); the lease is idempotent by key: acking again changes nothing |
-| leased/running -> retry | `LeaseRevoke`: wake/queue post failed, session ended (`EndSession`) or no longer live, deadline passed without proof (`leaseSweep`), launch failed before its turn started |
+| leased/running -> retry | `LeaseRevoke`: wake/queue post failed, session ended (`EndSession`) or no longer live, deadline passed without proof (`leaseSweep`; never for `inbox`/`queue`/`waiter`, see below), launch failed before its turn started |
+| retry/leased(other) -> running | late proof of an owner whose lease was revoked, while nobody acked it |
+| running(hold) -> failed | a launch's ack kept failing for `leaseHoldMax` (1 h): ack job and claim dropped |
 | running -> failed | a launch's first turn started and failed (may have acted in part: `needs_human`) |
 | retry -> failed | `attempts >= maxLeaseAttempts` (5): `needs_human` reported once |
 
 Rules:
 
 - `running` only on proof. Queue/RPC/inbox accept is `leased`, never more.
+- A wake that put the message into a session (`inbox` post accepted, `codex
+  queue`, waiter output) cannot be withdrawn: the lease stays that session's
+  (`routeOf` routes to it) until proof, or evidence the channel dropped it
+  (session end/gone, post/queue/proxy error, thread gone: `LeaseRevoke`).
+  Time alone never reassigns it; waking the same session again is no failure.
+- `failed` is terminal for automatic paths (`Lease.Failed`): a hook may still
+  show the message to a live session, and its lapse returns to `failed`.
 - `hook` leases (a session in a turn claiming) do not count as attempts and
   their lapse does not count as an owner failure: the batching hook just
   delivers the rest at its next event.
@@ -90,8 +99,7 @@ for every unread message (UI PR-E).
 
 ## Open risks
 
-- A Codex prompt queued to a closed app (`codex queue`) survives the lease: if
-  the lease lapses and another session gets the message, reopening Codex runs
-  the old prompt too. PR-D (app-server `turn/started`) narrows it.
+- A Codex session that died without its hooks ending it keeps a queued lease
+  until its registration lapses (TTL 1 h) or PR-D reports the thread gone.
 - Proof for Claude is still the hook's ack at the woken prompt; a session
   whose hooks never run cannot prove and is passed over after two failed leases.

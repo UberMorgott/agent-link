@@ -69,7 +69,10 @@ const (
 	// leaseDoneKeep: a record of a message no longer unread is kept this long
 	// (the API shows it); leaseKeep bounds every record.
 	leaseDoneKeep = 10 * time.Minute
-	leaseKeep     = 7 * 24 * time.Hour
+	// leaseHoldMax bounds a held lease whose ack keeps failing (holdForAck):
+	// then it is failed and the message is released to the hooks.
+	leaseHoldMax = time.Hour
+	leaseKeep    = 7 * 24 * time.Hour
 )
 
 // Lease is one message's delivery lease for one recipient on this node.
@@ -91,8 +94,11 @@ type Lease struct {
 	NextAt   time.Time      `json:"next_at,omitzero"`
 	Reason   string         `json:"reason,omitempty"`
 	// Hold: running with no deadline, its ack pending (holdForAck).
-	Hold bool      `json:"hold,omitempty"`
-	At   time.Time `json:"at"`
+	Hold bool `json:"hold,omitempty"`
+	// Failed: the message failed once (maxLeaseAttempts, a failed turn); it
+	// stays so for every automatic path, whatever a hook does with it later.
+	Failed bool      `json:"failed,omitempty"`
+	At     time.Time `json:"at"`
 }
 
 // LeaseView is the lease state of one unread message (GET /leases).
@@ -119,6 +125,21 @@ func leaseKey(seat, id string) string {
 
 // automatic reports whether a lease by via counts as an attempt.
 func automatic(via string) bool { return via != ViaHook }
+
+// contentVia reports whether a lease by via put the message itself into the
+// session (its queue, inbox or waiter output): it cannot be withdrawn.
+func contentVia(via string) bool { return via == ViaInbox || via == ViaQueue || via == ViaWaiter }
+
+// queuedOwner is the session a lease by contentVia still holds message id
+// for (leased, not revoked), or "".
+func (b *leaseBook) queuedOwner(id string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if l := b.m[id]; l != nil && l.State == LeaseLeased && contentVia(l.Via) {
+		return l.Owner
+	}
+	return ""
+}
 
 // leaseBackoff is the retry delay after attempts automatic leases.
 func leaseBackoff(attempts int) time.Duration {
@@ -224,9 +245,10 @@ func (b *leaseBook) blocked(key, owner, via string, now time.Time) bool {
 	if !ok {
 		return false
 	}
-	switch l.State {
-	case LeaseFailed:
+	if l.Failed {
 		return automatic(via)
+	}
+	switch l.State {
 	case LeaseRetry:
 		return (via == ViaInbox || via == ViaQueue) && now.Before(l.NextAt)
 	case LeaseLeased, LeaseRunning:
@@ -258,15 +280,18 @@ func (b *leaseBook) take(id, seat, owner, via, token string, deadline, now time.
 			}
 			return true, b.touchLocked(l)
 		}
-		if l.Hold || (!l.Deadline.IsZero() && now.Before(l.Deadline)) {
-			if l.Owner != owner {
-				return false, nil
-			}
-		} else {
+		switch {
+		case l.Owner == owner:
+			// The same owner again (a new wake of it): no failure of it.
+		case l.Hold || contentVia(l.Via) || (!l.Deadline.IsZero() && now.Before(l.Deadline)):
+			// Another owner's, still held: a wake that put the message into a
+			// session's queue or inbox is never reassigned by time alone.
+			return false, nil
+		default:
 			b.revokeLocked(l, "deadline", now)
 		}
 	}
-	if l.State == LeaseFailed && automatic(via) {
+	if l.Failed && automatic(via) {
 		return false, nil
 	}
 	if automatic(via) {
@@ -283,23 +308,31 @@ func (b *leaseBook) take(id, seat, owner, via, token string, deadline, now time.
 	return true, b.touchLocked(l)
 }
 
-// start moves owner's leased leases of ids to running on proof its turn has
-// them (token "" matches any token), and to newOwner when set (a launch's
-// session). It returns the message ids started, and running ones again.
+// start moves owner's leases of ids to running on proof its turn has them
+// (token "" matches any token), and to newOwner when set (a launch's
+// session). A late proof counts too: a lease revoked from owner (retry, or
+// leased by another owner since) that no one acked becomes owner's, running.
+// It returns the message ids started, and running ones again.
 func (b *leaseBook) start(owner, newOwner, token string, ids []string, now time.Time) ([]string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var out []string
 	changed := false
 	for _, l := range b.m {
-		if l.Owner != owner || !slices.Contains(ids, l.ID) || (token != "" && l.Token != token) {
+		if !slices.Contains(ids, l.ID) {
 			continue
 		}
-		switch l.State {
-		case LeaseRunning:
+		mine := l.Owner == owner && (token == "" || l.Token == token)
+		earlier := l.Owner != owner && l.Fails[owner] > 0 // a lease of owner's was revoked
+		if !mine && !earlier {
+			continue
+		}
+		switch {
+		case l.State == LeaseRunning && mine:
 			out = append(out, l.ID)
-		case LeaseLeased:
-			l.State, l.Deadline, l.At = LeaseRunning, now.Add(runningHold), now
+		case l.State == LeaseLeased || l.State == LeaseRetry || l.State == LeasePending || (l.State == LeaseFailed && mine):
+			l.Owner = owner
+			l.State, l.Deadline, l.NextAt, l.At = LeaseRunning, now.Add(runningHold), time.Time{}, now
 			if newOwner != "" {
 				l.Owner = newOwner
 			}
@@ -368,6 +401,12 @@ func (b *leaseBook) revokeLocked(l *Lease, reason string, now time.Time) bool {
 		return false
 	}
 	l.Reason, l.Deadline, l.Hold, l.At = reason, time.Time{}, false, now
+	if l.Failed {
+		// Failed is terminal: a hook's delivery of it that lapsed leaves it
+		// failed (reported already), never back in retry.
+		l.State = LeaseFailed
+		return false
+	}
 	if !automatic(l.Via) {
 		l.State = LeasePending
 		if l.Attempts > 0 {
@@ -380,7 +419,7 @@ func (b *leaseBook) revokeLocked(l *Lease, reason string, now time.Time) bool {
 	}
 	l.Fails[l.Owner]++
 	if l.Attempts >= maxLeaseAttempts {
-		l.State = LeaseFailed
+		l.State, l.Failed = LeaseFailed, true
 		return true
 	}
 	l.State, l.NextAt = LeaseRetry, now.Add(leaseBackoff(l.Attempts))
@@ -420,10 +459,24 @@ func (b *leaseBook) fail(owner string, ids []string, reason string, now time.Tim
 				l.Fails = map[string]int{}
 			}
 			l.Fails[l.Owner]++
-			l.State, l.Reason, l.Deadline, l.Hold, l.At = LeaseFailed, reason, time.Time{}, false, now
+			l.State, l.Failed, l.Reason, l.Deadline, l.Hold, l.At = LeaseFailed, true, reason, time.Time{}, false, now
 		}
 	}
 	return b.saveLocked()
+}
+
+// staleHolds lists the held leases (holdForAck) whose ack kept failing for
+// leaseHoldMax.
+func (b *leaseBook) staleHolds(now time.Time) []leaseEnd {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []leaseEnd
+	for _, l := range b.m {
+		if l.Hold && l.State == LeaseRunning && now.Sub(l.At) > leaseHoldMax {
+			out = append(out, leaseEnd{l.Owner, l.ID, "ack_stuck"})
+		}
+	}
+	return out
 }
 
 // fails is how often owner's leases of key failed.
@@ -459,6 +512,10 @@ func (b *leaseBook) due(now time.Time, gone func(owner string) bool) []leaseEnd 
 		switch {
 		case gone(l.Owner):
 			out = append(out, leaseEnd{l.Owner, l.ID, "session_gone"})
+		case l.State == LeaseLeased && contentVia(l.Via):
+			// The prompt is in the session's queue or inbox: it cannot be
+			// withdrawn, so time alone never reassigns it (a slow turn is no
+			// failure). Proof, the session's end or a channel error ends it.
 		case !l.Deadline.IsZero() && !now.Before(l.Deadline):
 			out = append(out, leaseEnd{l.Owner, l.ID, "deadline"})
 		}
