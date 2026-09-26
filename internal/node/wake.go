@@ -32,7 +32,7 @@ import (
 // message for no session in particular; a message routed to an idle session
 // (its claim, assignment or chat affinity, routeOf; affinity never names an
 // idle session while one of its area is in a turn) wakes that one; else the
-// area's wakeable idle session seen last is woken, and only it.
+// area's wakeable idle session active last (LastActive) is woken, and only it.
 // The same loop runs the launch ladder (launch.go).
 
 // wakePoll is how often the node looks for idle sessions to wake.
@@ -130,7 +130,7 @@ func (n *Node) wakeIdle(ctx context.Context) {
 	}
 	var list []due
 	// active: areas with a live session in a turn (its hooks deliver);
-	// first: per area, the wakeable idle session seen last, the one a message
+	// first: per area, the wakeable idle session active last, the one a message
 	// for no session in particular wakes.
 	active := map[string]bool{}
 	first := map[string]Session{}
@@ -151,7 +151,7 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		} else {
 			continue
 		}
-		if f, ok := first[s.Area]; !ok || s.LastSeen.After(f.LastSeen) || (s.LastSeen.Equal(f.LastSeen) && s.SessionID < f.SessionID) {
+		if f, ok := first[s.Area]; !ok || s.activeAt().After(f.activeAt()) || (s.activeAt().Equal(f.activeAt()) && s.SessionID < f.SessionID) {
 			first[s.Area] = *s
 		}
 	}

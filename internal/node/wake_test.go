@@ -262,7 +262,9 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 		a.sess.mu.Unlock()
 	}
 	lapse()
-	if page, _ := a.UnreadFor(dir, "s-q", "", 10); page.Total != 4 || len(page.Woken) != 0 {
+	// Unread again; still listed as woken, for a hook that sees the prompt
+	// arrived after all.
+	if page, _ := a.UnreadFor(dir, "s-q", "", 10); page.Total != 4 || len(page.Woken) != 2 {
 		t.Fatalf("after the lapse: %+v", page)
 	}
 	// Still idle, never took it: one retry in this idle period, then no more.

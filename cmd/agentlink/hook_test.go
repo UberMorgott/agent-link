@@ -44,13 +44,17 @@ type fakeNode struct {
 	// inboxWakes: like a node that wakes the session through its inbox, a
 	// waiter's GET /unread (waiter=1) gets nothing.
 	inboxWakes bool
-	// woken: ids the node woke the session with (UnreadPage.Woken).
-	woken map[string]bool
+	// woken: ids the node woke the session with (UnreadPage.Woken); wakeTok:
+	// the token of a wake claim (POST /claim with wake_token), else tok-<id>.
+	woken   map[string]bool
+	wakeTok map[string]string
+	// lapsed: woken ids whose wake claim lapsed: listed as woken and unread.
+	lapsed map[string]bool
 }
 
 func newFakeNode(t *testing.T, folder string) *fakeNode {
 	f := &fakeNode{folder: folder, sessions: map[string]node.SessionRequest{}, acked: map[string]string{}, worker: map[string]bool{},
-		claims: map[string]string{}, woken: map[string]bool{}}
+		claims: map[string]string{}, woken: map[string]bool{}, wakeTok: map[string]string{}, lapsed: map[string]bool{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	f.api = strings.TrimPrefix(srv.URL, "http://")
@@ -99,8 +103,14 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			if f.woken[m.ID] && q.Get("session") != "" {
 				m.WakeToken = "tok-" + m.ID
+				if tok := f.wakeTok[m.ID]; tok != "" {
+					m.WakeToken = tok
+				}
 				page.Woken = append(page.Woken, m)
-				continue
+				if !f.lapsed[m.ID] {
+					continue
+				}
+				m.WakeToken = ""
 			}
 			page.Total++
 			if q.Get("after") != "" && m.Cursor <= q.Get("after") {
@@ -135,6 +145,9 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 			if s := f.claims[id]; s == "" || s == req.SessionID {
 				f.claims[id] = req.SessionID
 				granted = append(granted, id)
+				if req.WakeToken != "" {
+					f.woken[id], f.wakeTok[id] = true, req.WakeToken
+				}
 			}
 		}
 		_ = json.NewEncoder(w).Encode(granted)
@@ -183,6 +196,13 @@ func (f *fakeNode) texts() []string {
 		out = append(out, a.Text+"|"+a.Phase)
 	}
 	return out
+}
+
+// token is the wake token message id was claimed with ("" when none).
+func (f *fakeNode) token(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.wakeTok[id]
 }
 
 func (f *fakeNode) ackedIDs() []string {
@@ -777,6 +797,7 @@ func TestToolActivity(t *testing.T) {
 
 func TestHookWaitWakesIdleSession(t *testing.T) {
 	c := newHookCase(t)
+	c.f.claimOn = true
 	c.run(hookClaude, evSessionStart)
 	c.run(hookClaude, evStop) // idle now
 	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 5 * time.Second, busyFor: time.Hour, stale: time.Minute}
@@ -793,8 +814,9 @@ func TestHookWaitWakesIdleSession(t *testing.T) {
 	if !strings.Contains(errw.String(), "wake up") || !strings.Contains(errw.String(), "agentlink send --chat c1") {
 		t.Fatalf("stderr %q", errw.String())
 	}
-	if !slices.Equal(c.f.ackedIDs(), []string{"m1"}) {
-		t.Fatalf("acked %v", c.f.ackedIDs())
+	// Written is not delivered: no ack until the session shows it got the wake.
+	if tok := c.f.token("m1"); len(c.f.ackedIDs()) != 0 || tok == "" || !strings.Contains(errw.String(), node.WakeMarker(tok)) {
+		t.Fatalf("acked %v token %q stderr %q", c.f.ackedIDs(), tok, errw.String())
 	}
 	// The person sees the line at the session's next event.
 	if v := parseOut(t, c.run(hookClaude, evPreTool, `,"tool_name":"Read"`)); v.SystemMessage != "agent-link: 1 сообщение от KPECTIK — беру в работу" {
@@ -802,6 +824,72 @@ func TestHookWaitWakesIdleSession(t *testing.T) {
 	}
 	if c.state(hookClaude).Notice != "" {
 		t.Fatal("notice shown twice")
+	}
+	// An event whose transcript lacks the wake neither acknowledges nor
+	// delivers it again.
+	transcript := filepath.Join(t.TempDir(), "t.jsonl")
+	if err := os.WriteFile(transcript, []byte(`{"type":"user","message":{"content":"hello"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tp := `,"tool_name":"Read","transcript_path":` + strconv.Quote(transcript)
+	if out := c.run(hookClaude, evPostTool, tp); strings.Contains(out, "wake up") || len(c.f.ackedIDs()) != 0 {
+		t.Fatalf("unproven wake: out %q acked %v", out, c.f.ackedIDs())
+	}
+	// Once the wake is in the transcript, the next event acknowledges it.
+	rec := mustJSON(map[string]any{"type": "user", "message": map[string]string{"content": "Stop hook feedback:\n" + errw.String()}})
+	if err := os.WriteFile(transcript, rec, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := c.run(hookClaude, evPostTool, tp); strings.Contains(out, "wake up") || !slices.Equal(c.f.ackedIDs(), []string{"m1"}) {
+		t.Fatalf("proven wake: out %q acked %v", out, c.f.ackedIDs())
+	}
+}
+
+// A wake whose claim lapsed before the session's next event (a long first
+// tool call) is unread again; a hook that finds it in the transcript
+// acknowledges it instead of delivering it a second time.
+func TestHookLapsedWakeProvenNotRedelivered(t *testing.T) {
+	c := newHookCase(t)
+	c.f.claimOn = true
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evStop)
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "ping", true))
+	var errw bytes.Buffer
+	if code, _ := wakeWith(hookClaude, c.sid, c.folder, hookStatePath(c.env.dir, hookClaude, c.sid), &errw, c.env, time.Hour); code != 2 {
+		t.Fatalf("wake: %d", code)
+	}
+	c.f.mu.Lock()
+	c.f.lapsed["m1"] = true
+	c.f.mu.Unlock()
+	transcript := filepath.Join(t.TempDir(), "t.jsonl")
+	if err := os.WriteFile(transcript, mustJSON(map[string]string{"content": errw.String()}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := c.run(hookClaude, evPostTool, `,"tool_name":"Read","transcript_path":`+strconv.Quote(transcript))
+	if strings.Contains(out, "ping") || !slices.Equal(c.f.ackedIDs(), []string{"m1"}) {
+		t.Fatalf("lapsed proven wake: out %q acked %v", out, c.f.ackedIDs())
+	}
+}
+
+// A Stop whose only batch is a proven wake acknowledges it and lets the
+// session stop.
+func TestHookStopAcksProvenWake(t *testing.T) {
+	c := newHookCase(t)
+	c.f.claimOn = true
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evStop)
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "ping", true))
+	var errw bytes.Buffer
+	if code, done := wakeWith(hookClaude, c.sid, c.folder, hookStatePath(c.env.dir, hookClaude, c.sid), &errw, c.env, time.Hour); code != 2 || !done {
+		t.Fatalf("wake: %d %v", code, done)
+	}
+	transcript := filepath.Join(t.TempDir(), "t.jsonl")
+	if err := os.WriteFile(transcript, mustJSON(map[string]string{"content": errw.String()}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := c.run(hookClaude, evStop, `,"transcript_path":`+strconv.Quote(transcript))
+	if strings.Contains(out, `"decision"`) || !slices.Equal(c.f.ackedIDs(), []string{"m1"}) {
+		t.Fatalf("stop: out %q acked %v", out, c.f.ackedIDs())
 	}
 }
 

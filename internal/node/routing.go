@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -23,7 +24,9 @@ import (
 //     one that did lives. An active session (in a turn) wins over an idle
 //     one of its area: while one lives, affinity picks among the active ones
 //     only, and a chat whose session is idle is for no session in particular
-//     (the active one's hooks take it, no idle session is woken);
+//     (the active one's hooks take it, no idle session is woken). A session
+//     without a hook event for AffinityLapse (LastActive) has lost its
+//     chats: an abandoned one its waiter keeps live does not hold them;
 //   - else no session in particular: the first session to Claim it takes it.
 //
 // Only live sessions count: a message for a session that is gone is anyone's.
@@ -32,6 +35,10 @@ import (
 // after it delivers, so a claim older than that was never delivered and the
 // message goes back to its route.
 const claimTTL = time.Minute
+
+// AffinityLapse: a session with no hook event (LastActive) for this long no
+// longer holds its chats (routeOf), though its waiter keeps it live.
+const AffinityLapse = 30 * time.Minute
 
 // sessionClaim is one session's claim of an unread message (Claim), or, with
 // wake, the node's for the prompt that woke the session with it (wakeClaim).
@@ -142,6 +149,11 @@ type ClaimRequest struct {
 	IDs       []string `json:"ids"`
 	SessionID string   `json:"session_id"`
 	Folder    string   `json:"folder,omitempty"` // routing hint of the control API
+	// WakeToken makes it a wake claim (Claude's background waiter wakes the
+	// session with them, WakeMarker(WakeToken) in its output): the hooks
+	// acknowledge them only at an event that shows the session got that wake
+	// (UnreadPage.Woken), else it lapses after inboxWakeGrace.
+	WakeToken string `json:"wake_token,omitempty"`
 }
 
 // liveIDs is the set of live session ids.
@@ -170,13 +182,28 @@ func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string 
 	if s := assignedSession(*rec); live[s] {
 		return s
 	}
-	aff := n.chats.affinity(rec.Message.ChatID, n.cfg.Node, live)
-	if busy := n.sess.busyBeside(aff, live); busy != nil {
+	recent := n.sess.recentlyActive(live, time.Now())
+	aff := n.chats.affinity(rec.Message.ChatID, n.cfg.Node, recent)
+	if busy := n.sess.busyBeside(aff, recent); busy != nil {
 		// The chat's session is idle while another of its area is in a turn:
 		// the active one wins (no wake), affinity only picks among them.
 		return n.chats.affinity(rec.Message.ChatID, n.cfg.Node, busy)
 	}
 	return aff
+}
+
+// recentlyActive is the subset of live whose sessions had a hook event within
+// AffinityLapse.
+func (r *sessionRegistry) recentlyActive(live map[string]bool, now time.Time) map[string]bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]bool, len(live))
+	for id, ok := range live {
+		if s := r.sessions[id]; ok && s != nil && now.Sub(s.activeAt()) < AffinityLapse {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 // busyBeside is, when session id is idle, the set of the live sessions of its
@@ -223,18 +250,93 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 		return nil, fmt.Errorf("%w: invalid session_id", ErrBadRequest)
 	case len(req.IDs) > 1000:
 		return nil, fmt.Errorf("%w: at most 1000 ids", ErrBadRequest)
+	case req.WakeToken != "" && !validWakeToken(req.WakeToken):
+		return nil, fmt.Errorf("%w: invalid wake_token", ErrBadRequest)
 	}
 	r := n.sess
+	now := time.Now()
 	r.claimMu.Lock()
-	defer r.claimMu.Unlock()
-	live := r.liveIDs(time.Now())
+	live := r.liveIDs(now)
 	if !live[req.SessionID] {
+		r.claimMu.Unlock()
 		// Only a registered session takes messages: a hook of a run that never
 		// registered (a headless claude -p) must not steal them.
 		return []string{}, nil
 	}
-	return n.claimLocked(req.SessionID, req.IDs, false, "", live), nil
+	want, spent := req.IDs, []string(nil)
+	if req.WakeToken != "" {
+		want, spent = r.waiterWakesLeft(req.IDs, now)
+	}
+	granted := n.claimLocked(req.SessionID, want, req.WakeToken != "", req.WakeToken, live)
+	if req.WakeToken != "" {
+		for _, id := range granted {
+			w := r.waiterWakes[id]
+			r.waiterWakes[id] = waiterWake{n: w.n + 1, at: now}
+		}
+	}
+	r.claimMu.Unlock()
+	n.report(spent, AttemptNeedsHuman)
+	return granted, nil
 }
+
+// maxWaiterWakes bounds the wakes of one message by Claude waiters (Claim
+// with a WakeToken), like maxIdleWakes the node's own: a wake no hook event
+// proved lapses and may be tried again, but a session that never shows it
+// got one (it is gone, or its transcript lacks the wakes) is not woken for
+// that message forever. After that no waiter wakes for it: it stays unread
+// for the session's next event, and its author hears it needs a person
+// (AttemptNeedsHuman).
+const maxWaiterWakes = 2
+
+// waiterWakeKeep: a message's waiter wake count is forgotten this long after
+// its last wake.
+const waiterWakeKeep = 24 * time.Hour
+
+// waiterWake counts one message's waiter wakes, the last at at.
+type waiterWake struct {
+	n  int
+	at time.Time
+}
+
+// waiterWakesLeft splits ids into those a waiter may still wake with and
+// those that used up maxWaiterWakes. The caller holds r.claimMu.
+func (r *sessionRegistry) waiterWakesLeft(ids []string, now time.Time) (left, spent []string) {
+	for id, w := range r.waiterWakes {
+		if now.Sub(w.at) > waiterWakeKeep {
+			delete(r.waiterWakes, id)
+		}
+	}
+	for _, id := range ids {
+		if r.waiterWakes[id].n >= maxWaiterWakes {
+			spent = append(spent, id)
+		} else {
+			left = append(left, id)
+		}
+	}
+	return left, spent
+}
+
+// waiterSpent drops from page the messages no waiter may wake with anymore
+// (maxWaiterWakes), so a waiter does not poll for them.
+func (n *Node) waiterSpent(page *UnreadPage) {
+	r := n.sess
+	r.claimMu.Lock()
+	defer r.claimMu.Unlock()
+	kept := page.Messages[:0]
+	for _, m := range page.Messages {
+		if r.waiterWakes[m.ID].n < maxWaiterWakes {
+			kept = append(kept, m)
+		}
+	}
+	page.Total -= len(page.Messages) - len(kept)
+	page.Messages = kept
+}
+
+// validWakeToken accepts a short token of letters, digits, '-' and '_' (it
+// goes into WakeMarker).
+func validWakeToken(t string) bool { return wakeTokenPattern.MatchString(t) }
+
+var wakeTokenPattern = regexp.MustCompile(`^[0-9A-Za-z_-]{8,64}$`)
 
 // claimLocked grants session the ids of want still unread, not for another
 // live session and not held by its own wake claim, as a wake claim with wake

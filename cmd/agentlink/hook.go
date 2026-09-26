@@ -101,6 +101,9 @@ type hookInput struct {
 	ToolInput      json.RawMessage `json:"tool_input"`
 	AgentID        string          `json:"agent_id"`
 	AgentType      string          `json:"agent_type"`
+	// TranscriptPath is the session's transcript (Claude Code): a wake's
+	// marker in it shows the session got that wake (collect).
+	TranscriptPath string `json:"transcript_path"`
 }
 
 // hookState is what the hooks of one session keep between events.
@@ -183,7 +186,7 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if *wait {
-		return hookWait(client, stdin, stderr, env, defaultWaitOpts())
+		return hookWait(client, stdin, stderr, env, defaultWaitOpts(client))
 	}
 	// The output is written before the batch is acknowledged (see accept).
 	_ = hookRun(client, *event, stdin, stdout, env)
@@ -310,13 +313,17 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		writeHookJSON(stdout, takeNotice(&st), nil)
 		return nil
 	}
-	b, err := h.collect(event == evStop, event == evStop, event == evPrompt, in.Prompt)
+	b, err := h.collect(event == evStop, event == evStop, func() string { return in.Prompt + "\n" + transcriptTail(in.TranscriptPath) })
 	if err != nil {
 		quiet()
 		return err
 	}
 	notes := st.Notes
 	if event == evStop {
+		if b.text == "" {
+			h.accept(b) // only woken messages the session got: acknowledged, nothing to add
+			b = hookBatch{}
+		}
 		switch {
 		case b.empty():
 			st.Blocks = 0
@@ -488,6 +495,8 @@ type hookSession struct {
 	st     *hookState
 	sid    string
 	folder string
+	// wakeToken (the waiter's only) makes its claim a wake (node.ClaimRequest).
+	wakeToken string
 }
 
 // hookBatch is the unread messages one event delivers.
@@ -506,10 +515,13 @@ func (b hookBatch) empty() bool { return len(b.ids) == 0 }
 // session, claims them and formats what fits one hook output. The rest stays
 // unread for the next event.
 //
-// At a prompt (UserPromptSubmit, prompt its text) the batch also takes, to
-// acknowledge only, the messages the node woke the session with
-// (UnreadPage.Woken) that the prompt carries: the model has them already.
-func (h *hookSession) collect(stop, actionable, atPrompt bool, prompt string) (hookBatch, error) {
+// The batch also takes, to acknowledge only, the messages the session was
+// woken with (UnreadPage.Woken: by the node's inbox wake or its waiter) that
+// proof carries (the prompt, the end of the transcript): the model has them
+// already, also when that wake's claim lapsed (then they are listed as
+// unread too, and are not delivered again). A nil proof (the waiter's) takes
+// none.
+func (h *hookSession) collect(stop, actionable bool, proof func() string) (hookBatch, error) {
 	var page node.UnreadPage
 	q := url.Values{"folder": {h.folder}, "session": {h.sid}, "limit": {fmt.Sprint(hookPageSize)}}
 	if actionable {
@@ -518,27 +530,65 @@ func (h *hookSession) collect(stop, actionable, atPrompt bool, prompt string) (h
 	if err := hookCall(h.env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout); err != nil {
 		return hookBatch{}, err
 	}
-	woken := page.Woken
+	var got []node.UnreadMessage
+	if len(page.Woken) > 0 && proof != nil {
+		got = provenWoken(page.Woken, proof())
+		n := len(page.Messages)
+		page.Messages = slices.DeleteFunc(page.Messages, func(m node.UnreadMessage) bool {
+			return slices.ContainsFunc(got, func(g node.UnreadMessage) bool { return g.ID == m.ID })
+		})
+		page.Total -= n - len(page.Messages)
+	}
 	page, err := h.claim(page)
 	if err != nil {
 		return hookBatch{}, err
 	}
 	b := formatBatch(page, h.folder, h.sid, stop)
-	if atPrompt {
-		b.takeWoken(woken, prompt)
-	}
+	b.takeWoken(got)
 	return b, nil
 }
 
-// takeWoken adds to the batch, to acknowledge, the woken messages prompt
-// verifiably carries (node.WokenBy: that wake's token and the id). Nothing
-// when the agent does not say what the prompt was: they stay the wake's
-// until it lapses, and the hooks deliver them then.
-func (b *hookBatch) takeWoken(woken []node.UnreadMessage, prompt string) {
+// provenWoken is the woken messages proof verifiably carries (node.WokenBy:
+// that wake's token and the id). None when the agent does not say what the
+// prompt was and there is no transcript: they stay the wake's until it
+// lapses, and the hooks deliver them then.
+func provenWoken(woken []node.UnreadMessage, proof string) []node.UnreadMessage {
+	var out []node.UnreadMessage
 	for _, m := range woken {
-		if !node.WokenBy(prompt, m) {
-			continue // another prompt: its wake is still on the way
+		if node.WokenBy(proof, m) {
+			out = append(out, m)
 		}
+	}
+	return out
+}
+
+// transcriptTailSize bounds how much of a transcript's end collect reads.
+const transcriptTailSize = 4 << 20
+
+// transcriptTail is the end of the session's transcript ("" when there is
+// none or it cannot be read): a wake the session got is in it.
+func transcriptTail(path string) string {
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	if info, err := f.Stat(); err == nil && info.Size() > transcriptTailSize {
+		if _, err := f.Seek(-transcriptTailSize, io.SeekEnd); err != nil {
+			return ""
+		}
+	}
+	data, _ := io.ReadAll(io.LimitReader(f, transcriptTailSize))
+	return string(data)
+}
+
+// takeWoken adds to the batch, to acknowledge, the woken messages the session
+// is proven to have got (provenWoken).
+func (b *hookBatch) takeWoken(got []node.UnreadMessage) {
+	for _, m := range got {
 		b.ids = append(b.ids, m.ID)
 		if m.ChatID != "" && !m.OwnHuman && !m.Paused && m.Assigned != "worker" {
 			b.chats[m.ChatID] = m.ID
@@ -555,7 +605,7 @@ func (h *hookSession) claim(page node.UnreadPage) (node.UnreadPage, error) {
 	if len(page.Messages) == 0 {
 		return page, nil
 	}
-	req := node.ClaimRequest{SessionID: h.sid, Folder: h.folder}
+	req := node.ClaimRequest{SessionID: h.sid, Folder: h.folder, WakeToken: h.wakeToken}
 	for _, m := range page.Messages {
 		req.IDs = append(req.IDs, m.ID)
 	}

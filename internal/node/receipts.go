@@ -163,13 +163,22 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 		return to == "" || to == session
 	}
 	var all, woken []UnreadMessage
-	wake := func(um *UnreadMessage) bool {
-		if session == "" {
-			return false
+	// add lists um: a message the session was woken with is Woken (with the
+	// wake's token), not delivered again while the wake holds; one whose wake
+	// lapsed is listed in both, so a hook that sees the session got it after
+	// all acknowledges it instead of delivering it twice.
+	add := func(um UnreadMessage) {
+		if session != "" {
+			if c, ok := n.sess.claims[um.ID]; ok && c.wake && c.session == session && c.token != "" {
+				w := um
+				w.WakeToken = c.token
+				woken = append(woken, w)
+				if c.held(live) {
+					return
+				}
+			}
 		}
-		token, ok := n.wokeWith(um.ID, session, live)
-		um.WakeToken = token
-		return ok
+		all = append(all, um)
 	}
 	for _, u := range n.chats.unread() {
 		if filter && n.localArea(u.chat.Area) != area {
@@ -185,11 +194,7 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 			continue
 		}
 		n.materialize(&um.Message, u.chat.Area)
-		if wake(&um) {
-			woken = append(woken, um)
-			continue
-		}
-		all = append(all, um)
+		add(um)
 	}
 	for _, r := range n.store.unreadPlain() {
 		if filter && n.localArea(r.Message.Area) != area {
@@ -201,11 +206,7 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 		um := UnreadMessage{Direction: "in", Unread: true, Message: r.Message,
 			ReceivedAt: r.ReceivedAt, AsksYou: r.Message.IsRequest()}
 		n.materialize(&um.Message, r.Message.Area)
-		if wake(&um) {
-			woken = append(woken, um)
-			continue
-		}
-		all = append(all, um)
+		add(um)
 	}
 	if session != "" {
 		seen := map[string]bool{}
