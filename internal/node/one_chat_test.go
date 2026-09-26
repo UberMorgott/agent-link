@@ -273,4 +273,10 @@ func TestNicknameResolves(t *testing.T) {
 	if !ValidDisplay("Морготт") || ValidDisplay("") || ValidDisplay(" x") || ValidDisplay("a,b") || ValidDisplay(strings.Repeat("я", MaxDisplayLen+1)) {
 		t.Fatal("ValidDisplay")
 	}
+	// A member that takes another's earlier nickname makes it ambiguous: it
+	// never takes over the asks meant for the other one.
+	a.SetDisplay("NIKITA", nil)
+	if got := a.ResolveMember("nikita"); got != "nikita" {
+		t.Fatalf("taken earlier nickname resolved to %q", got)
+	}
 }

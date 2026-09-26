@@ -287,9 +287,10 @@ func (n *Node) ResolveMember(s string) string {
 	}
 	for _, rank := range []func(name string, m *Member) bool{
 		func(name string, _ *Member) bool { return strings.EqualFold(name, s) },
-		func(_ string, m *Member) bool { return strings.EqualFold(m.Display, s) },
+		// Nickname and earlier nickname rank alike: a member that takes
+		// another's earlier nickname makes it ambiguous, never takes it over.
 		func(_ string, m *Member) bool {
-			return slices.ContainsFunc(m.Aliases, func(a string) bool { return strings.EqualFold(a, s) })
+			return strings.EqualFold(m.Display, s) || slices.ContainsFunc(m.Aliases, func(a string) bool { return strings.EqualFold(a, s) })
 		},
 	} {
 		var hits []string
