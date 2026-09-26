@@ -198,6 +198,8 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		if err != nil {
 			// Its hooks, another session or a launch deliver them instead.
 			n.revokeLeases(s.SessionID, ids(msgs), "wake_failed", true)
+		} else if !byInbox {
+			go n.observeQueueStart(ctx, s, token, ids(msgs))
 		}
 		r.mu.Lock()
 		if cur := r.sessions[s.SessionID]; cur != nil {
@@ -250,6 +252,44 @@ func (n *Node) pickIdle(id string, cands []Session) string {
 		return ""
 	}
 	return best.SessionID
+}
+
+func (n *Node) observeQueueStart(ctx context.Context, s Session, token string, ids []string) {
+	home := s.CodexHome
+	if home == "" {
+		home = agentHome("CODEX_HOME", ".codex")
+	}
+	path := codexRollout(home, s.SessionID)
+	if path == "" {
+		n.log.Warn("queued Codex turn has no rollout to observe", "session", s.SessionID)
+		return // missing proof is not evidence that the queued prompt was dropped
+	}
+	tick := time.NewTicker(wakePoll)
+	defer tick.Stop()
+	for {
+		if rolloutContains(path, WakeMarker(token)) {
+			n.LeaseStart(s.SessionID, token, ids)
+			return
+		}
+		select {
+		case <-tick.C:
+			if !n.queueLeaseActive(s.SessionID, token, ids) {
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (n *Node) queueLeaseActive(owner, token string, ids []string) bool {
+	for _, id := range ids {
+		l, ok := n.leases.get(id)
+		if ok && l.Owner == owner && l.Token == token && (l.State == LeaseLeased || l.State == LeaseRunning) {
+			return true
+		}
+	}
+	return false
 }
 
 // maxIdleWakes bounds the node's wakes of one idle period: the first, and one

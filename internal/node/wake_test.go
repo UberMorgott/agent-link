@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -39,6 +41,36 @@ func (w *fakeWaker) count() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return len(w.calls)
+}
+
+func TestObserveQueueStartDrivesLease(t *testing.T) {
+	n := newTestNode(t, "a", testSecret, nil, t.TempDir(), listen(t), nil)
+	now := time.Now()
+	if ok, err := n.leases.take("m1", "", "s1", ViaQueue, "tok12345", now.Add(time.Minute), now); err != nil || !ok {
+		t.Fatalf("take lease: %v %v", ok, err)
+	}
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions", "2026", "09", "26")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rollout-x-s1.jsonl"), []byte(WakeMarker("tok12345")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n.observeQueueStart(context.Background(), Session{SessionID: "s1", CodexHome: home}, "tok12345", []string{"m1"})
+	if lease, _ := n.leases.get("m1"); lease.State != LeaseRunning {
+		t.Fatalf("lease after proof: %+v", lease)
+	}
+
+	if ok, err := n.leases.take("m2", "", "s2", ViaQueue, "tok23456", now.Add(time.Minute), now); err != nil || !ok {
+		t.Fatalf("take second lease: %v %v", ok, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	n.observeQueueStart(ctx, Session{SessionID: "s2", CodexHome: home}, "tok23456", []string{"m2"})
+	if lease, _ := n.leases.get("m2"); lease.State != LeaseLeased {
+		t.Fatalf("missing proof revoked content-carrying wake: %+v", lease)
+	}
 }
 
 // wakePair is pair with w as a's waker; the test drives the wakes itself.
