@@ -314,6 +314,17 @@ func (n *Node) Ack(chat string, req AckRequest) ([]AckResult, error) {
 		delete(n.sess.claims, id) // read now: nobody's to deliver any more
 	}
 	n.sess.claimMu.Unlock()
+	// Their leases are acked (a lease the acking session held was proven by
+	// this ack: its turn has them).
+	var acked []string
+	for _, res := range out {
+		if res.Found {
+			acked = append(acked, res.ID)
+		}
+	}
+	if err := n.leases.ack(n.seatOfSession(req.SessionID), acked, seat, time.Now()); err != nil {
+		n.log.Warn("save leases", "err", err)
+	}
 	n.sendReceipts(receipts, StateRead)
 	var read []string
 	for _, res := range out {

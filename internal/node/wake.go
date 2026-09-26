@@ -75,6 +75,7 @@ func (n *Node) wakeLoop(ctx context.Context) {
 			n.waker.Check(ctx, false)
 			n.syncQueueWake()
 		}
+		n.leaseSweep(time.Now())
 		n.wakeIdle(ctx)
 		n.seatsDue(ctx, time.Now())
 		n.launchMaintain(ctx, time.Now())
@@ -130,10 +131,10 @@ func (n *Node) wakeIdle(ctx context.Context) {
 	}
 	var list []due
 	// active: areas with a live session in a turn (its hooks deliver);
-	// first: per area, the wakeable idle session active last, the one a message
-	// for no session in particular wakes.
+	// cands: per area, the wakeable idle sessions, among which pickIdle picks
+	// the one a message for no session in particular wakes.
 	active := map[string]bool{}
-	first := map[string]Session{}
+	cands := map[string][]Session{}
 	r.mu.Lock()
 	for _, s := range r.sessions {
 		if s.live(now) && !s.Idle {
@@ -151,9 +152,7 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		} else {
 			continue
 		}
-		if f, ok := first[s.Area]; !ok || s.activeAt().After(f.activeAt()) || (s.activeAt().Equal(f.activeAt()) && s.SessionID < f.SessionID) {
-			first[s.Area] = *s
-		}
+		cands[s.Area] = append(cands[s.Area], *s)
 	}
 	r.mu.Unlock()
 	for _, d := range list {
@@ -164,24 +163,28 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		}
 		// One recipient per message: the session it is routed to (its claim,
 		// assignment or chat), else, while no session of the area is in a turn,
-		// the area's first idle session.
-		anyone := !active[s.Area] && first[s.Area].SessionID == s.SessionID
+		// the area's idle session pickIdle picks for it.
 		mine := n.routedTo(ids(page.Messages))
 		take := page.Messages[:0:0]
 		for _, m := range page.Messages {
-			if to := mine[m.ID]; m.ForSeat != "" || to == s.SessionID || (to == "" && anyone) {
+			to := mine[m.ID]
+			if m.ForSeat != "" || to == s.SessionID || (to == "" && !active[s.Area] && n.pickIdle(m.ID, cands[s.Area]) == s.SessionID) {
 				take = append(take, m)
 			}
 		}
 		if len(take) == 0 {
 			continue
 		}
-		msgs, token := n.wakeClaim(s.SessionID, take[:FitUnread(take)])
+		byInbox := d.inbox.socket != ""
+		via := ViaQueue
+		if byInbox {
+			via = ViaInbox
+		}
+		msgs, token := n.wakeClaim(s.SessionID, via, take[:FitUnread(take)])
 		if len(msgs) == 0 {
 			continue
 		}
 		text := WakePrompt(msgs, len(take)-len(msgs)+page.Total-len(page.Messages), s.Folder, token)
-		byInbox := d.inbox.socket != ""
 		images := wakeImages(msgs)
 		iw, withImages := n.waker.(ImageWaker)
 		switch {
@@ -193,7 +196,8 @@ func (n *Node) wakeIdle(ctx context.Context) {
 			err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, text)
 		}
 		if err != nil {
-			n.unclaim(s.SessionID, ids(msgs)) // its hooks deliver them instead
+			// Its hooks, another session or a launch deliver them instead.
+			n.revokeLeases(s.SessionID, ids(msgs), "wake_failed", true)
 		}
 		r.mu.Lock()
 		if cur := r.sessions[s.SessionID]; cur != nil {
@@ -222,6 +226,30 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		n.log.Info("idle session woken", "session", s.SessionID, "provider", s.Provider, "inbox", byInbox, "messages", len(msgs), "unread", page.Total)
 		n.noteWoken(msgs)
 	}
+}
+
+// pickIdle is the session of cands a wake with message id goes to: the one
+// whose leases of it failed least, then the one active last (LastActive, not
+// its registration); none passed over for it (maxOwnerFails). "" when every
+// one is.
+func (n *Node) pickIdle(id string, cands []Session) string {
+	var best *Session
+	bestFails := 0
+	for i := range cands {
+		c := &cands[i]
+		f := n.leases.fails(id, c.SessionID)
+		if f >= maxOwnerFails {
+			continue
+		}
+		if best == nil || f < bestFails || (f == bestFails && (c.activeAt().After(best.activeAt()) ||
+			(c.activeAt().Equal(best.activeAt()) && c.SessionID < best.SessionID))) {
+			best, bestFails = c, f
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	return best.SessionID
 }
 
 // maxIdleWakes bounds the node's wakes of one idle period: the first, and one

@@ -282,6 +282,10 @@ func TestLaunchDirect(t *testing.T) {
 	if len(a.launchHeld()) != 0 {
 		t.Fatalf("launch claim kept: %v", a.launchHeld())
 	}
+	// Leased to the launch, running once its session was named, acked by it.
+	if l, _ := a.leases.get(m.ID); l.State != LeaseAcked || l.Owner != "sess-1" || l.Via != ViaLaunch || l.Attempts != 1 {
+		t.Fatalf("lease %+v", l)
+	}
 	a.sess.mu.Lock()
 	ls := a.sess.recent[""]
 	a.sess.mu.Unlock()
@@ -401,6 +405,9 @@ func TestLaunchDirectTurnFailed(t *testing.T) {
 			}
 			if len(a.launchHeld()) != 0 || len(l.all()) != 0 {
 				t.Fatalf("claim %v terminal %d", a.launchHeld(), len(l.all()))
+			}
+			if l, _ := a.leases.get(m.ID); l.State != LeaseFailed || l.Owner != "sess-f" {
+				t.Fatalf("lease %+v", l)
 			}
 			// Not launched for again either: the turn may have acted in part.
 			a.launchDue(context.Background(), time.Now().Add(launchDebounce+launchGrace+time.Minute))

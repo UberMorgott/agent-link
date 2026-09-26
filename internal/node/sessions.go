@@ -134,9 +134,6 @@ type sessionRegistry struct {
 	// Taken before mu and the chat store's lock, never inside them.
 	claimMu sync.Mutex
 	claims  map[string]sessionClaim
-	// waiterWakes counts each message's wakes by Claude waiters
-	// (maxWaiterWakes), under claimMu.
-	waiterWakes map[string]waiterWake
 
 	// inbox is each live Claude session's inbox address (memory only, never
 	// persisted or sent); recent is the last session seen per area, kept in
@@ -157,7 +154,7 @@ type LastSession struct {
 
 func openSessions(dir string) (*sessionRegistry, error) {
 	r := &sessionRegistry{path: filepath.Join(dir, "sessions.json"), sessions: map[string]*Session{}, last: map[string]ActivityState{},
-		on: map[string]map[string]string{}, claims: map[string]sessionClaim{}, waiterWakes: map[string]waiterWake{}, inbox: map[string]inboxAddr{},
+		on: map[string]map[string]string{}, claims: map[string]sessionClaim{}, inbox: map[string]inboxAddr{},
 		recent: map[string]LastSession{}, recentPath: filepath.Join(dir, "last_sessions.json")}
 	var list []Session
 	if err := readJSON(r.path, &list); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -326,6 +323,8 @@ func (n *Node) EndSession(id string) error {
 	delete(r.inbox, id)
 	err := r.saveLocked(time.Now())
 	r.mu.Unlock()
+	// Its leases go back at once: another session or a launch takes them.
+	n.revokeLeases(id, nil, "session_end", true)
 	if !ok {
 		return fmt.Errorf("%w %s", ErrUnknownSession, id)
 	}

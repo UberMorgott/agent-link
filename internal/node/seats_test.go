@@ -195,6 +195,10 @@ func TestSeatAskedRunsTurn(t *testing.T) {
 	if n := len(runs); n != 3 {
 		t.Fatalf("turns %d: %+v", n, runs)
 	}
+	// The turn leased the seat's message; the turn that succeeded acked it.
+	if l, ok := a.leases.get(leaseKey(codex.ID, m.ID)); !ok || l.State != LeaseAcked || l.Owner != seatOwner(codex.ID) || l.Via != ViaSeat || l.Attempts != 1 {
+		t.Fatalf("seat lease %+v", l)
+	}
 	_ = claude
 }
 
@@ -713,5 +717,34 @@ func TestSeatSetupTurnPostsNothing(t *testing.T) {
 	eventually(t, "answered", func() bool { return len(seatByLabel(t, a, "Claude").Pending) == 0 })
 	if askErr != nil {
 		t.Fatalf("a turn with a message may not send: %v", askErr)
+	}
+}
+
+// A seat's message whose lease failed is not run in a turn (like a launch's):
+// no turn starts for it, it stays pending for a person.
+func TestSeatFailedLeaseNotRun(t *testing.T) {
+	l := &seatLauncher{}
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	_, codex := addSeats(t, a)
+	chat, err := a.NewProjectChat(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "hi codex", AuthorKind: AuthorHuman, AskSeats: []string{"codex"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if _, err := a.leases.take(m.ID, codex.ID, seatOwner(codex.ID), ViaSeat, "", now.Add(time.Minute), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.leases.fail(seatOwner(codex.ID), []string{m.ID}, "seat_turn_failed", now); err != nil {
+		t.Fatal(err)
+	}
+	before := len(l.all())
+	a.seatsDue(context.Background(), time.Now())
+	a.seatTurn(context.Background(), l, codex.ID, false, false)
+	if runs := len(l.all()); runs != before || len(seatByLabel(t, a, "Codex").Pending) != 1 {
+		t.Fatalf("runs %d -> %d, pending %+v", before, runs, seatByLabel(t, a, "Codex").Pending)
 	}
 }

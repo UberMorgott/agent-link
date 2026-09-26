@@ -342,7 +342,7 @@ func TestWakeSkipsHookClaimed(t *testing.T) {
 	if w.count() != 0 {
 		t.Fatalf("woke with a hook-claimed message: %v", w.calls)
 	}
-	if msgs, _ := a.wakeClaim("s-q", page.Messages); len(msgs) != 0 {
+	if msgs, _ := a.wakeClaim("s-q", ViaQueue, page.Messages); len(msgs) != 0 {
 		t.Fatalf("wake claim over a hook claim: %v", msgs)
 	}
 }
