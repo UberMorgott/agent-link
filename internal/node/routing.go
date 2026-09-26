@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -148,6 +149,11 @@ type ClaimRequest struct {
 	IDs       []string `json:"ids"`
 	SessionID string   `json:"session_id"`
 	Folder    string   `json:"folder,omitempty"` // routing hint of the control API
+	// WakeToken makes it a wake claim (Claude's background waiter wakes the
+	// session with them, WakeMarker(WakeToken) in its output): the hooks
+	// acknowledge them only at an event that shows the session got that wake
+	// (UnreadPage.Woken), else it lapses after inboxWakeGrace.
+	WakeToken string `json:"wake_token,omitempty"`
 }
 
 // liveIDs is the set of live session ids.
@@ -244,6 +250,8 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 		return nil, fmt.Errorf("%w: invalid session_id", ErrBadRequest)
 	case len(req.IDs) > 1000:
 		return nil, fmt.Errorf("%w: at most 1000 ids", ErrBadRequest)
+	case req.WakeToken != "" && !validWakeToken(req.WakeToken):
+		return nil, fmt.Errorf("%w: invalid wake_token", ErrBadRequest)
 	}
 	r := n.sess
 	r.claimMu.Lock()
@@ -254,8 +262,14 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 		// registered (a headless claude -p) must not steal them.
 		return []string{}, nil
 	}
-	return n.claimLocked(req.SessionID, req.IDs, false, "", live), nil
+	return n.claimLocked(req.SessionID, req.IDs, req.WakeToken != "", req.WakeToken, live), nil
 }
+
+// validWakeToken accepts a short token of letters, digits, '-' and '_' (it
+// goes into WakeMarker).
+func validWakeToken(t string) bool { return wakeTokenPattern.MatchString(t) }
+
+var wakeTokenPattern = regexp.MustCompile(`^[0-9A-Za-z_-]{8,64}$`)
 
 // claimLocked grants session the ids of want still unread, not for another
 // live session and not held by its own wake claim, as a wake claim with wake

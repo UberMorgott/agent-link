@@ -307,10 +307,15 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   `agentlink hook claude --wait` in the background (`"asyncRewake": true`, `timeout` 86400 s;
   [command hook fields](https://code.claude.com/docs/en/hooks#command-hook-fields)). It polls
   the node every 2 s; when the session is idle (its last event was `Stop`) and unread messages
-  arrive, it writes the batch to stderr, acknowledges it and exits 2, which wakes Claude with
-  the batch as a system reminder. The next `Stop` arms it again. One waiter per session runs
-  at a time; it heartbeats the idle session every 5 minutes and ends with the session
-  (`SessionEnd`, or its parent process gone) or shortly before its timeout. The line for the
+  arrive, it claims them as a wake (`POST /claim` with a random `wake_token`), writes the batch
+  with the marker `[agent-link wake <token>]` to stderr and exits 2, which wakes Claude with
+  the batch as a system reminder. It does not acknowledge them: the session's next hook event
+  does, for the ones whose marker and id are in the session's transcript (`transcript_path`);
+  a wake nobody took lapses after 2 minutes and the messages are delivered again. The next
+  `Stop` arms it again. One waiter per session runs at a time; it heartbeats the idle session
+  every 5 minutes (`heartbeat: true`: it keeps the session live, not active) and ends with the
+  session (`SessionEnd`, or the Claude process among its ancestors gone) or shortly before its
+  timeout. The line for the
   person comes with the session's next event. Codex has no such hook (a background hook
   "doesn't start a new turn", [hooks](https://learn.chatgpt.com/docs/hooks)); see the next
   item. The waiter is not
@@ -331,9 +336,9 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   as the hooks inject them (sender, chat, id, body, reply command), as many as fit 4500 runes,
   then «Ещё N непрочитанных: agentlink chat unread --folder …». The node claims exactly those
   for the session first: its hooks leave them out (`GET /unread?session=` lists them under
-  `woken`, each with the wake's random `wake_token`), and `UserPromptSubmit` acknowledges only
-  the ones whose prompt carries that wake's marker `[agent-link wake <token>]` and their id (a
-  hook without the prompt text acknowledges none). A wake never takes a message a hook has
+  `woken`, each with the wake's random `wake_token`), and a hook event acknowledges only
+  the ones whose wake marker `[agent-link wake <token>]` and id are in its prompt or the
+  session's transcript (a hook with neither acknowledges none). A wake never takes a message a hook has
   claimed. A failed wake drops the claim; one the session never took lapses after 2 minutes,
   and the hooks deliver them as usual; a session still idle then is woken once more (at most 2
   wakes per idle period; a Claude session's waiter may take over too). Messages over 12000

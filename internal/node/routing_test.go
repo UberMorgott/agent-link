@@ -153,3 +153,32 @@ func TestChatAffinityKeepsNewRootsWithTheChatsSession(t *testing.T) {
 		t.Fatalf("the FYI is read before the owner got it: %+v", rec)
 	}
 }
+
+// A waiter's wake claim (ClaimRequest.WakeToken): the message is not
+// delivered again to the session but listed as woken with the token, which
+// its hooks need to acknowledge it; a bad token is refused.
+func TestClaimAsWake(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	dir := t.TempDir()
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-w", Provider: "claude", Folder: dir, Wake: WakeRewake, Idle: true}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := b.SendRequest(SendRequest{To: "a", Body: "wake", AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has it", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 1 })
+	if _, err := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-w", WakeToken: "bad token!"}); err == nil {
+		t.Fatal("a bad wake token was taken")
+	}
+	if g, err := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-w", WakeToken: "0123456789abcdef"}); err != nil || !slices.Equal(g, []string{m.ID}) {
+		t.Fatalf("wake claim: %v %v", g, err)
+	}
+	p, _ := a.UnreadFor(dir, "s-w", "", 10)
+	if p.Total != 0 || len(p.Woken) != 1 || p.Woken[0].WakeToken != "0123456789abcdef" {
+		t.Fatalf("after the wake claim: %+v", p)
+	}
+	if g, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-w"}); len(g) != 0 {
+		t.Fatalf("the woken message was claimed for delivery again: %v", g)
+	}
+}
