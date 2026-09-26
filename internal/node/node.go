@@ -103,11 +103,12 @@ type Node struct {
 	waker     SessionWaker
 	wakeEvery time.Duration
 	// poster wakes idle Claude sessions through their inbox (inbox.go);
-	// launcher opens a visible session when none is live (launch.go), while
-	// autoOpen is on. deliv is the delivery ladder's state.
+	// launcher opens a visible session when none is live (launch.go), as the
+	// project's autonomy allows (auto, autonomy.go). deliv is the delivery
+	// ladder's state.
 	poster   InboxPoster
 	launcher SessionLauncher
-	autoOpen atomic.Bool
+	auto     *autonomy
 	deliv    *deliveryState
 	// leases: the delivery lease of every message handed to an owner (lease.go).
 	leases *leaseBook
@@ -283,6 +284,10 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		return nil, err
 	}
 	n.MigrateProjectChats()
+	n.auto = newAutonomy(cfg.DataDir)
+	if err := n.auto.load(); err != nil {
+		n.log.Warn("autonomy state unreadable; starting over", "err", err)
+	}
 	n.leases = newLeaseBook(cfg.DataDir)
 	if err := n.leases.load(); err != nil {
 		n.log.Warn("delivery leases unreadable; starting over", "err", err)

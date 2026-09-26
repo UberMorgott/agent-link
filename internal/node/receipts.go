@@ -97,7 +97,7 @@ type UnreadMessage struct {
 	// AsksYou: the message asks this node to answer (a chat request with this
 	// node among its responders, or a plain request). OwnHuman ones never do.
 	AsksYou bool `json:"asks_you,omitempty"`
-	// Paused: past MaxAutoDepth; shown as information on the next human turn.
+	// Paused: past the hop limit (Node.held); shown as information on the next human turn.
 	Paused bool `json:"paused,omitempty"`
 	// WakeToken (UnreadPage.Woken only): the token of the wake prompt that
 	// carried the message (WakeMarker); only a prompt with it acknowledges it.
@@ -189,7 +189,7 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 		}
 		um := UnreadMessage{ChatMessage: n.chatMessage(u.chat, u.rec), ReceivedAt: u.rec.ReceivedAt}
 		um.AsksYou = !um.OwnHuman && um.Asks(n.cfg.Node)
-		um.Paused = um.AsksYou && um.Message.Held()
+		um.Paused = um.AsksYou && n.held(um.Message)
 		if actionable && um.Paused {
 			continue
 		}

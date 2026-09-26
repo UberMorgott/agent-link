@@ -264,7 +264,7 @@ func (w *Worker) Accept(m node.Message) error {
 			// Auto-answer is off: the message waits unread for a session there.
 			return nil
 		}
-		if m.Held() {
+		if w.opt.Chats.AutoHeld(m) {
 			return nil // stop the automatic chain without a visible hold
 		}
 		if w.opt.Chats.LiveSession(m.Area) {

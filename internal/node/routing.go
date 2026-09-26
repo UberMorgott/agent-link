@@ -169,13 +169,25 @@ func (r *sessionRegistry) liveIDs(now time.Time) map[string]bool {
 	return out
 }
 
+// activeAts is when each registered session was last active (activeAt).
+func (r *sessionRegistry) activeAts() map[string]time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]time.Time, len(r.sessions))
+	for id, s := range r.sessions {
+		out[id] = s.activeAt()
+	}
+	return out
+}
+
 // routeOf is the live session unread message id is for; "" when it is for no
 // session in particular. rec is its chat record (nil for a plain message).
 // The caller holds n.sess.claimMu.
 func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string {
 	if q := n.leases.queuedOwner(id); q != "" && live[q] {
 		// Its wake prompt sits in that session's queue or inbox: it stays that
-		// session's until proof or the session's end (no second handler).
+		// session's until proof, the session's end or its silence for
+		// queuedOwnerMax (leaseSweep; no second handler meanwhile).
 		return q
 	}
 	if c, ok := n.sess.claims[id]; ok && c.held(live) {

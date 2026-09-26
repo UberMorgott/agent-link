@@ -31,7 +31,7 @@ var contractErrors = map[string]int{
 	"chat_legacy": http.StatusConflict, "chat_closed": http.StatusConflict, "work_dir": http.StatusBadRequest,
 	"project_needs_folder": http.StatusConflict, "folder_not_in_project": http.StatusConflict,
 	"not_found": http.StatusNotFound, "unknown_chat": http.StatusNotFound, "chat_owner": http.StatusForbidden,
-	"remove_self": http.StatusBadRequest, "unknown_member": http.StatusNotFound,
+	"remove_self": http.StatusBadRequest, "unknown_member": http.StatusNotFound, "autonomy": http.StatusBadRequest,
 	"internal": http.StatusInternalServerError,
 }
 
@@ -43,7 +43,9 @@ func contractValues() map[string]any {
 	bob := node.MemberInfo{Name: "bob", Online: true, Addrs: []string{"10.147.20.9:7420"}, Seen: at, App: "v0.9.0", Proto: 6}
 	carol := node.MemberInfo{Name: "carol", Addrs: []string{"10.147.20.11:7420"}, Seen: at.Add(-time.Hour), App: "v0.9.0", Proto: 6}
 	ready := ProjectView{ID: pid, Name: "Сайт", Alias: "", Display: "Сайт", Dir: `C:\work\site`, State: ProjectReady,
-		Online: 1, Total: 2, Members: []node.MemberInfo{self, bob, carol}, CanRename: true, HasInvite: true}
+		Online: 1, Total: 2, Members: []node.MemberInfo{self, bob, carol}, CanRename: true, HasInvite: true, LaunchMode: node.LaunchDesktop,
+		Autonomy: &AutonomyView{Mode: settings.AutonomyFull, MaxAutoDepth: 0, MaxAutoDepthDefault: true, TurnsPerHour: 30, MaxRunMinutes: 240,
+			TurnsLastHour: 4, RunMinutes: 25}}
 	busy := ready
 	busy.Busy = true
 	aliased := ready

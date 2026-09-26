@@ -208,6 +208,64 @@ func TestLeaseQueuedStaysWithOwner(t *testing.T) {
 	}
 }
 
+// A queued wake whose session keeps heartbeating but does nothing for
+// queuedOwnerMax is revoked (its failure counted) and the message goes to
+// another idle session; activity since the lease keeps it. The first
+// session's late proof still counts.
+func TestLeaseQueuedOwnerCap(t *testing.T) {
+	p := &fakePoster{}
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, p, nil)
+	regClaude(t, a, dir, "s-1", testSocket, true)
+	time.Sleep(10 * time.Millisecond)
+	regClaude(t, a, dir, "s-2", testSocket2, true)
+	m := ask(t, a, b, "stuck in a queue")
+	a.wakeIdle(context.Background())
+	if v := leaseViewOf(t, a, m.ID); v.Owner != "s-2" || v.Via != ViaInbox {
+		t.Fatalf("first wake: %+v", v)
+	}
+	age := func(lease, active time.Duration) {
+		now := time.Now()
+		a.leases.mu.Lock()
+		a.leases.m[m.ID].At = now.Add(-lease)
+		a.leases.mu.Unlock()
+		a.sess.mu.Lock()
+		a.sess.sessions["s-2"].LastActive = now.Add(-active)
+		a.sess.sessions["s-2"].WokeAt = now.Add(-lease)
+		a.sess.mu.Unlock()
+		a.sess.claimMu.Lock()
+		if c, ok := a.sess.claims[m.ID]; ok {
+			c.at = now.Add(-lease) // the wake claim lapsed long ago
+			a.sess.claims[m.ID] = c
+		}
+		a.sess.claimMu.Unlock()
+	}
+	// Active 10 minutes ago, after the lease: kept.
+	age(queuedOwnerMax+time.Minute, 10*time.Minute)
+	a.leaseSweep(time.Now())
+	if v := leaseViewOf(t, a, m.ID); v.State != LeaseLeased || v.Owner != "s-2" {
+		t.Fatalf("an active session lost it: %+v", v)
+	}
+	// Heartbeats only (LastSeen), no activity since the lease: revoked.
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-2", Provider: "claude", Folder: dir, Wake: WakeRewake, Idle: true,
+		InboxSocket: testSocket2, InboxToken: testToken, Heartbeat: true}); err != nil {
+		t.Fatal(err)
+	}
+	age(queuedOwnerMax+time.Minute, queuedOwnerMax+2*time.Minute)
+	a.leaseSweep(time.Now())
+	if v := leaseViewOf(t, a, m.ID); v.State != LeaseRetry || v.Reason != "queued_stale" || a.leases.fails(m.ID, "s-2") != 1 || a.leases.queuedOwner(m.ID) != "" {
+		t.Fatalf("stale owner kept it: %+v", v)
+	}
+	backoffOver(a, m.ID)
+	a.wakeIdle(context.Background())
+	if v := leaseViewOf(t, a, m.ID); v.Owner != "s-1" || !strings.HasPrefix(p.calls[len(p.calls)-1], testSocket+"|") {
+		t.Fatalf("not reassigned: %+v %v", v, p.calls)
+	}
+	if got := a.LeaseStart("s-2", "", []string{m.ID}); len(got) != 1 {
+		t.Fatalf("late proof refused: %v", got)
+	}
+}
+
 // A session passed over for a message is not woken for it again, whatever
 // its idle periods (no loop); the message is an orphan then, and the launch
 // ladder opens a new session although one is registered.

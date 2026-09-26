@@ -447,3 +447,6 @@ func argbForImage(img image.Image) []byte {
 	}
 	return data
 }
+
+// ShowNotification is a no-op here (agentlink patch; Windows only).
+func ShowNotification(title, text string) {}

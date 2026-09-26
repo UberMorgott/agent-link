@@ -5,8 +5,14 @@ A copy of `fyne.io/systray@v1.12.2` (module cache, without `example/` and the up
 separate module under a `vendor` directory: `./...` in the root, qgate's stack detection and
 typos (`_typos.toml`) leave it alone, as somebody else's code.
 
-One file differs from upstream, `systray_windows.go`; the exact change is `agentlink.patch`
-(`git diff --no-index <modcache>/fyne.io/systray@v1.12.2/systray_windows.go systray_windows.go`):
+Four files differ from upstream, `systray.go`, `systray_windows.go`, `systray_unix.go` and
+`systray_darwin.go`; the exact change is `agentlink.patch` (`git diff --no-index` of each
+against `<modcache>/fyne.io/systray@v1.12.2/`):
+
+- `ShowNotification(title, text)` shows a notification balloon from the tray icon
+  (`NIF_INFO`, cleared again so later icon or tooltip changes do not repeat it) and
+  `SetOnNotificationTapped(f)` runs `f` on a click on it (`NIN_BALLOONUSERCLICK`). Windows
+  only; `ShowNotification` is a no-op on the other systems.
 
 - The tray icon is loaded at the notification-area size for the window's DPI
   (`GetSystemMetricsForDpi(SM_CXSMICON/SM_CYSMICON, GetDpiForWindow)`, falling back to

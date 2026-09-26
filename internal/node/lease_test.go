@@ -124,7 +124,7 @@ func TestLeaseDueAndTakeOver(t *testing.T) {
 	mustTake(t, b, "m2", "", "s2", ViaQueue, "t2", now.Add(time.Hour), now)
 	mustTake(t, b, "m3", "", "s1", ViaInbox, "t3", now.Add(time.Minute), now)
 	later := now.Add(2 * time.Minute)
-	ends := b.due(later, func(o string) bool { return o == "s2" })
+	ends := b.due(later, func(o string) bool { return o == "s2" }, func(string) time.Time { return time.Time{} })
 	if len(ends) != 2 {
 		t.Fatalf("due: %+v", ends)
 	}

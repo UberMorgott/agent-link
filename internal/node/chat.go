@@ -1335,7 +1335,8 @@ const WorkerOwner = "worker"
 
 // ClaimRun reports whether this node's worker should answer m and, if so,
 // assigns m to it and marks it read (a read receipt goes to its author): m
-// must ask this node, the chat be open, m within MaxAutoDepth, no live
+// must ask this node, the chat be open, m within the hop limit, the node not
+// stopped (SetStopped), no live
 // session be registered for m's area (LiveSession) and nobody else be
 // assigned or have read it. The assignment is atomic with Ack, so a request
 // is handled by the worker or by a session, never both. When m asks this node
@@ -1346,8 +1347,11 @@ func (n *Node) ClaimRun(m Message) (run bool, hold string, err error) {
 	if !m.Asks(n.cfg.Node) {
 		return false, "", nil
 	}
-	if m.Held() {
+	if n.held(m) {
 		return false, HoldAutoLimit, nil
+	}
+	if n.Stopped() {
+		return false, "", nil // the agents are stopped: it waits unread
 	}
 	c, ok := n.chats.get(m.ChatID)
 	if !ok || c.Closed() {

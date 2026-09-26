@@ -53,6 +53,8 @@ export interface Backend {
   legacyNeedsDir: boolean
   // failNext: the next request answers this error fixture (e.g. "internal").
   failNext: string
+  // stopAll: the emergency stop of every project's agents (POST autonomy/stop).
+  stopAll: boolean
   // changed names the event topics a request made stale.
   changed: (topics: string[]) => void
 }
@@ -88,6 +90,7 @@ export function createBackend(): Backend {
     sent: [],
     legacyNeedsDir: false,
     failNext: '',
+    stopAll: false,
     changed: () => {},
   }
 }
@@ -144,7 +147,7 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
 
   if (method === 'GET') {
     switch (path) {
-      case 'status': return { configured: true, connected: true, zerotier: true, node: SELF, online: 1, total: 2 }
+      case 'status': return { configured: true, connected: true, zerotier: true, node: SELF, online: 1, total: 2, stop_all: b.stopAll }
       case 'settings': return { node: SELF, handler: 'none', work_dir: 'C:\\work', discovery: true }
       case 'dashboard': return { status: { online: 1, total: 2, handler: 'none' }, total_messages: 3, active_requests: 1, recent: [] }
       case 'participants': return []
@@ -155,6 +158,11 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     }
   }
   if (method === 'POST' && (path === 'agent' || path === 'pick-folder')) return path === 'agent' ? { text: '' } : { path: 'C:\\work\\picked' }
+  if (method === 'POST' && path === 'autonomy/stop') {
+    b.stopAll = req.on === true
+    b.changed(['status', 'projects'])
+    return handle(b, 'GET', 'status', undefined)
+  }
 
   if (parts[0] !== 'projects') throw new HttpError(404, 'unexpected ' + method + ' ' + fullPath)
 
@@ -224,10 +232,35 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     const next = { ...p }
     if (typeof req.alias === 'string') next.alias = req.alias.trim()
     if (typeof req.dir === 'string') next.dir = req.dir.trim()
-    if (typeof req.auto_open === 'boolean') next.auto_open = req.auto_open
+    if (next.autonomy && !p.legacy) {
+      const a = { ...next.autonomy }
+      if (typeof req.autonomy === 'string') {
+        if (!['off', 'asked', 'full'].includes(req.autonomy)) throw apiError('autonomy')
+        a.mode = req.autonomy as typeof a.mode
+      }
+      if (typeof req.max_auto_depth === 'number') {
+        if (req.max_auto_depth > 250) throw apiError('autonomy')
+        a.max_auto_depth_default = req.max_auto_depth < 0
+        a.max_auto_depth = req.max_auto_depth
+      }
+      if (a.max_auto_depth_default) a.max_auto_depth = a.mode === 'full' ? 0 : 8
+      if (typeof req.turns_per_hour === 'number') {
+        if (req.turns_per_hour < 0 || req.turns_per_hour > 600) throw apiError('autonomy')
+        a.turns_per_hour = req.turns_per_hour || 30
+      }
+      if (typeof req.max_run_minutes === 'number') {
+        if (req.max_run_minutes !== 0 && (req.max_run_minutes < 10 || req.max_run_minutes > 1440)) throw apiError('autonomy')
+        a.max_run_minutes = req.max_run_minutes || 240
+      }
+      next.autonomy = a
+    }
     next.display = next.alias || next.name
     next.state = stateOf(next)
     return setView(b, next)
+  }
+  if (method === 'POST' && rest.join('/') === 'autonomy/resume') {
+    if (!p.autonomy) throw apiError('not_found')
+    return setView(b, { ...p, autonomy: { ...p.autonomy, paused: false, pause_reason: undefined, turns_last_hour: 0, run_minutes: 0 } })
   }
   if (method === 'POST' && rest[0] === 'invite') {
     if (p.legacy) return { invite: LEGACY_CODE } satisfies InviteView

@@ -31,7 +31,7 @@ describe('the project menu', () => {
     await open('/p/' + SITE)
     const items = await menu(SITE)
     expect(items.map((i) => i.textContent!.trim())).toEqual([
-      'inbox.archive_history', 'project.menu.members', 'project.menu.invite', 'project.menu.agents', 'project.menu.name', 'project.menu.folder', 'project.menu.delete',
+      'inbox.archive_history', 'project.menu.members', 'project.menu.invite', 'project.menu.agents', 'project.menu.name', 'project.menu.folder', 'project.menu.autonomy', 'project.menu.delete',
     ])
     items[2]!.click()
     await settle()
@@ -45,19 +45,16 @@ describe('the project menu', () => {
     expect(legacy).toContain('project.menu.leave')
   })
 
-  it('lets other agents open a session here only once switched on (off by default)', async () => {
-    const { requests } = await open('/p/' + SITE)
-    await menu(SITE)
-    const toggle = () => $$('[role="menuitemcheckbox"]').find((i) => i.textContent!.includes('project.menu.auto_open'))
-    expect(toggle()!.getAttribute('aria-checked')).toBe('false')
-    toggle()!.click()
+  it('opens the agents\' autonomy on the settings page; the legacy network has none', async () => {
+    const { router } = await open('/p/' + SITE)
+    const item = (await menu(SITE)).find((i) => i.textContent!.includes('project.menu.autonomy'))!
+    item.click()
     await settle()
-    const last = requests[requests.length - 1]!
-    expect(last.url).toBe('/ui/api/projects/' + SITE + '/binding')
-    expect(JSON.parse(String(last.init.body))).toEqual({ auto_open: true })
-    expect(useProjectsStore().byID(SITE)!.auto_open).toBe(true)
-    expect((await menu('legacy')).length).toBeGreaterThan(0)
-    expect(toggle()).toBeUndefined()
+    expect(router.currentRoute.value.name).toBe('settings')
+    expect(document.querySelector('[data-autonomy="' + SITE + '"]')).not.toBeNull()
+    await router.push('/p/' + SITE)
+    await settle()
+    expect((await menu('legacy')).map((i) => i.textContent!.trim())).not.toContain('project.menu.autonomy')
   })
 
   it('removes a member from the project only after a confirmation', async () => {

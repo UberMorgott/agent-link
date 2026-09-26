@@ -512,14 +512,22 @@ area's messages; a session in the working folder gets the rest (direct messages,
 an area, areas without a folder); a session elsewhere gets none. Codex runs a new hook only
 after you trust it once with `/hooks` in that folder.
 
-**Auto-open (off by default).** With a project's «Разрешить другим агентам создавать сессию в
-этом проекте» (project menu «⋯») on, a message that asks you while no session (active or idle)
-is live in the project's folder makes the node open a **new** agent session there: in the
-agent's desktop app (the first turn runs headless with the messages as its prompt, the app
-shows it live) or in Windows Terminal. **Such a session runs with your full permissions**
-(Claude `bypassPermissions`, Codex no approvals and no sandbox) and acts on what other members'
-agents wrote without asking: switch it on only for projects whose members you trust; it is off
-for every project until you do. While it is off, a message waits for a session of the folder.
+**Agent autonomy (off by default).** «Настройки → Автономия агентов» sets per project how far your
+agents work by themselves: **off** (the default, also for projects that had auto-open off) —
+no session is opened by the node, a message waits for a session of the folder; **asked** (what
+auto-open on was) — a message that asks you while no session (active or idle) is live in the
+project's folder makes the node open a **new** agent session there: in the agent's desktop app
+(the first turn runs headless with the messages as its prompt, the app shows it live) or in
+Windows Terminal; **full** — a message of another member that only informs you opens one too,
+with no hop limit by default (settable, 0 = none; off and asked keep 8) and finite budgets: at
+most 30 autonomous turns (wake, launch, seat turn) per hour and 240 minutes of continuous
+autonomous work (both settable); an exhausted budget pauses autonomous delivery for that
+project, the tray shows one notification, and «Продолжить» on the settings page goes on.
+**An opened session runs with your full permissions** (Claude `bypassPermissions`, Codex no
+approvals and no sandbox) and acts on what other members' agents wrote without asking: use
+asked or full only for projects whose members you trust. **Emergency stop:** «Остановить всех
+агентов» (tray menu and settings page, saved) ends the turns the node runs, releases every
+active automatic delivery and wakes, opens or runs no agent in any project; messages stay unread.
 Details: [docs/agent-usage.md](docs/agent-usage.md#hearing-about-messages-in-a-live-session-hooks).
 
 ## Delivery

@@ -569,8 +569,8 @@ func (n *Node) queueSeats(id string, list []seatTo) (queued bool, err error) {
 }
 
 // seatPaused reports whether a seat's pending message waits for a person: it
-// asks, past MaxAutoDepth.
-func seatPaused(p SeatPending, m Message) bool { return p.Ask && m.AutoDepth > MaxAutoDepth }
+// asks, past the hop limit (MaxAutoDepth unless the project sets another).
+func (n *Node) seatPaused(p SeatPending, m Message) bool { return p.Ask && n.overDepth(m) }
 
 // seatUnread is the unread messages of the seat of live session sid (as
 // unreadFor lists them): the ones its wake prompt carries apart (woken).
@@ -616,7 +616,7 @@ func (n *Node) seatMessage(seat string, p SeatPending) (UnreadMessage, string, b
 	}
 	um := UnreadMessage{ChatMessage: n.chatMessage(c, rec), ReceivedAt: p.At, ForSeat: seat}
 	um.Direction, um.Unread, um.OwnHuman, um.Delivery = "in", true, false, nil
-	um.Paused = seatPaused(p, rec.Message)
+	um.Paused = n.seatPaused(p, rec.Message)
 	um.AsksYou = p.Ask && !um.Paused
 	n.materialize(&um.Message, c.Area)
 	return um, c.Area, true
@@ -770,13 +770,16 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 		due = append(due, c)
 	}
 	st.mu.Unlock()
+	if !n.autoOK() {
+		return // stopped, or paused by the budgets (autonomy.go)
+	}
 	for _, s := range due {
 		ready := false
 		for _, p := range s.Pending {
 			if l, _ := n.leases.get(leaseKey(s.ID, p.ID)); l.Failed {
 				continue // a person decides
 			}
-			if rec, ok := n.chats.message(p.ID); ok && !seatPaused(p, rec.Message) {
+			if rec, ok := n.chats.message(p.ID); ok && !n.seatPaused(p, rec.Message) {
 				ready = true
 				break
 			}
@@ -798,6 +801,9 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 		}
 		if busy {
 			continue
+		}
+		if !n.autoTake(now) {
+			return
 		}
 		id, intro := s.ID, s.SessionID == ""
 		n.wg.Go(func() { n.seatTurn(ctx, dl, id, intro, false) })
@@ -824,7 +830,8 @@ func (n *Node) seatTurn(ctx context.Context, dl DirectLauncher, id string, intro
 	defer cancel()
 	st.mu.Lock()
 	s := st.getLocked(id)
-	if s == nil || s.Stopped || st.run[id] != nil {
+	// Nothing runs while the node's agents are stopped (SetStopped).
+	if s == nil || s.Stopped || st.run[id] != nil || n.Stopped() {
 		st.mu.Unlock()
 		return
 	}

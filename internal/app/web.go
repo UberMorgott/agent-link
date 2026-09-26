@@ -83,6 +83,7 @@ func (a *App) URL(page string) string {
 //	POST /ui/api/update/check      ask GitHub for the latest release -> UpdateStatus
 //	POST /ui/api/update/apply      install the newer release, then restart -> UpdateStatus
 //	POST /ui/api/update/auto       {"auto"} -> save the auto-update switch -> UpdateStatus
+//	POST /ui/api/autonomy/stop     {"on"} -> the emergency stop of every project's agents -> Status
 //	POST /ui/api/quit              exit the app (same path as the tray's Quit)
 func (a *App) Handler() http.Handler {
 	ui := http.NewServeMux()
@@ -126,6 +127,7 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /ui/api/update/check", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, a.CheckUpdate(r.Context())) })
 	api.HandleFunc("POST /ui/api/update/apply", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, a.InstallUpdate(r.Context())) })
 	api.HandleFunc("POST /ui/api/update/auto", a.setAutoUpdate)
+	api.HandleFunc("POST /ui/api/autonomy/stop", a.setStopAll)
 	api.HandleFunc("POST /ui/api/quit", func(w http.ResponseWriter, _ *http.Request) {
 		if a.QuitFunc == nil {
 			writeError(w, http.StatusNotImplemented, msg("error.internal", nil))

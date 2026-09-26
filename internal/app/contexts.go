@@ -135,6 +135,9 @@ func (a *App) newNodeOf(pid string, cfg config.Config, key []byte) (*node.Node, 
 	}
 	topic := projectTopic(pid)
 	n.SetChangeHook(func(t string) { a.events.publish(t, topic) })
+	// The emergency stop is the app's, for every context (SetStopAll).
+	n.SetStopped(a.s.StopAll)
+	n.SetAutonomyPauseHook(func(reason string) { go a.autonomyPaused(pid, reason) })
 	return n, nil
 }
 
@@ -188,11 +191,11 @@ func (a *App) newProjectContext(b settings.ProjectBinding) (*appContext, error) 
 	}
 	c := &appContext{pid: b.ID, n: n}
 	n.SetFolders(b.Dir, nil)
+	n.SetAutonomy(autonomyOf(b))
 	if b.Dir == "" {
 		n.SetInboundHook(n.HoldWithoutFolder)
 		return c, nil
 	}
-	n.SetAutoOpen(b.AutoOpenOn())
 	n.SetLaunchMode(b.LaunchModeOf())
 	opt, hasHandler := a.workerOptions(b.ID, n)
 	if c.w, err = worker.New(nil, n.SendMessage, cfg.DataDir, b.Dir, opt, a.log); err != nil {

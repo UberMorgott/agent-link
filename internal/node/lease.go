@@ -155,6 +155,9 @@ type leaseBook struct {
 	mu    sync.Mutex
 	m     map[string]*Lease
 	dirty bool
+	// stopped: the node's agents are stopped (Node.SetStopped); no automatic
+	// lease is taken.
+	stopped bool
 }
 
 func newLeaseBook(dir string) *leaseBook {
@@ -264,6 +267,9 @@ func (b *leaseBook) blocked(key, owner, via string, now time.Time) bool {
 func (b *leaseBook) take(id, seat, owner, via, token string, deadline, now time.Time) (bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.stopped && automatic(via) {
+		return false, nil
+	}
 	key := leaseKey(seat, id)
 	l := b.m[key]
 	if l == nil {
@@ -448,6 +454,38 @@ func (b *leaseBook) revoke(owner string, ids []string, reason string, now time.T
 	return failed, b.saveLocked()
 }
 
+// stop takes no automatic lease any more and releases the active ones (not
+// held for an ack): back to retry, due at once, without a failure of their
+// owner or an attempt spent. Owner and token stay, so a late proof of the
+// owner still counts (start). It returns the released leases.
+func (b *leaseBook) stop(now time.Time) ([]leaseEnd, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.stopped = true
+	var out []leaseEnd
+	for _, l := range b.m {
+		if (l.State != LeaseLeased && l.State != LeaseRunning) || l.Hold || !automatic(l.Via) {
+			continue
+		}
+		l.State, l.Reason, l.Deadline, l.NextAt, l.At = LeaseRetry, "stopped", time.Time{}, now, now
+		if l.Attempts > 0 {
+			l.Attempts--
+		}
+		out = append(out, leaseEnd{l.Owner, l.ID, "stopped"})
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, b.saveLocked()
+}
+
+// resume takes automatic leases again (after stop).
+func (b *leaseBook) resume() {
+	b.mu.Lock()
+	b.stopped = false
+	b.mu.Unlock()
+}
+
 // fail ends owner's leases of ids as failed (a turn that started and failed:
 // it may have acted in part, so nothing delivers it automatically again).
 func (b *leaseBook) fail(owner string, ids []string, reason string, now time.Time) error {
@@ -499,9 +537,17 @@ type leaseEnd struct {
 	owner, id, reason string
 }
 
-// due lists the leases that must end now: past their deadline, or owned by a
-// session that is not live (gone(owner) true).
-func (b *leaseBook) due(now time.Time, gone func(owner string) bool) []leaseEnd {
+// queuedOwnerMax bounds how long a session keeps a message whose wake prompt
+// sits in its queue or inbox while it shows no activity (active: its last hook
+// event, not a heartbeat): a session whose waiter hit its wake cap but keeps
+// heartbeating would hold it for as long as it stays registered.
+const queuedOwnerMax = 30 * time.Minute
+
+// due lists the leases that must end now: past their deadline, owned by a
+// session that is not live (gone(owner) true), or queued in a session that
+// did nothing for queuedOwnerMax since the lease or its last activity
+// (active(owner)).
+func (b *leaseBook) due(now time.Time, gone func(owner string) bool, active func(owner string) time.Time) []leaseEnd {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var out []leaseEnd
@@ -514,8 +560,17 @@ func (b *leaseBook) due(now time.Time, gone func(owner string) bool) []leaseEnd 
 			out = append(out, leaseEnd{l.Owner, l.ID, "session_gone"})
 		case l.State == LeaseLeased && contentVia(l.Via):
 			// The prompt is in the session's queue or inbox: it cannot be
-			// withdrawn, so time alone never reassigns it (a slow turn is no
-			// failure). Proof, the session's end or a channel error ends it.
+			// withdrawn, so a deadline never reassigns it (a slow turn is no
+			// failure). Proof, the session's end, a channel error or the
+			// session's silence for queuedOwnerMax ends it; a late proof still
+			// counts (start).
+			since := l.At
+			if a := active(l.Owner); a.After(since) {
+				since = a
+			}
+			if now.Sub(since) >= queuedOwnerMax {
+				out = append(out, leaseEnd{l.Owner, l.ID, "queued_stale"})
+			}
 		case !l.Deadline.IsZero() && !now.Before(l.Deadline):
 			out = append(out, leaseEnd{l.Owner, l.ID, "deadline"})
 		}

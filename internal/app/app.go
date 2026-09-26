@@ -52,6 +52,12 @@ type App struct {
 	Launcher node.SessionLauncher
 	// QuitFunc ends the program; Quit calls it. Nil makes quitting unavailable.
 	QuitFunc func()
+	// Notify shows the owner a desktop notification (the tray's balloon);
+	// nil: none. It tells of a project's autonomy paused by its budgets.
+	Notify func(title, text string)
+	// StopAllChanged, if set, is told the emergency stop's new state after it
+	// changed (SetStopAll), so the tray checkbox follows the page.
+	StopAllChanged func(on bool)
 	// Ifaces lists network interfaces for ZeroTier detection; replaceable in tests.
 	Ifaces func() []settings.Iface
 	// PickFolder shows the native folder dialog starting at start and returns
@@ -133,6 +139,8 @@ type Status struct {
 	// a legacy 6-character code while the listener is reachable beyond
 	// private networks.
 	Warning string `json:"warning,omitempty"`
+	// StopAll: the emergency stop of every project's agents is on (SetStopAll).
+	StopAll bool `json:"stop_all,omitempty"`
 }
 
 // New loads settings from path. log may be nil.
@@ -218,7 +226,7 @@ func (a *App) Status() Status {
 	st := Status{
 		Configured: a.configured, Running: a.n != nil || len(a.projects) > 0,
 		Node: a.s.Node, Handler: a.s.Handler,
-		Listen: a.listen, ZeroTier: a.zeroTier,
+		Listen: a.listen, ZeroTier: a.zeroTier, StopAll: a.s.StopAll,
 	}
 	for _, p := range a.s.Peers {
 		if st.Peer == "" {
@@ -326,6 +334,8 @@ func (a *App) apply(ctx context.Context, s settings.Settings) (found settings.Fo
 	if s.AutoAnswer == nil {
 		s.AutoAnswer = a.s.AutoAnswer
 	}
+	// The emergency stop has its own switch (SetStopAll).
+	s.StopAll = a.s.StopAll
 	if len(s.HandlerCommand) == 0 && a.Agents.LookPath != nil && !a.agentPresent(s.AgentPath) {
 		if f, ok := a.Agents.Discover(s.Handler); ok {
 			s.AgentPath, found = "", f

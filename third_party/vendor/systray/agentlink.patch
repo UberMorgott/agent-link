@@ -1,5 +1,48 @@
+diff --git a/systray.go b/systray.go
+index 3c0b6a2..14aabb5 100644
+--- a/systray.go
++++ b/systray.go
+@@ -167,6 +167,16 @@ func SetOnSecondaryTapped(f func()) {
+ 	tappedRight = f
+ }
+ 
++// agentlink patch: notificationTapped runs on a click on a notification shown
++// by ShowNotification (Windows).
++var notificationTapped func()
++
++// SetOnNotificationTapped sets what a click on a notification shown by
++// ShowNotification does (agentlink patch; Windows only).
++func SetOnNotificationTapped(f func()) {
++	notificationTapped = f
++}
++
+ // AddMenuItem adds a menu item with the designated title and tooltip.
+ // It can be safely invoked from different goroutines.
+ // Created menu items are checkable on Windows and OSX by default. For Linux you have to use AddMenuItemCheckbox
+diff --git a/systray_darwin.go b/systray_darwin.go
+index 612e75a..c64975f 100644
+--- a/systray_darwin.go
++++ b/systray_darwin.go
+@@ -211,3 +211,6 @@ func systray_menu_will_open() {
+ 	default:
+ 	}
+ }
++
++// ShowNotification is a no-op here (agentlink patch; Windows only).
++func ShowNotification(title, text string) {}
+diff --git a/systray_unix.go b/systray_unix.go
+index dfcdf09..031532f 100644
+--- a/systray_unix.go
++++ b/systray_unix.go
+@@ -447,3 +447,6 @@ func argbForImage(img image.Image) []byte {
+ 	}
+ 	return data
+ }
++
++// ShowNotification is a no-op here (agentlink patch; Windows only).
++func ShowNotification(title, text string) {}
 diff --git a/systray_windows.go b/systray_windows.go
-index 84ee6a2..02e51c9 100644
+index 84ee6a2..7d6eeb6 100644
 --- a/systray_windows.go
 +++ b/systray_windows.go
 @@ -230,9 +230,10 @@ type winTray struct {
@@ -24,27 +67,74 @@ index 84ee6a2..02e51c9 100644
  	t.nid.Icon = h
  	t.nid.Flags |= NIF_ICON
  	t.nid.Size = uint32(unsafe.Sizeof(*t.nid))
-@@ -302,6 +304,9 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
+@@ -290,6 +292,40 @@ func (t *winTray) setTooltip(src string) error {
+ 	return t.nid.modify()
+ }
+ 
++// showNotification shows a balloon notification from the icon (agentlink patch).
++func (t *winTray) showNotification(title, text string) error {
++	if !wt.isReady() {
++		return ErrTrayNotReadyYet
++	}
++
++	const (
++		NIF_INFO  = 0x00000010
++		NIIF_INFO = 0x00000001
++	)
++	ti, err := windows.UTF16FromString(title)
++	if err != nil {
++		return err
++	}
++	tx, err := windows.UTF16FromString(text)
++	if err != nil {
++		return err
++	}
++
++	t.muNID.Lock()
++	defer t.muNID.Unlock()
++	t.nid.InfoTitle = [64]uint16{}
++	copy(t.nid.InfoTitle[:len(t.nid.InfoTitle)-1], ti)
++	t.nid.Info = [256]uint16{}
++	copy(t.nid.Info[:len(t.nid.Info)-1], tx)
++	t.nid.InfoFlags = NIIF_INFO
++	t.nid.Flags |= NIF_INFO
++	t.nid.Size = uint32(unsafe.Sizeof(*t.nid))
++	err = t.nid.modify()
++	// Later icon or tooltip changes must not show it again.
++	t.nid.Flags &^= NIF_INFO
++	return err
++}
++
+ var wt = winTray{}
+ 
+ // WindowProc callback function that processes messages sent to a window.
+@@ -302,6 +338,10 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
  		WM_ENDSESSION = 0x0016
  		WM_CLOSE      = 0x0010
  		WM_DESTROY    = 0x0002
 +
-+		WM_DPICHANGED    = 0x02E0 // agentlink patch
-+		WM_DISPLAYCHANGE = 0x007E // agentlink patch
++		WM_DPICHANGED        = 0x02E0 // agentlink patch
++		NIN_BALLOONUSERCLICK = 0x0405 // agentlink patch: WM_USER + 5
++		WM_DISPLAYCHANGE     = 0x007E // agentlink patch
  	)
  	switch message {
  	case WM_COMMAND:
-@@ -331,8 +336,25 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
+@@ -330,9 +370,30 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
+ 			systrayLeftClick()
  		case WM_RBUTTONUP:
  			systrayRightClick()
- 		}
++		case NIN_BALLOONUSERCLICK: // agentlink patch
++			if f := notificationTapped; f != nil {
++				go f()
++			}
++		}
 +	case WM_DPICHANGED, WM_DISPLAYCHANGE: // agentlink patch: reload at the new small-icon size
 +		t.muNID.RLock()
 +		src := t.iconSrc
 +		t.muNID.RUnlock()
 +		if src != "" {
 +			t.setIcon(src)
-+		}
+ 		}
  	case t.wmTaskbarCreated: // on explorer.exe restarts
 +		t.muNID.RLock()
 +		src := t.iconSrc
@@ -60,7 +150,7 @@ index 84ee6a2..02e51c9 100644
  		t.nid.add()
  		t.muNID.Unlock()
  	default:
-@@ -807,8 +829,10 @@ func (t *winTray) loadIconFrom(src string) (windows.Handle, error) {
+@@ -807,8 +868,10 @@ func (t *winTray) loadIconFrom(src string) (windows.Handle, error) {
  	const LR_DEFAULTSIZE = 0x00000040  // Loads default-size icon for windows(SM_CXICON x SM_CYICON) if cx, cy are set to zero
  
  	// Save and reuse handles of loaded images
@@ -72,7 +162,7 @@ index 84ee6a2..02e51c9 100644
  	t.muLoadedImages.RUnlock()
  	if !ok {
  		srcPtr, err := windows.UTF16PtrFromString(src)
-@@ -819,21 +843,47 @@ func (t *winTray) loadIconFrom(src string) (windows.Handle, error) {
+@@ -819,21 +882,47 @@ func (t *winTray) loadIconFrom(src string) (windows.Handle, error) {
  			0,
  			uintptr(unsafe.Pointer(srcPtr)),
  			IMAGE_ICON,
@@ -124,3 +214,18 @@ index 84ee6a2..02e51c9 100644
  func iconToBitmap(hIcon windows.Handle) (windows.Handle, error) {
  	const SM_CXSMICON = 49
  	const SM_CYSMICON = 50
+@@ -1075,6 +1164,14 @@ func SetTooltip(tooltip string) {
+ 	}
+ }
+ 
++// ShowNotification shows a notification balloon from the tray icon (agentlink
++// patch); a click on it runs the SetOnNotificationTapped function.
++func ShowNotification(title, text string) {
++	if err := wt.showNotification(title, text); err != nil {
++		log.Printf("systray error: unable to show a notification: %s\n", err)
++	}
++}
++
+ func addOrUpdateMenuItem(item *MenuItem) {
+ 	err := wt.addOrUpdateMenuItem(uint32(item.id), item.parentId(), item.title, item.disabled, item.checked)
+ 	if err != nil {
