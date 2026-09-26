@@ -1,7 +1,9 @@
 package node
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,7 +69,9 @@ func sessionOccupied(provider, claudeHome, codexHome, dir, sid string, since, no
 		}
 	case ProviderCodex:
 		if codexHome != "" {
-			paths, _ = filepath.Glob(filepath.Join(codexHome, "sessions", "*", "*", "*", "rollout-*"+sid+".jsonl"))
+			if path := codexRollout(codexHome, sid); path != "" {
+				paths = []string{path}
+			}
 		}
 	}
 	for _, p := range paths {
@@ -76,6 +80,34 @@ func sessionOccupied(provider, claudeHome, codexHome, dir, sid string, since, no
 		}
 	}
 	return false
+}
+
+// codexRollout is the newest rollout of sid. A resumed thread keeps writing
+// its first day's file, so the date cannot be inferred from the current day.
+func codexRollout(home, sid string) string {
+	paths, _ := filepath.Glob(filepath.Join(home, "sessions", "*", "*", "*", "rollout-*"+sid+".jsonl"))
+	var found string
+	var newest time.Time
+	for _, path := range paths {
+		if info, err := os.Stat(path); err == nil && (found == "" || info.ModTime().After(newest)) {
+			found, newest = path, info.ModTime()
+		}
+	}
+	return found
+}
+
+func rolloutContains(path, marker string) bool {
+	const tail = int64(1024 * 1024)
+	f, err := os.Open(path) //nolint:gosec // rollout under the configured Codex home
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	if info, err := f.Stat(); err == nil && info.Size() > tail {
+		_, _ = f.Seek(-tail, io.SeekEnd)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, tail))
+	return err == nil && bytes.Contains(b, []byte(marker))
 }
 
 // agentHome is the agent's home: env when set, else ~/<dir>; "" when unknown.
