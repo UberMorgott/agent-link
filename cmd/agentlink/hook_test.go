@@ -513,14 +513,21 @@ func TestCodexSubagentActivity(t *testing.T) {
 	if got := c.state(hookCodex).Subagents["child-1"]["c1"]; got != "own1" {
 		t.Fatalf("child start snapshot %q", got)
 	}
+	// Codex tool hooks have no agent_id. While a child is live, do not claim
+	// its edit is the main agent's activity.
+	c.now = c.now.Add(time.Second)
+	c.run(hookCodex, evPreTool, `,"tool_name":"apply_patch","tool_input":{"command":"*** Update File: TASKS.md"}`)
 	noteSent(c.env, c.sid, "c1", "own2") // parent moves to another request in the same chat
 	stop := c.run(hookCodex, evSubagentStop, `,"agent_id":"child-1","agent_type":"reviewer"`)
 	if start != "" || stop != "{}" {
 		t.Fatalf("subagent hook output: start %q, stop %q", start, stop)
 	}
 	got := c.f.activity
-	if len(got) != 4 || got[1].SessionID != c.sid || got[1].AgentID != "child-1" || got[1].Label != "reviewer" || got[1].Phase != "" ||
-		got[1].ReplyTo != "own1" || got[3].AgentID != "child-1" || got[3].Phase != node.PhaseIdle || got[3].ReplyTo != "own1" ||
+	if len(got) != 6 || got[1].SessionID != c.sid || got[1].AgentID != "child-1" || got[1].Label != "reviewer" || got[1].Phase != "" ||
+		got[1].ReplyTo != "own1" || got[2].AgentID != "" || got[2].Text != "работает с субагентами" ||
+		got[3].AgentID != "" || got[3].Text != "работает с субагентами" || got[3].ReplyTo != "own2" ||
+		got[4].AgentID != "child-1" || got[4].Phase != node.PhaseIdle || got[4].ReplyTo != "own1" ||
+		got[5].AgentID != "" || got[5].Text != "думает" || got[5].ReplyTo != "own2" ||
 		len(c.state(hookCodex).Subagents) != 0 {
 		t.Fatalf("subagent lifecycle: %+v", got)
 	}

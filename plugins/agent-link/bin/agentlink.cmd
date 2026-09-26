@@ -16,10 +16,14 @@ if defined AGENTLINK_EXE (
 set "AL_EXE="
 if exist "%APPDATA%\agentlink\executable.path" set /p AL_EXE=<"%APPDATA%\agentlink\executable.path"
 if defined AL_EXE if exist "%AL_EXE%" goto run
+if exist "%~dp0agentlink.exe" (
+  set "AL_EXE=%~dp0agentlink.exe"
+  goto run
+)
 set "AL_EXE="
 for %%I in (agentlink.exe) do set "AL_EXE=%%~$PATH:I"
 if defined AL_EXE goto run
->&2 echo agentlink: agentlink.exe not found. Start the agentlink desktop app once ^(it records its path in %%APPDATA%%\agentlink\executable.path^), put agentlink.exe on PATH, or set AGENTLINK_EXE to its full path. Download: https://github.com/UberMorgott/agent-link/releases
+>&2 echo agentlink: agentlink.exe not found. Start the agentlink desktop app once ^(it records its path in %%APPDATA%%\agentlink\executable.path^), keep the bundled bin\agentlink.exe, put agentlink.exe on PATH, or set AGENTLINK_EXE to its full path. Download: https://github.com/UberMorgott/agent-link/releases
 exit /b 1
 :run
 "%AL_EXE%" %*

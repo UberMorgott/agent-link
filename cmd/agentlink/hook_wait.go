@@ -146,7 +146,7 @@ func wakeWith(client, sid, folder, path string, stderr io.Writer, env hookEnv, b
 		return 0, st.Ended
 	}
 	token := randomToken()
-	h := &hookSession{env: env, st: &st, sid: sid, folder: folder, wakeToken: token}
+	h := &hookSession{env: env, st: &st, sid: sid, folder: folder, client: client, wakeToken: token}
 	b, err := h.collect(false, true, nil)
 	if err != nil || b.empty() {
 		return 0, false
