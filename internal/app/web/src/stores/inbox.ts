@@ -68,7 +68,7 @@ export const useInboxStore = defineStore('inbox', () => {
   const closing = ref(false)
   const focusComposer = ref(0)
   const askState = ref<Record<string, string[]>>({}) // chatKey -> names asked to answer
-  const seatAskState = ref<Record<string, string[]>>({}) // chatKey -> this member's local agents (seat ids) asked
+  const seatAskState = ref<Record<string, string[]>>({}) // local chat -> this member's seat ids
 
   // starting: the project's one chat is being started (startChat).
   const starting = ref(false)
@@ -131,11 +131,13 @@ export const useInboxStore = defineStore('inbox', () => {
 
   // --- whom a message asks ---
 
-  // askFor is the chat's "who must answer" choice: in a chat of two the other
-  // side by default, in a group nobody until the user picks.
+  // Project messages inform everyone unless the author explicitly asks a
+  // member. The legacy network retains its two-person default.
   function askFor(info: ChatInfo): string[] {
+    if (projects.byID(project.value)?.scope === 'local') return []
     const saved = askState.value[chatKey(project.value, info.id)]
     if (saved) return saved
+    if (project.value !== 'legacy') return []
     const names = others(info, app.self)
     return names.length === 1 ? names : []
   }
@@ -145,11 +147,14 @@ export const useInboxStore = defineStore('inbox', () => {
     if (!askState.value[key] && app.self) askState.value = { ...askState.value, [key]: askFor(info) }
   }
   function setAsk(info: ChatInfo, names: string[]) {
+    if (projects.byID(project.value)?.scope === 'local') return
     askState.value = { ...askState.value, [chatKey(project.value, info.id)]: names }
   }
-  // seatAskFor: the local agents (seats) the next message asks; none by default.
-  function seatAskFor(info: ChatInfo): string[] { return seatAskState.value[chatKey(project.value, info.id)] || [] }
+  function seatAskFor(info: ChatInfo): string[] {
+    return projects.byID(project.value)?.scope === 'local' ? seatAskState.value[chatKey(project.value, info.id)] || [] : []
+  }
   function setSeatAsk(info: ChatInfo, ids: string[]) {
+    if (projects.byID(project.value)?.scope !== 'local') return
     seatAskState.value = { ...seatAskState.value, [chatKey(project.value, info.id)]: ids }
   }
 

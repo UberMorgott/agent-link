@@ -74,16 +74,23 @@ settings API is added to that list.
 
 ### Projects
 
-The sidebar lists **projects**. A project is one continuing chat, with its own invite, members
-and shared name; nothing crosses between projects. Every member binds its **own** folder to it.
+The sidebar has two separate chat groups: **«С другими компьютерами»** for projects shared
+with network peers, and **«Мои нейросети»** for local Claude Code ↔ Codex discussions. In either
+group, a project is one continuing chat. Network projects have an invite, members and shared
+name; every member binds its **own** folder. A local
+project belongs only to this computer and may use the same folder as a network project. Its
+messages never go to network peers. Existing shared messages stay in their network chat; nothing
+is moved automatically.
 
-- **Create**: **＋ Новый проект** — a name (1–80 characters) and optionally a folder and your own
+- **Network project create**: **＋ Новый проект** — a name (1–80 characters) and optionally a folder and your own
   alias for it. **Join**: **Присоединиться** — paste the invite `ALP1.<project>.<epoch>.<secret>.<check>`
   (case and spaces do not matter; a typo fails its checksum), optionally a member's address when
   discovery cannot find one. Joining succeeds once the project's key matches; the shared name then
   arrives from the members («Подключение…» until it does). Pasting the invite of a project already
   here just opens it. At most 32 projects and 64 members per project.
-- **Project menu** `⋯`: **Участники**, **Приглашение** (hidden `••••` until you reveal it; the
+- **Local project create**: `agentlink discuss --with codex` (or `--with claude`) creates or reuses the local
+  project/chat for the selected folder under **«Мои нейросети»**. It stays there until cleared.
+- **Network project menu** `⋯`: **Участники**, **Приглашение** (hidden `••••` until you reveal it; the
   settings page and the other API answers never carry the secret), **Общее имя** (anyone renames it
   for everyone; the last rename wins), **Агенты**, **Автономия агентов…**, **Моя папка** (folder and
   alias, only yours), **Выйти**. Agent presence, autonomy and folder settings belong to this
@@ -92,16 +99,15 @@ and shared name; nothing crosses between projects. Every member binds its **own*
   status «у участника не выбрана папка проекта», and agent sessions cannot register. A folder change
   or a leave waits until the agent has finished that project's requests («Агент ещё выполняет
   запросы…»); a folder change forgets the agent sessions of the old folder.
-- **Chat**: the project row in the sidebar (name, a dot, «⋯») opens its chat. The
+- **Chat**: the project row in its sidebar group (name, a dot, «⋯») opens its chat. The
   dot counts the computers with an agent session (Claude Code, Codex) open in the project: grey —
   none, yellow — one, green — two or more (the tooltip names them; peers tell it by their presence
   frames, an older peer counts as none). Compact badges beside the chat show how many Claude Code
   and Codex agents are present; hover or open the activity control for people, agents and their
-  current work. The **Агенты** sidebar entry lists projects with local agents and opens the same
-  project chat, without creating another conversation. «⋯» → **Очистить чат** empties it for every member:
-  the messages so far stay as a dated, read-only snapshot under **История**, and the chat goes on
-  with the same members (live sessions follow it; requests left unread stay deliverable). The
-  chat's owner (who started it) invites project members and removes them in «Участники»: an
+  current work. «⋯» → **Очистить чат** empties the selected chat; its messages stay as a dated,
+  read-only snapshot under **История**. For a network chat the clear reaches its members. The
+  chat continues empty (live sessions follow it; requests left unread stay deliverable). In a
+  network project, the owner (who started it) invites members and removes them in «Участники»: an
   offline member gets the chat when it connects, from then on (not older messages).
 - **Profile**: the chip at the foot of the sidebar sets your nickname and chat color. Both travel
   in your member record to every member (an older version shows your name and a derived color);
@@ -116,11 +122,13 @@ and shared name; nothing crosses between projects. Every member binds its **own*
   working folder and «Проекты» areas on the settings page belong to it only.
 - **Agents**: in the project's **Агенты** add Claude Code, Codex, or more than one local agent seat to a
   project, then start, pause or remove each seat there. Pending requests wait while a seat is
-  paused. The app also runs the optional fallback worker per project with a folder; workers share
+  paused. The project's **Автономия агентов…** pause holds that chat's agent delivery independently
+  of the tray's global pause. People can keep chatting; queued agent requests arrive on resume.
+  The app also runs the optional fallback worker per project with a folder; workers share
   «Сколько вопросов агент решает сразу». An agent it starts for a project gets
-  `AGENTLINK_PROJECT_ID`, and the CLI (`send`, `discuss`, `wait`, `chat …`, flag `--project`) and
-  folder hooks reach the project of the chat, message or folder they name (see
-  [docs/agent-usage.md](docs/agent-usage.md)).
+  `AGENTLINK_PROJECT_ID`. The CLI (`send`, `wait`, `chat …`, flag `--project`) and folder hooks
+  reach the project of the chat, message or folder they name; `discuss` uses the folder's local
+  project (see [docs/agent-usage.md](docs/agent-usage.md)).
 - **Storage**: bindings (id, secret, alias, folder, typed addresses) are in `config.json`
   (`project_bindings`, settings `version` 2; the first start of this version keeps a copy of the
   old file as `config.v1.bak.json`); each project's data is in `data\projects\<id>\`.
@@ -162,8 +170,8 @@ A network is everyone holding the same key: a project's invite, or the legacy co
 
 The web UI is in Russian; every visible string lives in `internal/app/strings.go`, so a
 second language means a second map, not a page rewrite. It is a single-page app (Vue 3,
-Nuxt UI, Tailwind) in `internal/app/web`: a slim sidebar (sections, and the chat list on
-«Сообщения»), one centered column per page with Nuxt UI chat components for the messages,
+Nuxt UI, Tailwind) in `internal/app/web`: a slim sidebar with separate network and local chat
+groups, one centered column per page with Nuxt UI chat components for the messages,
 light/dark/system theme. It works offline: the Lucide icons are bundled into it and the fonts
 are the system's. Its build output
 `internal/app/web/dist` is committed and embedded in the binary, so `go build` needs no Node.
@@ -429,11 +437,13 @@ its `job_status`: `completed` or `failed`). Progress is visible in `inbox`: an o
 carries `job_status`, `activity` while it runs, `last_heard` and, when the peer has gone quiet,
 `no_news_min`.
 
-`discuss` is the local Claude Code ↔ Codex connector. From a project folder it uses that
-project's existing chat; from an unbound folder it creates a local project with that folder and
-its one chat. It adds a seat for `--with claude|codex` if needed and writes the question into
-the project chat, visible to its people and agents. `--folder <path>` selects another folder;
-`--body <text>` and `--prompt-file <path>` are alternatives. By default it waits up to 10 minutes
+`discuss` is the local Claude Code ↔ Codex connector. It creates or reuses a **local** project
+and its chat for the working folder, even when that folder also has a network project. Messages
+in this local chat stay on this computer and never appear in the network project's shared chat.
+Existing network messages are not moved into the local chat. It adds a seat for
+`--with claude` or `--with codex` if needed and writes the question into the local chat.
+`--folder <path>` selects another folder; `--body <text>` and `--prompt-file <path>` are
+alternatives. By default it waits up to 10 minutes
 for the asked seat's direct reply and prints JSON with `project`, `chat`, `id`, `seat` and
 `reply`. `--timeout <duration>` changes the wait (maximum 15 minutes); on expiry it prints the
 IDs with `timed_out: true` and exits 2. `--async` prints the IDs immediately. A global,
@@ -441,6 +451,13 @@ project or seat pause returns `queued: true` with IDs promptly: the request rema
 and reaches the agent after resume. The MCP `discuss` tool offers the same flow with
 `{with, body, folder?, timeout?, async?}`. Image and review flag parity with the older `cx.ps1`
 wrapper is not implemented.
+
+Use `agentlink send --chat <network-chat-id> --ask <member> --body "<question>"` to ask a member
+on another computer in the shared chat. Use `agentlink discuss --with codex` or
+`agentlink discuss --with claude` to ask your
+own agent in the separate local chat. A project's agent pause applies to that chat alone;
+the tray pause/play control applies to all local agents. People can keep sending messages
+during either pause; requests for paused agents wait until resumed.
 
 ## Config
 

@@ -236,6 +236,13 @@ export const useProjectsStore = defineStore('projects', () => {
     return view
   }
 
+  // stopAutonomy pauses delivery only to this member's agents in this project.
+  async function stopAutonomy(pid: string, on: boolean) {
+    const view = await api<ProjectView>('POST', projectPath(pid, 'autonomy/stop'), { on })
+    upsert(view)
+    return view
+  }
+
   async function addMember(pid: string, addr: string) {
     const view = await api<ProjectView>('POST', projectPath(pid, 'members/add'), { addr })
     upsert(view)
@@ -344,7 +351,7 @@ export const useProjectsStore = defineStore('projects', () => {
     list, chats, history, refreshHistory, colorOf, displayOf, seats, refreshSeats, seatAction, current, currentProject, hasLegacy, loaded, invite, inviteFor,
     joinStep, joinProject, joinCreated,
     byID, upsert, listSettled, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped,
-    open, landing, create, rename, bind, resumeAutonomy, addMember, removeMember, leave, createChat, revealInvite, hideInvite,
+    open, landing, create, rename, bind, resumeAutonomy, stopAutonomy, addMember, removeMember, leave, createChat, revealInvite, hideInvite,
     joinReset, join, joinProgress, joinCancel, dialog, dialogProject, openDialog, closeDialog,
   }
 })

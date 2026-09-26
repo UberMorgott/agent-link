@@ -25,7 +25,8 @@ const (
 
 // ProjectView is one project (or the legacy network) as the web UI lists it.
 type ProjectView struct {
-	ID      string `json:"id"` // project id or LegacyProjectID
+	ID      string `json:"id"`              // project id or LegacyProjectID
+	Scope   string `json:"scope,omitempty"` // "local" or "network"; absent for legacy
 	Legacy  bool   `json:"legacy"`
 	Name    string `json:"name"`    // shared name; "" while connecting
 	Alias   string `json:"alias"`   // this member's own name for it; "" = none

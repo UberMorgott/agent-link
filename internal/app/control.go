@@ -29,9 +29,10 @@ import (
 
 // routeCtx is one running context as the router sees it.
 type routeCtx struct {
-	id  string // project id or LegacyProjectID
-	n   *node.Node
-	dir string // bound folder of a project; "" for the legacy network or none
+	id    string // project id or LegacyProjectID
+	n     *node.Node
+	dir   string // bound folder of a project; "" for the legacy network or none
+	scope string // settings.ProjectScopeNetwork or settings.ProjectScopeLocal
 }
 
 // routeError is a request the router refuses, as a plain-text control API error.
@@ -59,7 +60,7 @@ func (a *App) routeContexts() []routeCtx {
 	}
 	for _, b := range a.s.Bindings {
 		if c := a.projects[b.ID]; c != nil {
-			out = append(out, routeCtx{id: b.ID, n: c.n, dir: b.Dir})
+			out = append(out, routeCtx{id: b.ID, n: c.n, dir: b.Dir, scope: b.ScopeOf()})
 		}
 	}
 	return out
@@ -125,7 +126,8 @@ func route(ctxs []routeCtx, sel selector) (routeCtx, *routeError) {
 		}
 		best := -1
 		for i, c := range ctxs {
-			if c.dir != "" && within(c.dir, folder) && (best < 0 || len(filepath.Clean(c.dir)) > len(filepath.Clean(ctxs[best].dir))) {
+			if c.dir != "" && within(c.dir, folder) && (best < 0 || len(filepath.Clean(c.dir)) > len(filepath.Clean(ctxs[best].dir)) ||
+				(len(filepath.Clean(c.dir)) == len(filepath.Clean(ctxs[best].dir)) && c.scope != "local" && ctxs[best].scope == "local")) {
 				best = i
 			}
 		}
@@ -194,16 +196,27 @@ func (a *App) controlAPI() http.Handler {
 	mux.HandleFunc("GET /discuss/reply", a.discussReply)
 	mux.HandleFunc("POST /send", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Project string `json:"project"`
-			ChatID  string `json:"chat_id"`
-			ReplyTo string `json:"reply_to"`
-			Parent  string `json:"parent"`
-			Folder  string `json:"folder"`
+			Project  string   `json:"project"`
+			ChatID   string   `json:"chat_id"`
+			ReplyTo  string   `json:"reply_to"`
+			Parent   string   `json:"parent"`
+			Folder   string   `json:"folder"`
+			AskSeats []string `json:"ask_seats"`
 		}
 		if !peekJSON(w, r, &body) {
 			return
 		}
-		a.forward(w, r, selector{project: pick(r, body.Project), chat: body.ChatID, ids: []string{body.ReplyTo, body.Parent}, folder: body.Folder}, false)
+		sel := selector{project: pick(r, body.Project), chat: body.ChatID, ids: []string{body.ReplyTo, body.Parent}, folder: body.Folder}
+		c, err := route(a.routeContexts(), sel)
+		if err != nil {
+			err.write(w)
+			return
+		}
+		if len(body.AskSeats) > 0 && c.scope != "local" {
+			http.Error(w, "ask_seats requires a local project", http.StatusBadRequest)
+			return
+		}
+		c.n.APIHandler().ServeHTTP(w, r)
 	})
 	mux.HandleFunc("GET /wait", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -234,13 +247,24 @@ func (a *App) controlAPI() http.Handler {
 	mux.HandleFunc("GET /sessions", a.controlSessions)
 	mux.HandleFunc("DELETE /sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
+		found := false
+		var endErr error
 		for _, c := range a.routeContexts() {
 			if slices.ContainsFunc(c.n.Sessions(), func(s node.Session) bool { return s.SessionID == id }) {
-				c.n.APIHandler().ServeHTTP(w, r)
-				return
+				found = true
+				if err := c.n.EndSession(id); err != nil {
+					endErr = errors.Join(endErr, err)
+				}
 			}
 		}
-		http.Error(w, node.ErrUnknownSession.Error()+" "+id, http.StatusNotFound)
+		switch {
+		case endErr != nil:
+			http.Error(w, endErr.Error(), http.StatusInternalServerError)
+		case found:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, node.ErrUnknownSession.Error()+" "+id, http.StatusNotFound)
+		}
 	})
 	mux.HandleFunc("POST /ack", a.controlAck)
 	byChat := func(w http.ResponseWriter, r *http.Request) {

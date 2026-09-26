@@ -13,8 +13,8 @@ import (
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
 
-// discuss posts to the one chat of the project bound to the caller's folder.
-// It creates a local project only when no existing binding contains the folder.
+// discuss posts to this machine's private agent chat for the caller's folder.
+// A network project bound to the same folder has a separate chat.
 func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Folder    string `json:"folder"`
@@ -43,7 +43,8 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	var pid string
 	for _, b := range a.s.Bindings {
-		if b.Dir != "" && within(b.Dir, dir) && (pid == "" || len(b.Dir) > len(a.bindingDirLocked(pid))) {
+		if b.ScopeOf() == settings.ProjectScopeLocal && b.Dir != "" && within(b.Dir, dir) &&
+			(pid == "" || len(b.Dir) > len(a.bindingDirLocked(pid))) {
 			pid = b.ID
 		}
 	}
@@ -62,7 +63,8 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 				if nameErr != nil {
 					name = "Project " + pid[:8]
 				}
-				err = a.addProjectLocked(r.Context(), settings.ProjectBinding{ID: pid, Epoch: config.ProjectEpoch, Secret: secret, Dir: dir}, name)
+				err = a.addProjectLocked(r.Context(), settings.ProjectBinding{ID: pid, Epoch: config.ProjectEpoch, Secret: secret,
+					Dir: dir, Scope: settings.ProjectScopeLocal}, name)
 			}
 		}
 	}
@@ -100,12 +102,9 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		seat = added.ID
 	}
 	a.mu.Unlock()
-	if req.SessionID != "" && req.Source != "" {
-		if _, err := c.n.RegisterSession(node.SessionRequest{SessionID: req.SessionID, Provider: req.Source, Folder: dir}); err != nil {
-			a.failed(w, "discuss session", err)
-			return
-		}
-	}
+	// An external interactive session keeps its folder hook in the network
+	// project when one exists. The direct discuss reply serves this call;
+	// AgentLink-launched seats use their explicit project selector in hooks.
 	message, err := c.n.SendRequest(node.SendRequest{ChatID: chat.ID, Body: req.Body, Folder: dir,
 		SessionID: req.SessionID, Seat: req.Seat, AskSeats: []string{seat}, AuthorKind: authorKind(req.SessionID, req.Seat)})
 	if err != nil {

@@ -274,6 +274,10 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     if (!p.autonomy) throw apiError('not_found')
     return setView(b, { ...p, autonomy: { ...p.autonomy, paused: false, pause_reason: undefined, turns_last_hour: 0, run_minutes: 0 } })
   }
+  if (method === 'POST' && rest.join('/') === 'autonomy/stop') {
+    if (!p.autonomy || typeof req.on !== 'boolean') throw apiError('not_found')
+    return setView(b, { ...p, autonomy: { ...p.autonomy, stopped: req.on } })
+  }
   if (method === 'POST' && rest[0] === 'invite') {
     if (p.legacy) return { invite: LEGACY_CODE } satisfies InviteView
     return { ...fixture<InviteView>('invite'), invite: fixture<InviteView>('invite').invite.replace(SITE, pid) }

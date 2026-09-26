@@ -45,7 +45,7 @@ func contractValues() map[string]any {
 	// Both alice and bob have an agent session open in the project: two machines.
 	selfAgent, bobAgent := self, bob
 	selfAgent.Agent, bobAgent.Agent = true, true
-	ready := ProjectView{ID: pid, Name: "Сайт", Alias: "", Display: "Сайт", Dir: `C:\work\site`, State: ProjectReady,
+	ready := ProjectView{ID: pid, Scope: settings.ProjectScopeNetwork, Name: "Сайт", Alias: "", Display: "Сайт", Dir: `C:\work\site`, State: ProjectReady,
 		Online: 1, Total: 2, Agents: 2, Members: []node.MemberInfo{selfAgent, bobAgent, carol}, CanRename: true, HasInvite: true, LaunchMode: node.LaunchDesktop,
 		Autonomy: &AutonomyView{Mode: settings.AutonomyFull, MaxAutoDepth: 0, MaxAutoDepthDefault: true, TurnsPerHour: 30, MaxRunMinutes: 240,
 			TurnsLastHour: 4, RunMinutes: 25}}
@@ -53,8 +53,10 @@ func contractValues() map[string]any {
 	busy.Busy = true
 	aliased := ready
 	aliased.Alias, aliased.Display = "Мой сайт", "Мой сайт"
-	connecting := ProjectView{ID: "NBSWY3DPEB3W64TMMQQGC3DUMU", State: ProjectConnecting, Members: []node.MemberInfo{self},
+	connecting := ProjectView{ID: "NBSWY3DPEB3W64TMMQQGC3DUMU", Scope: settings.ProjectScopeNetwork, State: ProjectConnecting, Members: []node.MemberInfo{self},
 		CanRename: true, HasInvite: true}
+	local := ready
+	local.Scope, local.HasInvite, local.Members, local.Online, local.Total, local.Agents = settings.ProjectScopeLocal, false, []node.MemberInfo{selfAgent}, 0, 0, 1
 	needsFolder := ready
 	needsFolder.Dir, needsFolder.State = "", ProjectNeedsFolder
 	failed := connecting
@@ -94,6 +96,7 @@ func contractValues() map[string]any {
 	return map[string]any{
 		"projects":             []ProjectView{aliased, connecting, failed, needsFolder, ready, legacy},
 		"project_ready":        ready,
+		"project_local":        local,
 		"project_busy":         busy,
 		"project_connecting":   connecting,
 		"project_needs_folder": needsFolder,

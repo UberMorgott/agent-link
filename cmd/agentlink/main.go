@@ -44,7 +44,7 @@ const usage = `usage:
   agentlink serve --config <path>
   agentlink send  --config <path> [--to <node|area:NAME>] [--area <name>] --body <text> [--reply-to <id>] [--ask <node,...>] [--project <id>]   (into the one open chat with them; no --to: the only peer; the area defaults to this folder's project)
   agentlink send  --config <path> --chat <id> --body <text> [--ask <node,...>] [--ask-seat <label>] [--reply-to <id>] [--project <id>]   (to every chat participant; --ask: who must answer; --ask-seat: a local agent of this node, repeatable)
-  agentlink discuss --with <claude|codex> (--body <text> | --prompt-file <path>) [--folder <path>] [--timeout 10m] [--async]   (ask in the folder's project/chat and wait for that agent's reply; --async returns IDs immediately; exit 2 on timeout)
+  agentlink discuss --with <claude|codex> (--body <text> | --prompt-file <path>) [--folder <path>] [--timeout 10m] [--async]   (ask in the folder's local agent chat, separate from network chats; --async returns IDs immediately; exit 2 on timeout)
   agentlink wait  --config <path> [--timeout 0] [--chat <id>] [--project <id>]   (seconds or duration; 0 = forever; exit 2 on timeout; --chat: only that chat)
   agentlink chat new     --config <path> --with <node,...> [--area <name>] [--project <id>]   (prints the chat id; you are added; in a project: its one active chat)
   agentlink chat archive --config <path> [--chat <id>] [--project <id>]   (the project's chat history goes to the archive; a fresh chat with the same members opens; prints its id)

@@ -225,6 +225,7 @@ export interface MemberInfo {
 export interface ProjectView {
   id: string // project id or "legacy"
   legacy: boolean
+  scope?: 'local' | 'network' // absent on older nodes: network
   name: string // shared name; "" while connecting
   alias: string
   display: string // alias || name || ""
@@ -251,6 +252,7 @@ export type AutonomyMode = 'off' | 'asked' | 'full'
 // follows the mode), the budgets of full mode and what of them is used.
 export interface AutonomyView {
   mode: AutonomyMode
+  stopped?: boolean // this member manually paused agents in this project
   max_auto_depth: number
   max_auto_depth_default: boolean
   turns_per_hour: number

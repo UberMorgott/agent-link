@@ -54,7 +54,7 @@ describe('local agents (seats)', () => {
     expect($$('#project_seats [data-seat]')).toHaveLength(1)
   })
 
-  it('asks a chosen local agent from the composer', async () => {
+  it('keeps local seats out of the shared project composer', async () => {
     const [chat] = fixture<ChatInfo[]>('chats')
     const api = fakeBackend()
     api.backend.seats[SITE] = [
@@ -65,18 +65,42 @@ describe('local agents (seats)', () => {
     useAppStore().status = { configured: true, node: 'alice' }
     await useProjectsStore().refreshAll()
     await settle()
-    expect($$('#seat_row input[type="checkbox"], #seat_row button[role="checkbox"]')).toHaveLength(2)
-    const codex = $<HTMLElement>('#seat_seat-b')!
-    codex.click()
+    expect($('#seat_row')).toBeNull()
+    const inbox = useInboxStore()
+    inbox.composer = 'посмотри тесты'
+    await inbox.submitMessage()
+    await settle()
+    expect(api.backend.sent.at(-1)).toEqual(expect.objectContaining({ chat_id: chat!.id, body: 'посмотри тесты', ask: [] }))
+    expect(api.backend.sent.at(-1)).not.toHaveProperty('ask_seats')
+  })
+
+  it('asks a local seat only inside a local Claude/Codex chat', async () => {
+    const [chat] = fixture<ChatInfo[]>('chats')
+    const api = fakeBackend()
+    const local = 'LOCAL_CHAT'
+    const localChat = 'local-chat-1'
+    const site = api.backend.projects.find((p) => p.id === SITE)!
+    api.backend.projects.push({ ...site, id: local, scope: 'local', name: 'Local Claude ↔ Codex', display: 'Local Claude ↔ Codex', members: site.members.filter((m) => m.self) })
+    api.backend.chats[local] = [{ ...chat!, id: localChat, project: local, participants: ['alice'], members: chat!.members?.filter((m) => m.self) }]
+    api.backend.messages[localChat] = []
+    api.backend.seats[local] = [
+      { id: 'seat-a', provider: 'claude', label: 'Claude', status: 'idle' },
+      { id: 'seat-b', provider: 'codex', label: 'Codex', status: 'closed' },
+    ]
+    await mountApp('/p/' + local + '/c/' + localChat)
+    useAppStore().status = { configured: true, node: 'alice' }
+    await useProjectsStore().refreshAll()
+    await settle()
+    expect($('#ask_row')).toBeNull()
+    expect($$('#seat_row [role="checkbox"]')).toHaveLength(2)
+    $<HTMLButtonElement>('#seat_seat-b')!.click()
     await settle()
     const inbox = useInboxStore()
     expect(inbox.seatAskFor(inbox.chat!)).toEqual(['seat-b'])
     inbox.composer = 'посмотри тесты'
     await inbox.submitMessage()
     await settle()
-    expect(api.backend.sent.at(-1)).toMatchObject({ chat_id: chat!.id, body: 'посмотри тесты', ask_seats: ['seat-b'] })
-    // The message says whom it asks (a chat of two says so only for agents).
-    expect(document.body.textContent).toContain('посмотри тестыinbox.asks')
+    expect(api.backend.sent.at(-1)).toMatchObject({ chat_id: localChat, body: 'посмотри тесты', ask: [], ask_seats: ['seat-b'] })
   })
 
   it('names a local agent as "<node> · <label>" and keeps agents apart', () => {

@@ -28,6 +28,31 @@ async function menu(pid: string): Promise<HTMLElement[]> {
 }
 
 describe('the project menu', () => {
+  it('keeps member and invite controls out of a local Claude/Codex chat', async () => {
+    const api = fakeBackend()
+    const local = 'LOCAL_CHAT'
+    const site = api.backend.projects.find((p) => p.id === SITE)!
+    api.backend.projects.push({ ...site, id: local, scope: 'local', name: 'Local Claude ↔ Codex', display: 'Local Claude ↔ Codex', members: site.members.filter((m) => m.self) })
+    api.backend.chats[local] = []
+    await mountApp('/p/' + local)
+    useAppStore().status = { configured: true, node: 'alice' }
+    const projects = useProjectsStore()
+    await projects.refreshAll()
+    await settle()
+    const labels = (await menu(local)).map((item) => item.textContent!.trim())
+    expect(labels).not.toContain('project.menu.members')
+    expect(labels).not.toContain('project.menu.invite')
+    expect(labels).toContain('project.menu.agents')
+    expect(labels).toContain('project.menu.autonomy')
+    expect(labels).toContain('inbox.history')
+    projects.openDialog('members', local)
+    await settle()
+    expect($('#project_members')).toBeNull()
+    projects.openDialog('invite', local)
+    await settle()
+    expect($('#invite_value')).toBeNull()
+  })
+
   it('offers clearing the chat, its history, members, invite, name, folder and delete; the legacy network has no name', async () => {
     await open('/p/' + SITE)
     const items = await menu(SITE)

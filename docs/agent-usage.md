@@ -37,9 +37,12 @@ No code or secret is needed for the client commands: the running node holds it.
 
 ## Projects: which network a command reaches
 
-The desktop app runs one network and one active chat per **project** (and, while it still has a
-pairing code, the network from before projects, «Прежняя сеть», id `legacy`). The project and
-its chat are the same conversation in the UI. Every member binds its own folder to the project.
+The desktop app shows two project/chat groups: **«С другими компьютерами»** for network
+projects, and **«Мои нейросети»** for local Claude Code ↔ Codex discussions. A project is one
+continuing chat in either group. A network project is shared by members, each with its own bound
+folder. A local project and chat stay on this computer; they may use the same folder as a network
+project without sharing messages with it. Existing network messages are not moved automatically.
+The network from before projects remains «Прежняя сеть» (id `legacy`) while it has a pairing code.
 Chat and message ids belong to exactly one project. A command picks its project:
 
 1. `--project <id>` (or `legacy`), else `$AGENTLINK_PROJECT_ID` (set for an agent the app runs
@@ -49,6 +52,9 @@ Chat and message ids belong to exactly one project. A command picks its project:
    answered (`--reply-to`); else the project whose folder holds the current folder (the deepest
    one; `send` and `wait` send it); else the legacy network; with none of these, `400 folder is
    not in a project`.
+
+`discuss` uses the local project for its folder, even if a network project is also bound there.
+Use an explicit network `--chat` or `--project` when sending to other computers.
 
 `chat list` without a project lists every project's chats, each with its `project`; so does
 `GET /sessions`. `members`, `inbox`, `chat new` and `chat unread` without a project send the
@@ -77,17 +83,18 @@ question typed in the inbox page is answered briefly in that human's language.
 
 ## Ask and get the answer in a project chat
 
-Every project has one active chat. `send --chat`, replies, the app's composer and local
-Claude Code ↔ Codex discussions use that same history. For the legacy network, conversations
-are still identified by their member set and area. Members of a project share its chat and
-history; clearing it keeps a dated snapshot and continues in the project's one active chat.
+Every project has one active chat. Network project members share that chat and its history;
+local Claude Code ↔ Codex discussions use a separate local project/chat for the same folder.
+For the legacy network, conversations are still identified by their member set and area.
+Clearing a chat keeps a dated snapshot and continues in that project's one active chat.
 
 ```powershell
 agentlink members                                              # who is in the network: one JSON line each, this node first
-agentlink send         --to nikita --body "<question>"         # into this folder's project chat, asks nikita
+agentlink send         --project <network-project-id> --to nikita --body "<question>" # ask a remote member in its shared chat
 agentlink send         --to nikita --area dev --body "<question>"   # the dev area conversation (legacy network)
 agentlink send         --to area:dev --body "<question>"       # the dev area conversation (legacy network), asks all members
-agentlink send         --chat <id> [--ask nikita] --body "<text>"   # into that chat's conversation (a closed one: its next chat)
+agentlink send         --chat <network-chat-id> --ask nikita --body "<question>" # ask a remote member in its shared chat
+agentlink send         --chat <local-chat-id> --ask-seat Codex --body "<question>" # ask a local seat in its local chat
 agentlink send         --reply-to <id> --body "<answer>"       # into the conversation of the message you answer
 agentlink send         --chat <id> --attach shot.png [--attach log.txt] [--body "<text>"]   # with files (see Attachments below)
 agentlink chat unread  [--folder <path>]                       # what this node has not read yet, oldest first
@@ -95,22 +102,25 @@ agentlink chat ack     --ids <id,...> [--session <id>]         # mark read: the 
 agentlink chat history --chat <id> [--limit 50] [--before <seq>] [--after <seq>]
 agentlink chat list    [--archive] [--legacy]
 agentlink chat new     --with nikita[,olga] [--area dev]       # prints the chat id (the open one; created when missing)
-agentlink chat archive [--chat <id>]                           # project: «Очистить чат» for everyone; the history keeps a snapshot
+agentlink chat archive [--chat <id>]                           # clear the selected chat; network members receive its clear
 agentlink wait         [--chat <id>] --timeout 0               # blocks until the next message
-agentlink discuss      --with codex --body "Review this design" # ask local Codex in this folder's project, wait for reply
-agentlink discuss      --with claude --prompt-file question.md --async # post to the project chat and return IDs
+agentlink discuss      --with codex --body "Review this design" # ask local Codex in this folder's local chat, wait for reply
+agentlink discuss      --with claude --prompt-file question.md --async # post to the local chat and return IDs
 ```
 
-`discuss` connects your own Claude Code and Codex through agent-link. It reuses the project
-whose bound folder contains the caller's working folder; when no project is bound there, it
-creates a local project for that folder and uses its one chat. It creates a seat for the named
+`discuss` connects your own Claude Code and Codex through agent-link. It reuses or creates a
+**local** project and chat for the caller's working folder, including when the folder also has a
+shared network project. Local messages never go to network peers; existing shared messages stay
+in the network chat. It creates a seat for the named
 provider if one does not exist. `--folder <path>` selects the folder; `--body <text>` and
 `--prompt-file <path>` are alternatives. It returns JSON with `project`, `chat`, `id`, `seat`
 and, by default, waits up to 10 minutes for that seat's direct `reply`. `--timeout` accepts a
 duration up to 15 minutes. Timeout returns the IDs with `timed_out: true` and CLI exit code 2;
 `--async` returns IDs immediately. During a global, project or seat pause it returns
-`queued: true` promptly; the request stays in the chat for delivery after resume. The MCP
-`discuss {with, body, folder?, timeout?, async?}` tool has the same behavior. This does not
+`queued: true` promptly; the request stays in the local chat for delivery after resume. The MCP
+`discuss {with, body, folder?, timeout?, async?}` tool has the same behavior. A project's manual
+agent pause applies to that chat alone and is independent of the global tray pause. People can
+keep exchanging messages while either pause holds agent delivery. This does not
 provide the old `cx.ps1` wrapper's image or review flags.
 
 Attachments: images (PNG, JPEG, GIF, WebP), PDF and UTF-8 text files, by content (not by
@@ -122,12 +132,14 @@ viewer, text by reading the file. A Codex session woken by the node also gets th
 the prompt (`codex queue --image`). Peers older than attachments see a line
 `[attachment: <name>]` in the text instead.
 
-A project has exactly one active chat, shown under the project's name: `chat new`, `send --to`
-and MCP `send` with `new_chat_with` all land in it (members it lacks are added), and a message to
-an archived chat of the project continues there.
+A project has exactly one active chat, shown under the project's name. For a network project,
+`chat new`, `send --to` and MCP `send` with `new_chat_with` all land in it (members it lacks are
+added), and a message to an archived chat of the project continues there. `discuss` targets the
+separate local project/chat for its folder.
 
 **Clearing and the history («Очистить чат», «История»).** `chat archive` (MCP has no tool for it;
-a person uses the project's «⋯» → «Очистить чат») clears the chat **for every member**: each node
+a person uses the project's «⋯» → «Очистить чат») clears the selected chat. In a network
+project the clear reaches every member: each node
 keeps the messages so far as a dated, read-only snapshot and the chat goes on empty with the same
 members (technically a new chat id that takes over from the old one: live sessions, routing and
 delivery leases follow it). Snapshots are the project's history:
@@ -246,8 +258,8 @@ error whose text is the API's message.
 | `chats` | `project?`, `archive?`, `legacy?` | `chat list` |
 | `history` | `chat`, `limit?` (50), `before_seq?`, `after_seq?` | `chat history` |
 | `unread` | `folder?`, `project?`, `limit?` (50), `after?` | `chat unread`, as one `{messages, total, next}` object; never marks read |
-| `send` | exactly one of `chat` / `to` / `new_chat_with[]`, `body`, `ask?[]`, `reply_to?` | `send` (`new_chat_with`: `chat new` first); answers `{id, chat}` |
-| `discuss` | `with` (`claude` or `codex`), `body`, `folder?`, `timeout?`, `async?` | uses or creates this folder's project chat and local seat; returns IDs and the direct reply, `queued`, or `timed_out` |
+| `send` | exactly one of `chat` / `to` / `new_chat_with[]`, `body`, `ask?[]`, `ask_seats?[]`, `reply_to?` | `send` (`new_chat_with`: `chat new` first); `ask` addresses network members, `ask_seats` local agents; answers `{id, chat}` |
+| `discuss` | `with` (`claude` or `codex`), `body`, `folder?`, `timeout?`, `async?` | uses or creates this folder's local project chat and seat; returns IDs and the direct reply, `queued`, or `timed_out` |
 | `ack` | `ids[]`, `chat?`, `project?`, `session?` (default: this session) | `chat ack` |
 
 There is no wait tool: the hooks tell a live session about new messages.

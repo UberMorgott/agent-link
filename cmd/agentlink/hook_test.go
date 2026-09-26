@@ -61,6 +61,48 @@ func newFakeNode(t *testing.T, folder string) *fakeNode {
 	return f
 }
 
+func TestHookSeatRequestsSelectLocalProject(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path+"?project="+r.URL.Query().Get("project"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/unread":
+			_ = json.NewEncoder(w).Encode(node.UnreadPage{Total: 1})
+		case "/claim":
+			_ = json.NewEncoder(w).Encode([]string{"message"})
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	env := hookEnv{api: strings.TrimPrefix(srv.URL, "http://"), dir: t.TempDir(), project: "local-project"}
+	state := hookState{}
+	if !heartbeat(env, &state, hookClaude, "session", t.TempDir(), true, false) {
+		t.Fatal("local seat heartbeat failed")
+	}
+	if !pendingUnread(env, t.TempDir(), "session") {
+		t.Fatal("local seat unread failed")
+	}
+	h := hookSession{env: env, sid: "session", folder: t.TempDir()}
+	if _, err := h.claim(node.UnreadPage{Messages: []node.UnreadMessage{{ID: "message"}}, Total: 1}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, path := range paths {
+		if !strings.HasSuffix(path, "?project=local-project") {
+			t.Fatalf("request lost local project selector: %v", paths)
+		}
+	}
+	if len(paths) != 3 {
+		t.Fatalf("want session, unread and claim requests: %v", paths)
+	}
+}
+
 func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

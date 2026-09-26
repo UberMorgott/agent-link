@@ -30,6 +30,20 @@ func projectsHarness(t *testing.T, name, listen string, setup ...func(*App)) *ha
 	return h
 }
 
+func localProjectForTest(t *testing.T, h *harness, name, dir string) ProjectView {
+	t.Helper()
+	b := newBinding(t, dir)
+	b.Scope = settings.ProjectScopeLocal
+	h.app.mu.Lock()
+	err := h.app.addProjectLocked(t.Context(), b, name)
+	v, ok := h.app.projectViewLocked(b.ID)
+	h.app.mu.Unlock()
+	if err != nil || !ok {
+		t.Fatalf("create local project: %+v, %v", v, err)
+	}
+	return v
+}
+
 // api calls the projects API and decodes a 200 answer into out (nil: none).
 func (h *harness) api(t *testing.T, method, path string, body any, out any) (int, string) {
 	t.Helper()

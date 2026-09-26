@@ -364,9 +364,11 @@ func (n *Node) launchable(dir string, now time.Time) (eligible, paused []UnreadM
 	for _, m := range page.Messages {
 		l, leased := book[m.ID]
 		leased = leased && (l.State == LeaseLeased || l.State == LeaseRunning || l.Failed)
-		// Full autonomy: a chat message of another member that only informs
-		// this node counts too, within the hop limit.
-		fyi := full && !m.AsksYou && !m.Paused && m.ChatID != "" && m.Kind == "" && m.Direction == "in" && !n.overDepth(m.Message)
+		// Full autonomy may follow information addressed to the project.
+		// A peer's local seat request and a seat's answer stay in the shared
+		// chat, but neither asks this node to open an agent for them.
+		fyi := full && !m.AsksYou && !m.Paused && m.ChatID != "" && m.Kind == "" && m.Direction == "in" &&
+			len(m.AskSeats) == 0 && m.Agent == nil && !n.overDepth(m.Message)
 		switch {
 		case (!m.AsksYou && !fyi) || m.OwnHuman || m.Assigned != "" || held[m.ID] || leased:
 		case m.Paused:

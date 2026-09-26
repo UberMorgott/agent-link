@@ -18,6 +18,9 @@ import (
 // AutonomyView is a project's autonomy as the web UI shows it.
 type AutonomyView struct {
 	Mode string `json:"mode"` // settings.Autonomy*
+	// Stopped is this project's manual agent pause; the global stop and
+	// budget pause have separate switches.
+	Stopped bool `json:"stopped"`
 	// MaxAutoDepth is the hop limit in effect (0: none); Default reports that
 	// it follows the mode (none set).
 	MaxAutoDepth        int  `json:"max_auto_depth"`
@@ -42,7 +45,7 @@ func autonomyOf(b settings.ProjectBinding) node.Autonomy {
 // autonomyViewOf is the view of b's autonomy, with the budget state of its
 // running node c (nil: none).
 func autonomyViewOf(b settings.ProjectBinding, c *appContext) *AutonomyView {
-	v := &AutonomyView{Mode: b.AutonomyOf(), MaxAutoDepth: b.MaxAutoDepthOf(), MaxAutoDepthDefault: b.MaxAutoDepth == nil,
+	v := &AutonomyView{Mode: b.AutonomyOf(), Stopped: b.StopAgents, MaxAutoDepth: b.MaxAutoDepthOf(), MaxAutoDepthDefault: b.MaxAutoDepth == nil,
 		TurnsPerHour: b.TurnsPerHourOf(), MaxRunMinutes: b.MaxRunMinutesOf()}
 	if c != nil {
 		st := c.n.AutonomyStatus()
@@ -147,8 +150,8 @@ func (a *App) StopAll() bool {
 	return a.s.StopAll
 }
 
-// SetStopAll turns the emergency stop on or off: saved, then applied to every
-// running context (node.SetStopped).
+// SetStopAll turns the emergency stop on or off: saved, then combined with
+// each project's manual stop before applying to its running node.
 func (a *App) SetStopAll(on bool) error {
 	a.mu.Lock()
 	if a.s.StopAll == on {
@@ -164,24 +167,59 @@ func (a *App) SetStopAll(on bool) error {
 		}
 	}
 	a.s = s
-	var ctxs []*appContext
-	if a.legacy != nil {
-		ctxs = append(ctxs, a.legacy)
-	}
-	for _, c := range a.projects {
-		ctxs = append(ctxs, c)
-	}
 	changed := a.StopAllChanged
-	a.mu.Unlock()
-	for _, c := range ctxs {
-		c.n.SetStopped(on)
+	if a.legacy != nil {
+		a.legacy.n.SetStopped(on)
 	}
+	for _, b := range a.s.Bindings {
+		if c := a.projects[b.ID]; c != nil {
+			c.n.SetStopped(on || b.StopAgents)
+		}
+	}
+	a.mu.Unlock()
 	a.log.Warn("emergency stop of the agents", "on", on)
 	if changed != nil {
 		changed(on)
 	}
 	a.events.publish("status", "projects", "settings")
 	return nil
+}
+
+// stopProjectAgents serves POST projects/{pid}/autonomy/stop {"on"}.
+// This is a local member preference, independent of the global and budget
+// pauses; the legacy network has no project-specific switch.
+func (a *App) stopProjectAgents(w http.ResponseWriter, r *http.Request) {
+	pid := r.PathValue("pid")
+	var req struct {
+		On bool `json:"on"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	a.mu.Lock()
+	i := a.bindingIndex(pid)
+	if i < 0 {
+		a.mu.Unlock()
+		writeCodedError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if a.s.Bindings[i].StopAgents != req.On {
+		s := a.s
+		s.Bindings = slices.Clone(s.Bindings)
+		s.Bindings[i].StopAgents = req.On
+		if err := settings.Save(a.path, s); err != nil {
+			a.mu.Unlock()
+			a.failed(w, "save project agent pause", err)
+			return
+		}
+		a.s = s
+	}
+	if c := a.projects[pid]; c != nil {
+		c.n.SetStopped(a.s.StopAll || req.On)
+	}
+	a.mu.Unlock()
+	a.changed(pid, "settings", "status")
+	a.writeView(w, pid)
 }
 
 // setStopAll serves POST /ui/api/autonomy/stop {"on"} -> Status.

@@ -118,18 +118,24 @@ func TestValidateBindings(t *testing.T) {
 		mutate func(bs []ProjectBinding) []ProjectBinding
 		key    string
 	}{
-		"bad id":         {func(bs []ProjectBinding) []ProjectBinding { bs[0].ID = "legacy"; return bs }, "project_binding"},
-		"lower id":       {func(bs []ProjectBinding) []ProjectBinding { bs[0].ID = strings.ToLower(bs[0].ID); return bs }, "project_binding"},
-		"epoch 2":        {func(bs []ProjectBinding) []ProjectBinding { bs[0].Epoch = 2; return bs }, "project_binding"},
-		"short secret":   {func(bs []ProjectBinding) []ProjectBinding { bs[0].Secret = bs[0].Secret[:25]; return bs }, "project_binding"},
-		"duplicate id":   {func(bs []ProjectBinding) []ProjectBinding { bs[1].ID = bs[0].ID; return bs }, "project_binding"},
-		"long alias":     {func(bs []ProjectBinding) []ProjectBinding { bs[0].Alias = strings.Repeat("я", 65); return bs }, "alias"},
-		"control alias":  {func(bs []ProjectBinding) []ProjectBinding { bs[0].Alias = "a\x07b"; return bs }, "alias"},
-		"relative dir":   {func(bs []ProjectBinding) []ProjectBinding { bs[0].Dir = "rel"; return bs }, "dir"},
-		"missing dir":    {func(bs []ProjectBinding) []ProjectBinding { bs[0].Dir = filepath.Join(dirB, "absent"); return bs }, "dir"},
-		"duplicate dir":  {func(bs []ProjectBinding) []ProjectBinding { bs[2].Dir = dirA; return bs }, "dir_taken"},
-		"case-fold dir":  {func(bs []ProjectBinding) []ProjectBinding { bs[2].Dir = dupDir; return bs }, "dir_taken"},
-		"bad peer":       {func(bs []ProjectBinding) []ProjectBinding { bs[0].Peers = []string{"10.0.0.1:70000"}; return bs }, "addr"},
+		"bad id":        {func(bs []ProjectBinding) []ProjectBinding { bs[0].ID = "legacy"; return bs }, "project_binding"},
+		"lower id":      {func(bs []ProjectBinding) []ProjectBinding { bs[0].ID = strings.ToLower(bs[0].ID); return bs }, "project_binding"},
+		"epoch 2":       {func(bs []ProjectBinding) []ProjectBinding { bs[0].Epoch = 2; return bs }, "project_binding"},
+		"short secret":  {func(bs []ProjectBinding) []ProjectBinding { bs[0].Secret = bs[0].Secret[:25]; return bs }, "project_binding"},
+		"duplicate id":  {func(bs []ProjectBinding) []ProjectBinding { bs[1].ID = bs[0].ID; return bs }, "project_binding"},
+		"long alias":    {func(bs []ProjectBinding) []ProjectBinding { bs[0].Alias = strings.Repeat("я", 65); return bs }, "alias"},
+		"control alias": {func(bs []ProjectBinding) []ProjectBinding { bs[0].Alias = "a\x07b"; return bs }, "alias"},
+		"relative dir":  {func(bs []ProjectBinding) []ProjectBinding { bs[0].Dir = "rel"; return bs }, "dir"},
+		"missing dir":   {func(bs []ProjectBinding) []ProjectBinding { bs[0].Dir = filepath.Join(dirB, "absent"); return bs }, "dir"},
+		"duplicate dir": {func(bs []ProjectBinding) []ProjectBinding { bs[2].Dir = dirA; return bs }, "dir_taken"},
+		"case-fold dir": {func(bs []ProjectBinding) []ProjectBinding { bs[2].Dir = dupDir; return bs }, "dir_taken"},
+		"bad peer":      {func(bs []ProjectBinding) []ProjectBinding { bs[0].Peers = []string{"10.0.0.1:70000"}; return bs }, "addr"},
+		"bad scope":     {func(bs []ProjectBinding) []ProjectBinding { bs[0].Scope = "shared"; return bs }, "project_binding"},
+		"local peer": {func(bs []ProjectBinding) []ProjectBinding {
+			bs[0].Scope = ProjectScopeLocal
+			bs[0].Peers = []string{"127.0.0.1:7420"}
+			return bs
+		}, "project_binding"},
 		"too many":       {func([]ProjectBinding) []ProjectBinding { return many }, "too_many_projects"},
 		"alias 64 runes": {func(bs []ProjectBinding) []ProjectBinding { bs[0].Alias = strings.Repeat("я", 64); return bs }, ""},
 	}
@@ -143,6 +149,25 @@ func TestValidateBindings(t *testing.T) {
 		case c.key != "" && (!errors.As(err, &p) || p.Key != c.key):
 			t.Errorf("%s: Validate() = %v, want %s", name, err, c.key)
 		}
+	}
+}
+
+func TestBindingsAllowSeparateLocalAndNetworkChatsInOneFolder(t *testing.T) {
+	dir := t.TempDir()
+	network := newBinding(t, dir) // old files have no scope
+	local := newBinding(t, dir)
+	local.Scope = ProjectScopeLocal
+	if network.ScopeOf() != ProjectScopeNetwork || local.ScopeOf() != ProjectScopeLocal {
+		t.Fatal("scope defaults or local scope changed")
+	}
+	if err := validateBindings([]ProjectBinding{network, local}); err != nil {
+		t.Fatalf("one binding per scope in a folder: %v", err)
+	}
+	duplicate := newBinding(t, dir)
+	duplicate.Scope = ProjectScopeLocal
+	var p *Problem
+	if err := validateBindings([]ProjectBinding{network, local, duplicate}); !errors.As(err, &p) || p.Key != "dir_taken" {
+		t.Fatalf("two local bindings in one folder: %v", err)
 	}
 }
 

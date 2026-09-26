@@ -175,7 +175,10 @@
   .composer-hint { color: var(--app-muted); opacity: 0.75; white-space: nowrap; }
   /* The open chat: one centered column. */
   .chat-column { width: 100%; max-width: 48rem; margin: 0 auto; padding: 0 1rem; }
-  .chat-topbar { min-height: 2.25rem; padding-top: 0.2rem; padding-bottom: 0.2rem; }
+  .chat-topbar { min-height: 2.25rem; padding-top: 0.2rem; padding-bottom: 0.2rem; flex-wrap: wrap; }
+  .chat-pause-controls { flex-wrap: wrap; justify-content: flex-end; }
+  .chat-global-pause { color: var(--app-muted); font-size: 0.75rem; white-space: nowrap; }
+  .chat-agent-pause { white-space: nowrap; }
   .chat-activity-dock { position: relative; z-index: 5; min-width: 0; }
   .chat-activity-toggle {
     display: flex; align-items: center; justify-content: flex-end; gap: 0.35rem;

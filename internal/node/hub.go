@@ -271,6 +271,9 @@ func (h *Hub) route(ctx context.Context, c net.Conn) {
 		pid = f.Project
 	}
 	e := h.entry(pid)
+	if e != nil && e.n.cfg.LocalOnly {
+		e = nil
+	}
 	if e == nil {
 		if pid != "" {
 			if reply, err := json.Marshal(frame{Type: "hello", Error: helloUnknownProject}); err == nil {
@@ -341,7 +344,7 @@ func readFirstLine(br *bufio.Reader, limit int) ([]byte, error) {
 func (h *Hub) beaconMsgs() [][]byte {
 	var out [][]byte
 	for _, e := range h.entries() {
-		if e.n.netTag == "" {
+		if e.n.netTag == "" || e.n.cfg.LocalOnly {
 			continue
 		}
 		if msg, err := json.Marshal(e.n.beacon()); err == nil {
@@ -354,7 +357,7 @@ func (h *Hub) beaconMsgs() [][]byte {
 // heard routes a beacon by its tag to the context of that network.
 func (h *Hub) heard(b beacon, ip net.IP) {
 	for _, e := range h.entries() {
-		if e.n.ownsTag(b.Net) {
+		if !e.n.cfg.LocalOnly && e.n.ownsTag(b.Net) {
 			e.n.heard(b, ip)
 			return
 		}

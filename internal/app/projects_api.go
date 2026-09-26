@@ -24,6 +24,13 @@ import (
 // legacyName is the legacy network's name in the project list.
 const legacyName = "Прежняя сеть"
 
+func (a *App) localProject(pid string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	i := a.bindingIndex(pid)
+	return i >= 0 && a.s.Bindings[i].ScopeOf() == settings.ProjectScopeLocal
+}
+
 // projectRoutes mounts the projects API on api.
 func (a *App) projectRoutes(api *http.ServeMux) {
 	const p = "/ui/api/projects"
@@ -34,6 +41,7 @@ func (a *App) projectRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST "+p+"/{pid}/name", a.renameProject)
 	api.HandleFunc("POST "+p+"/{pid}/binding", a.bindProject)
 	api.HandleFunc("POST "+p+"/{pid}/autonomy/resume", a.resumeAutonomy)
+	api.HandleFunc("POST "+p+"/{pid}/autonomy/stop", a.stopProjectAgents)
 	api.HandleFunc("POST "+p+"/{pid}/invite", a.revealInvite)
 	api.HandleFunc("POST "+p+"/{pid}/members/add", a.addProjectMember)
 	api.HandleFunc("POST "+p+"/{pid}/members/remove", a.removeProjectMember)
@@ -83,6 +91,11 @@ func (a *App) projectSeats(do func(n *node.Node, r *http.Request) (any, error)) 
 	return func(w http.ResponseWriter, r *http.Request) {
 		n, ok := a.contextNode(w, r.PathValue("pid"))
 		if !ok {
+			return
+		}
+		if !a.localProject(r.PathValue("pid")) && r.Method == http.MethodPost &&
+			!strings.HasSuffix(r.URL.Path, "/stop") && !strings.HasSuffix(r.URL.Path, "/remove") {
+			writeCodedError(w, http.StatusBadRequest, "bad_request")
 			return
 		}
 		v, err := do(n, r)
@@ -135,7 +148,8 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 		}
 		b := a.s.Bindings[i]
 		c = a.projects[pid]
-		v = ProjectView{ID: pid, Alias: b.Alias, Dir: b.Dir, CanRename: true, HasInvite: true, LaunchMode: b.LaunchModeOf(),
+		v = ProjectView{ID: pid, Scope: b.ScopeOf(), Alias: b.Alias, Dir: b.Dir, CanRename: true,
+			HasInvite: b.ScopeOf() == settings.ProjectScopeNetwork, LaunchMode: b.LaunchModeOf(),
 			Autonomy: autonomyViewOf(b, c)}
 		if c != nil {
 			v.Name = c.n.ProjectMeta().Name
@@ -258,7 +272,7 @@ func (a *App) failed(w http.ResponseWriter, what string, err error) {
 
 // checkDir validates a folder to bind ("" = none): an absolute existing
 // directory that no other binding than pid's holds.
-func (a *App) checkDirLocked(pid, dir string) error {
+func (a *App) checkDirLocked(pid, dir, scope string) error {
 	if dir == "" {
 		return nil
 	}
@@ -266,7 +280,7 @@ func (a *App) checkDirLocked(pid, dir string) error {
 		return &settings.Problem{Key: "dir"}
 	}
 	for _, b := range a.s.Bindings {
-		if b.ID != pid && b.Dir != "" && settings.DirKey(b.Dir) == settings.DirKey(dir) {
+		if b.ID != pid && b.Dir != "" && b.ScopeOf() == scope && settings.DirKey(b.Dir) == settings.DirKey(dir) {
 			return &settings.Problem{Key: "dir_taken"}
 		}
 	}
@@ -351,7 +365,7 @@ func (a *App) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	err = a.checkDirLocked("", dir)
+	err = a.checkDirLocked("", dir, settings.ProjectScopeNetwork)
 	if err == nil && len(a.s.Bindings) >= settings.MaxProjects {
 		err = &settings.Problem{Key: "too_many_projects"}
 	}
@@ -574,7 +588,11 @@ func (a *App) bindLocked(pid string, alias, dir *string) error {
 	}
 	if dir != nil {
 		*dir = filepathClean(strings.TrimSpace(*dir))
-		if err := a.checkDirLocked(pid, *dir); err != nil {
+		scope := settings.ProjectScopeNetwork
+		if !legacy {
+			scope = a.s.Bindings[a.bindingIndex(pid)].ScopeOf()
+		}
+		if err := a.checkDirLocked(pid, *dir, scope); err != nil {
 			return err
 		}
 		old := a.s.WorkDir
@@ -639,6 +657,8 @@ func (a *App) revealInvite(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case !known:
 		writeCodedError(w, http.StatusNotFound, "not_found")
+	case pid != LegacyProjectID && s.Bindings[slices.IndexFunc(s.Bindings, func(b settings.ProjectBinding) bool { return b.ID == pid })].ScopeOf() == settings.ProjectScopeLocal:
+		writeCodedError(w, http.StatusNotFound, "not_found")
 	case pid == LegacyProjectID && s.Code == "":
 		writeCodedError(w, http.StatusConflict, "legacy_invite_unavailable")
 	case pid == LegacyProjectID:
@@ -653,6 +673,10 @@ func (a *App) revealInvite(w http.ResponseWriter, r *http.Request) {
 // network's peers) and dials it.
 func (a *App) addProjectMember(w http.ResponseWriter, r *http.Request) {
 	pid := r.PathValue("pid")
+	if a.localProject(pid) {
+		writeCodedError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
 	var req node.MemberRequest
 	if !decode(w, r, &req) {
 		return
@@ -707,6 +731,10 @@ func (a *App) addBindingPeer(pid, addr string) error {
 // (the legacy network's peers): body {"name"}.
 func (a *App) removeProjectMember(w http.ResponseWriter, r *http.Request) {
 	pid := r.PathValue("pid")
+	if a.localProject(pid) {
+		writeCodedError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
 	var req node.MemberRequest
 	if !decode(w, r, &req) {
 		return
@@ -919,6 +947,10 @@ func (a *App) projectSend(w http.ResponseWriter, r *http.Request) {
 		Attachments []node.Attachment `json:"attachments"` // uploaded: id and name
 	}
 	if !decode(w, r, &req) {
+		return
+	}
+	if len(req.AskSeats) > 0 && !a.localProject(pid) {
+		writeCodedError(w, http.StatusBadRequest, "bad_request")
 		return
 	}
 	n, ok := a.contextNode(w, pid)

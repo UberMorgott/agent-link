@@ -43,6 +43,22 @@ const self = computed(() => app.self)
 // The chat has no header: the project's row in the sidebar names it, and its
 // "⋯" menu holds the chat's controls (ProjectMenu.vue).
 const inProject = computed(() => !!info.value && !info.value.legacy && pid.value !== 'legacy')
+const localChat = computed(() => inProject.value && projects.byID(pid.value)?.scope === 'local')
+const projectStopped = computed(() => !!projects.byID(pid.value)?.autonomy?.stopped)
+const globallyStopped = computed(() => !!app.status?.stop_all)
+const pauseBusy = ref(false)
+const pauseError = ref('')
+const pauseLabel = computed(() => projectStopped.value
+  ? t(globallyStopped.value ? 'inbox.project_pause.remove' : 'inbox.project_pause.resume')
+  : t('inbox.project_pause.pause'))
+async function toggleProjectPause() {
+  if (!inProject.value || pauseBusy.value) return
+  pauseBusy.value = true
+  pauseError.value = ''
+  try { await projects.stopAutonomy(pid.value, !projectStopped.value) }
+  catch (error) { pauseError.value = (error as Error).message }
+  finally { pauseBusy.value = false }
+}
 // A project has one chat: it goes by the project's name.
 const title = computed(() => {
   const project = projects.byID(pid.value)
@@ -104,7 +120,7 @@ function sinceTitle(row: ActivityLine) {
 // A legacy chat is writable too: the node continues it in a real chat with the
 // peer, or with a plain message when the peer's version has no chats.
 const writable = computed(() => !!info.value && !info.value.closed && !info.value.removed)
-const askNames = computed(() => others(info.value, self.value))
+const askNames = computed(() => localChat.value ? [] : others(info.value, self.value))
 const asked = computed<string[]>({
   get: () => (info.value ? inbox.askFor(info.value) : []),
   set: (names) => { if (info.value) inbox.setAsk(info.value, names) },
@@ -116,6 +132,17 @@ watch(() => [pid.value, inProject.value] as const, ([p, on]) => {
   if (on && p && !Object.hasOwn(projects.seats, p)) void projects.refreshSeats(p).catch(() => {})
 }, { immediate: true })
 const seatList = computed(() => (inProject.value ? projects.seats[pid.value] || [] : []))
+const seatChoices = computed(() => {
+  const totals = new Map<string, number>()
+  const seen = new Map<string, number>()
+  for (const seat of seatList.value) totals.set(seat.label, (totals.get(seat.label) || 0) + 1)
+  return seatList.value.map((seat) => {
+    const number = (seen.get(seat.label) || 0) + 1
+    seen.set(seat.label, number)
+    const name = (totals.get(seat.label) || 0) > 1 ? `${seat.label} (${number})` : seat.label
+    return { ...seat, askLabel: fmt('inbox.seats.mine', { name }) }
+  })
+})
 const agentMembers = computed(() => (projects.byID(pid.value)?.members || [])
   .filter((member) => (member.self || member.online) &&
     (member.agent || Object.values(member.agent_counts || {}).some((count) => count > 0)))
@@ -125,6 +152,10 @@ const providerCounts = computed(() => (['claude', 'codex', 'other'] as const).ma
   label: provider === 'claude' ? 'Claude Code' : provider === 'codex' ? 'Codex' : t('inbox.activity.other'),
   count: agentMembers.value.reduce((sum, member) => sum + (member.counts?.[provider] || 0), 0),
 })).filter((entry) => entry.count > 0))
+const seatAsked = computed<string[]>({
+  get: () => (info.value ? inbox.seatAskFor(info.value) : []),
+  set: (ids) => { if (info.value) inbox.setSeatAsk(info.value, ids) },
+})
 function memberCountText(counts: AgentCounts | undefined): string {
   if (!counts) return t('inbox.activity.unknown_count')
   return [
@@ -133,10 +164,6 @@ function memberCountText(counts: AgentCounts | undefined): string {
     counts.other ? `${t('inbox.activity.other')} ${counts.other}` : '',
   ].filter(Boolean).join(' · ')
 }
-const seatAsked = computed<string[]>({
-  get: () => (info.value ? inbox.seatAskFor(info.value) : []),
-  set: (ids) => { if (info.value) inbox.setSeatAsk(info.value, ids) },
-})
 
 const note = computed(() => {
   const i = info.value
@@ -210,7 +237,7 @@ function back() {
           {{ title }}
         </h1>
         <div
-          v-if="isNarrow || activity.length || seatList.length || agentMembers.length"
+          v-if="isNarrow || inProject || activity.length || seatList.length || agentMembers.length"
           class="chat-column chat-topbar flex flex-none items-center gap-2"
         >
           <UButton
@@ -225,7 +252,7 @@ function back() {
           />
           <div
             v-if="activity.length || seatList.length || agentMembers.length"
-            class="chat-activity-dock ml-auto"
+            class="chat-activity-dock"
             :class="{ open: activityOpen }"
             @mouseenter="activityHover = true"
             @mouseleave="activityHover = false"
@@ -335,7 +362,41 @@ function back() {
               </ul>
             </div>
           </div>
+          <div
+            v-if="inProject"
+            class="chat-pause-controls ml-auto flex items-center gap-2"
+          >
+            <span
+              v-if="globallyStopped"
+              id="chat_global_pause"
+              class="chat-global-pause"
+              role="status"
+            >{{ t('inbox.project_pause.global') }}</span>
+            <UButton
+              id="chat_agent_pause"
+              type="button"
+              class="chat-agent-pause"
+              :icon="icon(projectStopped ? 'play' : 'pause')"
+              :label="pauseLabel"
+              :aria-label="pauseLabel"
+              :aria-pressed="projectStopped"
+              :title="t('inbox.project_pause.hint')"
+              :disabled="pauseBusy"
+              color="neutral"
+              variant="soft"
+              size="sm"
+              @click="toggleProjectPause"
+            />
+          </div>
         </div>
+        <p
+          v-if="pauseError"
+          id="chat_pause_error"
+          class="chat-column flex-none text-xs text-error"
+          role="status"
+        >
+          {{ pauseError }}
+        </p>
         <p
           v-if="inbox.subtitleError"
           id="chat_error"
@@ -360,7 +421,7 @@ function back() {
             @drop.prevent="onDrop"
           >
             <div
-              v-if="askNames.length >= 2"
+              v-if="!localChat && askNames.length > 0 && (inProject || askNames.length >= 2)"
               id="ask_row"
               class="ask-row flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm"
               role="group"
@@ -394,7 +455,7 @@ function back() {
               >{{ t("inbox.ask.none") }}</span>
             </div>
             <div
-              v-if="seatList.length"
+              v-if="localChat && seatList.length"
               id="seat_row"
               class="ask-row flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm"
               role="group"
@@ -406,10 +467,10 @@ function back() {
               >{{ t("inbox.seats.label") }}</span>
               <span class="ask-choices flex flex-wrap gap-x-4 gap-y-1">
                 <UCheckbox
-                  v-for="s in seatList"
+                  v-for="s in seatChoices"
                   :id="'seat_' + s.id"
                   :key="s.id"
-                  :label="s.label"
+                  :label="s.askLabel"
                   :title="t('project.agents.status.' + s.status)"
                   :model-value="seatAsked.includes(s.id)"
                   size="sm"

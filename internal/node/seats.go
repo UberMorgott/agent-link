@@ -581,6 +581,9 @@ func (n *Node) seatPaused(p SeatPending, m Message) bool { return p.Ask && n.ove
 // seatUnread is the unread messages of the seat of live session sid (as
 // unreadFor lists them): the ones its wake prompt carries apart (woken).
 func (n *Node) seatUnread(sid string, filter bool, area string, actionable bool) (msgs, woken []UnreadMessage) {
+	if n.cfg.DisableSeats {
+		return nil, nil
+	}
 	st := n.seats
 	st.mu.Lock()
 	s := st.bySessionLocked(sid)
@@ -649,6 +652,9 @@ func (st *seatStore) held(seat, id string) (token string, woke, turn bool) {
 // handled is false when it is none; granted like claimLocked (a wake never
 // takes what a hook claimed, a hook never what a wake holds).
 func (n *Node) seatClaim(session, id string, wake bool, token string) (handled, granted bool) {
+	if n.cfg.DisableSeats {
+		return false, false
+	}
 	st := n.seats
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -674,6 +680,9 @@ func (n *Node) seatClaim(session, id string, wake bool, token string) (handled, 
 // seatPendingFor is the seat of session when message id is pending for it
 // (seatClaim handles it then), else "".
 func (n *Node) seatPendingFor(session, id string) string {
+	if n.cfg.DisableSeats {
+		return ""
+	}
 	st := n.seats
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -753,6 +762,9 @@ func (n *Node) seatAck(session, seat string, ids []string) map[string]bool {
 // not open in the agent's app (seatOccupied: SeatBusy, its hooks deliver).
 // It also saves a seats.json whose last save failed.
 func (n *Node) seatsDue(ctx context.Context, now time.Time) {
+	if n.cfg.DisableSeats {
+		return
+	}
 	dl, ok := n.launcher.(DirectLauncher)
 	if !ok {
 		return
@@ -821,6 +833,9 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 // session (a new one when it has none). It reports false when the node does
 // not run or has no DirectLauncher.
 func (n *Node) startSeatTurn(id string, intro, open bool) bool {
+	if n.cfg.DisableSeats {
+		return false
+	}
 	dl, ok := n.launcher.(DirectLauncher)
 	if !ok {
 		return false

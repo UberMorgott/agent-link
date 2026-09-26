@@ -6,14 +6,15 @@ import { t } from '@/lib/runtime'
 import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore } from '@/stores/projects'
 
-// This is an index of the existing project chats, not a second conversation.
+// The local chats are independent projects. Network project chats stay in the
+// other sidebar section and never appear here.
 const projects = useProjectsStore()
 const inbox = useInboxStore()
 const pending = ref(false)
 const loadError = ref('')
 let request = 0
 
-const projectIDs = computed(() => (projects.list || []).filter((p) => !p.legacy).map((p) => p.id))
+const projectIDs = computed(() => (projects.list || []).filter((p) => p.scope === 'local').map((p) => p.id))
 watch(projectIDs, async (ids) => {
   const current = ++request
   const missing = ids.filter((id) => !Object.hasOwn(projects.seats, id))
@@ -30,7 +31,7 @@ onMounted(() => {
 })
 
 const rows = computed(() => (projects.list || [])
-  .filter((p) => !p.legacy && (projects.seats[p.id] || []).length > 0)
+  .filter((p) => p.scope === 'local')
   .map((p) => ({ project: p, seats: projects.seats[p.id] || [] })))
 
 function open(pid: string) {

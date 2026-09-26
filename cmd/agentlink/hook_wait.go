@@ -90,7 +90,7 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 			return 0
 		}
 		if o.alive != nil && !o.alive() {
-			_ = hookCall(env.api, http.MethodDelete, "/sessions/"+url.PathEscape(in.SessionID), nil, nil, nil, hookHTTPTimeout)
+			_ = hookCall(env.api, http.MethodDelete, "/sessions/"+url.PathEscape(in.SessionID), env.withProject(nil), nil, nil, hookHTTPTimeout)
 			return 0
 		}
 		// Only an idle session's heartbeat: a busy one's hooks keep it
@@ -100,7 +100,7 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 		if time.Since(lastBeat) >= o.heartbeat && !waiterBusy(st, env.clock(), o.busyFor) {
 			req := sessionRequest(client, in.SessionID, folder, true)
 			req.Heartbeat = true // keeps the session live, not active (node.Session.LastActive)
-			if hookCall(env.api, http.MethodPost, "/sessions", nil, req, nil, hookHTTPTimeout) == nil {
+			if hookCall(env.api, http.MethodPost, "/sessions", env.withProject(nil), req, nil, hookHTTPTimeout) == nil {
 				lastBeat = time.Now()
 			}
 		}
@@ -129,6 +129,7 @@ func waiterBusy(st hookState, now time.Time, busyFor time.Duration) bool {
 func pendingUnread(env hookEnv, folder, session string) bool {
 	var page node.UnreadPage
 	q := url.Values{"folder": {folder}, "session": {session}, "limit": {"1"}, "actionable": {"1"}, "waiter": {"1"}}
+	q = env.withProject(q)
 	return hookCall(env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout) == nil && page.Total > 0
 }
 

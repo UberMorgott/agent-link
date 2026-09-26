@@ -184,7 +184,9 @@ func (a *App) newProjectContext(b settings.ProjectBinding) (*appContext, error) 
 		return nil, err
 	}
 	cfg := config.Config{Node: a.s.Node, Listen: a.s.BindAddr(), API: a.s.APIAddr(), DataDir: a.projectDir(b.ID),
-		SecretEnv: "-", Discovery: a.s.DiscoveryOn() && a.Discovery, Project: b.ID}
+		SecretEnv: "-", Discovery: b.ScopeOf() == settings.ProjectScopeNetwork && a.s.DiscoveryOn() && a.Discovery,
+		Project: b.ID, LocalOnly: b.ScopeOf() == settings.ProjectScopeLocal,
+		DisableSeats: b.ScopeOf() == settings.ProjectScopeNetwork}
 	for _, p := range b.Peers {
 		cfg.Peers = append(cfg.Peers, config.Peer{Addr: p})
 	}
@@ -194,6 +196,7 @@ func (a *App) newProjectContext(b settings.ProjectBinding) (*appContext, error) 
 	}
 	c := &appContext{pid: b.ID, n: n}
 	n.SetFolders(b.Dir, nil)
+	n.SetStopped(a.s.StopAll || b.StopAgents)
 	n.SetAutonomy(autonomyOf(b))
 	if b.Dir == "" {
 		n.SetInboundHook(n.HoldWithoutFolder)

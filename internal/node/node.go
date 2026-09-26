@@ -427,6 +427,9 @@ func (n *Node) spawn(fn func(ctx context.Context)) bool {
 // the configured peers, now and in a later Run. The first session through it
 // brings back a member someone removed; the address then spreads to every member.
 func (n *Node) AddPeer(addr string) error {
+	if n.cfg.LocalOnly {
+		return ErrNotProject
+	}
 	a, err := config.WithDefaultPort(addr)
 	if err != nil {
 		return err
@@ -670,6 +673,10 @@ func (n *Node) acceptLoop(ctx context.Context, ln net.Listener) {
 				return
 			}
 			n.log.Warn("accept", "err", err)
+			continue
+		}
+		if n.cfg.LocalOnly {
+			_ = c.Close()
 			continue
 		}
 		n.wg.Go(func() { n.handleInbound(ctx, c) })

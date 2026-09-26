@@ -14,8 +14,8 @@ import { useAppStore } from '@/stores/app'
 import { chatKey, useInboxStore } from '@/stores/inbox'
 import { useProjectsStore } from '@/stores/projects'
 
-// The sidebar: one row per project (its one chat opens on a click), then the
-// member's own chip with the appearance and the settings.
+// The sidebar separates chats shared with other computers from local
+// Claude/Codex chats. Each project still owns one chat.
 const app = useAppStore()
 const projects = useProjectsStore()
 const inbox = useInboxStore()
@@ -29,7 +29,7 @@ function unread(pid: string): number {
   return (projects.chats[pid] || []).filter((c) => isUnread(c, inbox.openKey() === chatKey(pid, c.id), inbox.readOf(pid, c.id))).length
 }
 
-const tree = computed(() => (projects.list || []).map((p) => {
+function row(p: NonNullable<typeof projects.list>[number]) {
   const dot = projectDot(p, app.self)
   return {
     p,
@@ -39,7 +39,9 @@ const tree = computed(() => (projects.list || []).map((p) => {
     unread: unread(p.id),
     active: projects.current === p.id && (current.value === 'project' || current.value === 'chat'),
   }
-}))
+}
+const tree = computed(() => (projects.list || []).filter((p) => p.scope !== 'local').map(row))
+const localTree = computed(() => (projects.list || []).filter((p) => p.scope === 'local').map(row))
 
 // A project's row opens its one chat (the network from before projects: its page).
 function openRow(pid: string, legacy: boolean) {
@@ -60,18 +62,6 @@ function openRow(pid: string, legacy: boolean) {
       <VersionBadge />
     </div>
     <div class="flex flex-col gap-0.5 px-2 pb-2">
-      <RouterLink
-        to="/agents"
-        data-route="agents"
-        class="nav-link flex w-full items-center gap-2"
-        :class="{ active: current === 'agents' }"
-        :aria-current="current === 'agents' ? 'page' : undefined"
-      >
-        <UIcon
-          :name="icon('agent')"
-          class="nav-icon size-[1.1rem] flex-none"
-        /><span class="nav-text">{{ t("nav.agents") }}</span>
-      </RouterLink>
       <button
         id="new_project"
         type="button"
@@ -95,58 +85,117 @@ function openRow(pid: string, legacy: boolean) {
         /><span class="nav-text">{{ t("projects.join") }}</span>
       </button>
     </div>
-    <section
-      class="flex min-h-0 flex-1 flex-col"
-      aria-labelledby="projects_label"
-    >
-      <h2
-        id="projects_label"
-        class="px-4 pt-2 pb-1 text-xs font-medium text-muted"
-      >
-        {{ t("projects.label") }}
-      </h2>
-      <ul
-        id="project_tree"
-        class="min-h-0 flex-1 overflow-y-auto px-2 pb-2"
-      >
-        <li
-          v-for="item in tree"
-          :key="item.p.id"
-          :data-project="item.p.id"
+    <div class="min-h-0 flex-1 overflow-y-auto">
+      <section aria-labelledby="projects_label">
+        <h2
+          id="projects_label"
+          class="px-4 pt-2 pb-1 text-xs font-medium text-muted"
         >
-          <div
-            class="project-row"
-            :class="{ active: item.active }"
+          {{ t("projects.network_chats") }}
+        </h2>
+        <ul
+          id="project_tree"
+          class="px-2 pb-2"
+        >
+          <li
+            v-for="item in tree"
+            :key="item.p.id"
+            :data-project="item.p.id"
           >
-            <button
-              type="button"
-              class="project-open"
-              :aria-current="item.active ? 'page' : undefined"
-              @click="openRow(item.p.id, item.p.legacy)"
+            <div
+              class="project-row"
+              :class="{ active: item.active }"
             >
-              <span
-                class="project-dot"
-                :class="item.dot"
-                :data-dot="item.dot"
-                :title="item.dotLabel"
-                role="img"
-                :aria-label="item.dotLabel.replace(/\n/g, '; ')"
+              <button
+                type="button"
+                class="project-open"
+                :aria-current="item.active ? 'page' : undefined"
+                @click="openRow(item.p.id, item.p.legacy)"
+              >
+                <span
+                  class="project-dot"
+                  :class="item.dot"
+                  :data-dot="item.dot"
+                  :title="item.dotLabel"
+                  role="img"
+                  :aria-label="item.dotLabel.replace(/\n/g, '; ')"
+                />
+                <span class="project-name">{{ item.name }}</span>
+                <span
+                  v-if="item.unread"
+                  class="project-unread"
+                  :title="t('inbox.unread')"
+                >{{ item.unread }}</span>
+              </button>
+              <ProjectMenu
+                :project="item.p"
+                :name="item.name"
               />
-              <span class="project-name">{{ item.name }}</span>
-              <span
-                v-if="item.unread"
-                class="project-unread"
-                :title="t('inbox.unread')"
-              >{{ item.unread }}</span>
-            </button>
-            <ProjectMenu
-              :project="item.p"
-              :name="item.name"
-            />
-          </div>
-        </li>
-      </ul>
-    </section>
+            </div>
+          </li>
+        </ul>
+      </section>
+      <section aria-labelledby="local_chats_label">
+        <h2
+          id="local_chats_label"
+          class="px-4 pt-3 pb-1 text-xs font-medium text-muted"
+        >
+          <RouterLink
+            to="/agents"
+            data-route="agents"
+            class="inline-flex items-center gap-1 hover:underline"
+            :class="{ active: current === 'agents' }"
+            :aria-current="current === 'agents' ? 'page' : undefined"
+          >
+            <UIcon
+              :name="icon('agent')"
+              class="size-3.5"
+            />{{ t('projects.local_chats') }}
+          </RouterLink>
+        </h2>
+        <ul
+          id="local_chat_tree"
+          class="px-2 pb-2"
+        >
+          <li
+            v-for="item in localTree"
+            :key="item.p.id"
+            :data-project="item.p.id"
+          >
+            <div
+              class="project-row"
+              :class="{ active: item.active }"
+            >
+              <button
+                type="button"
+                class="project-open"
+                :aria-current="item.active ? 'page' : undefined"
+                @click="openRow(item.p.id, false)"
+              >
+                <span
+                  class="project-dot"
+                  :class="item.dot"
+                  :data-dot="item.dot"
+                  :title="item.dotLabel"
+                  role="img"
+                  :aria-label="item.dotLabel.replace(/\n/g, '; ')"
+                />
+                <span class="project-name">{{ item.name }}</span>
+                <span
+                  v-if="item.unread"
+                  class="project-unread"
+                  :title="t('inbox.unread')"
+                >{{ item.unread }}</span>
+              </button>
+              <ProjectMenu
+                :project="item.p"
+                :name="item.name"
+              />
+            </div>
+          </li>
+        </ul>
+      </section>
+    </div>
     <span
       id="nav_label"
       class="sr-only"

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,59 @@ func pairApps(t *testing.T, p settings.ProjectBinding, more ...settings.ProjectB
 		return alice.n.Connected("bob") && alice.projects[p.ID].n.Connected("bob")
 	})
 	return alice, bob
+}
+
+func TestNetworkHookUnreadSurvivesLocalDiscussionInSameFolder(t *testing.T) {
+	p := newBinding(t, t.TempDir())
+	alice, bob := pairApps(t, p)
+	alice.Launcher = &seatRunner{}
+	srv := httptest.NewServer(alice.Handler())
+	defer srv.Close()
+	session := node.SessionRequest{SessionID: "claude-interactive", Provider: node.ProviderClaude, Folder: p.Dir}
+	if code, body := call(t, srv, http.MethodPost, "/sessions", jsonOf(t, session)); code != http.StatusOK {
+		t.Fatalf("register network session: %d %s", code, body)
+	}
+	if code, body := call(t, srv, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
+		"folder": p.Dir, "provider": node.ProviderCodex, "source": node.ProviderClaude,
+		"session_id": session.SessionID, "body": "Ask private Codex",
+	})); code != http.StatusOK {
+		t.Fatalf("discuss: %d %s", code, body)
+	}
+	if code, body := call(t, srv, http.MethodPost, "/sessions", jsonOf(t, session)); code != http.StatusOK {
+		t.Fatalf("network hook heartbeat after discuss: %d %s", code, body)
+	}
+	chat, err := bob.projects[p.ID].n.NewProjectChat([]string{"alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := bob.projects[p.ID].n.SendRequest(node.SendRequest{ChatID: chat.ID, Body: "Network question",
+		Ask: []string{"alice"}, AuthorKind: node.AuthorHuman})
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrived := false
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		page, _ := alice.projects[p.ID].n.UnreadFor("", session.SessionID, "", 10)
+		if slices.ContainsFunc(page.Messages, func(m node.UnreadMessage) bool { return m.ID == message.ID }) {
+			arrived = true
+			break
+		}
+	}
+	if !arrived {
+		page, _ := alice.projects[p.ID].n.UnreadFor("", session.SessionID, "", 10)
+		msgs, _ := alice.projects[p.ID].n.ChatMessages(chat.ID, 0, 0, 10)
+		t.Fatalf("network question not in session unread: page=%+v chat=%+v sessions=%+v", page, msgs, alice.projects[p.ID].n.Sessions())
+	}
+	path := "/unread?folder=" + url.QueryEscape(p.Dir) + "&session=" + session.SessionID + "&agent=1"
+	code, body := call(t, srv, http.MethodGet, path, "")
+	if code != http.StatusOK || !strings.Contains(body, message.ID) {
+		t.Fatalf("network unread routed to local chat: %d %s", code, body)
+	}
+	for _, b := range alice.Settings().Bindings {
+		if b.ScopeOf() == settings.ProjectScopeLocal && len(alice.projects[b.ID].n.Sessions()) != 0 {
+			t.Fatal("external network hook session was registered in the local project")
+		}
+	}
 }
 
 // call sends one control API request to srv.

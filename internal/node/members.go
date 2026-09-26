@@ -611,6 +611,9 @@ func (n *Node) revive(name, id string) {
 // applies (ends its session, stops dialing it, refuses it) and stores. Only
 // adding its address by hand (AddPeer) brings it back.
 func (n *Node) RemoveMember(name string) error {
+	if n.cfg.LocalOnly {
+		return ErrNotProject
+	}
 	if name == n.cfg.Node {
 		return ErrSelf
 	}
@@ -837,6 +840,9 @@ func (n *Node) persistMembers() bool {
 // meshLoop starts a dial loop for every live member with an address and for
 // every address added by AddPeer.
 func (n *Node) meshLoop(ctx context.Context) {
+	if n.cfg.LocalOnly {
+		return
+	}
 	tick := time.NewTicker(n.meshEvery)
 	defer tick.Stop()
 	for {

@@ -27,7 +27,8 @@ const busy = ref(false)
 
 function openFor(kind: ProjectDialog) {
   return computed({
-    get: () => projects.dialog === kind && !!view.value,
+    get: () => projects.dialog === kind && !!view.value &&
+      (view.value.scope !== 'local' || (kind !== 'members' && kind !== 'invite')),
     set: (open: boolean) => { if (!open) projects.closeDialog() },
   })
 }

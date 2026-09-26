@@ -145,6 +145,12 @@ type Config struct {
 	// secret is the ProjectKey, and it only talks to members of that project.
 	// "" is the legacy network.
 	Project string `json:"project,omitempty"`
+	// LocalOnly keeps a project private to this machine: it never accepts a
+	// peer connection or advertises a discovery beacon.
+	LocalOnly bool `json:"local_only,omitempty"`
+	// DisableSeats holds existing seat messages without starting new turns.
+	// Used by network project contexts after private local chats were added.
+	DisableSeats bool `json:"disable_seats,omitempty"`
 }
 
 var namePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_-]{0,63}$`)

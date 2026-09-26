@@ -42,7 +42,7 @@ const items = computed<DropdownMenuItem[][]>(() => {
       onSelect: () => run(() => inbox.confirmClose()),
     })
   }
-  const main: DropdownMenuItem[] = [item('members', "project.menu.members", 'participants'), item('invite', "project.menu.invite", 'invite')]
+  const main: DropdownMenuItem[] = p.scope === 'local' ? [] : [item('members', "project.menu.members", 'participants'), item('invite', "project.menu.invite", 'invite')]
   // This member's local agents (Claude Code, Codex) in the project's conversation.
   if (!p.legacy) main.push(item('agents', "project.menu.agents", 'agent'))
   if (p.can_rename) main.push(item('name', "project.menu.name", 'rename'))

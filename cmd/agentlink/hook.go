@@ -142,9 +142,21 @@ type hookState struct {
 
 // hookEnv is where the hook finds the node and keeps its state.
 type hookEnv struct {
-	api string // host:port of the node's local API
-	dir string // state directory
-	now func() time.Time
+	api     string // host:port of the node's local API
+	dir     string // state directory
+	project string // project of an AgentLink-launched local seat, if any
+	now     func() time.Time
+}
+
+func (e hookEnv) withProject(q url.Values) url.Values {
+	if e.project == "" {
+		return q
+	}
+	if q == nil {
+		q = url.Values{}
+	}
+	q.Set("project", e.project)
+	return q
 }
 
 func (e hookEnv) clock() time.Time {
@@ -244,7 +256,7 @@ func defaultHookEnv() (hookEnv, error) {
 	if err != nil {
 		return hookEnv{}, err
 	}
-	return hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks")}, nil
+	return hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks"), project: strings.TrimSpace(os.Getenv("AGENTLINK_PROJECT_ID"))}, nil
 }
 
 // hookRun handles one hook event: it reads the input, keeps the session
@@ -389,7 +401,7 @@ func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force, id
 	if !force && st.Folder == folder && st.Idle == idle && now.Sub(st.Registered) < hookHeartbeat {
 		return !st.Unbound
 	}
-	err := hookCall(env.api, http.MethodPost, "/sessions", nil, sessionRequest(client, sid, folder, idle), nil, hookHTTPTimeout)
+	err := hookCall(env.api, http.MethodPost, "/sessions", env.withProject(nil), sessionRequest(client, sid, folder, idle), nil, hookHTTPTimeout)
 	var se *statusError
 	switch {
 	case err == nil:
@@ -451,7 +463,7 @@ func endSession(env hookEnv, path, sid string) {
 	h.idle()
 	st.Ended, st.Active = true, nil
 	_ = saveHookState(path, st)
-	_ = hookCall(env.api, http.MethodDelete, "/sessions/"+url.PathEscape(sid), nil, nil, nil, hookHTTPTimeout)
+	_ = hookCall(env.api, http.MethodDelete, "/sessions/"+url.PathEscape(sid), env.withProject(nil), nil, nil, hookHTTPTimeout)
 }
 
 // writeHookJSON writes the event's JSON output: extra's fields plus
@@ -524,6 +536,7 @@ func (b hookBatch) empty() bool { return len(b.ids) == 0 }
 func (h *hookSession) collect(stop, actionable bool, proof func() string) (hookBatch, error) {
 	var page node.UnreadPage
 	q := url.Values{"folder": {h.folder}, "session": {h.sid}, "limit": {fmt.Sprint(hookPageSize)}}
+	q = h.env.withProject(q)
 	if actionable {
 		q.Set("actionable", "1")
 	}
@@ -610,7 +623,7 @@ func (h *hookSession) claim(page node.UnreadPage) (node.UnreadPage, error) {
 		req.IDs = append(req.IDs, m.ID)
 	}
 	var granted []string
-	err := hookCall(h.env.api, http.MethodPost, "/claim", nil, req, &granted, hookHTTPTimeout)
+	err := hookCall(h.env.api, http.MethodPost, "/claim", h.env.withProject(nil), req, &granted, hookHTTPTimeout)
 	var se *statusError
 	switch {
 	case errors.As(err, &se) && (se.code == http.StatusNotFound || se.code == http.StatusMethodNotAllowed):

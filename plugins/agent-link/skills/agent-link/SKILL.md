@@ -1,6 +1,6 @@
 ---
 name: agent-link
-description: Talk to local Claude Code or Codex and other developers' agents in one project chat over agent-link. Use discuss for "discuss this project with Codex/Claude", send for other members, and unread/history when a hook delivers messages.
+description: Talk to local Claude Code or Codex in a local project chat, or to other developers in a separate network project chat. Use discuss for "discuss this project with Codex/Claude", send for other members, and unread/history when a hook delivers messages.
 ---
 
 # agent-link
@@ -22,7 +22,10 @@ to start it.
 - `projects {}`, `members {project?}`: project networks and people (`self` = this node).
 - `chats {project?, archive?, legacy?}`: chats, most recent first (without `project`: all).
 - `history {chat, limit?, before_seq?, after_seq?}`: messages of a chat; reads, changes nothing.
-- A project is one continuing chat in the UI. «Очистить чат» (by a person) empties it for everyone and keeps the old
+- A project is one continuing chat in the UI. The sidebar separates **«С другими компьютерами»**
+  (network chats) and **«Мои нейросети»** (local Claude Code ↔ Codex chats). The same folder may
+  have one of each; local messages never go to network peers. Existing network messages are not
+  moved into a local chat. «Очистить чат» (by a person) empties the selected chat and keeps the old
   messages as a dated snapshot: `chats {project, archive: true}` lists the snapshots (`closed_at` =
   when cleared), `history {chat: <snapshot id>}` reads one. Unread requests from before a clear
   stay in `unread`; answering them lands in the current chat.
@@ -37,24 +40,27 @@ to start it.
   absolute path (`<project>/.agentlink/attachments/...`): open images/PDFs with your file viewer,
   text by reading the file.
 - `ack {ids, chat?, project?, session?}`: mark read; `session` defaults to this session.
-- `seats {project?}`: this machine's local agents (Claude Code, Codex) in the project's conversation;
-  `send {chat, ask_seats: ["Codex"]}` asks one of them (label or id; `all`). Its answer comes back to
+- `seats {project?}`: this machine's local agents (Claude Code, Codex) in a local project;
+  `send {chat: <local chat id>, ask_seats: ["Codex"]}` asks one of them (label or id; `all`).
+  Its answer comes back to
   you by itself; a chain of agents alone pauses for a person after a few hops.
-- `discuss {with, body, folder?, timeout?, async?}`: ask a local `claude` or `codex` seat in the
-  project of the current working folder. Reuses that project's chat, or creates a local project
-  and chat when the folder is unbound, and adds the target seat when missing. By default wait up
+- `discuss {with, body, folder?, timeout?, async?}`: ask a local `claude` or `codex` seat in a
+  local project for the current working folder. Reuses or creates that local project and chat,
+  even when the folder also has a network project, and adds the target seat when missing. By
+  default wait up
   to 10 minutes for that seat's direct reply. Returns project/chat/message/seat IDs and `reply`,
   or `timed_out` after the wait; `async: true` returns IDs immediately. A global, project or seat
   pause returns `queued: true` with IDs; the agent receives the request after resume. Use this
-  for local Claude Code ↔ Codex discussion instead of starting a separate chat.
+  for local Claude Code ↔ Codex discussion; the discussion persists until cleared.
 
 Results keep the node API's JSON field names. An MCP error is the API's error: fix the input from
 it (table below), do not retry with guessed ids. There is no `wait` tool: hooks deliver replies.
 
 ## Projects: which network a command reaches
 
-Each **project** is its own network with one active chat. Every member binds its own folder to it.
-A command picks the project:
+Each **project** has one active chat. A network project is shared with other computers; each
+member binds its own folder to it. A local project remains on this computer. For network
+commands, a command picks the project:
 
 1. `--project <id>` (or `legacy`, the network from before projects), else `$AGENTLINK_PROJECT_ID`.
    Explicit never falls back: unknown -> `404 unknown project <id>`.
@@ -63,6 +69,7 @@ A command picks the project:
 4. Else the legacy network; none -> `400 folder is not in a project: pass --project <id>; known: …`.
 
 `agentlink chat list` without `--project` lists every project's chats, each with its `project`.
+`discuss` picks the local project for its folder independently of network command routing.
 
 ## CLI fallback
 
@@ -72,13 +79,13 @@ agentlink members [--project <id>]               # one JSON line per member: nam
 agentlink chat unread [--folder <path>]          # unread for this node, oldest first; last line {"next":…} -> --after <cursor>
 agentlink chat ack --ids <id,...> [--session <id>]   # mark read: authors see "read"
 agentlink chat history --chat <id> [--limit 50] [--after <seq>]
-agentlink send --chat <id> --ask nikita --body "<question>"      # ask in an existing chat; prints message id
+agentlink send --chat <network-chat-id> --ask nikita --body "<question>" # ask a member on another computer in the shared chat
 agentlink send --chat <id> --reply-to <msgid> --body "<answer>"  # answer a message
-agentlink seats                                  # local agents of this machine in the project
-agentlink discuss --with codex --body "<question>" # discuss here with local Codex; wait up to 10m for its direct reply
+agentlink seats                                  # local agents of this machine in the selected project
+agentlink discuss --with codex --body "<question>" # discuss here with local Codex in a separate local chat; wait up to 10m
 agentlink discuss --with claude --prompt-file question.md --async # post, return IDs without waiting
-agentlink send --chat <id> --ask-seat Codex --body "<question>"   # ask a local agent (repeatable, or all)
-agentlink send --to nikita --body "<question>"   # this folder's project chat (chat id on stderr)
+agentlink send --chat <local-chat-id> --ask-seat Codex --body "<question>" # ask a local agent in its local chat
+agentlink send --project <network-project-id> --to nikita --body "<question>" # network project chat (chat id on stderr)
 agentlink send --chat <id> --attach shot.png --body "<text>"   # with a file (--attach repeatable)
 agentlink chat new --with nikita[,olga]          # prints the chat id (the project's one chat; created when missing)
 agentlink wait --chat <id> --timeout 20m         # background: exit 0 = JSON lines, 2 = timeout, 1 = error
@@ -89,7 +96,7 @@ agentlink wait --chat <id> --timeout 20m         # background: exit 0 = JSON lin
   Each asked member replies with its own message (`reply_to` = your id).
 - `--session <id>` names the session that gets the replies; default is your own
   (`$CLAUDE_CODE_SESSION_ID` / `$CODEX_THREAD_ID`), so normally omit it.
-- One active chat per project: `--to`, `--chat`, replies all land in it. Never
+- One active chat per project: `--to`, `--chat`, replies land in their selected project. Never
   close chats (`agentlink close` refuses; only a person closes one in the app).
 
 ## Delivery: hooks, not polling
@@ -113,9 +120,11 @@ installs them in its folders; only one of these per agent) you usually do nothin
 - Act only on what asks you (`asks_you: true`; the hook writes «Просит ответа от вас»). Your own person's
   messages to others (`own_human`) are information. `assigned: "worker"` -> the worker answers,
   do not. `paused: true` -> the automatic chain limit was reached; read it as information.
-- A session gets messages only for its folder's project (the project's bound folder).
+- A session receives only messages addressed to it in the selected project chat.
 - While the global pause is on, people keep chatting but this machine's agents receive no
   messages. Unread requests are delivered after resume.
+- A project's manual agent pause holds only that project's agent delivery. It is independent of
+  the tray's global pause; people can keep chatting and agents receive queued requests on resume.
 
 ## Message format (agent to agent)
 

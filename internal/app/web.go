@@ -84,6 +84,7 @@ func (a *App) URL(page string) string {
 //	POST /ui/api/update/apply      install the newer release, then restart -> UpdateStatus
 //	POST /ui/api/update/auto       {"auto"} -> save the auto-update switch -> UpdateStatus
 //	POST /ui/api/autonomy/stop     {"on"} -> the emergency stop of every project's agents -> Status
+//	POST /ui/api/projects/{pid}/autonomy/stop {"on"} -> this member's project agent pause -> ProjectView
 //	POST /ui/api/quit              exit the app (same path as the tray's Quit)
 func (a *App) Handler() http.Handler {
 	ui := http.NewServeMux()

@@ -65,13 +65,19 @@ function bobPresence(presence: Presence | undefined, connected = true, state = '
 
 let chats: Record<string, Fixture>
 let releaseSend: (() => void) | null
+let autonomyStopped: boolean
 const sent: unknown[] = []
 
 function serve() {
   return fakeApi((method, path, body) => {
-    if (path === 'projects') return [{ id: P, legacy: false, name: 'Сайт', alias: '', display: 'Сайт', dir: 'W:/work', state: 'ready', problem: '', online: 2, total: 2, can_rename: true, has_invite: true, busy: false, members: [{ name: 'local', self: true, online: true }, { name: 'bob', online: true }, { name: 'карл & sons', online: true }, { name: 'alice', online: false }] }]
+    const project = () => ({ id: P, legacy: false, name: 'Сайт', alias: '', display: 'Сайт', dir: 'W:/work', state: 'ready', problem: '', online: 2, total: 2, can_rename: true, has_invite: true, busy: false, autonomy: { mode: 'asked' as const, max_auto_depth: 8, max_auto_depth_default: true, turns_per_hour: 30, max_run_minutes: 240, turns_last_hour: 0, run_minutes: 0, stopped: autonomyStopped }, members: [{ name: 'local', self: true, online: true }, { name: 'bob', online: true }, { name: 'карл & sons', online: true }, { name: 'alice', online: false }] })
+    if (path === 'projects') return [project()]
     if (!path.startsWith(prefix)) throw new Error('unexpected call ' + method + ' ' + path)
     path = path.slice(prefix.length)
+    if (method === 'POST' && path === 'autonomy/stop') {
+      autonomyStopped = (body as { on: boolean }).on
+      return project()
+    }
     if (method === 'POST' && path.endsWith('/archive')) {
       const id = decodeURIComponent(path.split('/')[1]!)
       const chat = chats[id]!
@@ -117,8 +123,14 @@ const ticked = (sel: string) => $$(sel + ' [role="checkbox"]').filter((box) => b
 beforeEach(() => {
   chats = fixtures()
   releaseSend = null
+  autonomyStopped = false
   sent.length = 0
-  runtime.strings = { 'inbox.activity.type.edit': 'правит', 'inbox.activity.ago': '{t} назад','inbox.author.agent': 'агент {name}', 'inbox.member.queued': 'в очереди {n}' }
+  runtime.strings = {
+    'inbox.activity.type.edit': 'правит', 'inbox.activity.ago': '{t} назад', 'inbox.author.agent': 'агент {name}',
+    'inbox.member.queued': 'в очереди {n}',
+    'inbox.project_pause.pause': 'Пауза агентов', 'inbox.project_pause.resume': 'Продолжить работу агентов',
+    'inbox.project_pause.remove': 'Снять паузу проекта', 'inbox.project_pause.global': 'Общая пауза',
+  }
 })
 
 afterEach(() => { releaseSend?.() })
@@ -136,6 +148,81 @@ async function openInbox() {
 }
 
 describe('the open chat', () => {
+  it('retains the single-peer default in the legacy network', async () => {
+    const { inbox } = await openInbox()
+    inbox.project = 'legacy'
+    expect(inbox.askFor(chats.c3!.info)).toEqual(['bob'])
+  })
+
+  it('shows a per-project pause button and keeps human chat usable while paused', async () => {
+    const { api, app, inbox, projects } = await openInbox()
+    await inbox.selectChat(P, 'c3', '')
+    await settle()
+    const pause = $<HTMLButtonElement>('#chat_agent_pause')!
+    expect(pause).not.toBeNull()
+    expect(pause.getAttribute('aria-pressed')).toBe('false')
+    expect(text(pause)).toContain('Пауза агентов')
+    pause.click()
+    await settle()
+    expect(api.calls).toContain('POST projects/PROJ/autonomy/stop')
+    expect(projects.byID(P)?.autonomy?.stopped).toBe(true)
+    expect(pause.getAttribute('aria-pressed')).toBe('true')
+    expect(text(pause)).toContain('Продолжить работу агентов')
+
+    const body = $<HTMLTextAreaElement>('#body')!
+    body.value = 'human message during pause'
+    body.dispatchEvent(new Event('input'))
+    $('#send')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle()
+    expect(sent[0]).toEqual({ chat_id: 'c3', body: 'human message during pause', ask: [] })
+    releaseSend!()
+    await settle()
+
+    app.status = { ...app.status!, stop_all: true }
+    await settle()
+    expect(text($('#chat_global_pause'))).toContain('Общая пауза')
+    expect(text(pause)).toContain('Снять паузу проекта')
+    pause.click()
+    await settle()
+    expect(projects.byID(P)?.autonomy?.stopped).toBe(false)
+    expect(pause.getAttribute('aria-pressed')).toBe('false')
+    expect(app.status.stop_all).toBe(true)
+    expect(text($('#chat_global_pause'))).toContain('Общая пауза')
+  })
+
+  it('keeps a project message informational until a remote member is explicitly asked', async () => {
+    const { inbox, projects } = await openInbox()
+    await inbox.selectChat(P, 'c3', '')
+    projects.seats = { [P]: [
+      { id: 'codex1', provider: 'codex', label: 'Codex', status: 'idle' },
+      { id: 'codex2', provider: 'codex', label: 'Codex', status: 'idle' },
+    ] }
+    await settle()
+    expect($('#ask_row')).not.toBeNull()
+    expect(ticked('#ask_choices')).toEqual([])
+    expect(text($('#ask_hint'))).toContain('inbox.ask.none')
+    expect($('#seat_row')).toBeNull()
+
+    const body = $<HTMLTextAreaElement>('#body')!
+    const send = async (message: string) => {
+      body.value = message
+      body.dispatchEvent(new Event('input'))
+      $('#send')!.dispatchEvent(new Event('submit', { cancelable: true }))
+      await settle()
+    }
+    await send('for everyone')
+    expect(sent[0]).toEqual({ chat_id: 'c3', body: 'for everyone', ask: [] })
+    releaseSend!()
+    await settle()
+
+    $<HTMLButtonElement>('#ask_bob')!.click()
+    await settle()
+    await send('for Bob')
+    expect(sent[1]).toEqual({ chat_id: 'c3', body: 'for Bob', ask: ['bob'] })
+    releaseSend!()
+    await settle()
+  })
+
   it('renders ticks, authors, members, whom to ask and live activity', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const { api, inbox } = await openInbox()
@@ -395,12 +482,12 @@ describe('the chat list and the ways into a chat', () => {
     await settle()
     expect(router.currentRoute.value.params.chat).toBe('c3')
 
-    // A chat of two: nobody to choose; an unread message the local agent has
-    // not taken says why it waits.
+    // A project chat of two still lets the author explicitly ask the peer.
     app.sessions = [{ session_id: 's', provider: 'claude', folder: 'W:/work', area: '', wake: 'next-event' }]
     await inbox.selectChat(P, 'c4', '')
     await settle()
-    expect($('#ask_row')).toBeNull()
+    expect($('#ask_row')).not.toBeNull()
+    expect(ticked('#ask_choices')).toEqual([])
     // Not yet read by this computer's agent: one tick, and it says so.
     expect(tick('u1')!.className).toContain('delivered')
     expect(tick('u1')!.title).toBe('inbox.tick.agent_unread')

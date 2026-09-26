@@ -25,6 +25,8 @@ export const icons: Record<string, string> = {
   back: 'i-lucide-chevron-left',
   info: 'i-lucide-info',
   send: 'i-lucide-arrow-up',
+  pause: 'i-lucide-pause',
+  play: 'i-lucide-play',
   menu: 'i-lucide-menu',
   expand: 'i-lucide-chevron-down',
   collapse: 'i-lucide-chevron-up',

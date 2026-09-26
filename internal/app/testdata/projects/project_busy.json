@@ -1,5 +1,6 @@
 {
   "id": "MFRGGZDFMZTWQ2LKNNWG23TPOA",
+  "scope": "network",
   "legacy": false,
   "name": "Сайт",
   "alias": "",
@@ -49,6 +50,7 @@
   "busy": true,
   "autonomy": {
     "mode": "full",
+    "stopped": false,
     "max_auto_depth": 0,
     "max_auto_depth_default": true,
     "turns_per_hour": 30,

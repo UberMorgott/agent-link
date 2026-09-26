@@ -2,8 +2,10 @@ package node
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -42,6 +44,66 @@ func TestAutonomyFullLaunchesForInformation(t *testing.T) {
 	waitAttempts(t, b, fyi, AttemptLaunchRequested)
 	if st := a.AutonomyStatus(); st.TurnsLastHour != 1 {
 		t.Fatalf("the launch was not counted: %+v", st)
+	}
+}
+
+// A member's request for its own seat and that seat's answer are visible in
+// the shared project chat, but neither invites another member's Full agent.
+// Explicitly asking that member still launches its agent.
+func TestAutonomyFullIgnoresPeerSeatConversation(t *testing.T) {
+	p := newTestProject(t)
+	lnA, lnB := listen(t), listen(t)
+	a := newProjectNode(t, "a", p, lnA, map[string]net.Listener{"b": lnB})
+	b := newProjectNode(t, "b", p, lnB, nil)
+	seatRuns, remoteRuns := &seatLauncher{}, &fakeLauncher{}
+	a.SetFolders(t.TempDir(), nil)
+	a.SetLauncher(seatRuns, ProviderCodex)
+	a.seatBusy = seatRuns.busy
+	b.SetFolders(t.TempDir(), nil)
+	b.SetLauncher(remoteRuns, ProviderCodex)
+	b.SetAutonomy(Autonomy{Mode: AutonomyFull, MaxDepth: -1})
+	a.start(t)
+	b.start(t)
+	eventually(t, "a<->b connected", func() bool { return a.Connected("b") && b.Connected("a") })
+	seat, err := a.AddSeat(SeatRequest{Provider: ProviderCodex})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "local seat ready", func() bool { return seatByLabel(t, a, "Codex").SessionID != "" })
+	chat, err := a.NewProjectChat([]string{"b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	question, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "Codex, inspect this", AuthorKind: AuthorHuman, AskSeats: []string{seat.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "remote sees seat question", func() bool { return slices.Contains(chatIDs(b, chat.ID), question.ID) })
+	if eligible, _ := b.launchable(b.folders.work, time.Now().Add(launchGrace+time.Second)); len(eligible) != 0 {
+		t.Fatalf("peer seat request made remote agent eligible: %+v", eligible)
+	}
+	reply, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "Inspection complete", ReplyTo: question.ID, Seat: seat.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "remote sees seat answer", func() bool { return slices.Contains(chatIDs(b, chat.ID), reply.ID) })
+	b.launchDue(context.Background(), time.Now().Add(launchGrace+time.Second))
+	if got := remoteRuns.all(); len(got) != 0 {
+		t.Fatalf("remote agent launched for local seat conversation: %+v", got)
+	}
+	msgs, err := b.ChatMessages(chat.ID, 0, 0, 100)
+	if err != nil || !slices.ContainsFunc(msgs, func(m ChatMessage) bool { return m.ID == question.ID }) ||
+		!slices.ContainsFunc(msgs, func(m ChatMessage) bool { return m.ID == reply.ID }) {
+		t.Fatalf("shared history lost seat conversation: %+v, %v", msgs, err)
+	}
+	asked, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "b, review this", Ask: []string{"b"}, Seat: seat.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "remote sees explicit ask", func() bool { return slices.Contains(chatIDs(b, chat.ID), asked.ID) })
+	b.launchDue(context.Background(), time.Now().Add(launchGrace+time.Second))
+	if got := remoteRuns.all(); len(got) != 1 {
+		t.Fatalf("explicit ask did not launch remote agent: %+v", got)
 	}
 }
 

@@ -108,7 +108,7 @@ func newMCPServer(cfg config.Config) *mcp.Server {
 	addTool(s, "send", "Send a message: into a chat (chat), the open chat with a member (to), or a new chat (new_chat_with), optionally with file attachments. Returns {id, chat}.", func(in mcpSend) (any, error) {
 		return mcpSendMessage(cfg, in, proj(""))
 	})
-	addTool(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's project. Reuses the project's one chat or creates it, waits for the exact agent's reply (default 10m), and returns the reply with project/chat IDs. Use async to post without waiting; timed_out returns IDs for later history lookup.", func(in mcpDiscuss) (any, error) {
+	addTool(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's private agent chat. Creates or reuses a local project separate from any network project for the same folder, waits for the exact agent's reply (default 10m), and returns the reply with project/chat IDs. Use async to post without waiting; timed_out returns IDs for later history lookup.", func(in mcpDiscuss) (any, error) {
 		timeout := in.Timeout
 		if timeout == "" {
 			timeout = "10m"

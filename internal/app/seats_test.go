@@ -40,10 +40,7 @@ func cmpOr(a, b string) string {
 func TestProjectSeatsAPI(t *testing.T) {
 	runner := &seatRunner{}
 	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = runner })
-	var site ProjectView
-	if code, raw := h.api(t, http.MethodPost, "projects", map[string]any{"name": "Сайт", "dir": t.TempDir()}, &site); code != http.StatusOK {
-		t.Fatalf("create: %d %s", code, raw)
-	}
+	site := localProjectForTest(t, h, "Сайт", t.TempDir())
 	base := "projects/" + site.ID + "/seats"
 	var claude, codex node.SeatView
 	if code, raw := h.api(t, http.MethodPost, base, map[string]any{"provider": "claude"}, &claude); code != http.StatusOK || claude.Label != "Claude" {

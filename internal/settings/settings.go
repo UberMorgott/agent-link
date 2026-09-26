@@ -114,6 +114,12 @@ type ProjectBinding struct {
 	Alias  string   `json:"alias,omitempty"` // this member's own name for it, ≤ maxAlias runes
 	Dir    string   `json:"dir,omitempty"`   // bound folder; "" = none
 	Peers  []string `json:"peers,omitempty"` // bootstrap addresses typed by the user (host:port)
+	// Scope separates this member's private agent chat from the network chat
+	// for the same folder. Missing means the pre-existing network behavior.
+	Scope string `json:"scope,omitempty"`
+	// StopAgents holds this member's agents in this project. Human messages
+	// continue; agent delivery resumes when the switch is cleared.
+	StopAgents bool `json:"stop_agents,omitempty"`
 	// AutoOpen is the auto-open switch of files before Autonomy: Load and
 	// Normalize turn it into Autonomy (true: asked, else off) and drop it.
 	AutoOpen *bool `json:"auto_open,omitempty"`
@@ -138,6 +144,18 @@ type ProjectBinding struct {
 	// "desktop" (the default, "") the agent's desktop app when installed,
 	// "terminal" Windows Terminal.
 	LaunchMode string `json:"launch_mode,omitempty"`
+}
+
+const (
+	ProjectScopeNetwork = "network"
+	ProjectScopeLocal   = "local"
+)
+
+func (b ProjectBinding) ScopeOf() string {
+	if b.Scope == ProjectScopeLocal {
+		return ProjectScopeLocal
+	}
+	return ProjectScopeNetwork
 }
 
 // Autonomy modes (ProjectBinding.Autonomy), as node.Autonomy*.
@@ -690,8 +708,8 @@ func (s Settings) Validate() error {
 	return validateBindings(s.Bindings)
 }
 
-// validateBindings checks every binding and that no two share an id or a
-// folder (one folder may still hold another: the deepest one wins).
+// validateBindings checks every binding and permits one local and one network
+// chat per folder (one folder may still hold another).
 func validateBindings(bs []ProjectBinding) error {
 	if len(bs) > MaxProjects {
 		return problem("too_many_projects")
@@ -700,6 +718,10 @@ func validateBindings(bs []ProjectBinding) error {
 	for _, b := range bs {
 		switch {
 		case !config.ValidProjectID(b.ID) || b.Epoch != config.ProjectEpoch || !config.ValidProjectSecret(b.Secret) || ids[b.ID]:
+			return problem("project_binding")
+		case b.Scope != "" && b.Scope != ProjectScopeLocal && b.Scope != ProjectScopeNetwork:
+			return problem("project_binding")
+		case b.ScopeOf() == ProjectScopeLocal && len(b.Peers) != 0:
 			return problem("project_binding")
 		case !ValidAlias(b.Alias):
 			return problem("alias")
@@ -718,7 +740,7 @@ func validateBindings(bs []ProjectBinding) error {
 		if st, err := os.Stat(b.Dir); !filepath.IsAbs(b.Dir) || err != nil || !st.IsDir() {
 			return problem("dir")
 		}
-		key := DirKey(b.Dir)
+		key := b.ScopeOf() + ":" + DirKey(b.Dir)
 		if dirs[key] {
 			return problem("dir_taken")
 		}
