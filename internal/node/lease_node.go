@@ -137,11 +137,13 @@ const seatOwnerPrefix = "seat:"
 func seatOwner(seat string) string { return seatOwnerPrefix + seat }
 
 // leaseSweep ends the leases that lost their owner (a session that is not
-// live any more) or passed their deadline without proof, saves what is not
-// saved and prunes the book.
+// live any more, or one silent on a queued wake for queuedOwnerMax) or passed
+// their deadline without proof, saves what is not saved and prunes the book.
 func (n *Node) leaseSweep(now time.Time) {
 	live := n.sess.liveIDs(now)
-	ends := n.leases.due(now, func(owner string) bool { return sessionOwner(owner) && !live[owner] })
+	active := n.sess.activeAts()
+	ends := n.leases.due(now, func(owner string) bool { return sessionOwner(owner) && !live[owner] },
+		func(owner string) time.Time { return active[owner] })
 	type group struct{ owner, reason string }
 	byGroup := map[group][]string{}
 	for _, e := range ends {
@@ -150,9 +152,9 @@ func (n *Node) leaseSweep(now time.Time) {
 	}
 	for g, list := range byGroup {
 		n.log.Info("delivery lease ended", "owner", g.owner, "reason", g.reason, "messages", len(list))
-		// A lapsed wake keeps its claim (and token): a late proof acknowledges
-		// instead of delivering twice. A gone session's claims go.
-		n.revokeLeases(g.owner, list, g.reason, g.reason != "deadline")
+		// A lapsed or stale wake keeps its claim (and token): a late proof
+		// acknowledges instead of delivering twice. A gone session's claims go.
+		n.revokeLeases(g.owner, list, g.reason, g.reason != "deadline" && g.reason != "queued_stale")
 	}
 	for _, e := range n.leases.staleHolds(now) {
 		n.releaseHold(e.owner, []string{e.id}, now)

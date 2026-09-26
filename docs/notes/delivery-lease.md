@@ -43,7 +43,12 @@ Rules:
   queue`, waiter output) cannot be withdrawn: the lease stays that session's
   (`routeOf` routes to it) until proof, or evidence the channel dropped it
   (session end/gone, post/queue/proxy error, thread gone: `LeaseRevoke`).
-  Time alone never reassigns it; waking the same session again is no failure.
+  A deadline never reassigns it; waking the same session again is no failure.
+  Only a session silent on it for `queuedOwnerMax` (30 min without a hook
+  event since the lease, heartbeats aside) loses it (`queued_stale`: a
+  failure of that owner, the claim and token kept for a late proof), so a
+  session whose waiter hit its wake cap but keeps heartbeating cannot hold it
+  for the whole registration.
 - `failed` is terminal for automatic paths (`Lease.Failed`): a hook may still
   show the message to a live session, and its lapse returns to `failed`.
 - `hook` leases (a session in a turn claiming) do not count as attempts and
@@ -54,7 +59,7 @@ Rules:
   record's `waiter_wakes`, persisted); launches keep `launchDebounce`.
 - `failed` blocks every automatic delivery. The message stays unread: a
   session's hooks still deliver it at its next event (a person decides).
-- A revoke for a deadline keeps a lapsed wake claim's token (PR #16: a late
+- A revoke for a deadline or `queued_stale` keeps a lapsed wake claim's token (PR #16: a late
   proof acks instead of delivering twice); a revoke for a gone session drops
   the claim.
 
@@ -100,6 +105,7 @@ for every unread message (UI PR-E).
 ## Open risks
 
 - A Codex session that died without its hooks ending it keeps a queued lease
-  until its registration lapses (TTL 1 h) or PR-D reports the thread gone.
+  until its registration lapses (TTL 1 h), PR-D reports the thread gone or it
+  stays silent for `queuedOwnerMax`.
 - Proof for Claude is still the hook's ack at the woken prompt; a session
   whose hooks never run cannot prove and is passed over after two failed leases.

@@ -537,9 +537,17 @@ type leaseEnd struct {
 	owner, id, reason string
 }
 
-// due lists the leases that must end now: past their deadline, or owned by a
-// session that is not live (gone(owner) true).
-func (b *leaseBook) due(now time.Time, gone func(owner string) bool) []leaseEnd {
+// queuedOwnerMax bounds how long a session keeps a message whose wake prompt
+// sits in its queue or inbox while it shows no activity (active: its last hook
+// event, not a heartbeat): a session whose waiter hit its wake cap but keeps
+// heartbeating would hold it for as long as it stays registered.
+const queuedOwnerMax = 30 * time.Minute
+
+// due lists the leases that must end now: past their deadline, owned by a
+// session that is not live (gone(owner) true), or queued in a session that
+// did nothing for queuedOwnerMax since the lease or its last activity
+// (active(owner)).
+func (b *leaseBook) due(now time.Time, gone func(owner string) bool, active func(owner string) time.Time) []leaseEnd {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var out []leaseEnd
@@ -552,8 +560,17 @@ func (b *leaseBook) due(now time.Time, gone func(owner string) bool) []leaseEnd 
 			out = append(out, leaseEnd{l.Owner, l.ID, "session_gone"})
 		case l.State == LeaseLeased && contentVia(l.Via):
 			// The prompt is in the session's queue or inbox: it cannot be
-			// withdrawn, so time alone never reassigns it (a slow turn is no
-			// failure). Proof, the session's end or a channel error ends it.
+			// withdrawn, so a deadline never reassigns it (a slow turn is no
+			// failure). Proof, the session's end, a channel error or the
+			// session's silence for queuedOwnerMax ends it; a late proof still
+			// counts (start).
+			since := l.At
+			if a := active(l.Owner); a.After(since) {
+				since = a
+			}
+			if now.Sub(since) >= queuedOwnerMax {
+				out = append(out, leaseEnd{l.Owner, l.ID, "queued_stale"})
+			}
 		case !l.Deadline.IsZero() && !now.Before(l.Deadline):
 			out = append(out, leaseEnd{l.Owner, l.ID, "deadline"})
 		}
