@@ -155,6 +155,9 @@ type leaseBook struct {
 	mu    sync.Mutex
 	m     map[string]*Lease
 	dirty bool
+	// stopped: the node's agents are stopped (Node.SetStopped); no automatic
+	// lease is taken.
+	stopped bool
 }
 
 func newLeaseBook(dir string) *leaseBook {
@@ -264,6 +267,9 @@ func (b *leaseBook) blocked(key, owner, via string, now time.Time) bool {
 func (b *leaseBook) take(id, seat, owner, via, token string, deadline, now time.Time) (bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.stopped && automatic(via) {
+		return false, nil
+	}
 	key := leaseKey(seat, id)
 	l := b.m[key]
 	if l == nil {
@@ -446,6 +452,38 @@ func (b *leaseBook) revoke(owner string, ids []string, reason string, now time.T
 		return nil, nil
 	}
 	return failed, b.saveLocked()
+}
+
+// stop takes no automatic lease any more and releases the active ones (not
+// held for an ack): back to retry, due at once, without a failure of their
+// owner or an attempt spent. Owner and token stay, so a late proof of the
+// owner still counts (start). It returns the released leases.
+func (b *leaseBook) stop(now time.Time) ([]leaseEnd, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.stopped = true
+	var out []leaseEnd
+	for _, l := range b.m {
+		if (l.State != LeaseLeased && l.State != LeaseRunning) || l.Hold || !automatic(l.Via) {
+			continue
+		}
+		l.State, l.Reason, l.Deadline, l.NextAt, l.At = LeaseRetry, "stopped", time.Time{}, now, now
+		if l.Attempts > 0 {
+			l.Attempts--
+		}
+		out = append(out, leaseEnd{l.Owner, l.ID, "stopped"})
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, b.saveLocked()
+}
+
+// resume takes automatic leases again (after stop).
+func (b *leaseBook) resume() {
+	b.mu.Lock()
+	b.stopped = false
+	b.mu.Unlock()
 }
 
 // fail ends owner's leases of ids as failed (a turn that started and failed:

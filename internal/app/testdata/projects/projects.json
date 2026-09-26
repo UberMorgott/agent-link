@@ -44,7 +44,17 @@
     ],
     "can_rename": true,
     "has_invite": true,
-    "busy": false
+    "busy": false,
+    "autonomy": {
+      "mode": "full",
+      "max_auto_depth": 0,
+      "max_auto_depth_default": true,
+      "turns_per_hour": 30,
+      "max_run_minutes": 240,
+      "turns_last_hour": 4,
+      "run_minutes": 25
+    },
+    "launch_mode": "desktop"
   },
   {
     "id": "NBSWY3DPEB3W64TMMQQGC3DUMU",
@@ -145,7 +155,17 @@
     ],
     "can_rename": true,
     "has_invite": true,
-    "busy": false
+    "busy": false,
+    "autonomy": {
+      "mode": "full",
+      "max_auto_depth": 0,
+      "max_auto_depth_default": true,
+      "turns_per_hour": 30,
+      "max_run_minutes": 240,
+      "turns_last_hour": 4,
+      "run_minutes": 25
+    },
+    "launch_mode": "desktop"
   },
   {
     "id": "MFRGGZDFMZTWQ2LKNNWG23TPOA",
@@ -192,7 +212,17 @@
     ],
     "can_rename": true,
     "has_invite": true,
-    "busy": false
+    "busy": false,
+    "autonomy": {
+      "mode": "full",
+      "max_auto_depth": 0,
+      "max_auto_depth_default": true,
+      "turns_per_hour": 30,
+      "max_run_minutes": 240,
+      "turns_last_hour": 4,
+      "run_minutes": 25
+    },
+    "launch_mode": "desktop"
   },
   {
     "id": "legacy",

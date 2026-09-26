@@ -125,18 +125,33 @@ func TestProjectsAPI(t *testing.T) {
 	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"dir": dir2}, &v); code != http.StatusOK || v.State != ProjectReady {
 		t.Fatalf("bind folder: %d %s", code, raw)
 	}
-	// Auto-open: off by default (no value), on and off again, kept in the settings.
-	if v.AutoOpen || h.app.Settings().Bindings[h.app.bindingIndex(site.ID)].AutoOpen != nil || h.app.projects[site.ID].n.AutoOpen() {
-		t.Fatalf("auto-open not off by default: %+v", v)
+	// Autonomy: off by default with the hop limit 8; full follows with no hop
+	// limit; budgets and a set limit are kept in the settings and applied.
+	binding := func() settings.ProjectBinding { return h.app.Settings().Bindings[h.app.bindingIndex(site.ID)] }
+	if a := v.Autonomy; a == nil || a.Mode != settings.AutonomyOff || a.MaxAutoDepth != 8 || !a.MaxAutoDepthDefault ||
+		a.TurnsPerHour != 30 || a.MaxRunMinutes != 240 || h.app.projects[site.ID].n.Autonomy().Mode != node.AutonomyOff {
+		t.Fatalf("autonomy not off by default: %+v", v.Autonomy)
 	}
-	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"auto_open": true}, &v); code != http.StatusOK ||
-		!v.AutoOpen || !h.app.Settings().Bindings[h.app.bindingIndex(site.ID)].AutoOpenOn() || !h.app.projects[site.ID].n.AutoOpen() {
-		t.Fatalf("auto-open on: %d %s", code, raw)
+	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"autonomy": "full"}, &v); code != http.StatusOK ||
+		v.Autonomy.Mode != "full" || v.Autonomy.MaxAutoDepth != 0 || binding().Autonomy != "full" ||
+		h.app.projects[site.ID].n.Autonomy() != (node.Autonomy{Mode: node.AutonomyFull, MaxDepth: 0, TurnsPerHour: 30, MaxRun: 4 * time.Hour}) {
+		t.Fatalf("autonomy full: %d %s", code, raw)
 	}
-	v = ProjectView{}
-	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"auto_open": false}, &v); code != http.StatusOK ||
-		v.AutoOpen || h.app.Settings().Bindings[h.app.bindingIndex(site.ID)].AutoOpenOn() || h.app.projects[site.ID].n.AutoOpen() {
-		t.Fatalf("auto-open off: %d %s", code, raw)
+	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding",
+		map[string]any{"max_auto_depth": 12, "turns_per_hour": 5, "max_run_minutes": 30}, &v); code != http.StatusOK ||
+		v.Autonomy.MaxAutoDepth != 12 || v.Autonomy.MaxAutoDepthDefault || v.Autonomy.TurnsPerHour != 5 || v.Autonomy.MaxRunMinutes != 30 ||
+		h.app.projects[site.ID].n.Autonomy() != (node.Autonomy{Mode: node.AutonomyFull, MaxDepth: 12, TurnsPerHour: 5, MaxRun: 30 * time.Minute}) {
+		t.Fatalf("autonomy budgets: %d %s", code, raw)
+	}
+	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"autonomy": "asked", "max_auto_depth": -1}, &v); code != http.StatusOK ||
+		v.Autonomy.Mode != "asked" || v.Autonomy.MaxAutoDepth != 8 || binding().MaxAutoDepth != nil || h.app.projects[site.ID].n.Autonomy().MaxDepth != 8 {
+		t.Fatalf("autonomy asked: %d %s", code, raw)
+	}
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"autonomy": "always"}, http.StatusBadRequest, "autonomy")
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"turns_per_hour": 100000}, http.StatusBadRequest, "autonomy")
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"max_run_minutes": 1}, http.StatusBadRequest, "autonomy")
+	if binding().AutonomyOf() != settings.AutonomyAsked || binding().TurnsPerHour != 5 {
+		t.Fatalf("a refused autonomy change was kept: %+v", binding())
 	}
 	// Launch mode: desktop by default, terminal kept in the settings and applied.
 	if v.LaunchMode != "desktop" {

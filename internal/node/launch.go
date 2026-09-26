@@ -14,7 +14,10 @@ import (
 // The launch ladder. A message that asks this node must be seen by an agent
 // session. When an area of this node has eligible unread messages and no live
 // session at all, the node opens a visible session in the area's folder
-// (SessionLauncher), while auto-open is on (SetAutoOpen).
+// (SessionLauncher), as the project's autonomy allows (SetAutonomy: not off;
+// a message that only informs this node only in full mode). Every launch is
+// an autonomous turn (autoTake): none while the node is stopped or its
+// budgets paused it.
 //
 // In the agent's desktop app (DirectLauncher, launch mode LaunchDesktop, the
 // app installed): the node claims the messages for the launch first
@@ -54,7 +57,8 @@ import (
 //  3. One launch per area per launchDebounce; a message a launch was confirmed
 //     or failed for is not launched for again (a newer one is).
 //
-// Eligible: unread, asking this node, not taken by the worker, not paused by
+// Eligible: unread, asking this node (in full mode also a message of another
+// member that only informs it, within the hop limit), not taken by the worker, not paused by
 // the loop guard (those report AttemptNeedsHuman instead), and older than
 // launchGrace (the worker and the hooks go first). Eligibility is re-read
 // right before every attempt. Every step is reported to the messages' authors
@@ -157,13 +161,6 @@ func (n *Node) SetLauncher(l SessionLauncher, provider string) {
 	n.deliv.mu.Unlock()
 }
 
-// SetAutoOpen turns opening sessions on or off (a project's «auto-open»
-// setting); it may change while the node runs.
-func (n *Node) SetAutoOpen(on bool) { n.autoOpen.Store(on) }
-
-// AutoOpen reports whether the node opens sessions.
-func (n *Node) AutoOpen() bool { return n.autoOpen.Load() }
-
 // Full permissions of an opened session: the owner chose that auto-opened
 // sessions act with all rights, as the owner's own would (docs/agent-usage.md).
 const (
@@ -260,6 +257,8 @@ type pendingLaunch struct {
 	// before: the live sessions of the area at the launch (nil: none); only
 	// another one confirms it then.
 	before map[string]bool
+	// cancel ends a direct launch's first turn (SetStopped).
+	cancel context.CancelFunc
 }
 
 func newDeliveryState() *deliveryState {
@@ -352,14 +351,18 @@ func (n *Node) launchable(dir string, now time.Time) (eligible, paused []UnreadM
 	}
 	held := n.launchHeld()
 	book := n.leases.all()
+	full := n.autoMode() == AutonomyFull
 	d := n.deliv
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, m := range page.Messages {
 		l, leased := book[m.ID]
 		leased = leased && (l.State == LeaseLeased || l.State == LeaseRunning || l.Failed)
+		// Full autonomy: a chat message of another member that only informs
+		// this node counts too, within the hop limit.
+		fyi := full && !m.AsksYou && !m.Paused && m.ChatID != "" && m.Kind == "" && m.Direction == "in" && !n.overDepth(m.Message)
 		switch {
-		case !m.AsksYou || m.OwnHuman || m.Assigned != "" || held[m.ID] || leased:
+		case (!m.AsksYou && !fyi) || m.OwnHuman || m.Assigned != "" || held[m.ID] || leased:
 		case m.Paused:
 			paused = append(paused, m)
 		case d.isSpent(m.ID) || now.Sub(m.ReceivedAt) < launchGrace:
@@ -372,7 +375,7 @@ func (n *Node) launchable(dir string, now time.Time) (eligible, paused []UnreadM
 
 // launchDue runs one step of the launch ladder for every area.
 func (n *Node) launchDue(ctx context.Context, now time.Time) {
-	if n.launcher == nil || !n.AutoOpen() {
+	if n.launcher == nil || n.autoMode() == AutonomyOff || !n.autoOK() {
 		return
 	}
 	for area, dir := range n.launchAreas() {
@@ -476,12 +479,16 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 // messages themselves (WakePrompt, as many as fit). A headless turn runs no
 // agent-link hooks, so nothing else delivers them to it.
 func (n *Node) startDirect(ctx context.Context, dl DirectLauncher, area string, spec LaunchSpec, eligible []UnreadMessage, now time.Time) {
+	if !n.autoTake(now) {
+		return
+	}
 	msgs := n.launchClaim(area, eligible[:FitUnread(eligible)])
 	if len(msgs) == 0 {
 		return
 	}
 	spec.Prompt = WakePrompt(msgs, len(eligible)-len(msgs), spec.Folder, randomHex(8))
-	p := &pendingLaunch{at: now, tries: 1, spec: spec, ids: ids(msgs), direct: true}
+	ctx, cancel := context.WithCancel(ctx)
+	p := &pendingLaunch{at: now, tries: 1, spec: spec, ids: ids(msgs), direct: true, cancel: cancel}
 	d := n.deliv
 	d.mu.Lock()
 	d.last[area] = now
@@ -490,7 +497,10 @@ func (n *Node) startDirect(ctx context.Context, dl DirectLauncher, area string, 
 	n.report(p.ids, AttemptLaunchRequested)
 	n.log.Info("opening a session in the desktop app for unread messages", "area", area, "provider", spec.Provider,
 		"folder", spec.Folder, "resume", spec.ResumeID, "messages", len(p.ids))
-	n.directWG.Go(func() { n.runDirect(ctx, dl, area, p) })
+	n.directWG.Go(func() {
+		defer cancel()
+		n.runDirect(ctx, dl, area, p)
+	})
 }
 
 // runDirect runs p's first turn and ends p: a turn that succeeded acknowledges
@@ -654,6 +664,9 @@ func (n *Node) launchSeen(area string, p *pendingLaunch, session string) {
 
 // startLaunch opens spec for msgs (try number tries) and records it pending.
 func (n *Node) startLaunch(ctx context.Context, area string, spec LaunchSpec, msgs []UnreadMessage, tries int, now time.Time) {
+	if !n.autoTake(now) {
+		return
+	}
 	d := n.deliv
 	list := ids(msgs)
 	d.mu.Lock()

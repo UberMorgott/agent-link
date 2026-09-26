@@ -20,6 +20,7 @@ export interface Status {
   listen?: string
   handler?: string
   members?: Member[]
+  stop_all?: boolean // every project's agents are stopped (emergency stop)
 }
 
 export interface DashboardSummary {
@@ -220,10 +221,35 @@ export interface ProjectView {
   can_rename: boolean
   has_invite: boolean
   busy: boolean
-  // auto_open: other agents' messages may open a new agent session in this
-  // member's folder when none is there (off by default); launch_mode: where.
-  auto_open?: boolean
+  // autonomy: how far this member's agents work by themselves in the project;
+  // absent for the legacy network. launch_mode: where an opened session opens.
+  autonomy?: AutonomyView
   launch_mode?: 'desktop' | 'terminal'
+}
+
+export type AutonomyMode = 'off' | 'asked' | 'full'
+
+// AutonomyView: the mode, the hop limit in effect (0: none; _default: it
+// follows the mode), the budgets of full mode and what of them is used.
+export interface AutonomyView {
+  mode: AutonomyMode
+  max_auto_depth: number
+  max_auto_depth_default: boolean
+  turns_per_hour: number
+  max_run_minutes: number
+  paused?: boolean
+  pause_reason?: 'turns' | 'run'
+  turns_last_hour: number
+  run_minutes: number
+}
+
+// AutonomyRequest changes a project's autonomy (absent: kept); a negative
+// max_auto_depth follows the mode again, 0 budgets their defaults.
+export interface AutonomyRequest {
+  autonomy?: AutonomyMode
+  max_auto_depth?: number
+  turns_per_hour?: number
+  max_run_minutes?: number
 }
 
 export interface InviteView { invite: string }

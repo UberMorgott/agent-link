@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef, watch } from 'vue'
 import { api, projectPath } from '@/lib/api'
-import type { ChatInfo, InviteView, JoinResult, ProjectView, SeatView } from '@/types'
+import type { AutonomyRequest, ChatInfo, InviteView, JoinResult, ProjectView, SeatView } from '@/types'
 
 export const LEGACY = 'legacy'
 // The project opened last, so /ui/inbox comes back to it.
@@ -201,9 +201,16 @@ export const useProjectsStore = defineStore('projects', () => {
     return view
   }
 
-  // bind changes this member's own alias and folder; an absent field is kept.
-  async function bind(pid: string, body: { alias?: string; dir?: string; auto_open?: boolean }) {
+  // bind changes this member's own alias, folder and autonomy; an absent field is kept.
+  async function bind(pid: string, body: { alias?: string; dir?: string } & AutonomyRequest) {
     const view = await api<ProjectView>('POST', projectPath(pid, 'binding'), body)
+    upsert(view)
+    return view
+  }
+
+  // resumeAutonomy ends a pause of a project's autonomous work (its budgets ran out).
+  async function resumeAutonomy(pid: string) {
+    const view = await api<ProjectView>('POST', projectPath(pid, 'autonomy/resume'))
     upsert(view)
     return view
   }
@@ -316,7 +323,7 @@ export const useProjectsStore = defineStore('projects', () => {
     list, chats, archives, archiveOpen, seats, refreshSeats, seatAction, current, currentProject, hasLegacy, loaded, invite, inviteFor,
     joinStep, joinProject, joinCreated,
     byID, upsert, listSettled, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped, toggleArchive,
-    open, landing, create, rename, bind, addMember, removeMember, leave, createChat, revealInvite, hideInvite,
+    open, landing, create, rename, bind, resumeAutonomy, addMember, removeMember, leave, createChat, revealInvite, hideInvite,
     joinReset, join, joinProgress, joinCancel, dialog, dialogProject, openDialog, closeDialog,
   }
 })

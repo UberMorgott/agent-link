@@ -33,6 +33,10 @@ type Chats interface {
 	// node.Node.ClaimRun); it is asked once per new request. When m must not
 	// run, hold is the reason (node.Hold*), "" when m does not ask this node.
 	ClaimRun(m node.Message) (run bool, hold string, err error)
+	// AutoHeld reports whether no automatic handler may run for m (see
+	// node.Node.AutoHeld): past the project's hop limit, or the agents are
+	// stopped. m then waits unread, without a visible hold.
+	AutoHeld(m node.Message) bool
 	// LiveSession reports whether a live agent session is registered on this
 	// node for messages of area: the worker then leaves them to it.
 	LiveSession(area string) bool

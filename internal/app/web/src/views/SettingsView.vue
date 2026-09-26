@@ -4,6 +4,7 @@ import UButton from '@nuxt/ui/components/Button.vue'
 import UCollapsible from '@nuxt/ui/components/Collapsible.vue'
 import UInput from '@nuxt/ui/components/Input.vue'
 import USwitch from '@nuxt/ui/components/Switch.vue'
+import AutonomySettings from '@/components/AutonomySettings.vue'
 import { icon } from '@/lib/icons'
 import { api } from '@/lib/api'
 import { browser, fmt, t } from '@/lib/runtime'
@@ -125,8 +126,9 @@ function editedAndSave(note?: string) {
   return saveSettings(note)
 }
 
-// The auto-update switch sits in the form but saves through its own request.
-const ownRequest = (ev: Event) => !!(ev.target as HTMLElement | null)?.closest?.('#update_auto_row')
+// The auto-update switch and «Автономия агентов» sit in the form but save
+// through their own requests.
+const ownRequest = (ev: Event) => !!(ev.target as HTMLElement | null)?.closest?.('#update_auto_row, [data-own-request]')
 function onInput(ev: Event) { if (!ownRequest(ev)) edits++ }
 function onChange(ev: Event) { if (!ownRequest(ev)) void saveSettings() }
 
@@ -411,6 +413,8 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
             {{ t("settings.auto_answer.hint") }}
           </p>
         </section>
+
+        <AutonomySettings />
 
         <section
           class="settings-card flex flex-col gap-2"

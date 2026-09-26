@@ -76,10 +76,17 @@ func (n *Node) wakeLoop(ctx context.Context) {
 			n.syncQueueWake()
 		}
 		n.leaseSweep(time.Now())
-		n.wakeIdle(ctx)
+		// Stopped (SetStopped) or paused by the budgets (autonomy.go): no
+		// wake, seat turn or launch starts; messages wait unread.
+		auto := n.autoOK()
+		if auto {
+			n.wakeIdle(ctx)
+		}
 		n.seatsDue(ctx, time.Now())
 		n.launchMaintain(ctx, time.Now())
-		n.launchDue(ctx, time.Now())
+		if auto {
+			n.launchDue(ctx, time.Now())
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -174,6 +181,9 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		}
 		if len(take) == 0 {
 			continue
+		}
+		if !n.autoTake(time.Now()) {
+			return // stopped, or a budget just paused autonomous delivery
 		}
 		byInbox := d.inbox.socket != ""
 		via := ViaQueue

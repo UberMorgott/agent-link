@@ -71,7 +71,7 @@ func deliveryPair(t *testing.T, dir string, p InboxPoster, l SessionLauncher) (*
 	}
 	if l != nil {
 		a.SetLauncher(l, "")
-		a.SetAutoOpen(true)
+		a.SetAutonomy(Autonomy{Mode: AutonomyAsked, MaxDepth: -1})
 	}
 	a.wakeEvery = time.Hour
 	a.start(t)
@@ -362,13 +362,13 @@ func TestLaunchLadderEligibility(t *testing.T) {
 	waitAttempts(t, b, deep, AttemptNeedsHuman)
 
 	// Off: nothing opens.
-	a.SetAutoOpen(false)
+	a.SetAutonomy(Autonomy{Mode: AutonomyOff, MaxDepth: -1})
 	m2 := ask(t, a, b, "no agent here")
 	a.launchDue(ctx, time.Now().Add(launchGrace+time.Second))
 	if len(l.all()) != 0 {
 		t.Fatal("launched with auto-open off")
 	}
-	a.SetAutoOpen(true)
+	a.SetAutonomy(Autonomy{Mode: AutonomyAsked, MaxDepth: -1})
 	l.mu.Lock()
 	l.err = ErrNoAgent
 	l.mu.Unlock()

@@ -358,12 +358,26 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   to answer it, e.g. the reply to a question that session asked) goes to that session even
   while it is idle and another session of the folder is in a turn: it is woken for it, the
   active one does not get it.
-- **Opening a session (auto-open, off by default).** When a message asks this member and no
-  session at all (in a turn or idle) is live in the project's folder, the node opens a new
-  one there, only while the project's «Разрешить другим агентам создавать сессию в этом
-  проекте» (project menu «⋯», API `POST /ui/api/projects/{pid}/binding {"auto_open": true}`)
-  is on. Projects from before this setting, and new ones, have it off: the message then waits
-  until a session of the folder appears and gets it the usual way. The node always starts a
+- **Opening a session (project autonomy, off by default).** When a message asks this member and
+  no session at all (in a turn or idle) is live in the project's folder, the node opens a new
+  one there, only while the project's autonomy (settings page «Автономия агентов», API
+  `POST /ui/api/projects/{pid}/binding {"autonomy": "off|asked|full"}`, settings key
+  `project_bindings[].autonomy`) is `asked` or `full`; `full` also opens one for a chat message
+  of another member that only informs this member, within the hop limit (`max_auto_depth`:
+  unset follows the mode, 8 for off/asked and none for full; 0 = none). In full mode every
+  autonomous turn (a wake, a launch, a seat's turn) counts against `turns_per_hour` (default
+  30) and `max_run_minutes` of continuous work (default 240; a quiet gap of 15 minutes starts a
+  new run); an exhausted budget pauses autonomous delivery of that project (kept in
+  `autonomy.json` across restarts), the tray shows one notification, and
+  `POST /ui/api/projects/{pid}/autonomy/resume` («Продолжить») goes on. Projects from before
+  this setting keep their auto-open as `asked` (on) or `off`; new ones are off: the message then
+  waits until a session of the folder appears and gets it the usual way.
+- **Emergency stop.** `POST /ui/api/autonomy/stop {"on": true}` (settings page, tray menu
+  «Остановить всех агентов»; settings key `stop_all`) releases every active automatic lease
+  (back to retry, no failure counted; a late proof still counts), ends the seat and
+  desktop-launch turns the node runs, and takes no automatic lease, wake, launch, seat turn or
+  worker job in any project until switched off. Messages stay unread; the hook of a session in
+  a turn still delivers. The node always starts a
   **new** session (never resumes an old one: nothing proves it is closed). Launch mode
   `desktop` (default, when the agent's desktop app is installed) claims the messages for the
   launch (no session's hooks take them meanwhile), runs the first turn headless with the
@@ -396,8 +410,8 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   **Permissions: an auto-opened session runs with full rights, like the owner's own** — Claude
   `--permission-mode bypassPermissions`; Codex `approvalPolicy: "never"` and
   `sandbox: "danger-full-access"` (Terminal: `--dangerously-bypass-approvals-and-sandbox`). It
-  acts on what other members' agents write, without asking anyone: switch auto-open on only for
-  projects whose members you trust, and off (per project) to stop it.
+  acts on what other members' agents write, without asking anyone: choose asked or full only
+  for projects whose members you trust, and off (per project) or the emergency stop to stop it.
 - **Known gaps.** A session open in a desktop app whose hooks have not fired yet (nothing typed
   since it opened) is invisible to the node: it may open another one. A closed session counts
   as live until its registration lapses (900 s for Claude, 3600 s for Codex, when `SessionEnd`

@@ -109,6 +109,11 @@ func runApp(args []string) error {
 	a.QuitFunc = systray.Quit
 	if *noTray {
 		a.QuitFunc = quit
+	} else {
+		// A project's agents paused by their budgets: one balloon, a click on it
+		// opens the settings page with «Продолжить».
+		a.Notify = systray.ShowNotification
+		systray.SetOnNotificationTapped(func() { openBrowser(a.URL("settings")) })
 	}
 	ln, err := listen(quitCtx, a.APIAddr(), *restarted)
 	if err != nil {
@@ -164,7 +169,14 @@ func runApp(args []string) error {
 		default: // one pending refresh reads the latest state anyway
 		}
 	}
-	systray.Run(func() { onReady(a, log, autostartChanged) }, nil)
+	stopChanged := make(chan struct{}, 1)
+	a.StopAllChanged = func(bool) {
+		select {
+		case stopChanged <- struct{}{}:
+		default:
+		}
+	}
+	systray.Run(func() { onReady(a, log, autostartChanged, stopChanged) }, nil)
 	log.Info("quit")
 	return nil
 }
@@ -220,7 +232,7 @@ func cleanupUpdate(exe string, log *slog.Logger) {
 // Windows redraws (and on some builds closes) a popup menu whose items are
 // modified under TrackPopupMenu, so live state goes to the tooltip instead
 // and the checkbox changes only in response to a click or a settings save.
-func onReady(a *app.App, log *slog.Logger, autostartChanged <-chan struct{}) {
+func onReady(a *app.App, log *slog.Logger, autostartChanged, stopChanged <-chan struct{}) {
 	systray.SetIcon(icon)
 	systray.SetTitle("agentlink")
 	on, available := a.Autostart()
@@ -229,6 +241,8 @@ func onReady(a *app.App, log *slog.Logger, autostartChanged <-chan struct{}) {
 		autostart.Disable()
 	}
 	open := systray.AddMenuItem(app.Text(app.TrayOpenBrowser, nil), "")
+	// The emergency stop of every project's agents (app.SetStopAll).
+	stop := systray.AddMenuItemCheckbox(app.Text(app.TrayStopAll, nil), "", a.StopAll())
 	systray.AddSeparator()
 	quit := systray.AddMenuItem(app.Text(app.TrayQuit, nil), "")
 
@@ -256,6 +270,13 @@ func onReady(a *app.App, log *slog.Logger, autostartChanged <-chan struct{}) {
 			case <-autostartChanged: // saved on the settings page
 				on, _ := a.Autostart()
 				setChecked(autostart, on)
+			case <-stop.ClickedCh:
+				if err := a.SetStopAll(!stop.Checked()); err != nil {
+					log.Warn("emergency stop", "err", err)
+				}
+				setChecked(stop, a.StopAll())
+			case <-stopChanged: // switched on the settings page
+				setChecked(stop, a.StopAll())
 			case <-open.ClickedCh:
 				openBrowser(dashboardURL(a))
 			case <-quit.ClickedCh:

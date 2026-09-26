@@ -42,10 +42,10 @@ type ProjectView struct {
 	CanRename bool              `json:"can_rename"`
 	HasInvite bool              `json:"has_invite"`
 	Busy      bool              `json:"busy"` // the worker has unfinished jobs
-	// AutoOpen: a message that asks this member opens a visible agent session
-	// in Dir when none is live there (settings.ProjectBinding.AutoOpen).
-	AutoOpen bool `json:"auto_open,omitempty"`
-	// LaunchMode: where such a session opens, "desktop" or "terminal"
+	// Autonomy: how far this member's agents work by themselves in the project
+	// (settings.ProjectBinding.Autonomy, autonomy.go); nil for the legacy network.
+	Autonomy *AutonomyView `json:"autonomy,omitempty"`
+	// LaunchMode: where an opened session opens, "desktop" or "terminal"
 	// (settings.ProjectBinding.LaunchMode).
 	LaunchMode string `json:"launch_mode,omitempty"`
 }
