@@ -1,6 +1,6 @@
 package app
 
-// Folder hooks: the agent chosen in «Кто отвечает» gets the agentlink hook
+// Folder hooks: each available agent gets the agentlink hook
 // (`agentlink hook claude|codex`) in the working folder and in every project
 // folder, so a live session opened there hears of new messages. The hook
 // itself picks the messages of its folder (see the hook command).
@@ -15,6 +15,7 @@ import (
 	"slices"
 
 	"github.com/UberMorgott/agent-link/internal/agenthook"
+	"github.com/UberMorgott/agent-link/internal/settings"
 	"github.com/UberMorgott/agent-link/internal/worker"
 )
 
@@ -26,9 +27,11 @@ const (
 )
 
 // HookStatus is what the settings page shows next to the working folder and
-// each project. Client is "" when no agent answers (no hooks then).
+// each project. Client is "" when no folder hook is needed, or "both" when
+// both providers have one.
 type HookStatus struct {
 	Client   string            `json:"client"`
+	Clients  []string          `json:"clients,omitempty"`
 	WorkDir  string            `json:"work_dir,omitempty"`
 	Projects map[string]string `json:"projects,omitempty"`
 }
@@ -44,26 +47,26 @@ func (a *App) installedHooksPath() string {
 	return filepath.Join(filepath.Dir(a.path), "folder-hooks.json")
 }
 
-// syncHooksLocked makes the hooks match the settings: the chosen agent's hook
-// in the working folder and every project folder, and none of agentlink's
-// entries left in folders (or for an agent) no longer chosen. A missing folder
-// is skipped. Without HookExe the app manages no hooks, and none while the
-// agent's agent-link plugin is enabled (checked at every sync).
+// syncHooksLocked installs the hooks of both configured providers in the
+// working and project folders. A provider's plugin replaces its folder hook
+// to avoid duplicate delivery. Old entries are removed when no longer needed.
 func (a *App) syncHooksLocked() {
 	if a.HookExe == "" {
 		return
 	}
-	client := a.s.Handler
-	if client != worker.HandlerClaude && client != worker.HandlerCodex {
-		client = ""
-	}
-	if client != "" && agenthook.PluginEnabled(client) {
-		// The agent-link plugin brings the hooks to every session: folder
-		// entries would fire each hook twice, so the ones written before go.
-		client = ""
+	var clients []string
+	for _, provider := range []string{worker.HandlerClaude, worker.HandlerCodex} {
+		available := a.s.Handler == provider || a.s.ProgramPath(provider) != ""
+		if !available && a.Agents.LookPath != nil {
+			_, source := a.Agents.Resolve(provider, "")
+			available = source != "" && source != settings.AgentMissing
+		}
+		if available && !agenthook.PluginEnabled(provider) {
+			clients = append(clients, provider)
+		}
 	}
 	want := map[string]bool{}
-	if client != "" {
+	if len(clients) > 0 {
 		for _, dir := range append([]string{a.s.WorkDir}, a.projectDirs()...) {
 			if dir != "" {
 				want[filepath.Clean(dir)] = true
@@ -79,7 +82,7 @@ func (a *App) syncHooksLocked() {
 		a.log.Warn("folder hooks list", "err", err)
 	}
 	for _, p := range prev {
-		if p.Client == client && want[p.Dir] {
+		if slices.Contains(clients, p.Client) && want[p.Dir] {
 			continue // installed again below
 		}
 		if _, err := agenthook.Remove(agenthook.ProjectFile(p.Dir, p.Client), p.Client); err != nil {
@@ -93,20 +96,22 @@ func (a *App) syncHooksLocked() {
 			states[dir] = HookNoFolder
 			continue
 		}
-		file := agenthook.ProjectFile(dir, client)
-		kept = append(kept, installedHook{Dir: dir, Client: client})
-		changed, err := agenthook.Install(file, client, a.HookExe)
-		if err == nil {
-			err = agenthook.ExcludeFromGit(dir, file)
-		}
-		if err != nil {
-			states[dir] = HookError
-			a.log.Warn("install folder hook", "dir", dir, "client", client, "err", err)
-			continue
-		}
 		states[dir] = HookOK
-		if changed {
-			a.log.Info("folder hook installed", "file", file)
+		for _, client := range clients {
+			file := agenthook.ProjectFile(dir, client)
+			kept = append(kept, installedHook{Dir: dir, Client: client})
+			changed, err := agenthook.Install(file, client, a.HookExe)
+			if err == nil {
+				err = agenthook.ExcludeFromGit(dir, file)
+			}
+			if err != nil {
+				states[dir] = HookError
+				a.log.Warn("install folder hook", "dir", dir, "client", client, "err", err)
+				continue
+			}
+			if changed {
+				a.log.Info("folder hook installed", "file", file)
+			}
 		}
 	}
 	slices.SortFunc(kept, func(x, y installedHook) int {
@@ -119,7 +124,13 @@ func (a *App) syncHooksLocked() {
 	if err := writeJSONFile(a.installedHooksPath(), kept); err != nil {
 		a.log.Warn("save folder hooks list", "err", err)
 	}
-	a.hookClient, a.hookStates = client, states
+	client := ""
+	if len(clients) == 1 {
+		client = clients[0]
+	} else if len(clients) == 2 {
+		client = "both"
+	}
+	a.hookClient, a.hookClients, a.hookStates = client, clients, states
 }
 
 func (a *App) projectDirs() []string {
@@ -137,7 +148,7 @@ func (a *App) projectDirs() []string {
 func (a *App) HookStatus() HookStatus {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	st := HookStatus{Client: a.hookClient}
+	st := HookStatus{Client: a.hookClient, Clients: slices.Clone(a.hookClients)}
 	if st.Client == "" {
 		return st
 	}

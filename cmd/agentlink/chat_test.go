@@ -17,11 +17,12 @@ import (
 
 // fakeAPI records the requests of one CLI command and answers them.
 type fakeAPI struct {
-	t    *testing.T
-	cfg  string
-	api  string // host:port of the fake API
-	reqs []string
-	send node.SendRequest
+	t       *testing.T
+	cfg     string
+	api     string // host:port of the fake API
+	reqs    []string
+	send    node.SendRequest
+	discuss map[string]string
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -34,6 +35,16 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		f.reqs = append(f.reqs, r.Method+" "+r.URL.RequestURI())
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.URL.Path == "/discuss":
+			f.discuss = map[string]string{}
+			_ = json.NewDecoder(r.Body).Decode(&f.discuss)
+			_ = json.NewEncoder(w).Encode(discussResult{Project: "p1", Chat: "c1", ID: "m1", Seat: "seat-codex"})
+		case r.URL.Path == "/discuss/reply":
+			if r.URL.Query().Get("timeout") == "20ms" {
+				w.WriteHeader(http.StatusNoContent)
+			} else {
+				_ = json.NewEncoder(w).Encode(node.Message{ID: "m2", ReplyTo: "m1", Body: "answer", Agent: &node.AgentRef{Seat: "seat-codex"}})
+			}
 		case r.URL.Path == "/send":
 			f.send = node.SendRequest{}
 			_ = json.NewDecoder(r.Body).Decode(&f.send)
@@ -61,6 +72,35 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		t.Fatal(err)
 	}
 	return f
+}
+
+func TestDiscussCLIWaitsAndReadsPromptFile(t *testing.T) {
+	f := newFakeAPI(t)
+	dir := t.TempDir()
+	promptFile := filepath.Join(t.TempDir(), "prompt.txt")
+	if err := os.WriteFile(promptFile, []byte("line one\nline two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := f.run("discuss", "--with", "codex", "--prompt-file", promptFile, "--folder", dir)
+	var got discussResult
+	if err := json.Unmarshal([]byte(out), &got); err != nil || got.ID != "m1" || got.Reply == nil || got.Reply.Body != "answer" {
+		t.Fatalf("discuss result: %q: %v", out, err)
+	}
+	if f.discuss["body"] != "line one\nline two" || f.discuss["folder"] != dir || len(f.reqs) != 2 {
+		t.Fatalf("discuss requests: %q, body %+v", f.reqs, f.discuss)
+	}
+	f.reqs = nil
+	f.run("discuss", "--with", "codex", "--body", "later", "--async")
+	if len(f.reqs) != 1 || f.reqs[0] != "POST /discuss" {
+		t.Fatalf("async requests: %q", f.reqs)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"discuss", "--with", "codex", "--body", "timeout", "--timeout", "20ms", "--config", f.cfg}, &stdout, &stderr); code != exitTimeout {
+		t.Fatalf("timeout exit: %d, out %q, err %q", code, stdout.String(), stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil || !got.TimedOut || got.ID != "m1" {
+		t.Fatalf("timeout result: %q: %v", stdout.String(), err)
+	}
 }
 
 func (f *fakeAPI) run(args ...string) string {

@@ -135,7 +135,7 @@ func TestMCPToolsMatchCLIRequests(t *testing.T) {
 	cliReqs := f.reqs
 	f.reqs = nil
 	text, isErr := callTool(t, cs, "unread", map[string]any{"limit": 1, "after": "0-x", "folder": "."})
-	if isErr || !slices.Equal(cliReqs, f.reqs) {
+	if isErr || len(f.reqs) != 1 || !slices.Equal(cliReqs, []string{strings.Replace(f.reqs[0], "agent=1&", "", 1)}) {
 		t.Fatalf("unread: %s, requests %q, CLI %q", text, f.reqs, cliReqs)
 	}
 	var page node.UnreadPage
@@ -157,6 +157,19 @@ func TestMCPToolsMatchCLIRequests(t *testing.T) {
 	text, isErr = callTool(t, cs, "send", map[string]any{"chat": "c1", "body": "hi", "ask": []string{"b"}, "reply_to": "r1"})
 	if isErr || normJSON(t, text) != `{"chat":"","id":"m1"}` || toJSON(t, f.send) != toJSON(t, cliSend) {
 		t.Fatalf("send: %s, request %+v, CLI %+v", text, f.send, cliSend)
+	}
+}
+
+func TestMCPUnreadUsesAgentSession(t *testing.T) {
+	f := newFakeAPI(t)
+	cleanAgentEnv(t)
+	t.Setenv(envClaudeSession, "session-claude")
+	cs := mcpClient(t, f.api)
+	if text, isErr := callTool(t, cs, "unread", nil); isErr {
+		t.Fatalf("unread: %s", text)
+	}
+	if len(f.reqs) != 1 || !strings.Contains(f.reqs[0], "session=session-claude") || !strings.Contains(f.reqs[0], "agent=1") {
+		t.Fatalf("MCP unread was not session-scoped: %q", f.reqs)
 	}
 }
 

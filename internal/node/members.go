@@ -100,11 +100,12 @@ type MemberInfo struct {
 	// OldAuth: connected with the pre-v0.6 handshake (no PAKE), which only a
 	// private address may use.
 	OldAuth bool `json:"old_auth,omitempty"`
-	// Agent: the member's machine has an open agent session (Claude Code,
-	// Codex, a local seat) in this network's working folder now: this node's
-	// own registry (LiveSession) for self, the peer's presence frame for
-	// another (CapPresence). An older peer that sends no presence reads false.
+	// Agent: this member has a live agent session or active local seat in this
+	// network's working folder. An older peer that sends no presence reads false.
 	Agent bool `json:"agent,omitempty"`
+	// AgentCounts is known only for this node and connected peers with
+	// CapAgentCounts. Nil for older or disconnected peers.
+	AgentCounts *AgentCounts `json:"agent_counts,omitempty"`
 	// Color is the member's chat color (Member.Color), "" for the default.
 	Color string `json:"color,omitempty"`
 	// Display is the member's nickname (Member.Display), "" for none.
@@ -711,11 +712,12 @@ func (n *Node) incarnationGone(name, oldID string) {
 // Members lists this node first, then every member that is not removed,
 // online ones first.
 func (n *Node) Members() []MemberInfo {
-	agent := n.LiveSession("") // before n.mu: the registry has its own lock
+	counts := n.agentCountsForArea("") // before n.mu: registries have their own locks
+	agent := counts.total() > 0
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	self := MemberInfo{Name: n.cfg.Node, Self: true, Online: true, Addrs: slices.Clone(n.selfAddrs), App: n.appVersion, Proto: ProtocolVersion,
-		Agent: agent, Color: n.chatColor, Display: n.display}
+		Agent: agent, AgentCounts: &counts, Color: n.chatColor, Display: n.display}
 	var out []MemberInfo
 	names := map[string]bool{}
 	for name, m := range n.members {
@@ -746,6 +748,13 @@ func (n *Node) Members() []MemberInfo {
 		if pc := n.conns[name]; pc != nil {
 			info.Online, info.Proto, info.Legacy, info.OldAuth = true, pc.proto, !pc.has(CapMembers), !pc.pake
 			info.Agent = pc.presence[""].Session != ""
+			if pc.has(CapAgentCounts) && pc.presence != nil {
+				if p, ok := pc.presence[""]; ok {
+					counts := p.Counts
+					info.AgentCounts = &counts
+					info.Agent = counts.total() > 0
+				}
+			}
 			if pc.app != "" {
 				info.App = pc.app
 			}

@@ -34,7 +34,7 @@ export function historyOrder(list: ChatInfo[] | null | undefined): ChatInfo[] {
 export type JoinStep = 'invite' | 'connecting' | 'folder'
 
 // The dialogs of a project's menu, and those that make or join a project.
-export type ProjectDialog = '' | 'members' | 'agents' | 'history' | 'invite' | 'name' | 'folder' | 'leave' | 'create' | 'join'
+export type ProjectDialog = '' | 'members' | 'agents' | 'autonomy' | 'history' | 'invite' | 'name' | 'folder' | 'leave' | 'create' | 'join'
 
 export const useProjectsStore = defineStore('projects', () => {
   const list = shallowRef<ProjectView[] | null>(null)

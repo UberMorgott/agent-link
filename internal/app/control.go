@@ -190,6 +190,8 @@ func folderScoped(c routeCtx, folder string) *routeError {
 // controlAPI serves the control API for every context.
 func (a *App) controlAPI() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /discuss", a.discuss)
+	mux.HandleFunc("GET /discuss/reply", a.discussReply)
 	mux.HandleFunc("POST /send", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Project string `json:"project"`

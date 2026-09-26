@@ -16,6 +16,10 @@ async function open() {
 }
 
 const card = () => $('[data-autonomy="' + SITE + '"]')!
+async function openProjectAutonomy() {
+  useProjectsStore().openDialog('autonomy', SITE)
+  await settle()
+}
 const bodies = (requests: { url: string; init: RequestInit }[], url: string) =>
   requests.filter((r) => r.url === url).map((r) => JSON.parse(String(r.init.body || '{}')))
 
@@ -30,6 +34,8 @@ async function change(el: HTMLInputElement | HTMLSelectElement, value: string) {
 describe('agent autonomy settings', () => {
   it('lists the projects with every option described, and saves each change on its own', async () => {
     const { requests } = await open()
+    expect(card()).toBeNull() // project controls live in the project menu
+    await openProjectAutonomy()
     expect($('[data-autonomy="legacy"]')).toBeNull()
     expect($('[data-autonomy="' + JOINING + '"]')).toBeNull() // still connecting: no autonomy yet
     const text = card().textContent!
@@ -59,6 +65,7 @@ describe('agent autonomy settings', () => {
 
   it('shows a budget pause with «Продолжить», which resumes it', async () => {
     const { backend, requests } = await open()
+    await openProjectAutonomy()
     const projects = useProjectsStore()
     backend.projects = backend.projects.map((p) => (p.id === SITE ? { ...p, autonomy: { ...p.autonomy!, paused: true, pause_reason: 'run' } } : p))
     await projects.refreshList()

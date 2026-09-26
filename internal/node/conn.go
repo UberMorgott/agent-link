@@ -332,7 +332,7 @@ func (n *Node) writeLoop(pc *peerConn) {
 		// The presence is looked at on every pass (at least every resendTick),
 		// so a session that expires silently is noticed too.
 		if pc.has(CapPresence) && time.Since(toldAt) >= presenceGap {
-			if p := n.presenceFor(pc.areas); told == nil || !slices.Equal(p, told) {
+			if p := n.presenceForCaps(pc.areas, pc.has(CapAgentCounts)); told == nil || !slices.Equal(p, told) {
 				if pc.write(frame{Type: framePresence, Presence: p}) != nil {
 					pc.close()
 					return

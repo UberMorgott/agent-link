@@ -196,6 +196,11 @@ describe('the open chat', () => {
     expect(ticked('#ask_choices')).toEqual([])
     expect($('#ask_hint')).not.toBeNull()
 
+    // Activity is in a compact top control, never between the timeline and composer.
+    expect($('#chat_activity_toggle')).not.toBeNull()
+    expect($('#chat_activity')!.closest('.chat-activity-popover')).not.toBeNull()
+    expect($('#send')!.previousElementSibling).toBeNull()
+    expect(text($('#chat_activity_toggle .chat-activity-count'))).toBe('1')
     // Live activity: one row per job, local timers, no app calls.
     const rows = $$('#chat_activity > li')
     expect(rows).toHaveLength(2)
@@ -213,6 +218,35 @@ describe('the open chat', () => {
     await nextTick()
     expect(text(rows[0]!.querySelector('.act-time'))).toBe('· 1:05 назад')
     expect(api.calls.length).toBe(before)
+  })
+
+  it('summarizes local and remote agents by provider and shows seat state in details', async () => {
+    const { projects, inbox } = await openInbox()
+    await inbox.selectChat(P, group, '')
+    projects.seats = { [P]: [
+      { id: 'claude1', provider: 'claude', label: 'Claude work', status: 'running' },
+      { id: 'claude2', provider: 'claude', label: 'Claude paused', status: 'stopped' },
+      { id: 'codex1', provider: 'codex', label: 'Codex work', status: 'idle' },
+    ] }
+    projects.list = (projects.list || []).map((project) => project.id === P ? {
+      ...project,
+      members: [
+        { name: 'local', self: true, online: true, agent: true, agent_counts: { claude: 1, codex: 1 } },
+        { name: 'bob', online: true, agent: true, agent_counts: { claude: 1, codex: 2 } },
+        { name: 'карл & sons', online: true, agent: true }, // an older peer has no exact counts
+      ],
+    } : project)
+    await settle()
+    const badges = $$('#chat_activity_toggle .chat-activity-provider')
+    expect(badges.map(text)).toEqual(['Claude Code 2', 'Codex 3'])
+    expect(text($('.chat-activity-popover'))).toContain('inbox.activity.unknown_count')
+    expect($('#chat_agent_seats')).not.toBeNull()
+    expect(text($('#chat_agent_seats'))).toContain('Claude paused')
+    expect($('#chat_activity_toggle')!.tagName).toBe('BUTTON')
+    expect($('#chat_activity_toggle')!.getAttribute('aria-controls')).toBe('chat_activity_popover')
+    $('#chat_activity_toggle')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await nextTick()
+    expect($('#chat_activity_toggle')!.getAttribute('aria-expanded')).toBe('true')
   })
 
   it('keeps bubbles, focus, draft, caret and scroll across refreshes, then loads older and sends once', async () => {

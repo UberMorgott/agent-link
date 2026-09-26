@@ -95,7 +95,7 @@ func (a *App) workerOptions(pid string, n *node.Node) (opt worker.Options, hasHa
 	cmd, hasHandler := a.s.Command()
 	hasHandler = hasHandler && a.s.AutoAnswerOn()
 	if hasHandler {
-		opt.Agent = a.agentCommand(cmd, a.s.Handler, a.s.AgentPath != "" && len(a.s.HandlerCommand) == 0)
+		opt.Agent = a.agentCommand(cmd, a.s.Handler, a.s.ProgramPath(a.s.Handler) != "" && len(a.s.HandlerCommand) == 0)
 	}
 	return opt, hasHandler
 }

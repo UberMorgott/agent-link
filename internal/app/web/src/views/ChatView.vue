@@ -20,6 +20,7 @@ import { useAppStore } from '@/stores/app'
 import { useAttachmentsStore } from '@/stores/attachments'
 import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore } from '@/stores/projects'
+import type { AgentCounts } from '@/types'
 
 const app = useAppStore()
 const inbox = useInboxStore()
@@ -61,6 +62,28 @@ onBeforeUnmount(() => clearInterval(ticker))
 const lastKnown = new Map<string, ActivityLine>()
 const activity = computed(() => keepLastKnown(activityLines(info.value, inbox.messages, self.value,
   chatSessionList(info.value, app.sessions, app.settings), app.settings, now.value), info.value, lastKnown))
+const workingCount = computed(() => activity.value.reduce((count, row) =>
+  count + (row.cls === 'running' ? 1 : 0) + (row.children?.filter((child) => child.cls === 'running').length || 0), 0))
+const activityOpen = ref(false)
+const activityHover = ref(false)
+const activityFocused = ref(false)
+const activityVisible = computed(() => activityOpen.value || activityHover.value || activityFocused.value)
+function closeActivity(event: FocusEvent | KeyboardEvent) {
+  if (event instanceof KeyboardEvent) {
+    activityOpen.value = false
+    document.getElementById('chat_activity_toggle')?.blur()
+    return
+  }
+  const dock = event.currentTarget as HTMLElement | null
+  if (!dock?.contains(event.relatedTarget as Node | null)) {
+    activityOpen.value = false
+    activityFocused.value = false
+  }
+}
+function toggleActivity() {
+  activityOpen.value = !activityOpen.value
+  if (!activityOpen.value) document.getElementById('chat_activity_toggle')?.blur()
+}
 // A running line's time is how long ago its agent was last heard of («0:12
 // назад»); the tooltip adds when it took the request. A waiting or queued
 // line's time is how long it has waited.
@@ -93,6 +116,23 @@ watch(() => [pid.value, inProject.value] as const, ([p, on]) => {
   if (on && p && !Object.hasOwn(projects.seats, p)) void projects.refreshSeats(p).catch(() => {})
 }, { immediate: true })
 const seatList = computed(() => (inProject.value ? projects.seats[pid.value] || [] : []))
+const agentMembers = computed(() => (projects.byID(pid.value)?.members || [])
+  .filter((member) => (member.self || member.online) &&
+    (member.agent || Object.values(member.agent_counts || {}).some((count) => count > 0)))
+  .map((member) => ({ name: member.display || member.name, counts: member.agent_counts })))
+const providerCounts = computed(() => (['claude', 'codex', 'other'] as const).map((provider) => ({
+  provider,
+  label: provider === 'claude' ? 'Claude Code' : provider === 'codex' ? 'Codex' : t('inbox.activity.other'),
+  count: agentMembers.value.reduce((sum, member) => sum + (member.counts?.[provider] || 0), 0),
+})).filter((entry) => entry.count > 0))
+function memberCountText(counts: AgentCounts | undefined): string {
+  if (!counts) return t('inbox.activity.unknown_count')
+  return [
+    counts.claude ? `Claude Code ${counts.claude}` : '',
+    counts.codex ? `Codex ${counts.codex}` : '',
+    counts.other ? `${t('inbox.activity.other')} ${counts.other}` : '',
+  ].filter(Boolean).join(' · ')
+}
 const seatAsked = computed<string[]>({
   get: () => (info.value ? inbox.seatAskFor(info.value) : []),
   set: (ids) => { if (info.value) inbox.setSeatAsk(info.value, ids) },
@@ -170,10 +210,11 @@ function back() {
           {{ title }}
         </h1>
         <div
-          v-if="isNarrow"
-          class="chat-column flex flex-none items-center pb-2"
+          v-if="isNarrow || activity.length || seatList.length || agentMembers.length"
+          class="chat-column chat-topbar flex flex-none items-center gap-2"
         >
           <UButton
+            v-if="isNarrow"
             id="chat_back"
             :icon="icon('back')"
             :aria-label="t('inbox.back')"
@@ -182,6 +223,118 @@ function back() {
             size="sm"
             @click="back"
           />
+          <div
+            v-if="activity.length || seatList.length || agentMembers.length"
+            class="chat-activity-dock ml-auto"
+            :class="{ open: activityOpen }"
+            @mouseenter="activityHover = true"
+            @mouseleave="activityHover = false"
+            @focusin="activityFocused = true"
+            @keydown.esc="closeActivity"
+            @focusout="closeActivity"
+          >
+            <button
+              id="chat_activity_toggle"
+              type="button"
+              class="chat-activity-toggle"
+              :aria-label="t('inbox.activity.compact')"
+              :aria-expanded="activityVisible"
+              aria-controls="chat_activity_popover"
+              @click="toggleActivity"
+            >
+              <span
+                class="chat-activity-dot"
+                :class="{ active: workingCount > 0 }"
+                aria-hidden="true"
+              />
+              <span class="chat-activity-caption">{{ t('inbox.activity.compact') }}</span>
+              <span
+                v-if="workingCount"
+                class="chat-activity-count"
+                :aria-label="fmt('inbox.activity.running_count', { n: workingCount })"
+              >{{ workingCount }}</span>
+              <span
+                v-for="entry in providerCounts"
+                :key="entry.provider"
+                class="chat-activity-provider"
+                :aria-label="fmt('inbox.activity.provider_count', { provider: entry.label, n: entry.count })"
+              >{{ entry.label }} {{ entry.count }}</span>
+            </button>
+            <div
+              id="chat_activity_popover"
+              class="chat-activity-popover"
+              role="region"
+              :aria-label="t('inbox.activity.compact')"
+            >
+              <p class="chat-activity-heading">
+                {{ t('inbox.activity.compact') }}
+              </p>
+              <ul
+                v-if="agentMembers.length"
+                class="chat-agent-seats"
+                :aria-label="t('inbox.activity.member_counts')"
+              >
+                <li
+                  v-for="member in agentMembers"
+                  :key="member.name"
+                  class="chat-agent-seat"
+                >
+                  <strong>{{ member.name }}</strong>
+                  <span>{{ memberCountText(member.counts) }}</span>
+                </li>
+              </ul>
+              <ul
+                v-if="seatList.length"
+                id="chat_agent_seats"
+                class="chat-agent-seats"
+                :aria-label="t('project.agents.title')"
+              >
+                <li
+                  v-for="seat in seatList"
+                  :key="seat.id"
+                  class="chat-agent-seat"
+                >
+                  <strong>{{ seat.label }}</strong>
+                  <span>{{ t('project.agents.status.' + seat.status) }}</span>
+                </li>
+              </ul>
+              <ul
+                v-if="activity.length"
+                id="chat_activity"
+                class="chat-activity"
+                :aria-label="t('inbox.activity.label')"
+              >
+                <li
+                  v-for="row in activity"
+                  :key="row.key"
+                  class="act-node"
+                  :class="row.cls"
+                  :style="{ '--who': whoColor(row.name, projects.colorOf(pid, row.name)) }"
+                >
+                  <div
+                    v-for="line in [row, ...(row.children || [])]"
+                    :key="line.key"
+                    class="act-row"
+                    :class="[line.cls, { 'act-sub': line !== row }]"
+                  >
+                    <span
+                      class="act-spin"
+                      aria-hidden="true"
+                    />
+                    <strong class="act-who">{{ line.who }}</strong>
+                    <span
+                      class="act-text"
+                      :title="line.text"
+                    >{{ line.text }}</span>
+                    <span
+                      class="act-time"
+                      :title="sinceTitle(line)"
+                    >{{ since(line) }}</span>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
         </div>
         <p
           v-if="inbox.subtitleError"
@@ -194,41 +347,6 @@ function back() {
 
         <ChatTimeline />
         <div class="chat-column flex flex-none flex-col gap-2 pb-4">
-          <ul
-            v-if="activity.length"
-            id="chat_activity"
-            class="chat-activity flex flex-col gap-1 px-1"
-            :aria-label="t('inbox.activity.label')"
-          >
-            <li
-              v-for="row in activity"
-              :key="row.key"
-              class="act-node"
-              :class="row.cls"
-              :style="{ '--who': whoColor(row.name, projects.colorOf(pid, row.name)) }"
-            >
-              <div
-                v-for="line in [row, ...(row.children || [])]"
-                :key="line.key"
-                class="act-row"
-                :class="[line.cls, { 'act-sub': line !== row }]"
-              >
-                <span
-                  class="act-spin"
-                  aria-hidden="true"
-                />
-                <strong class="act-who">{{ line.who }}</strong>
-                <span
-                  class="act-text"
-                  :title="line.text"
-                >{{ line.text }}</span>
-                <span
-                  class="act-time"
-                  :title="sinceTitle(line)"
-                >{{ since(line) }}</span>
-              </div>
-            </li>
-          </ul>
           <form
             v-if="writable"
             id="send"

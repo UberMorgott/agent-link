@@ -85,7 +85,10 @@ func runApp(args []string) error {
 	a.Worker.IdleTimeout = *idle
 	a.Waker = codexqueue.New()
 	a.Poster = node.PipePoster{}
-	a.Launcher = node.DesktopLauncher{Terminal: node.TerminalLauncher{}, Version: selfupdate.Version}
+	programPath := func(provider string) string {
+		return a.Settings().ProgramPath(provider)
+	}
+	a.Launcher = node.DesktopLauncher{Terminal: node.TerminalLauncher{ProgramPath: programPath}, Version: selfupdate.Version, ProgramPath: programPath}
 	if *apiAddr != "" {
 		if err := a.SetAPIAddr(*apiAddr); err != nil {
 			return err
@@ -228,10 +231,9 @@ func cleanupUpdate(exe string, log *slog.Logger) {
 	log.Warn("update leftovers", "err", err)
 }
 
-// onReady builds the tray menu once. It never changes while it may be open:
-// Windows redraws (and on some builds closes) a popup menu whose items are
-// modified under TrackPopupMenu, so live state goes to the tooltip instead
-// and the checkbox changes only in response to a click or a settings save.
+// onReady builds the tray menu once. Windows redraws (and on some builds closes)
+// a popup menu whose items are modified under TrackPopupMenu, so menu state
+// changes only in response to a click or a settings save, never on a timer.
 func onReady(a *app.App, log *slog.Logger, autostartChanged, stopChanged <-chan struct{}) {
 	systray.SetIcon(icon)
 	systray.SetTitle("agentlink")
@@ -241,8 +243,15 @@ func onReady(a *app.App, log *slog.Logger, autostartChanged, stopChanged <-chan 
 		autostart.Disable()
 	}
 	open := systray.AddMenuItem(app.Text(app.TrayOpenBrowser, nil), "")
-	// The emergency stop of every project's agents (app.SetStopAll).
-	stop := systray.AddMenuItemCheckbox(app.Text(app.TrayStopAll, nil), "", a.StopAll())
+	// The global pause/resume action applies to every project's agents.
+	stopTitle := app.TrayActionLabel(a.StopAll())
+	stop := systray.AddMenuItem(stopTitle, "")
+	refreshStop := func() {
+		if title := app.TrayActionLabel(a.StopAll()); title != stopTitle {
+			stopTitle = title
+			stop.SetTitle(title)
+		}
+	}
 	systray.AddSeparator()
 	quit := systray.AddMenuItem(app.Text(app.TrayQuit, nil), "")
 
@@ -271,12 +280,12 @@ func onReady(a *app.App, log *slog.Logger, autostartChanged, stopChanged <-chan 
 				on, _ := a.Autostart()
 				setChecked(autostart, on)
 			case <-stop.ClickedCh:
-				if err := a.SetStopAll(!stop.Checked()); err != nil {
-					log.Warn("emergency stop", "err", err)
+				if err := a.SetStopAll(!a.StopAll()); err != nil {
+					log.Warn("agent pause", "err", err)
 				}
-				setChecked(stop, a.StopAll())
+				refreshStop()
 			case <-stopChanged: // switched on the settings page
-				setChecked(stop, a.StopAll())
+				refreshStop()
 			case <-open.ClickedCh:
 				openBrowser(dashboardURL(a))
 			case <-quit.ClickedCh:

@@ -92,6 +92,10 @@ type Settings struct {
 	// when it is not on PATH. It replaces only the command name: the handler's
 	// arguments stay.
 	AgentPath string `json:"agent_path,omitempty"`
+	// ClaudePath and CodexPath are the programs for project seats. The legacy
+	// handler keeps AgentPath for compatibility with earlier settings.
+	ClaudePath string `json:"claude_path,omitempty"`
+	CodexPath  string `json:"codex_path,omitempty"`
 	// HandlerCommand replaces the built-in agent command (argv, used by tests)
 	// and wins over AgentPath.
 	HandlerCommand []string `json:"handler_command,omitempty"`
@@ -389,6 +393,7 @@ func (s Settings) Normalize() Settings {
 	s.Node, s.Listen = strings.TrimSpace(s.Node), strings.TrimSpace(s.Listen)
 	s.API, s.WorkDir = strings.TrimSpace(s.API), strings.TrimSpace(s.WorkDir)
 	s.Code, s.AgentPath = strings.TrimSpace(s.Code), strings.TrimSpace(s.AgentPath)
+	s.ClaudePath, s.CodexPath = strings.TrimSpace(s.ClaudePath), strings.TrimSpace(s.CodexPath)
 	if c, ok := config.NormalizeCode(s.Code); ok {
 		s.Code = c
 	}
@@ -549,6 +554,25 @@ func (s Settings) Project(area string) string {
 	return s.Projects[area].Dir
 }
 
+// ProgramPath resolves the configured executable for a provider. The legacy
+// AgentPath remains a fallback for the selected handler.
+func (s Settings) ProgramPath(provider string) string {
+	switch provider {
+	case worker.HandlerClaude:
+		if s.ClaudePath != "" {
+			return s.ClaudePath
+		}
+	case worker.HandlerCodex:
+		if s.CodexPath != "" {
+			return s.CodexPath
+		}
+	}
+	if s.Handler == provider {
+		return s.AgentPath
+	}
+	return ""
+}
+
 // Command returns the agent command for the handler, or ok=false for none.
 func (s Settings) Command() (worker.Command, bool) {
 	if s.Handler == worker.HandlerNone || s.Handler == "" {
@@ -559,8 +583,8 @@ func (s Settings) Command() (worker.Command, bool) {
 		// A stand-in for the handler's CLI: same output format, no preamble.
 		return worker.Command{Name: s.HandlerCommand[0], Args: s.HandlerCommand[1:], Format: c.Format}, true
 	}
-	if ok && s.AgentPath != "" {
-		c.Name = s.AgentPath
+	if path := s.ProgramPath(s.Handler); ok && path != "" {
+		c.Name = path
 	}
 	return c, ok
 }
@@ -596,9 +620,16 @@ func (s Settings) Validate() error {
 		}
 		switch {
 		case len(s.HandlerCommand) > 0:
-		case s.AgentPath != "":
-			if st, err := os.Stat(s.AgentPath); !filepath.IsAbs(s.AgentPath) || err != nil || !st.Mode().IsRegular() {
-				return problem("agent_path")
+		case s.ProgramPath(s.Handler) != "":
+			path := s.ProgramPath(s.Handler)
+			if st, err := os.Stat(path); !filepath.IsAbs(path) || err != nil || !st.Mode().IsRegular() {
+				key := "agent_path"
+				if s.Handler == worker.HandlerClaude && s.ClaudePath != "" {
+					key = "claude_path"
+				} else if s.Handler == worker.HandlerCodex && s.CodexPath != "" {
+					key = "codex_path"
+				}
+				return problem(key)
 			}
 		default:
 			if _, err := exec.LookPath(s.Handler); err != nil {
@@ -607,6 +638,15 @@ func (s Settings) Validate() error {
 		}
 	default:
 		return problem("handler")
+	}
+	for _, p := range []struct{ path, key string }{{s.ClaudePath, "claude_path"}, {s.CodexPath, "codex_path"}} {
+		if p.path == "" {
+			continue
+		}
+		st, err := os.Stat(p.path)
+		if !filepath.IsAbs(p.path) || err != nil || !st.Mode().IsRegular() {
+			return problem(p.key)
+		}
 	}
 	if s.Listen != "" {
 		// Never all interfaces: the peer port belongs on the private network only.

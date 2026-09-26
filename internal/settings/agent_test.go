@@ -39,6 +39,29 @@ func TestCommandAgentPath(t *testing.T) {
 	}
 }
 
+func TestConfiguredProviderPaths(t *testing.T) {
+	dir := t.TempDir()
+	claude := touch(t, filepath.Join(dir, "claude.exe"))
+	codex := touch(t, filepath.Join(dir, "codex.exe"))
+	s := valid(t)
+	s.Handler, s.AgentPath = worker.HandlerCodex, filepath.Join(dir, "old-codex.exe")
+	s.ClaudePath, s.CodexPath = claude, codex
+	if s.ProgramPath(worker.HandlerClaude) != claude || s.ProgramPath(worker.HandlerCodex) != codex {
+		t.Fatalf("provider paths: %q %q", s.ProgramPath(worker.HandlerClaude), s.ProgramPath(worker.HandlerCodex))
+	}
+	if cmd, ok := s.Command(); !ok || cmd.Name != codex {
+		t.Fatalf("handler ignored configured path: %+v %v", cmd, ok)
+	}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("valid provider paths: %v", err)
+	}
+	s.CodexPath = filepath.Join(dir, "missing.exe")
+	var pr *Problem
+	if err := s.Validate(); !errors.As(err, &pr) || pr.Key != "codex_path" {
+		t.Fatalf("missing provider path: %v", err)
+	}
+}
+
 func TestValidateAgentPath(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	dir := t.TempDir()

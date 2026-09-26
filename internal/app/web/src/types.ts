@@ -77,6 +77,13 @@ export interface Presence {
   area?: string
   session?: string
   auto_answer?: boolean
+  agent_counts?: AgentCounts
+}
+
+export interface AgentCounts {
+  claude?: number
+  codex?: number
+  other?: number
 }
 
 export interface ChatMember {
@@ -206,9 +213,11 @@ export interface MemberInfo {
   proto?: number
   legacy?: boolean
   old_auth?: boolean
-  // agent: the member's computer has an agent session (Claude Code, Codex)
-  // open in the project now; color: its own chat color ("" = derived).
+  // agent: the member has a live agent session or active seat in this project;
+  // color: its own chat color ("" = derived).
   agent?: boolean
+  // Present for this member and for peers that support agent-counts-v1.
+  agent_counts?: AgentCounts
   color?: string
   display?: string // the member's nickname, shown instead of its name
 }
@@ -286,6 +295,8 @@ export interface AppSettings {
   node?: string
   handler?: string
   agent_path?: string
+  claude_path?: string
+  codex_path?: string
   work_dir?: string
   listen?: string
   api?: string
@@ -332,6 +343,7 @@ export interface Changelog {
 
 export interface HookStatus {
   client?: string
+  clients?: string[]
   work_dir?: string
   projects?: Record<string, string>
 }

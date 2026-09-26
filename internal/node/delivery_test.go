@@ -238,6 +238,7 @@ func TestLaunchCommand(t *testing.T) {
 		{LaunchSpec{Provider: ProviderClaude, Folder: `C:\p`, ResumeID: "abc", Prompt: "go"}, `wt.exe -w new -d C:\p claude --permission-mode bypassPermissions --resume abc go`},
 		{LaunchSpec{Provider: ProviderCodex, Folder: `C:\p`, Prompt: "go"}, `wt.exe -w new -d C:\p codex --dangerously-bypass-approvals-and-sandbox -C C:\p go`},
 		{LaunchSpec{Provider: ProviderCodex, Folder: `C:\p`, ResumeID: "t-1", Prompt: "go"}, `wt.exe -w new -d C:\p codex resume --dangerously-bypass-approvals-and-sandbox t-1 go`},
+		{LaunchSpec{Provider: ProviderCodex, ProgramPath: `C:\Tools\codex.exe`, Folder: `C:\p`, Prompt: "go"}, `wt.exe -w new -d C:\p C:\Tools\codex.exe --dangerously-bypass-approvals-and-sandbox -C C:\p go`},
 	} {
 		got := LaunchCommand(c.spec)
 		if strings.Join(got, " ") != c.want {

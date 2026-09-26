@@ -135,6 +135,10 @@ func (n *Node) UnreadFor(folder, session, after string, limit int) (UnreadPage, 
 
 // unreadFor optionally excludes guarded messages from automatic wake and Stop.
 func (n *Node) unreadFor(folder, session, after string, limit int, actionable bool) (UnreadPage, error) {
+	if session != "" {
+		n.auto.stopMu.RLock()
+		defer n.auto.stopMu.RUnlock()
+	}
 	if limit <= 0 {
 		limit = 50
 	}
@@ -148,6 +152,11 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 			return UnreadPage{}, fmt.Errorf("%w: %s", ErrFolderUnbound, folder)
 		}
 		area = a
+	}
+	// The owner can still inspect pending messages without a session while
+	// agents are paused. A live session's hook must not receive them yet.
+	if session != "" && n.Stopped() {
+		return UnreadPage{Messages: []UnreadMessage{}}, nil
 	}
 	var live map[string]bool
 	if session != "" {

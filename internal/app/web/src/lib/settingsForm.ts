@@ -9,6 +9,8 @@ export interface SettingsFields {
   node: string
   handler: string
   agent_path: string
+  claude_path: string
+  codex_path: string
   work_dir: string
   listen: string
   api: string
@@ -55,6 +57,8 @@ export function settingsBody(f: SettingsFields, rows: ProjectsBody, saved: AppSe
     node: f.node.trim(),
     handler: f.handler,
     agent_path: f.agent_path,
+    claude_path: f.claude_path.trim(),
+    codex_path: f.codex_path.trim(),
     work_dir: f.work_dir.trim(),
     listen: f.listen.trim(),
     api: f.api.trim(),
@@ -68,4 +72,3 @@ export function settingsBody(f: SettingsFields, rows: ProjectsBody, saved: AppSe
     auto_answer: f.auto_answer,
   }
 }
-

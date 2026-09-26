@@ -44,6 +44,7 @@ const usage = `usage:
   agentlink serve --config <path>
   agentlink send  --config <path> [--to <node|area:NAME>] [--area <name>] --body <text> [--reply-to <id>] [--ask <node,...>] [--project <id>]   (into the one open chat with them; no --to: the only peer; the area defaults to this folder's project)
   agentlink send  --config <path> --chat <id> --body <text> [--ask <node,...>] [--ask-seat <label>] [--reply-to <id>] [--project <id>]   (to every chat participant; --ask: who must answer; --ask-seat: a local agent of this node, repeatable)
+  agentlink discuss --with <claude|codex> (--body <text> | --prompt-file <path>) [--folder <path>] [--timeout 10m] [--async]   (ask in the folder's project/chat and wait for that agent's reply; --async returns IDs immediately; exit 2 on timeout)
   agentlink wait  --config <path> [--timeout 0] [--chat <id>] [--project <id>]   (seconds or duration; 0 = forever; exit 2 on timeout; --chat: only that chat)
   agentlink chat new     --config <path> --with <node,...> [--area <name>] [--project <id>]   (prints the chat id; you are added; in a project: its one active chat)
   agentlink chat archive --config <path> [--chat <id>] [--project <id>]   (the project's chat history goes to the archive; a fresh chat with the same members opens; prints its id)
@@ -56,7 +57,7 @@ const usage = `usage:
   agentlink members --config <path> [--project <id>]   (one JSON line per member, this node first)
   agentlink seats [--project <id>]   (one JSON line per local agent (seat) of this node in the project; send --ask-seat <label> asks one)
   agentlink projects [--config <path>]   (one JSON line per project of the desktop app; online/total count the other members, members lists this node too)
-  agentlink mcp [--config <path>]   (stdio MCP server "agentlink" for an agent session: tools projects, members, seats, chats, history, unread, send, ack)
+  agentlink mcp [--config <path>]   (stdio MCP server "agentlink" for an agent session: tools projects, members, seats, chats, history, unread, send, discuss, ack)
   agentlink add    --config <path> --addr <ip[:port]> [--project <id>]   (dial a member's address; it spreads to all members)
   agentlink remove --config <path> --name <node> [--project <id>]   (remove a member from the whole network)
   agentlink hook <claude|codex> [--event auto]   (run by an agent's hooks: tells the session about new messages; never claims them)
@@ -146,6 +147,39 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fs.Var(&attach, "attach", "file to attach (repeatable): an image (png, jpeg, gif, webp), pdf or text file of at most 10 MB inside the project folder or the temp folder")
 		cmd = func(c config.Config) (int, error) {
 			return 0, send(c, sendArgs{to: *to, body: *body, replyTo: *replyTo, chat: *chat, ask: *ask, area: *area, project: proj(), session: *session, files: attach, askSeats: askSeat}, stdout)
+		}
+	case "discuss":
+		with := fs.String("with", "", "local agent to ask: claude or codex")
+		body := fs.String("body", "", "message text")
+		promptFile := fs.String("prompt-file", "", "read message text from this file")
+		folder := fs.String("folder", "", "project working folder (default: current folder)")
+		async := fs.Bool("async", false, "return after posting instead of waiting for the answer")
+		timeout := fs.String("timeout", "10m", "maximum time to wait for the answer (up to 15m)")
+		cmd = func(c config.Config) (int, error) {
+			prompt := *body
+			if *promptFile != "" {
+				if prompt != "" {
+					return 1, errors.New("--body and --prompt-file cannot be used together")
+				}
+				data, err := os.ReadFile(*promptFile)
+				if err != nil {
+					return 1, err
+				}
+				prompt = string(data)
+			}
+			result, err := discussMessage(c, *with, prompt, *folder, *async, *timeout)
+			if result.ID != "" {
+				if encodeErr := json.NewEncoder(stdout).Encode(result); encodeErr != nil {
+					return 1, encodeErr
+				}
+			}
+			if err != nil {
+				return 1, err
+			}
+			if result.TimedOut {
+				return exitTimeout, nil
+			}
+			return 0, nil
 		}
 	case "wait":
 		timeout := fs.String("timeout", "0", "seconds or Go duration; 0 waits forever")
@@ -330,6 +364,76 @@ type sendArgs struct {
 	to, body, replyTo, chat, ask, area, project, session string
 	files                                                []string // local files to attach
 	askSeats                                             []string // local agents (seats) asked
+}
+
+type discussResult struct {
+	Project  string        `json:"project"`
+	Chat     string        `json:"chat"`
+	ID       string        `json:"id"`
+	Seat     string        `json:"seat"`
+	Reply    *node.Message `json:"reply,omitempty"`
+	Queued   bool          `json:"queued,omitempty"`
+	TimedOut bool          `json:"timed_out,omitempty"`
+}
+
+func discussMessage(cfg config.Config, provider, body, folder string, async bool, timeout string) (discussResult, error) {
+	if provider != node.ProviderClaude && provider != node.ProviderCodex {
+		return discussResult{}, errors.New("--with must be claude or codex")
+	}
+	if strings.TrimSpace(body) == "" {
+		return discussResult{}, errors.New("--body is required")
+	}
+	d, err := parseTimeout(timeout)
+	if err != nil || d <= 0 || d > 15*time.Minute {
+		return discussResult{}, errors.New("--timeout must be greater than 0 and at most 15m")
+	}
+	dir := folder
+	if dir == "" {
+		var wdErr error
+		dir, wdErr = os.Getwd()
+		if wdErr != nil {
+			return discussResult{}, wdErr
+		}
+	} else {
+		var absErr error
+		dir, absErr = filepath.Abs(dir)
+		if absErr != nil {
+			return discussResult{}, absErr
+		}
+	}
+	session, source := agentSession()
+	var result discussResult
+	err = apiJSON(http.MethodPost, apiURL(cfg, "/discuss", nil), map[string]string{
+		"folder": dir, "provider": provider, "body": body, "session_id": session,
+		"source": source, "seat": os.Getenv(envSeat),
+	}, &result)
+	if err != nil || async || result.Queued {
+		return result, err
+	}
+	q := url.Values{"project": {result.Project}, "chat": {result.Chat}, "id": {result.ID},
+		"seat": {result.Seat}, "timeout": {d.String()}}
+	resp, err := apiDo(http.MethodGet, apiURL(cfg, "/discuss/reply", q), nil)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusAccepted {
+		result.Queued = true
+		return result, nil
+	}
+	if resp.StatusCode == http.StatusNoContent {
+		result.TimedOut = true
+		return result, nil
+	}
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return result, err
+	}
+	var reply node.Message
+	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
+		return result, err
+	}
+	result.Reply = &reply
+	return result, nil
 }
 
 // listFlag is a repeatable string flag.
@@ -553,6 +657,10 @@ func chatUnread(cfg config.Config, folder, after string, limit int, project stri
 
 // unread reads one page of unread messages; it never marks them read.
 func unread(cfg config.Config, folder, after string, limit int, project string) (node.UnreadPage, error) {
+	return unreadForSession(cfg, folder, after, limit, project, "", false)
+}
+
+func unreadForSession(cfg config.Config, folder, after string, limit int, project, session string, agent bool) (node.UnreadPage, error) {
 	q := inFolder(url.Values{"limit": {strconv.Itoa(limit)}}, project)
 	if folder != "" {
 		abs, err := filepath.Abs(folder)
@@ -563,6 +671,12 @@ func unread(cfg config.Config, folder, after string, limit int, project string) 
 	}
 	if after != "" {
 		q.Set("after", after)
+	}
+	if session != "" {
+		q.Set("session", session)
+	}
+	if agent {
+		q.Set("agent", "1")
 	}
 	var page node.UnreadPage
 	err := apiJSON(http.MethodGet, apiURL(cfg, "/unread", q), nil, &page)

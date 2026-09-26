@@ -335,7 +335,13 @@ func (n *Node) handleWait(w http.ResponseWriter, r *http.Request) {
 	}
 	for {
 		changed := n.store.updates()
-		msgs, err := n.store.claimUndelivered(r.URL.Query().Get("chat"))
+		var msgs []Message
+		var err error
+		n.auto.stopMu.RLock()
+		if !n.Stopped() {
+			msgs, err = n.store.claimUndelivered(r.URL.Query().Get("chat"))
+		}
+		n.auto.stopMu.RUnlock()
 		msgs = slices.DeleteFunc(msgs, n.handledHere)
 		if len(msgs) > 0 {
 			writeJSONResponse(w, msgs)
@@ -501,6 +507,10 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 				return
 			}
 			limit = v
+		}
+		if q.Get("agent") == "1" && n.Stopped() {
+			writeJSONResponse(w, UnreadPage{Messages: []UnreadMessage{}})
+			return
 		}
 		// A Claude session's background waiter asks with waiter=1: while the
 		// node wakes that session through its inbox, the waiter has nothing to do.

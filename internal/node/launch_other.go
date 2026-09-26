@@ -8,7 +8,9 @@ import (
 )
 
 // TerminalLauncher opens sessions in Windows Terminal; elsewhere it has none.
-type TerminalLauncher struct{}
+type TerminalLauncher struct {
+	ProgramPath func(provider string) string
+}
 
 // Launch reports ErrNoTerminal: opening a visible session is Windows-only.
 func (TerminalLauncher) Launch(context.Context, LaunchSpec) error {

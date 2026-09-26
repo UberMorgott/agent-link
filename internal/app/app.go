@@ -99,18 +99,19 @@ type App struct {
 	s          settings.Settings
 	configured bool
 	// hub runs every context (contexts.go); nil until one is started.
-	hub        *node.Hub
-	hubCtx     context.Context
-	hubStop    context.CancelFunc
-	slots      *worker.Slots // job slots shared by every worker
-	legacy     *appContext   // the legacy network, nil without a code
-	n          *node.Node    // legacy.n
-	projects   map[string]*appContext
-	startErr   error
-	listen     string // this side's address to give the others, of the last start
-	zeroTier   bool
-	hookClient string            // agent of the last hook sync, "" for none
-	hookStates map[string]string // clean folder -> Hook* state of the last sync
+	hub         *node.Hub
+	hubCtx      context.Context
+	hubStop     context.CancelFunc
+	slots       *worker.Slots // job slots shared by every worker
+	legacy      *appContext   // the legacy network, nil without a code
+	n           *node.Node    // legacy.n
+	projects    map[string]*appContext
+	startErr    error
+	listen      string // this side's address to give the others, of the last start
+	zeroTier    bool
+	hookClient  string            // agent of the last hook sync, "both", or "" for none
+	hookClients []string          // providers with folder hooks after the last sync
+	hookStates  map[string]string // clean folder -> Hook* state of the last sync
 }
 
 // Status is a snapshot for the tray and the web UI.
@@ -342,11 +343,27 @@ func (a *App) apply(ctx context.Context, s settings.Settings) (found settings.Fo
 	s.StopAll = a.s.StopAll
 	// So have the nickname and the chat color (SetProfile).
 	s.ChatColor, s.Nickname, s.NicknameAliases = a.s.ChatColor, a.s.Nickname, a.s.NicknameAliases
-	if len(s.HandlerCommand) == 0 && a.Agents.LookPath != nil && !a.agentPresent(s.AgentPath) {
+	if s.Handler != worker.HandlerNone && len(s.HandlerCommand) == 0 && a.Agents.LookPath != nil && !a.agentPresent(s.ProgramPath(s.Handler)) {
 		if f, ok := a.Agents.Discover(s.Handler); ok {
 			s.AgentPath, found = "", f
 			if f.Kind != settings.KindPath {
 				s.AgentPath = f.Path
+			}
+		}
+	}
+	// Seats can run both providers independently of the legacy auto-answer
+	// handler. Resolve both programs once, including installs outside PATH.
+	if a.Agents.LookPath != nil {
+		for _, provider := range []string{worker.HandlerClaude, worker.HandlerCodex} {
+			if a.agentPresent(s.ProgramPath(provider)) {
+				continue
+			}
+			if f, ok := a.Agents.Discover(provider); ok && f.Kind != settings.KindPath {
+				if provider == worker.HandlerClaude {
+					s.ClaudePath = f.Path
+				} else {
+					s.CodexPath = f.Path
+				}
 			}
 		}
 	}
@@ -412,12 +429,19 @@ func (a *App) agentCommand(cmd worker.Command, handler string, fromSetting bool)
 // changed meanwhile. The running node keeps going: its runner already uses p.
 func (a *App) saveAgentPath(handler, old, p string) {
 	a.mu.Lock()
-	if !a.configured || a.s.Handler != handler || a.s.AgentPath != old || len(a.s.HandlerCommand) > 0 {
+	if !a.configured || a.s.Handler != handler || a.s.ProgramPath(handler) != old || len(a.s.HandlerCommand) > 0 {
 		a.mu.Unlock()
 		return
 	}
 	s := a.s
-	s.AgentPath = p
+	switch {
+	case handler == worker.HandlerClaude && s.ClaudePath == old:
+		s.ClaudePath = p
+	case handler == worker.HandlerCodex && s.CodexPath == old:
+		s.CodexPath = p
+	default:
+		s.AgentPath = p
+	}
 	if err := settings.Save(a.path, s); err != nil {
 		a.log.Warn("save rediscovered agent path", "err", err)
 		a.mu.Unlock()

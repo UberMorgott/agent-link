@@ -4,7 +4,6 @@ import type { DropdownMenuItem } from '@nuxt/ui'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UDropdownMenu from '@nuxt/ui/components/DropdownMenu.vue'
 import { icon } from '@/lib/icons'
-import { navigate } from '@/lib/nav'
 import { browser, fmt, t } from '@/lib/runtime'
 import { chatKey, useInboxStore } from '@/stores/inbox'
 import { useProjectsStore, type ProjectDialog } from '@/stores/projects'
@@ -13,7 +12,7 @@ import type { ProjectView } from '@/types'
 // A project's "⋯" menu, the project's own controls (the chat has no header):
 // clearing its one chat for everyone and its history of cleared chats,
 // members, the invite, the shared name, this member's folder, its agents'
-// autonomy (on the settings page), and deleting the project here (leaving it).
+// autonomy, and deleting the project here (leaving it).
 const props = defineProps<{ project: ProjectView; name: string }>()
 const projects = useProjectsStore()
 const inbox = useInboxStore()
@@ -49,8 +48,7 @@ const items = computed<DropdownMenuItem[][]>(() => {
   if (p.can_rename) main.push(item('name', "project.menu.name", 'rename'))
   main.push(item('folder', "project.menu.folder", 'folder'))
   if (!p.legacy) {
-    // How far this member's agents work by themselves: the settings page.
-    main.push({ label: t("project.menu.autonomy"), icon: icon('agent'), onSelect: () => { void navigate('settings') } })
+    main.push(item('autonomy', "project.menu.autonomy", 'agent'))
   }
   const leave = p.legacy ? item('leave', "project.menu.leave", 'leave', 'error') : item('leave', "project.menu.delete", 'delete', 'error')
   return [...(chat.length ? [chat] : []), main, [leave]]

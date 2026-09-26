@@ -1,6 +1,8 @@
 package node
 
 import (
+	"bytes"
+	"encoding/json"
 	"net"
 	"testing"
 )
@@ -48,14 +50,14 @@ func TestPresencePropagates(t *testing.T) {
 	if _, err := b.RegisterSession(SessionRequest{SessionID: "s1", Provider: "claude", Folder: proj, Wake: WakeRewake}); err != nil {
 		t.Fatal(err)
 	}
-	sees("rewake session", "dev", AreaPresence{Area: "dev", Session: WakeRewake, AutoAnswer: true})
+	sees("rewake session", "dev", AreaPresence{Area: "dev", Session: WakeRewake, AutoAnswer: true, Counts: AgentCounts{Claude: 1}})
 	if p := memberPresence(); p == nil || p.Session != WakeRewake {
 		t.Fatalf("chat member presence after register %+v", p)
 	}
 	if _, err := b.RegisterSession(SessionRequest{SessionID: "s2", Provider: "codex", Folder: work}); err != nil {
 		t.Fatal(err)
 	}
-	sees("next-event session in the working folder", "", AreaPresence{Session: WakeNextEvent, AutoAnswer: true})
+	sees("next-event session in the working folder", "", AreaPresence{Session: WakeNextEvent, AutoAnswer: true, Counts: AgentCounts{Codex: 1}})
 	if err := b.EndSession("s1"); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +67,7 @@ func TestPresencePropagates(t *testing.T) {
 	if _, err := b.RegisterSession(SessionRequest{SessionID: "s3", Provider: "codex", Folder: proj, TTLSec: 1}); err != nil {
 		t.Fatal(err)
 	}
-	sees("short session", "dev", AreaPresence{Area: "dev", Session: WakeNextEvent, AutoAnswer: true})
+	sees("short session", "dev", AreaPresence{Area: "dev", Session: WakeNextEvent, AutoAnswer: true, Counts: AgentCounts{Codex: 1}})
 	sees("short session expired", "dev", AreaPresence{Area: "dev", AutoAnswer: true})
 
 	b.stop()
@@ -100,10 +102,21 @@ func TestMembersAgentFromPresence(t *testing.T) {
 	if got := agents(a); !got["a"] || got["b"] {
 		t.Fatalf("own session: %+v", got)
 	}
+	if ms := a.Members(); ms[0].AgentCounts == nil || ms[0].AgentCounts.Claude != 1 {
+		t.Fatalf("own agent counts: %+v", ms[0].AgentCounts)
+	}
 	if _, err := b.RegisterSession(SessionRequest{SessionID: "peer", Provider: "codex", Folder: workB}); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "a sees b's session", func() bool { return agents(a)["b"] })
+	eventually(t, "a sees b's provider count", func() bool {
+		for _, m := range a.Members() {
+			if m.Name == "b" {
+				return m.AgentCounts != nil && m.AgentCounts.Codex == 1
+			}
+		}
+		return false
+	})
 	if err := b.EndSession("peer"); err != nil {
 		t.Fatal(err)
 	}
@@ -161,5 +174,59 @@ func TestPresenceSharedAreas(t *testing.T) {
 	want := []AreaPresence{{Area: ""}, {Area: "ops"}}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("presence %+v, want %+v", got, want)
+	}
+}
+
+func TestPresenceAgentCountsDeduplicatesSeats(t *testing.T) {
+	p := newTestProject(t)
+	n := newProjectNode(t, "a", p, listen(t), nil)
+	folder := t.TempDir()
+	n.SetFolders(folder, nil)
+	for _, req := range []SessionRequest{
+		{SessionID: "seat-codex", Provider: ProviderCodex, Folder: folder},
+		{SessionID: "free-codex", Provider: ProviderCodex, Folder: folder},
+	} {
+		if _, err := n.RegisterSession(req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n.seats.mu.Lock()
+	n.seats.seats = []*Seat{
+		{ID: "seat-1", Provider: ProviderCodex, SessionID: "seat-codex"},
+		{ID: "seat-2", Provider: ProviderClaude},
+	}
+	n.seats.run["seat-2"] = func() {}
+	n.seats.mu.Unlock()
+
+	got := n.presenceForCaps(nil, true)[0].Counts
+	if got != (AgentCounts{Claude: 1, Codex: 2}) {
+		t.Fatalf("counts include each active seat and free session once: %+v", got)
+	}
+	if old := n.presenceForCaps(nil, false)[0].Counts; old != (AgentCounts{}) {
+		t.Fatalf("old peer received new counts: %+v", old)
+	}
+	oldWire, err := json.Marshal(n.presenceForCaps(nil, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(oldWire, []byte("agent_counts")) {
+		t.Fatalf("old peer wire frame has agent counts: %s", oldWire)
+	}
+	n.seats.mu.Lock()
+	n.seats.seats[0].Stopped = true
+	n.seats.mu.Unlock()
+	if got := n.presenceForCaps(nil, true)[0].Counts; got != (AgentCounts{Claude: 1, Codex: 1}) {
+		t.Fatalf("stopped seat counted: %+v", got)
+	}
+	n.SetAutoAnswer(true)
+	n.SetStopped(true)
+	paused := n.presenceForCaps(nil, true)[0]
+	if paused.Counts.total() != 0 || paused.Session != "" || paused.AutoAnswer {
+		t.Fatalf("global pause advertised agents: %+v", paused)
+	}
+	n.SetStopped(false)
+	resumed := n.presenceForCaps(nil, true)[0]
+	if resumed.Counts != (AgentCounts{Claude: 1, Codex: 1}) || resumed.Session == "" || !resumed.AutoAnswer {
+		t.Fatalf("resume did not advertise agents: %+v", resumed)
 	}
 }

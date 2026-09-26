@@ -1,6 +1,6 @@
 // navigate moves the application shell to a route; main.ts points it at the
 // router, a test at a recorder.
-export const ROUTES = ['dashboard', 'inbox', 'welcome', 'project', 'chat', 'participants', 'settings'] as const
+export const ROUTES = ['dashboard', 'inbox', 'welcome', 'project', 'chat', 'agents', 'participants', 'settings'] as const
 export type Route = (typeof ROUTES)[number]
 export type Query = Record<string, string>
 export type Params = Record<string, string>

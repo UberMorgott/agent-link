@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UInput from '@nuxt/ui/components/Input.vue'
 import UModal from '@nuxt/ui/components/Modal.vue'
+import AutonomySettings from '@/components/AutonomySettings.vue'
 import { pickFolder } from '@/lib/folders'
 import { icon } from '@/lib/icons'
 import { navigate, openChat, openProject } from '@/lib/nav'
@@ -173,6 +174,7 @@ function saveFolder() {
 // --- this member's local agents (seats): Claude Code and Codex ---
 
 const agentsOpen = openFor('agents')
+const autonomyOpen = openFor('autonomy')
 watch(() => [projects.dialog, projects.dialogProject] as const, ([kind, pid]) => {
   if (kind === 'agents' && pid) void run(() => projects.refreshSeats(pid))
 })
@@ -315,6 +317,16 @@ function leave() {
           {{ result }}
         </p>
       </div>
+    </template>
+  </UModal>
+
+  <UModal
+    v-model:open="autonomyOpen"
+    :title="t('project.menu.autonomy')"
+    :description="name"
+  >
+    <template #body>
+      <AutonomySettings :project="projects.dialogProject" />
     </template>
   </UModal>
 

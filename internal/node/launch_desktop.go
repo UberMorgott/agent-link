@@ -41,6 +41,17 @@ type DesktopLauncher struct {
 	Terminal SessionLauncher
 	// Version is reported to codex app-server as the client's.
 	Version string
+	// ProgramPath resolves a configured executable for each provider.
+	ProgramPath func(provider string) string
+}
+
+func (l DesktopLauncher) program(provider string) string {
+	if l.ProgramPath != nil {
+		if path := l.ProgramPath(provider); path != "" {
+			return path
+		}
+	}
+	return provider
 }
 
 // desktopTurnTimeout bounds one headless first turn.
@@ -56,11 +67,11 @@ func (l DesktopLauncher) Launch(ctx context.Context, spec LaunchSpec) error {
 
 // Direct reports whether provider's sessions open in its desktop app: its
 // URL protocol is registered and its CLI is found.
-func (DesktopLauncher) Direct(provider string) bool {
+func (l DesktopLauncher) Direct(provider string) bool {
 	if provider != ProviderClaude && provider != ProviderCodex {
 		return false
 	}
-	if _, err := exec.LookPath(provider); err != nil {
+	if _, err := exec.LookPath(l.program(provider)); err != nil {
 		return false
 	}
 	return protocolRegistered(provider)
@@ -69,7 +80,11 @@ func (DesktopLauncher) Direct(provider string) bool {
 // Run runs spec's first turn headless and opens the session in the desktop
 // app. started gets the session (thread) id once the turn has the prompt.
 func (l DesktopLauncher) Run(ctx context.Context, spec LaunchSpec, started func(session string)) error {
-	bin, err := exec.LookPath(spec.Provider)
+	program := spec.ProgramPath
+	if program == "" {
+		program = l.program(spec.Provider)
+	}
+	bin, err := exec.LookPath(program)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrNoAgent, err)
 	}

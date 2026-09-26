@@ -50,11 +50,12 @@ Copy `agentlink.exe` anywhere and double-click it. Members reach each other over
    участника по адресу** (e.g. `10.147.20.9`, port optional) and press **Добавить**: this node
    connects (only if that side has the same code), and every other member learns the address
    and connects too. The page shows your own address ("Ваш адрес для других участников").
-5. **Кто отвечает** and **Рабочая папка** (see "Handler agent"): press **Выбрать…** next to the
-   folder field and pick the project folder in the Windows folder dialog (the tray app opens it,
-   since a browser page cannot see absolute paths; the field stays editable), then **Сохранить**. The top
-   bar shows "связь есть: <name>" (or «на связи N из M») once members are connected; names
-   come from the connection.
+5. In general settings, configure **Мои агенты** for Claude Code and Codex once, plus
+   **Кто отвечает** if you want a fallback worker. Open a project's **Моя папка** to bind its
+   working directory, then **Агенты** to add either or both programs to that project. The
+   Windows folder dialog can pick the folder; its path remains editable. The top bar shows
+   "связь есть: <name>" (or «на связи N из M») once members are connected; names come from the
+   connection.
 
 Saving with only some fields filled is fine: the bar then says what is missing («нет ни одного
 проекта…», «пока никого — добавьте адрес участника…»). **Дополнительно** (collapsed) holds the rest:
@@ -73,8 +74,8 @@ settings API is added to that list.
 
 ### Projects
 
-The sidebar lists **projects**. Each project is its own network: its own invite, members, shared
-name and chats; nothing crosses between projects. Every member binds its **own** folder to it.
+The sidebar lists **projects**. A project is one continuing chat, with its own invite, members
+and shared name; nothing crosses between projects. Every member binds its **own** folder to it.
 
 - **Create**: **＋ Новый проект** — a name (1–80 characters) and optionally a folder and your own
   alias for it. **Join**: **Присоединиться** — paste the invite `ALP1.<project>.<epoch>.<secret>.<check>`
@@ -84,15 +85,20 @@ name and chats; nothing crosses between projects. Every member binds its **own**
   here just opens it. At most 32 projects and 64 members per project.
 - **Project menu** `⋯`: **Участники**, **Приглашение** (hidden `••••` until you reveal it; the
   settings page and the other API answers never carry the secret), **Общее имя** (anyone renames it
-  for everyone; the last rename wins), **Моя папка** (folder and alias, only yours), **Выйти**.
+  for everyone; the last rename wins), **Агенты**, **Автономия агентов…**, **Моя папка** (folder and
+  alias, only yours), **Выйти**. Agent presence, autonomy and folder settings belong to this
+  project; the general settings page keeps machine-wide programs and the global pause.
 - **No folder**: chats work, but no agent runs for you there: requests that ask you get the held
   status «у участника не выбрана папка проекта», and agent sessions cannot register. A folder change
   or a leave waits until the agent has finished that project's requests («Агент ещё выполняет
   запросы…»); a folder change forgets the agent sessions of the old folder.
-- **Chats**: a project has **one chat**; its row in the sidebar (name, a dot, «⋯») opens it. The
+- **Chat**: the project row in the sidebar (name, a dot, «⋯») opens its chat. The
   dot counts the computers with an agent session (Claude Code, Codex) open in the project: grey —
   none, yellow — one, green — two or more (the tooltip names them; peers tell it by their presence
-  frames, an older peer counts as none). «⋯» → **Очистить чат** empties the chat for every member:
+  frames, an older peer counts as none). Compact badges beside the chat show how many Claude Code
+  and Codex agents are present; hover or open the activity control for people, agents and their
+  current work. The **Агенты** sidebar entry lists projects with local agents and opens the same
+  project chat, without creating another conversation. «⋯» → **Очистить чат** empties it for every member:
   the messages so far stay as a dated, read-only snapshot under **История**, and the chat goes on
   with the same members (live sessions follow it; requests left unread stay deliverable). The
   chat's owner (who started it) invites project members and removes them in «Участники»: an
@@ -101,16 +107,20 @@ name and chats; nothing crosses between projects. Every member binds its **own**
   in your member record to every member (an older version shows your name and a derived color);
   your name stays your identity, and agents' `--to`/`ask` accept the name, the nickname or an
   earlier nickname. A nickname another member already has is refused. The palette icon picks the
-  theme, accent color and font (Inter, Manrope, IBM Plex Sans — bundled — or the system font).- **Leave** tells the members, stops the project and moves its data to
+  theme, accent color and font (Inter, Manrope, IBM Plex Sans — bundled — or the system font).
+- **Leave** tells the members, stops the project and moves its data to
   `data\projects\.left\<id>-<time>` (never deleted). Joining again later is a new member identity.
 - **Прежняя сеть**: a network from before projects (a `XXXX-XXXX-XXXX` code or an old long secret)
   keeps running as the project «Прежняя сеть» while its code exists; it is not converted. Its code is
   set by pasting it into **Присоединиться** and removed by leaving it (its history stays). The
   working folder and «Проекты» areas on the settings page belong to it only.
-- **Agents**: the app runs one agent worker per project with a folder, all sharing «Сколько
-  вопросов агент решает сразу». An agent it starts for a project gets `AGENTLINK_PROJECT_ID`, and
-  the CLI (`send`, `wait`, `chat …`, flag `--project`) and the folder hooks reach the project of the
-  chat, the message or the folder they name (see [docs/agent-usage.md](docs/agent-usage.md)).
+- **Agents**: in the project's **Агенты** add Claude Code, Codex, or more than one local agent seat to a
+  project, then start, pause or remove each seat there. Pending requests wait while a seat is
+  paused. The app also runs the optional fallback worker per project with a folder; workers share
+  «Сколько вопросов агент решает сразу». An agent it starts for a project gets
+  `AGENTLINK_PROJECT_ID`, and the CLI (`send`, `discuss`, `wait`, `chat …`, flag `--project`) and
+  folder hooks reach the project of the chat, message or folder they name (see
+  [docs/agent-usage.md](docs/agent-usage.md)).
 - **Storage**: bindings (id, secret, alias, folder, typed addresses) are in `config.json`
   (`project_bindings`, settings `version` 2; the first start of this version keeps a copy of the
   old file as `config.v1.bak.json`); each project's data is in `data\projects\<id>\`.
@@ -229,15 +239,13 @@ newest version wins (by folder version, else by file time).
 
 `<editor>` is `%USERPROFILE%\.vscode`, `.vscode-insiders`, `.cursor` or `.windsurf`.
 
-**Программа агента** under **Кто отвечает** shows which program will run and how it was
-installed («Найден: приложение Codex — <path>», «Найден: пакет npm — <path>»), «Найдена в
-PATH», a path you chose, or «не найдена». The tray started from Explorer or autostart often does
-not see a `PATH` entry an installer just added. The search runs on save (when no program is set
-or the set one is gone), on **Найти заново**, and when a job finds the saved program gone (an
-app update moved its versioned folder): the job then runs the new one and the new path is saved.
-**Указать…** picks any other `codex.cmd` / `codex.exe` / `claude.exe` in the Windows file
-dialog. The path is saved as `agent_path` in the config; it replaces only the program, the
-arguments below stay the same.
+**Мои агенты** in general settings shows Claude Code and Codex separately. For each,
+**Найти заново** searches installed programs and **Указать…** picks an executable in the Windows
+file dialog. The paths are saved as `claude_path` and `codex_path`; the older `agent_path` stays
+for compatibility with the fallback handler. The tray started from Explorer or autostart may
+not see a `PATH` entry an installer just added. Search runs on save when a program is missing,
+and again when a saved program disappears after an app update. A project seat uses its
+  provider's configured program; adding or pausing a seat is done in that project's **Агенты**.
 
 The primary answerer is a **live session**: a Claude Code or Codex session open in the
 «Рабочая папка» or a «Проекты» folder registers with the node through its hooks, reads the
@@ -391,7 +399,7 @@ npm run build       # vite build into dist/, then the vue-tsc typecheck
 ```powershell
 $env:AGENTLINK_SECRET = 'K7Q2-MXAB-CDEF'   # the same code on every machine (or a 16+ byte secret)
 agentlink serve --config node.json                         # the node (keep running)
-agentlink send  --config node.json --to node-b --body "hi" # into the one open chat with node-b; prints the message id
+agentlink send  --config node.json --to node-b --body "hi" # into the project chat; prints the message id
 agentlink send  --config node.json --body "hi"             # no --to: the only other member (several: error listing them)
 agentlink send  --config node.json --to area:dev --body "build is green"
 agentlink send  --config node.json --to node-b --body "done" --reply-to <id>
@@ -400,6 +408,8 @@ agentlink inbox --config node.json --limit 20              # recent in/out, non-
 agentlink chat unread --config node.json                   # unread messages of this node, oldest first
 agentlink chat ack --config node.json --ids <id,...>       # mark read: the authors get read receipts
 agentlink members --config node.json                       # member table, one JSON line each, this node first
+agentlink discuss --with codex --body "Review this design" # ask a local Codex seat in this folder's project; wait for its reply
+agentlink discuss --with claude --prompt-file question.md --async # post and return IDs immediately
 agentlink add    --config node.json --addr 203.0.113.7     # dial a member's address; it spreads to all members
 agentlink remove --config node.json --name node-c          # remove a member from the whole network
 agentlink version                                          # this build's version (dev: not a release)
@@ -418,6 +428,19 @@ expires, and exits 1 on errors. It returns requests and replies only: a handler'
 its `job_status`: `completed` or `failed`). Progress is visible in `inbox`: an outbound request
 carries `job_status`, `activity` while it runs, `last_heard` and, when the peer has gone quiet,
 `no_news_min`.
+
+`discuss` is the local Claude Code ↔ Codex connector. From a project folder it uses that
+project's existing chat; from an unbound folder it creates a local project with that folder and
+its one chat. It adds a seat for `--with claude|codex` if needed and writes the question into
+the project chat, visible to its people and agents. `--folder <path>` selects another folder;
+`--body <text>` and `--prompt-file <path>` are alternatives. By default it waits up to 10 minutes
+for the asked seat's direct reply and prints JSON with `project`, `chat`, `id`, `seat` and
+`reply`. `--timeout <duration>` changes the wait (maximum 15 minutes); on expiry it prints the
+IDs with `timed_out: true` and exits 2. `--async` prints the IDs immediately. A global,
+project or seat pause returns `queued: true` with IDs promptly: the request remains in the chat
+and reaches the agent after resume. The MCP `discuss` tool offers the same flow with
+`{with, body, folder?, timeout?, async?}`. Image and review flag parity with the older `cx.ps1`
+wrapper is not implemented.
 
 ## Config
 
@@ -509,16 +532,16 @@ asking session. The hook stays silent when the node is not running and does noth
 handler job or a headless run (`claude -p`, `codex exec`). Details:
 [docs/agent-usage.md](docs/agent-usage.md#hearing-about-messages-in-a-live-session-hooks).
 
-The desktop app does this by itself for the folders it knows: the agent chosen in «Кто отвечает»
-gets the hook in the «Рабочая папка» and in every «Проекты» folder (Claude Code:
-`.claude/settings.local.json`, Codex: `.codex/hooks.json`), on start and on every save; entries
-of an older version are replaced in place. A changed folder or agent takes agentlink's entries
-out of the old place; other hooks stay. A session in an area's project folder gets only that
-area's messages; a session in the working folder gets the rest (direct messages, chats without
-an area, areas without a folder); a session elsewhere gets none. Codex runs a new hook only
-after you trust it once with `/hooks` in that folder.
+The desktop app installs **both** Claude Code and Codex hooks in each bound project folder,
+regardless of which fallback handler is selected (Claude Code:
+`.claude/settings.local.json`, Codex: `.codex/hooks.json`). It also installs them in the legacy
+working folder, when configured. On start and save it replaces old agentlink entries in place;
+changing a folder removes only its own entries from the old place. A session in a project's
+folder gets that project's messages; a session elsewhere gets none, apart from the legacy
+working folder's legacy messages. Codex runs a new hook only after you trust it once with
+`/hooks` in that folder.
 
-**Agent autonomy (off by default).** «Настройки → Автономия агентов» sets per project how far your
+**Agent autonomy (off by default).** Each project's **Автономия** setting controls how far its
 agents work by themselves: **off** (the default, also for projects that had auto-open off) —
 no session is opened by the node, a message waits for a session of the folder; **asked** (what
 auto-open on was) — a message that asks you while no session (active or idle) is live in the
@@ -528,21 +551,23 @@ Windows Terminal; **full** — a message of another member that only informs you
 with no hop limit by default (settable, 0 = none; off and asked keep 8) and finite budgets: at
 most 30 autonomous turns (wake, launch, seat turn) per hour and 240 minutes of continuous
 autonomous work (both settable); an exhausted budget pauses autonomous delivery for that
-project, the tray shows one notification, and «Продолжить» on the settings page goes on.
+project, the tray shows one notification, and «Продолжить» in the project setting goes on.
 **An opened session runs with your full permissions** (Claude `bypassPermissions`, Codex no
 approvals and no sandbox) and acts on what other members' agents wrote without asking: use
-asked or full only for projects whose members you trust. **Emergency stop:** «Остановить всех
-агентов» (tray menu and settings page, saved) ends the turns the node runs, releases every
-active automatic delivery and wakes, opens or runs no agent in any project; messages stay unread.
+asked or full only for projects whose members you trust. **Global pause:** the tray control
+switches between pause and play; the general settings page has the same saved switch. It ends
+agent turns the node runs and releases automatic delivery. People can continue to send and
+receive chat messages, while this machine's agents receive nothing and do not respond. Those
+messages stay unread and reach the agents after resume.
 Details: [docs/agent-usage.md](docs/agent-usage.md#hearing-about-messages-in-a-live-session-hooks).
 
 ## Delivery
 
 - Sent messages are written to `outbox/<peer>/` first and removed only when the peer ACKs, so an
   offline peer gets them on the next connection; unACKed messages are resent periodically.
-- One open chat per conversation (members + area): its id is a hash of both and a generation,
-  so every node picks the same chat; a person's close in the app moves the conversation to the
-  next generation everywhere, and a message that crossed the close is kept in the closed chat.
+- A project has one active chat. The legacy network still identifies conversations by members
+  and area. A person's clear moves the project chat to the next generation everywhere, and a
+  message that crossed the clear is kept in the previous chat's history.
 - Read receipts (`kind: "receipt"`, capability `receipts-v1`) go back to the author through
   the outbox when a session acks a message (or the worker takes it); the author shows
   queued → delivered → read → answered per recipient. Unread state is on disk per node.

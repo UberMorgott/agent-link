@@ -187,6 +187,14 @@ func (s *store) updates() <-chan struct{} {
 	return s.changed
 }
 
+// signal wakes waiters when a paused inbox may be read again.
+func (s *store) signal() {
+	s.mu.Lock()
+	close(s.changed)
+	s.changed = make(chan struct{})
+	s.mu.Unlock()
+}
+
 // claimUndelivered marks all undelivered inbound messages delivered and returns
 // them. A non-empty chat claims only that chat's messages and leaves the rest.
 func (s *store) claimUndelivered(chat string) ([]Message, error) {

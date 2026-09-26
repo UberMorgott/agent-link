@@ -2,6 +2,9 @@ package node
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -173,5 +176,87 @@ func TestStopReleasesAndBlocks(t *testing.T) {
 	}
 	if took, _ := a.leases.take("third", "", "s3", ViaQueue, "tok3", now.Add(time.Minute), now); !took {
 		t.Fatal("no automatic lease after the stop ended")
+	}
+}
+
+// A global pause keeps messages visible to the owner but does not deliver
+// them to a live agent session until the owner resumes all agents.
+func TestStopHoldsSessionDelivery(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	dir := t.TempDir()
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-paused", Provider: "claude", Folder: dir, Wake: WakeRewake}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := b.SendRequest(SendRequest{To: "a", Body: "wait for resume", AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the message", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 1 })
+	a.SetStopped(true)
+	queued, err := b.SendRequest(SendRequest{To: "a", Body: "sent during pause", AuthorKind: AuthorHuman})
+	if err != nil {
+		t.Fatalf("human chat send during pause: %v", err)
+	}
+	eventually(t, "human message reached paused node", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 2 })
+	if p, err := a.UnreadFor(dir, "s-paused", "", 10); err != nil || p.Total != 0 || len(p.Woken) != 0 {
+		t.Fatalf("paused session received messages: %+v, %v", p, err)
+	}
+	if got, err := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-paused"}); err != nil || len(got) != 0 {
+		t.Fatalf("paused session claimed messages: %v, %v", got, err)
+	}
+	if p, _ := a.Unread("", "", 10); p.Total != 2 {
+		t.Fatalf("owner lost the pending message: %+v", p)
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1/unread?agent=1", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	a.APIHandler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"messages":[]`) {
+		t.Fatalf("paused MCP agent read = %d %s", w.Code, w.Body.String())
+	}
+	a.SetStopped(false)
+	if p, err := a.UnreadFor(dir, "s-paused", "", 10); err != nil || p.Total != 2 ||
+		(p.Messages[0].ID != m.ID && p.Messages[1].ID != m.ID) ||
+		(p.Messages[0].ID != queued.ID && p.Messages[1].ID != queued.ID) {
+		t.Fatalf("resumed session did not receive message: %+v, %v", p, err)
+	}
+}
+
+func TestStopHoldsWaitUntilResume(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	m, err := b.SendRequest(SendRequest{To: "a", Body: "deferred", AuthorKind: AuthorHuman})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the message", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 1 })
+	a.SetStopped(true)
+	w := httptest.NewRecorder()
+	a.handleWait(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/wait?timeout=10ms", nil))
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("paused wait = %d %s", w.Code, w.Body.String())
+	}
+	a.SetStopped(false)
+	w = httptest.NewRecorder()
+	a.handleWait(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/wait?timeout=10ms", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), m.ID) {
+		t.Fatalf("resumed wait = %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSeatAddedDuringStopStartsAfterResume(t *testing.T) {
+	l := &seatLauncher{}
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	a.SetStopped(true)
+	seat, err := a.AddSeat(SeatRequest{Provider: ProviderCodex})
+	if err != nil || seat.ID == "" || len(l.all()) != 0 {
+		t.Fatalf("paused seat started: %+v, runs=%d, err=%v", seat, len(l.all()), err)
+	}
+	a.SetStopped(false)
+	a.seatsDue(context.Background(), time.Now())
+	eventually(t, "deferred seat introduction", func() bool {
+		return seatByLabel(t, a, "Codex").SessionID != ""
+	})
+	if len(l.all()) != 1 {
+		t.Fatalf("resumed seat runs = %d", len(l.all()))
 	}
 }

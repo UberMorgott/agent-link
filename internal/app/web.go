@@ -51,7 +51,7 @@ func (a *App) URL(page string) string {
 
 // Handler serves the web UI under /ui/ and the node's control API elsewhere.
 //
-//	GET  /ui/dashboard, /ui/inbox, /ui/participants, /ui/settings, /ui/welcome,
+//	GET  /ui/dashboard, /ui/inbox, /ui/agents, /ui/participants, /ui/settings, /ui/welcome,
 //	     /ui/p/{pid}, /ui/p/{pid}/c/{chat}   application shell with the per-run token embedded
 //	GET  /ui/files/{pid}/{id}     a chat attachment (attachments.go)
 //	GET  /ui/open                 public launcher that activates or adopts the dashboard tab
@@ -89,7 +89,7 @@ func (a *App) Handler() http.Handler {
 	ui := http.NewServeMux()
 	// The single-page app answers its own routes; a reload of any of them gets
 	// the same shell. Other /ui/ paths stay 404.
-	for _, path := range []string{"/ui/dashboard", "/ui/inbox", "/ui/participants", "/ui/settings", "/ui/welcome", "/ui/p/{pid}", "/ui/p/{pid}/c/{chat}"} {
+	for _, path := range []string{"/ui/dashboard", "/ui/inbox", "/ui/agents", "/ui/participants", "/ui/settings", "/ui/welcome", "/ui/p/{pid}", "/ui/p/{pid}/c/{chat}"} {
 		ui.HandleFunc("GET "+path, a.page("web/dist/index.html"))
 	}
 	ui.HandleFunc("GET /ui/open", a.page("web/dist/open.html"))
@@ -149,7 +149,7 @@ func (a *App) Handler() http.Handler {
 	})
 	control := a.controlAPI()
 	root.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if len(a.routeContexts()) == 0 {
+		if len(a.routeContexts()) == 0 && r.URL.Path != "/discuss" {
 			http.Error(w, "node is not running: create or join a project in the app", http.StatusServiceUnavailable)
 			return
 		}

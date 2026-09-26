@@ -60,6 +60,13 @@ type (
 		Project string   `json:"project,omitempty" jsonschema:"project id (or legacy); default: $AGENTLINK_PROJECT_ID"`
 		Session string   `json:"session,omitempty" jsonschema:"the reading session's id; default: this agent session"`
 	}
+	mcpDiscuss struct {
+		With    string `json:"with" jsonschema:"local agent to ask: claude or codex"`
+		Body    string `json:"body" jsonschema:"message for the agent in this folder's one project chat"`
+		Folder  string `json:"folder,omitempty" jsonschema:"project working folder, default current folder"`
+		Async   bool   `json:"async,omitempty" jsonschema:"return message IDs immediately instead of waiting for the agent's reply"`
+		Timeout string `json:"timeout,omitempty" jsonschema:"maximum time to wait for the reply, default 10m, at most 15m"`
+	}
 )
 
 // runMCP serves the MCP tools on stdin/stdout until the client leaves.
@@ -95,10 +102,18 @@ func newMCPServer(cfg config.Config) *mcp.Server {
 		return history(cfg, in.Chat, limit(in.Limit), in.BeforeSeq, in.AfterSeq, proj(""))
 	})
 	addTool(s, "unread", "Unread messages for this node, oldest first; next is the cursor of the next page. Does not mark them read.", func(in mcpUnread) (any, error) {
-		return unread(cfg, in.Folder, in.After, limit(in.Limit), proj(in.Project))
+		session, _ := agentSession()
+		return unreadForSession(cfg, in.Folder, in.After, limit(in.Limit), proj(in.Project), session, true)
 	})
 	addTool(s, "send", "Send a message: into a chat (chat), the open chat with a member (to), or a new chat (new_chat_with), optionally with file attachments. Returns {id, chat}.", func(in mcpSend) (any, error) {
 		return mcpSendMessage(cfg, in, proj(""))
+	})
+	addTool(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's project. Reuses the project's one chat or creates it, waits for the exact agent's reply (default 10m), and returns the reply with project/chat IDs. Use async to post without waiting; timed_out returns IDs for later history lookup.", func(in mcpDiscuss) (any, error) {
+		timeout := in.Timeout
+		if timeout == "" {
+			timeout = "10m"
+		}
+		return discussMessage(cfg, in.With, in.Body, in.Folder, in.Async, timeout)
 	})
 	addTool(s, "ack", "Mark messages read: their authors get read receipts.", func(in mcpAck) (any, error) {
 		if len(in.IDs) == 0 {

@@ -13,12 +13,13 @@ import type { AutonomyMode, AutonomyRequest, ProjectView, Status } from '@/types
 // project, how far its agents work by themselves (mode, hop limit, budgets of
 // full mode) with what of the budgets is used and «Продолжить» after a pause.
 // Every change saves itself through its own request, not the settings form.
+const props = defineProps<{ project?: string }>()
 const app = useAppStore()
 const projects = useProjectsStore()
 
 const MODES: AutonomyMode[] = ['off', 'asked', 'full']
 
-const list = computed(() => (projects.list || []).filter((p) => !p.legacy && p.autonomy))
+const list = computed(() => (projects.list || []).filter((p) => !p.legacy && p.autonomy && p.id === props.project))
 const stopAll = computed(() => !!app.status?.stop_all)
 const stopBusy = ref(false)
 const stopText = ref('')
@@ -103,10 +104,14 @@ const depthDefault = (p: ProjectView) => fmt("autonomy.depth.default", {
     <h2 id="settings_autonomy_title">
       {{ t("autonomy.title") }}
     </h2>
-    <p class="hint">
+    <p
+      v-if="!project"
+      class="hint"
+    >
       {{ t("autonomy.intro") }}
     </p>
     <USwitch
+      v-if="!project"
       id="stop_all"
       :model-value="stopAll"
       :label="t('autonomy.stop.label')"
@@ -115,11 +120,14 @@ const depthDefault = (p: ProjectView) => fmt("autonomy.depth.default", {
       class="check"
       @update:model-value="(v: boolean) => setStop(v)"
     />
-    <p class="hint">
+    <p
+      v-if="!project"
+      class="hint"
+    >
       {{ t("autonomy.stop.hint") }}
     </p>
     <p
-      v-if="stopAll"
+      v-if="!project && stopAll"
       id="stop_all_on"
       class="hint warn"
       role="status"
@@ -127,14 +135,14 @@ const depthDefault = (p: ProjectView) => fmt("autonomy.depth.default", {
       {{ t("autonomy.stop.on") }}
     </p>
     <p
-      v-if="stopText"
+      v-if="!project && stopText"
       class="hint warn"
       role="status"
     >
       {{ stopText }}
     </p>
     <p
-      v-if="!list.length"
+      v-if="project && !list.length"
       id="autonomy_none"
       class="hint"
     >

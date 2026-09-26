@@ -91,9 +91,11 @@ var (
 // ProviderCodex) in Folder, resuming ResumeID when set, starting with Prompt.
 type LaunchSpec struct {
 	Provider string
-	Folder   string
-	ResumeID string
-	Prompt   string
+	// ProgramPath is the configured executable for Provider; empty uses PATH.
+	ProgramPath string
+	Folder      string
+	ResumeID    string
+	Prompt      string
 	// Seat is the seat whose turn this is (seats.go): the turn ends with ctx
 	// (StopSeat) instead of outliving it. NoOpen keeps the desktop app closed.
 	// Env is added to the agent's environment.
@@ -174,15 +176,19 @@ const (
 func LaunchCommand(spec LaunchSpec) []string {
 	args := []string{"wt.exe", "-w", "new", "-d", spec.Folder}
 	prompt := launchSafe(spec.Prompt)
+	program := spec.ProgramPath
+	if program == "" {
+		program = spec.Provider
+	}
 	switch {
 	case spec.Provider == ProviderCodex && spec.ResumeID != "":
-		args = append(args, "codex", "resume", codexFullAccess, spec.ResumeID)
+		args = append(args, program, "resume", codexFullAccess, spec.ResumeID)
 	case spec.Provider == ProviderCodex:
-		args = append(args, "codex", codexFullAccess, "-C", spec.Folder)
+		args = append(args, program, codexFullAccess, "-C", spec.Folder)
 	case spec.ResumeID != "":
-		args = append(args, "claude", "--permission-mode", claudeFullAccess, "--resume", spec.ResumeID)
+		args = append(args, program, "--permission-mode", claudeFullAccess, "--resume", spec.ResumeID)
 	default:
-		args = append(args, "claude", "--permission-mode", claudeFullAccess)
+		args = append(args, program, "--permission-mode", claudeFullAccess)
 	}
 	if prompt != "" {
 		args = append(args, prompt)

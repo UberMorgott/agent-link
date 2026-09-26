@@ -37,9 +37,10 @@ No code or secret is needed for the client commands: the running node holds it.
 
 ## Projects: which network a command reaches
 
-The desktop app runs one network per **project** (and, while it still has a pairing code, the
-network from before projects, «Прежняя сеть», id `legacy`). Every member binds its own folder
-to a project. Chat and message ids belong to exactly one project. A command picks its project:
+The desktop app runs one network and one active chat per **project** (and, while it still has a
+pairing code, the network from before projects, «Прежняя сеть», id `legacy`). The project and
+its chat are the same conversation in the UI. Every member binds its own folder to the project.
+Chat and message ids belong to exactly one project. A command picks its project:
 
 1. `--project <id>` (or `legacy`), else `$AGENTLINK_PROJECT_ID` (set for an agent the app runs
    for a project). An explicit project never falls back: an unknown one is `404`, and a chat or
@@ -74,20 +75,18 @@ searched>` instead of a guess. Relay the answer to your user in their language. 
 Claude/Codex handler gets the same rule as a preamble (`worker.ReplyStyle`); a human's
 question typed in the inbox page is answered briefly in that human's language.
 
-## Ask and get the answer: one chat per conversation
+## Ask and get the answer in a project chat
 
-Talk to other members in **chats**. There is exactly **one open chat per conversation**: the
-set of members (you included) plus the area (project, or none). Every node computes the same
-chat id for it, so it does not matter who writes first or whether both write at once, and
-`send --to`, `send --chat`, replies and the app's composer all land in that one chat. Every
-message goes to all members, everyone keeps the same history, and each member's session (or
-worker) keeps the context.
+Every project has one active chat. `send --chat`, replies, the app's composer and local
+Claude Code ↔ Codex discussions use that same history. For the legacy network, conversations
+are still identified by their member set and area. Members of a project share its chat and
+history; clearing it keeps a dated snapshot and continues in the project's one active chat.
 
 ```powershell
 agentlink members                                              # who is in the network: one JSON line each, this node first
-agentlink send         --to nikita --body "<question>"         # into your open chat with nikita (this folder's project), asks nikita
-agentlink send         --to nikita --area dev --body "<question>"   # the same, in the chat of project dev
-agentlink send         --to area:dev --body "<question>"       # the chat of you + every member of area dev, asks them all
+agentlink send         --to nikita --body "<question>"         # into this folder's project chat, asks nikita
+agentlink send         --to nikita --area dev --body "<question>"   # the dev area conversation (legacy network)
+agentlink send         --to area:dev --body "<question>"       # the dev area conversation (legacy network), asks all members
 agentlink send         --chat <id> [--ask nikita] --body "<text>"   # into that chat's conversation (a closed one: its next chat)
 agentlink send         --reply-to <id> --body "<answer>"       # into the conversation of the message you answer
 agentlink send         --chat <id> --attach shot.png [--attach log.txt] [--body "<text>"]   # with files (see Attachments below)
@@ -98,7 +97,21 @@ agentlink chat list    [--archive] [--legacy]
 agentlink chat new     --with nikita[,olga] [--area dev]       # prints the chat id (the open one; created when missing)
 agentlink chat archive [--chat <id>]                           # project: «Очистить чат» for everyone; the history keeps a snapshot
 agentlink wait         [--chat <id>] --timeout 0               # blocks until the next message
+agentlink discuss      --with codex --body "Review this design" # ask local Codex in this folder's project, wait for reply
+agentlink discuss      --with claude --prompt-file question.md --async # post to the project chat and return IDs
 ```
+
+`discuss` connects your own Claude Code and Codex through agent-link. It reuses the project
+whose bound folder contains the caller's working folder; when no project is bound there, it
+creates a local project for that folder and uses its one chat. It creates a seat for the named
+provider if one does not exist. `--folder <path>` selects the folder; `--body <text>` and
+`--prompt-file <path>` are alternatives. It returns JSON with `project`, `chat`, `id`, `seat`
+and, by default, waits up to 10 minutes for that seat's direct `reply`. `--timeout` accepts a
+duration up to 15 minutes. Timeout returns the IDs with `timed_out: true` and CLI exit code 2;
+`--async` returns IDs immediately. During a global, project or seat pause it returns
+`queued: true` promptly; the request stays in the chat for delivery after resume. The MCP
+`discuss {with, body, folder?, timeout?, async?}` tool has the same behavior. This does not
+provide the old `cx.ps1` wrapper's image or review flags.
 
 Attachments: images (PNG, JPEG, GIF, WebP), PDF and UTF-8 text files, by content (not by
 extension), at most 10 MB each, 10 files and 50 MB per message; `--attach` (MCP `send`:
@@ -234,6 +247,7 @@ error whose text is the API's message.
 | `history` | `chat`, `limit?` (50), `before_seq?`, `after_seq?` | `chat history` |
 | `unread` | `folder?`, `project?`, `limit?` (50), `after?` | `chat unread`, as one `{messages, total, next}` object; never marks read |
 | `send` | exactly one of `chat` / `to` / `new_chat_with[]`, `body`, `ask?[]`, `reply_to?` | `send` (`new_chat_with`: `chat new` first); answers `{id, chat}` |
+| `discuss` | `with` (`claude` or `codex`), `body`, `folder?`, `timeout?`, `async?` | uses or creates this folder's project chat and local seat; returns IDs and the direct reply, `queued`, or `timed_out` |
 | `ack` | `ids[]`, `chat?`, `project?`, `session?` (default: this session) | `chat ack` |
 
 There is no wait tool: the hooks tell a live session about new messages.
@@ -379,7 +393,7 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   active one does not get it.
 - **Opening a session (project autonomy, off by default).** When a message asks this member and
   no session at all (in a turn or idle) is live in the project's folder, the node opens a new
-  one there, only while the project's autonomy (settings page «Автономия агентов», API
+  one there, only while the project's autonomy (project menu «Автономия агентов…», API
   `POST /ui/api/projects/{pid}/binding {"autonomy": "off|asked|full"}`, settings key
   `project_bindings[].autonomy`) is `asked` or `full`; `full` also opens one for a chat message
   of another member that only informs this member, within the hop limit (`max_auto_depth`:
@@ -391,12 +405,13 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   `POST /ui/api/projects/{pid}/autonomy/resume` («Продолжить») goes on. Projects from before
   this setting keep their auto-open as `asked` (on) or `off`; new ones are off: the message then
   waits until a session of the folder appears and gets it the usual way.
-- **Emergency stop.** `POST /ui/api/autonomy/stop {"on": true}` (settings page, tray menu
-  «Остановить всех агентов»; settings key `stop_all`) releases every active automatic lease
+- **Global pause.** `POST /ui/api/autonomy/stop {"on": true}` (general settings page, tray
+  pause/play control; settings key `stop_all`) releases every active automatic lease
   (back to retry, no failure counted; a late proof still counts), ends the seat and
   desktop-launch turns the node runs, and takes no automatic lease, wake, launch, seat turn or
-  worker job in any project until switched off. Messages stay unread; the hook of a session in
-  a turn still delivers. The node always starts a
+  worker job in any project until switched off. People can still send and receive messages;
+  sessions' hooks do not receive them while paused. Messages stay unread and reach the agents
+  after resume. The node always starts a
   **new** session (never resumes an old one: nothing proves it is closed). Launch mode
   `desktop` (default, when the agent's desktop app is installed) claims the messages for the
   launch (no session's hooks take them meanwhile), runs the first turn headless with the
@@ -457,9 +472,9 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
 
 ### Folder hooks of the desktop app
 
-The desktop app (with the default settings file) installs the hook itself, for the agent chosen
-in «Кто отвечает» only, into the «Рабочая папка» and every «Проекты» folder, on start and on
-every settings save:
+The desktop app (with the default settings file) installs both Claude Code and Codex hooks
+into every bound project folder, and into the legacy working folder when configured, regardless
+of the chosen fallback handler. It reconciles them on start and every settings save:
 
 - Claude Code: `<folder>/.claude/settings.local.json`, the personal project settings that Claude
   Code reads hooks from ([settings](https://code.claude.com/docs/en/settings),
@@ -470,11 +485,12 @@ every settings save:
   `.git/info/exclude`, so it is not committed by accident.
 - The entry runs the app's own `agentlink.exe`; an update replaces that file in place, so the
   path stays valid. Installing is idempotent and keeps a `*.agentlink.bak` like `hook install`.
-- A folder removed from the settings, a new working folder or another agent: agentlink's entries
-  are taken out of the old file (only those; `%APPDATA%\agentlink\folder-hooks.json` remembers
-  where they went). «Никто» removes them all. A folder that does not exist is skipped.
-- The settings page shows the state next to the working folder and each project: «Хуки: Claude
-  ✓», «Хуки: папка не найдена», or a write error (details in `agentlink.log`).
+- A folder removed from the settings or a new working folder: agentlink's entries are taken out
+  of the old file (only those; `%APPDATA%\agentlink\folder-hooks.json` remembers where they
+  went). A folder that does not exist is skipped.
+- The legacy settings page shows the hook state next to its working folder and area folders:
+  «Хуки: Claude и Codex ✓», «Хуки: папка не найдена», or a write error (details in
+  `agentlink.log`).
 
 Which messages a session gets depends on its `cwd` (from the hook input), as the node binds it:
 a session inside the project folder of an area (the deepest one when folders nest) gets only

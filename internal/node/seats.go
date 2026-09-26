@@ -313,6 +313,12 @@ func (n *Node) StartSeat(id string, open bool) (SeatView, error) {
 	if err != nil {
 		return SeatView{}, err
 	}
+	if n.Stopped() {
+		// A seat added or resumed during the global pause keeps its place.
+		// seatsDue starts its introduction (or pending work) after resume.
+		n.changed("seats")
+		return n.seatView(id)
+	}
 	switch {
 	case running:
 	case seat.SessionID == "":
@@ -761,7 +767,7 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 	}
 	var due []Seat
 	for _, s := range st.seats {
-		if s.Stopped || st.run[s.ID] != nil || len(s.Pending) == 0 || (s.SessionID != "" && live[s.SessionID]) ||
+		if s.Stopped || st.run[s.ID] != nil || (len(s.Pending) == 0 && s.SessionID != "") || (s.SessionID != "" && live[s.SessionID]) ||
 			s.needsHuman() || (s.Fails > 0 && now.Before(s.RetryAt)) {
 			continue
 		}
@@ -774,7 +780,7 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 		return // stopped, or paused by the budgets (autonomy.go)
 	}
 	for _, s := range due {
-		ready := false
+		ready := s.SessionID == "" && len(s.Pending) == 0
 		for _, p := range s.Pending {
 			if l, _ := n.leases.get(leaseKey(s.ID, p.ID)); l.Failed {
 				continue // a person decides

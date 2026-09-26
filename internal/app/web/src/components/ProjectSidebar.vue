@@ -60,6 +60,18 @@ function openRow(pid: string, legacy: boolean) {
       <VersionBadge />
     </div>
     <div class="flex flex-col gap-0.5 px-2 pb-2">
+      <RouterLink
+        to="/agents"
+        data-route="agents"
+        class="nav-link flex w-full items-center gap-2"
+        :class="{ active: current === 'agents' }"
+        :aria-current="current === 'agents' ? 'page' : undefined"
+      >
+        <UIcon
+          :name="icon('agent')"
+          class="nav-icon size-[1.1rem] flex-none"
+        /><span class="nav-text">{{ t("nav.agents") }}</span>
+      </RouterLink>
       <button
         id="new_project"
         type="button"

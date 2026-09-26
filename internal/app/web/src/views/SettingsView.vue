@@ -20,20 +20,20 @@ const app = useAppStore()
 const projects = useProjectsStore()
 
 const form = reactive<SettingsFields>({
-  node: '', handler: 'none', agent_path: '', work_dir: '', listen: '', api: '', areas: '',
+  node: '', handler: 'none', agent_path: '', claude_path: '', codex_path: '', work_dir: '', listen: '', api: '', areas: '',
   discovery: true, max_jobs: '', autostart: false, auto_answer: false,
 })
 const rows = ref<ProjectRow[]>([])
 const result = ref('')
 const busy = ref(false)
-const agentShown = ref('')
+const agentShown = reactive<Record<string, string>>({ claude: '', codex: '' })
 const workDirKey = ref("settings.work_dir.current")
 const workDirHooks = ref('')
 const hooksCodex = ref(false)
 const advancedOpen = ref(false)
 const picking = ref(false)
-const pickingAgent = ref(false)
-const findingAgent = ref(false)
+const pickingAgent = reactive<Record<string, boolean>>({ claude: false, codex: false })
+const findingAgent = reactive<Record<string, boolean>>({ claude: false, codex: false })
 const projectList = ref<HTMLElement | null>(null)
 let rowSeq = 0
 
@@ -63,7 +63,10 @@ function showSettings(s: AppSettings | null) {
   form.areas = (s.areas || []).join(', ')
   form.handler = s.handler || 'none'
   form.agent_path = s.agent_path || ''
-  void showAgent()
+  form.claude_path = s.claude_path || (s.handler === 'claude' ? s.agent_path || '' : '')
+  form.codex_path = s.codex_path || (s.handler === 'codex' ? s.agent_path || '' : '')
+  void showAgent('claude')
+  void showAgent('codex')
   form.autostart = !!s.autostart
   form.auto_answer = !!s.auto_answer
   form.discovery = s.discovery !== false
@@ -181,54 +184,58 @@ async function pickProjectDir(row: ProjectRow) {
 
 // --- the agent program ---
 
-// showAgent tells which agent program the chosen handler would run.
-async function showAgent() {
-  const handler = form.handler
-  if (handler === 'none') return
+type Provider = 'claude' | 'codex'
+const providers: Provider[] = ['claude', 'codex']
+const programPath = (provider: Provider) => provider === 'claude' ? form.claude_path : form.codex_path
+function setProgramPath(provider: Provider, path: string) {
+  if (provider === 'claude') form.claude_path = path
+  else form.codex_path = path
+}
+
+// Resolve the executable each provider will launch, including PATH discovery.
+async function showAgent(provider: Provider) {
+  const path = programPath(provider)
   try {
-    const r = await api<{ text?: string }>('POST', 'agent', { handler, agent_path: form.agent_path })
-    if (form.handler === handler) agentShown.value = r.text || ''
-  } catch (e) { agentShown.value = (e as Error).message }
+    const r = await api<{ text?: string }>('POST', 'agent', { handler: provider, agent_path: path })
+    if (programPath(provider) === path) agentShown[provider] = r.text || ''
+  } catch (e) { agentShown[provider] = (e as Error).message }
 }
 
 // A program chosen for one agent is not the other agent's program. The form's
 // own "change" listener then saves the new handler.
 function handlerChanged() {
   form.agent_path = ''
-  void showAgent()
 }
 
 // «Найти заново» looks through every known install location and saves the
 // program it finds, like a picked program.
-async function findAgent() {
-  findingAgent.value = true
+async function findAgent(provider: Provider) {
+  findingAgent[provider] = true
   result.value = t("settings.agent.finding")
-  const handler = form.handler
   try {
-    const r = await api<{ path?: string; source?: string; text?: string }>('POST', 'find-agent', { handler })
-    if (form.handler !== handler) return
-    agentShown.value = r.text || ''
+    const r = await api<{ path?: string; source?: string; text?: string }>('POST', 'find-agent', { handler: provider })
+    agentShown[provider] = r.text || ''
     result.value = ''
     if (r.source !== 'missing') {
-      form.agent_path = r.path || ''
+      setProgramPath(provider, r.path || '')
       await editedAndSave()
     }
   } catch (e) {
     result.value = (e as Error).message
   } finally {
-    findingAgent.value = false
+    findingAgent[provider] = false
   }
 }
 
 // The tray process opens the native Windows file dialog for the program.
-async function pickAgent() {
-  pickingAgent.value = true
+async function pickAgent(provider: Provider) {
+  pickingAgent[provider] = true
   result.value = t("settings.agent.picking")
   try {
-    const r = await api<{ path?: string; message?: string }>('POST', 'pick-agent', { start: form.agent_path })
+    const r = await api<{ path?: string; message?: string }>('POST', 'pick-agent', { start: programPath(provider) })
     if (r.path) {
-      form.agent_path = r.path
-      await showAgent()
+      setProgramPath(provider, r.path)
+      await showAgent(provider)
       await editedAndSave(fmt("settings.agent.chosen", { path: r.path }))
     } else {
       result.value = r.message || ''
@@ -236,7 +243,7 @@ async function pickAgent() {
   } catch (e) {
     result.value = (e as Error).message
   } finally {
-    pickingAgent.value = false
+    pickingAgent[provider] = false
   }
 }
 
@@ -264,7 +271,7 @@ const myAddr = computed(() => {
 
 function hookText(client: string | undefined, state: string | undefined) {
   if (!client || !state) return ''
-  if (state === 'ok') return fmt("settings.hooks.ok", { agent: client === 'codex' ? 'Codex' : 'Claude' })
+  if (state === 'ok') return fmt("settings.hooks.ok", { agent: client === 'both' ? 'Claude и Codex' : client === 'codex' ? 'Codex' : 'Claude' })
   return t("settings.hooks." + state)
 }
 
@@ -275,7 +282,7 @@ async function showHooks() {
   const projects = h.projects || {}
   workDirHooks.value = hookText(h.client, h.work_dir)
   for (const r of rows.value) r.hooks = hookText(h.client, projects[r.area.trim()])
-  hooksCodex.value = h.client === 'codex' && [h.work_dir, ...Object.values(projects)].includes('ok')
+  hooksCodex.value = (h.clients || [h.client]).includes('codex') && [h.work_dir, ...Object.values(projects)].includes('ok')
 }
 
 // --- updates: own buttons and switch, saved by their own requests ---
@@ -366,42 +373,6 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
           <p class="handler-note text-sm">
             {{ t("settings.handler.context") }}
           </p>
-          <div
-            v-if="form.handler !== 'none'"
-            id="agent_row"
-            class="flex flex-col gap-1.5"
-          >
-            <span class="text-sm">{{ t("settings.agent.label") }}</span>
-            <span class="flex flex-wrap items-center gap-2">
-              <span
-                id="agent_shown"
-                class="min-w-0 flex-1 text-sm break-all"
-              >{{ agentShown }}</span>
-              <UButton
-                id="find_agent"
-                type="button"
-                :label="t('settings.agent.find')"
-                color="neutral"
-                variant="outline"
-                size="sm"
-                :disabled="findingAgent"
-                @click="findAgent"
-              />
-              <UButton
-                id="pick_agent"
-                type="button"
-                :label="t('settings.agent.pick')"
-                color="neutral"
-                variant="outline"
-                size="sm"
-                :disabled="pickingAgent"
-                @click="pickAgent"
-              />
-            </span>
-            <p class="hint">
-              {{ t("settings.agent.hint") }}
-            </p>
-          </div>
           <USwitch
             id="auto_answer"
             v-model="form.auto_answer"
@@ -411,6 +382,59 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
           />
           <p class="hint">
             {{ t("settings.auto_answer.hint") }}
+          </p>
+        </section>
+
+        <section
+          class="settings-card flex flex-col gap-3"
+          data-settings-card="programs"
+          aria-labelledby="settings_programs_title"
+        >
+          <h2 id="settings_programs_title">
+            {{ t('settings.programs.title') }}
+          </h2>
+          <p class="hint">
+            {{ t('settings.programs.hint') }}
+          </p>
+          <p class="text-sm">
+            {{ t('settings.agent.label') }}
+          </p>
+          <div
+            v-for="provider in providers"
+            :key="provider"
+            class="flex flex-col gap-1.5"
+            :data-program="provider"
+          >
+            <span class="text-sm font-medium">{{ t('settings.handler.' + provider) }}</span>
+            <span class="flex flex-wrap items-center gap-2">
+              <span
+                :id="'agent_shown_' + provider"
+                class="min-w-0 flex-1 text-sm break-all"
+              >{{ agentShown[provider] }}</span>
+              <UButton
+                :id="'find_agent_' + provider"
+                type="button"
+                :label="t('settings.agent.find')"
+                color="neutral"
+                variant="outline"
+                size="sm"
+                :disabled="findingAgent[provider]"
+                @click="findAgent(provider)"
+              />
+              <UButton
+                :id="'pick_agent_' + provider"
+                type="button"
+                :label="t('settings.agent.pick')"
+                color="neutral"
+                variant="outline"
+                size="sm"
+                :disabled="pickingAgent[provider]"
+                @click="pickAgent(provider)"
+              />
+            </span>
+          </div>
+          <p class="hint">
+            {{ t('settings.agent.hint') }}
           </p>
         </section>
 

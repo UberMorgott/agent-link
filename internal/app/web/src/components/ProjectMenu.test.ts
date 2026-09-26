@@ -81,12 +81,12 @@ describe('the project menu', () => {
     expect(router.currentRoute.value.params.chat).toBe(fresh.id)
   })
 
-  it('opens the agents\' autonomy on the settings page; the legacy network has none', async () => {
+  it('opens the project agents\' autonomy in the chat; the legacy network has none', async () => {
     const { router } = await open('/p/' + SITE)
     const item = (await menu(SITE)).find((i) => i.textContent!.includes('project.menu.autonomy'))!
     item.click()
     await settle()
-    expect(router.currentRoute.value.name).toBe('settings')
+    expect(router.currentRoute.value.name).toBe('chat')
     expect(document.querySelector('[data-autonomy="' + SITE + '"]')).not.toBeNull()
     await router.push('/p/' + SITE)
     await settle()

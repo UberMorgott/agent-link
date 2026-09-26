@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -185,6 +186,32 @@ func TestNoFolderHooksWithoutExe(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(work, ".claude")); err == nil {
 		t.Fatal("hooks installed without HookExe")
+	}
+}
+
+func TestBothConfiguredAgentsGetFolderHooks(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	work := t.TempDir()
+	project := t.TempDir()
+	exe := filepath.Join(t.TempDir(), "agentlink.exe")
+	agent := fakeAgentFile(t)
+	h := newHarness(t, func(a *App) { a.HookExe, a.Agents = exe, settings.Finder{} })
+	s := settings.Settings{Node: "alice", Handler: "none", ClaudePath: agent, CodexPath: agent,
+		WorkDir: work, Projects: map[string]settings.Project{"dev": {Dir: project}}}
+	if _, err := h.app.Apply(t.Context(), s); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{work, project} {
+		for _, provider := range []string{"claude", "codex"} {
+			data, err := os.ReadFile(agenthook.ProjectFile(dir, provider))
+			if err != nil || !strings.Contains(string(data), "agentlink.exe") {
+				t.Fatalf("%s hook in %s: %v", provider, dir, err)
+			}
+		}
+	}
+	st := h.app.HookStatus()
+	if st.Client != "both" || !slices.Equal(st.Clients, []string{"claude", "codex"}) || st.WorkDir != HookOK || st.Projects["dev"] != HookOK {
+		t.Fatalf("hook status %+v", st)
 	}
 }
 

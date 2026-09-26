@@ -275,12 +275,18 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 	case req.WakeToken != "" && !validWakeToken(req.WakeToken):
 		return nil, fmt.Errorf("%w: invalid wake_token", ErrBadRequest)
 	}
+	n.auto.stopMu.RLock()
+	if n.Stopped() {
+		n.auto.stopMu.RUnlock()
+		return []string{}, nil
+	}
 	r := n.sess
 	now := time.Now()
 	r.claimMu.Lock()
 	live := r.liveIDs(now)
 	if !live[req.SessionID] {
 		r.claimMu.Unlock()
+		n.auto.stopMu.RUnlock()
 		// Only a registered session takes messages: a hook of a run that never
 		// registered (a headless claude -p) must not steal them.
 		return []string{}, nil
@@ -292,6 +298,7 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 	}
 	granted := n.claimLocked(req.SessionID, want, via, req.WakeToken, live)
 	r.claimMu.Unlock()
+	n.auto.stopMu.RUnlock()
 	n.report(spent, AttemptNeedsHuman)
 	return granted, nil
 }
@@ -359,6 +366,9 @@ var wakeTokenPattern = regexp.MustCompile(`^[0-9A-Za-z_-]{8,64}$`)
 // claim that holds, even of the same session): that hook delivers it.
 // The caller holds n.sess.claimMu.
 func (n *Node) claimLocked(session string, want []string, via, token string, live map[string]bool) []string {
+	if n.Stopped() {
+		return []string{}
+	}
 	r := n.sess
 	wake := via != ViaHook
 	now := time.Now()

@@ -37,6 +37,15 @@ func TestTrayTooltip(t *testing.T) {
 	}
 }
 
+func TestTrayActionLabel(t *testing.T) {
+	if got, want := TrayActionLabel(false), "⏸ Приостановить всех агентов"; got != want {
+		t.Errorf("running action = %q, want %q", got, want)
+	}
+	if got, want := TrayActionLabel(true), "▶ Продолжить работу всех агентов"; got != want {
+		t.Errorf("paused action = %q, want %q", got, want)
+	}
+}
+
 func TestAutostartCommand(t *testing.T) {
 	exe := filepath.Join("C:", "Program Files", "agentlink", "agentlink.exe")
 	for _, p := range []string{exe, selfupdate.OldPath(exe), filepath.Join(filepath.Dir(exe), ".agentlink.exe.new")} {

@@ -16,6 +16,9 @@ import (
 const (
 	// CapPresence: sends and reads presence frames.
 	CapPresence = "presence-v1"
+	// CapAgentCounts: presence includes per-provider agent counts. Older peers
+	// still receive the original presence fields without the new counts.
+	CapAgentCounts = "agent-counts-v1"
 	// framePresence carries Frame.Presence.
 	framePresence = "presence"
 	// presenceGap is the least time between two presence frames on a session.
@@ -23,6 +26,27 @@ const (
 	// maxPresenceAreas bounds a received presence frame.
 	maxPresenceAreas = 256
 )
+
+// AgentCounts counts live sessions and active local seats by provider. A seat
+// backed by a registered session counts once, not once in each registry.
+type AgentCounts struct {
+	Claude int `json:"claude,omitempty"`
+	Codex  int `json:"codex,omitempty"`
+	Other  int `json:"other,omitempty"`
+}
+
+func (c AgentCounts) total() int { return c.Claude + c.Codex + c.Other }
+
+func (c *AgentCounts) add(provider string) {
+	switch provider {
+	case ProviderClaude:
+		c.Claude++
+	case ProviderCodex:
+		c.Codex++
+	default:
+		c.Other++
+	}
+}
 
 // AreaPresence is the session state of a node for one area ("" is the
 // working folder: direct messages and chats without a project there).
@@ -34,6 +58,8 @@ type AreaPresence struct {
 	Session string `json:"session,omitempty"`
 	// AutoAnswer: the worker answers requests while no session is live.
 	AutoAnswer bool `json:"auto_answer,omitempty"`
+	// Counts is announced only to peers with CapAgentCounts.
+	Counts AgentCounts `json:"agent_counts,omitzero"`
 }
 
 // SetAutoAnswer tells the node whether its worker answers requests no live
@@ -43,6 +69,10 @@ func (n *Node) SetAutoAnswer(on bool) { n.autoAnswer = on }
 // presenceFor is this node's presence for a peer with areas peerAreas: the
 // working folder's, then every area both have, sorted.
 func (n *Node) presenceFor(peerAreas []string) []AreaPresence {
+	return n.presenceForCaps(peerAreas, false)
+}
+
+func (n *Node) presenceForCaps(peerAreas []string, counts bool) []AreaPresence {
 	areas := []string{""}
 	for _, a := range n.cfg.Areas {
 		if a != "" && slices.Contains(peerAreas, a) && !slices.Contains(areas, a) {
@@ -52,14 +82,14 @@ func (n *Node) presenceFor(peerAreas []string) []AreaPresence {
 	slices.Sort(areas[1:])
 	r := n.sess
 	now := time.Now()
+	paused := n.Stopped()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	out := make([]AreaPresence, 0, len(areas))
 	for _, a := range areas {
-		p := AreaPresence{Area: a, AutoAnswer: n.autoAnswer}
+		p := AreaPresence{Area: a, AutoAnswer: n.autoAnswer && !paused}
 		want := n.localArea(a)
 		for _, s := range r.sessions {
-			if s.Area != want || !s.live(now) {
+			if paused || s.Area != want || !s.live(now) {
 				continue
 			}
 			switch {
@@ -73,7 +103,43 @@ func (n *Node) presenceFor(peerAreas []string) []AreaPresence {
 		}
 		out = append(out, p)
 	}
+	r.mu.Unlock()
+	if counts {
+		for i := range out {
+			out[i].Counts = n.agentCountsForArea(out[i].Area)
+		}
+	}
 	return out
+}
+
+// agentCountsForArea takes independent snapshots of the session and seat
+// registries. Both change events cause presence to be sent again.
+func (n *Node) agentCountsForArea(area string) AgentCounts {
+	var counts AgentCounts
+	if n.Stopped() {
+		return counts
+	}
+	want := n.localArea(area)
+	seats := n.Seats()
+	seatSessions := make(map[string]bool, len(seats))
+	if n.cfg.Project == "" || area != "" {
+		seats = nil
+	}
+	for _, seat := range seats {
+		if seat.SessionID != "" {
+			seatSessions[seat.SessionID] = true
+		}
+		switch seat.Status {
+		case SeatActive, SeatIdle, SeatRunning, SeatBusy:
+			counts.add(seat.Provider)
+		}
+	}
+	for _, session := range n.Sessions() {
+		if session.Area == want && !seatSessions[session.SessionID] {
+			counts.add(session.Provider)
+		}
+	}
+	return counts
 }
 
 // receivePresence keeps what a peer's presence frame says, for its session.
@@ -89,6 +155,9 @@ func (n *Node) receivePresence(pc *peerConn, list []AreaPresence) {
 			continue
 		}
 		if len(p.Area) <= 128 {
+			if !pc.has(CapAgentCounts) || p.Counts.Claude < 0 || p.Counts.Codex < 0 || p.Counts.Other < 0 || p.Counts.total() > maxSessions+maxSeats {
+				p.Counts = AgentCounts{}
+			}
 			got[p.Area] = p
 		}
 	}

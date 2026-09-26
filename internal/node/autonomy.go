@@ -92,6 +92,7 @@ type AutonomyStatus struct {
 
 type autonomy struct {
 	stopped atomic.Bool
+	stopMu  sync.RWMutex // serializes a waiter's inbox claim with a stop transition
 	mu      sync.Mutex
 	cfg     Autonomy
 	st      autonomyState
@@ -205,11 +206,16 @@ func (n *Node) ResumeAutonomy() {
 // running seat turns and desktop-launch turns, and lets no wake, launch or
 // seat turn start; messages stay unread.
 func (n *Node) SetStopped(on bool) {
-	if n.auto.stopped.Swap(on) == on {
+	n.auto.stopMu.Lock()
+	was := n.auto.stopped.Swap(on)
+	n.auto.stopMu.Unlock()
+	if was == on {
 		return
 	}
+	n.presenceChanged()
 	if !on {
 		n.leases.resume()
+		n.store.signal()
 		n.log.Info("agents may work again")
 		n.changed("autonomy")
 		return

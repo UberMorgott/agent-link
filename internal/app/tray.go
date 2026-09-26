@@ -11,7 +11,16 @@ const (
 	TrayOpenBrowser = "tray.open_browser"
 	TrayQuit        = "tray.quit"
 	TrayStopAll     = "tray.stop_all"
+	TrayResumeAll   = "tray.resume_all"
 )
+
+// TrayActionLabel describes the next global agent action, not the current state.
+func TrayActionLabel(stopped bool) string {
+	if stopped {
+		return Text(TrayResumeAll, nil)
+	}
+	return Text(TrayStopAll, nil)
+}
 
 // maxTooltip is the tray tooltip's room in UTF-16 units, without the
 // terminating zero (NOTIFYICONDATAW.szTip holds 128).
