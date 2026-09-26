@@ -48,12 +48,10 @@ type waitOpts struct {
 
 // defaultWaitOpts: the session's process is the client's agent among the
 // waiter's ancestors (agentPID: Claude Code runs it through cmd.exe and the
-// plugin's agentlink.cmd, so the parent is not the agent), else the parent.
+// plugin's agentlink.cmd, so the parent is not the agent). Without one, the
+// waiter stops rather than tracking a launcher that can outlive the session.
 func defaultWaitOpts(client string) waitOpts {
 	ppid := agentPID(client)
-	if ppid == 0 {
-		ppid = os.Getppid()
-	}
 	return waitOpts{
 		poll:      2 * time.Second,
 		heartbeat: 5 * time.Minute,

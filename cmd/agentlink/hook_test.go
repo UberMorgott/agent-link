@@ -1032,6 +1032,16 @@ func TestHookWaitLeavesBusySessionAndEnds(t *testing.T) {
 	}
 }
 
+func TestDefaultWaitOptsWithoutAgentFailsClosed(t *testing.T) {
+	const client = "agentlink-nonexistent-agent"
+	if pid := agentPID(client); pid != 0 {
+		t.Fatalf("unexpected agent pid %d", pid)
+	}
+	if defaultWaitOpts(client).alive() {
+		t.Fatal("waiter must stop when its agent ancestor cannot be found")
+	}
+}
+
 func TestHookUnreachableNodeIsSilent(t *testing.T) {
 	var lc net.ListenConfig
 	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")

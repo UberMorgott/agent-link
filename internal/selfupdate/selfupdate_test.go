@@ -312,6 +312,33 @@ func TestApplyReplacesTheExecutable(t *testing.T) {
 	}
 }
 
+// A previous executable can stay locked by a long-lived CLI helper on Windows.
+// Nonempty directories stand in for locked destinations on every test platform.
+func TestReplaceWhenPreviousBackupsRemainLocked(t *testing.T) {
+	exe := install(t)
+	for i, want := range []string{"second", "third"} {
+		blocked := OldPath(exe)
+		if i > 0 {
+			blocked += ".1"
+		}
+		if err := os.Mkdir(blocked, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(blocked, "locked"), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := replace([]file{{path: exe, data: []byte(want)}}); err != nil {
+			t.Fatalf("update %d with older backup locked: %v", i+1, err)
+		}
+		if got := read(t, exe); got != want {
+			t.Fatalf("update %d installed %q, want %q", i+1, got, want)
+		}
+		if got := read(t, filepath.Join(blocked, "locked")); got != "keep" {
+			t.Fatalf("update %d changed an older backup: %q", i+1, got)
+		}
+	}
+}
+
 func TestApplyRefusesUnknownExecutable(t *testing.T) {
 	fakeRelease(t, "v0.5.0")
 	for _, name := range []string{"other", "agentlink-tray"} {
@@ -388,6 +415,57 @@ func TestApplyRollsBack(t *testing.T) {
 	}
 }
 
+func TestReplaceRollsBackFromFallbackBackup(t *testing.T) {
+	exe := install(t)
+	if err := os.Mkdir(OldPath(exe), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(OldPath(exe), "locked"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rename = func(from, to string) error {
+		if from == newPath(exe) && to == exe {
+			return errors.New("injected install failure")
+		}
+		return os.Rename(from, to)
+	}
+	defer func() { rename = os.Rename }()
+	if err := replace([]file{{path: exe, data: []byte("new")}}); err == nil {
+		t.Fatal("replace succeeded despite install failure")
+	}
+	if got := read(t, exe); got != "old" {
+		t.Fatalf("rollback restored %q, want old", got)
+	}
+	if _, err := os.Stat(oldPathSlot(exe, 1)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fallback backup left behind: %v", err)
+	}
+	if _, err := os.Stat(newPath(exe)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new executable left behind: %v", err)
+	}
+}
+
+func TestReplaceStopsWhenAllBackupSlotsAreOccupied(t *testing.T) {
+	exe := install(t)
+	for slot := 0; slot <= maxOldSlots; slot++ {
+		blocked := oldPathSlot(exe, slot)
+		if err := os.Mkdir(blocked, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(blocked, "locked"), []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := replace([]file{{path: exe, data: []byte("new")}}); err == nil {
+		t.Fatal("replace succeeded without a free backup slot")
+	}
+	if got := read(t, exe); got != "old" {
+		t.Fatalf("failed update changed executable to %q", got)
+	}
+	if _, err := os.Stat(newPath(exe)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new executable left behind: %v", err)
+	}
+}
+
 // Cleanup sweeps update leftovers and the executables of older releases.
 func TestCleanupRemovesLegacy(t *testing.T) {
 	exe := install(t)
@@ -407,6 +485,30 @@ func TestCleanupRemovesLegacy(t *testing.T) {
 	}
 	if !LegacyName("AgentLink-Tray"+filepath.Ext(tray)) || LegacyName(filepath.Base(exe)) {
 		t.Fatal("LegacyName")
+	}
+}
+
+func TestCleanupRemovesNumberedOldExecutables(t *testing.T) {
+	exe := install(t)
+	for _, slot := range []int{1, 2, maxOldSlots} {
+		if err := os.WriteFile(oldPathSlot(exe, slot), []byte("stale"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unrelated := oldPathSlot(exe, maxOldSlots+1)
+	if err := os.WriteFile(unrelated, []byte("outside cleanup bound"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Cleanup(exe); err != nil {
+		t.Fatal(err)
+	}
+	for _, slot := range []int{1, 2, maxOldSlots} {
+		if _, err := os.Stat(oldPathSlot(exe, slot)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("old executable slot %d left behind: %v", slot, err)
+		}
+	}
+	if got := read(t, unrelated); got != "outside cleanup bound" {
+		t.Fatalf("cleanup changed unrelated file: %q", got)
 	}
 }
 

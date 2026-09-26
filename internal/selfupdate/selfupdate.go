@@ -69,6 +69,7 @@ const digestPrefix = "sha256:"
 const (
 	maxJSONSize  = 4 << 20   // 4 MiB
 	maxAssetSize = 256 << 20 // 256 MiB, far above a ~10 MB build
+	maxOldSlots  = 64        // bound retained executables and cleanup work
 )
 
 // client bounds every request; a hung connection must not wedge the updater.
@@ -150,10 +151,18 @@ func fileName(program string) string {
 
 // OldPath is where an update parks the executable it replaced. On Windows a
 // running executable cannot be deleted, only renamed aside, and it stays
-// locked until its process exits, so only a later start (Cleanup) removes it.
+// locked until its process exits. Later updates can use numbered old paths;
+// a later start (Cleanup) removes whichever old executables have exited.
 func OldPath(exePath string) string {
 	dir, base := filepath.Split(exePath)
 	return filepath.Join(dir, "."+base+".old")
+}
+
+func oldPathSlot(exePath string, slot int) string {
+	if slot == 0 {
+		return OldPath(exePath)
+	}
+	return OldPath(exePath) + "." + strconv.Itoa(slot)
 }
 
 func newPath(exePath string) string {
@@ -376,19 +385,20 @@ func replace(files []file) error {
 			return fmt.Errorf("write new %s: %w", filepath.Base(f.path), err)
 		}
 	}
-	var done []file
+	type swapped struct {
+		file
+		old string
+	}
+	var done []swapped
 	rollback := func() {
-		for _, f := range slices.Backward(done) {
-			_ = rename(OldPath(f.path), f.path)
+		for _, s := range slices.Backward(done) {
+			_ = rename(s.old, s.path)
 		}
 		cleanNew()
 	}
 	for _, f := range files {
-		old := OldPath(f.path)
-		// A leftover .old of an earlier update would block the rename; when it
-		// is still locked (its process runs) the rename below reports that.
-		_ = os.Remove(old)
-		if err := rename(f.path, old); err != nil {
+		old, err := parkOld(f.path)
+		if err != nil {
 			rollback()
 			return fmt.Errorf("move %s aside: %w", filepath.Base(f.path), err)
 		}
@@ -397,15 +407,39 @@ func replace(files []file) error {
 			rollback()
 			return fmt.Errorf("install new %s: %w", filepath.Base(f.path), err)
 		}
-		done = append(done, f)
+		done = append(done, swapped{file: f, old: old})
 	}
 	// A running executable stays locked: hide it until Cleanup at the next start.
-	for _, f := range files {
-		if err := os.Remove(OldPath(f.path)); err != nil {
-			_ = hideFile(OldPath(f.path))
+	for _, s := range done {
+		if err := os.Remove(s.old); err != nil {
+			_ = hideFile(s.old)
 		}
 	}
 	return nil
+}
+
+// parkOld finds a free backup name even when a helper still runs an older
+// executable. Only regular files at our exact backup names may be removed.
+func parkOld(path string) (string, error) {
+	var occupied error
+	for slot := 0; slot <= maxOldSlots; slot++ {
+		old := oldPathSlot(path, slot)
+		if st, err := os.Lstat(old); err == nil && !st.Mode().IsRegular() {
+			continue
+		}
+		if err := os.Remove(old); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			occupied = err
+			continue
+		}
+		if err := rename(path, old); err != nil {
+			return "", err
+		}
+		return old, nil
+	}
+	if occupied != nil {
+		return "", fmt.Errorf("all %d old executable slots are occupied: %w", maxOldSlots+1, occupied)
+	}
+	return "", fmt.Errorf("all %d old executable slots are occupied", maxOldSlots+1)
 }
 
 // Cleanup removes what an update left next to exePath: the replaced
@@ -424,7 +458,13 @@ func Cleanup(exePath string) error {
 	}
 	for _, p := range append([]string{Program}, legacy...) {
 		path := filepath.Join(dir, fileName(p))
-		remove(OldPath(path))
+		for slot := 0; slot <= maxOldSlots; slot++ {
+			old := oldPathSlot(path, slot)
+			if st, err := os.Lstat(old); err == nil && !st.Mode().IsRegular() {
+				continue
+			}
+			remove(old)
+		}
 		remove(newPath(path))
 	}
 	for _, p := range legacy {
