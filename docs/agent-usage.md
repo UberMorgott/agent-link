@@ -96,7 +96,7 @@ agentlink chat ack     --ids <id,...> [--session <id>]         # mark read: the 
 agentlink chat history --chat <id> [--limit 50] [--before <seq>] [--after <seq>]
 agentlink chat list    [--archive] [--legacy]
 agentlink chat new     --with nikita[,olga] [--area dev]       # prints the chat id (the open one; created when missing)
-agentlink chat archive [--chat <id>]                           # project: history to the archive, a fresh chat opens
+agentlink chat archive [--chat <id>]                           # project: «Очистить чат» for everyone; the history keeps a snapshot
 agentlink wait         [--chat <id>] --timeout 0               # blocks until the next message
 ```
 
@@ -111,8 +111,27 @@ the prompt (`codex queue --image`). Peers older than attachments see a line
 
 A project has exactly one active chat, shown under the project's name: `chat new`, `send --to`
 and MCP `send` with `new_chat_with` all land in it (members it lacks are added), and a message to
-an archived chat of the project continues there. `chat archive` moves its history to the
-project's archive and opens a fresh chat with the same members; live sessions follow it.
+an archived chat of the project continues there.
+
+**Clearing and the history («Очистить чат», «История»).** `chat archive` (MCP has no tool for it;
+a person uses the project's «⋯» → «Очистить чат») clears the chat **for every member**: each node
+keeps the messages so far as a dated, read-only snapshot and the chat goes on empty with the same
+members (technically a new chat id that takes over from the old one: live sessions, routing and
+delivery leases follow it). Snapshots are the project's history:
+
+- list them: `chat list --archive` / MCP `chats {project, archive: true}` — each entry is one
+  cleared chat: `id`, `closed_at` (when it was cleared), `closed_by` (who), `title`, `count`;
+- read one: `chat history --chat <id>` / MCP `history {chat: <id>}` (read-only, changes nothing).
+
+A request the clear caught unread stays unread and deliverable: `unread` still lists it, `ack`
+acknowledges it, and a reply (`send --reply-to <id>` or `--chat <old id>`) lands in the emptied chat.
+A member offline during the clear gets it (the old chat's close, the new chat's open) when it connects.
+
+**Names and nicknames.** A member's `name` is its identity and never changes; it may also show a
+nickname (`members[].display`, set in the app's own chip) and a chat color (`members[].color`).
+`--to`, `--ask`, MCP `to`/`ask`/`new_chat_with` accept the name, the current nickname or any earlier
+nickname (ignoring case) and resolve it to the member's name. `members[].agent: true` means that
+member's computer has an agent session (Claude Code or Codex) open in the project now.
 
 0. The network can have many members (everyone with the same code). `members` lists them:
    `name`, `online`, `addrs`, `app` (version), `self: true` for this node. Pick the recipient
