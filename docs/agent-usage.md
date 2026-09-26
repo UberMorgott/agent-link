@@ -248,7 +248,10 @@ it), so the node knows someone is there. All on the control API (loopback, no to
   may take. Chat affinity: every message of a chat (new roots and replies alike) goes to the
   live session behind the chat's newest message a session here sent (`agentlink send` inside a
   session names it: `--session`, default `$CLAUDE_CODE_SESSION_ID` / `$CODEX_THREAD_ID`) or was
-  assigned; a session that never took part in the chat does not get it. An active session (in a turn) wins: while one lives in the folder, only active sessions count for the chat, so an idle chat session is not woken and the active one's hooks take the message. A chat with no such
+  assigned; a session that never took part in the chat does not get it. A session without a
+  hook event for 30 minutes (its waiter's heartbeats do not count) has lost its chats: their
+  messages go to no session in particular, and an idle one wakes the folder's session with
+  the latest hook event. An active session (in a turn) wins: while one lives in the folder, only active sessions count for the chat, so an idle chat session is not woken and the active one's hooks take the message. A chat with no such
   live session goes to the first session that `claim`s it. A claim holds until the ack, the
   session ends, or 1 minute passes unacked (then the message goes back to its route).
 - `activity` shows every member what the session does (like the worker's activity) for

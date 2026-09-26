@@ -23,7 +23,9 @@ import (
 //     one that did lives. An active session (in a turn) wins over an idle
 //     one of its area: while one lives, affinity picks among the active ones
 //     only, and a chat whose session is idle is for no session in particular
-//     (the active one's hooks take it, no idle session is woken);
+//     (the active one's hooks take it, no idle session is woken). A session
+//     without a hook event for AffinityLapse (LastActive) has lost its
+//     chats: an abandoned one its waiter keeps live does not hold them;
 //   - else no session in particular: the first session to Claim it takes it.
 //
 // Only live sessions count: a message for a session that is gone is anyone's.
@@ -32,6 +34,10 @@ import (
 // after it delivers, so a claim older than that was never delivered and the
 // message goes back to its route.
 const claimTTL = time.Minute
+
+// AffinityLapse: a session with no hook event (LastActive) for this long no
+// longer holds its chats (routeOf), though its waiter keeps it live.
+const AffinityLapse = 30 * time.Minute
 
 // sessionClaim is one session's claim of an unread message (Claim), or, with
 // wake, the node's for the prompt that woke the session with it (wakeClaim).
@@ -170,13 +176,28 @@ func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string 
 	if s := assignedSession(*rec); live[s] {
 		return s
 	}
-	aff := n.chats.affinity(rec.Message.ChatID, n.cfg.Node, live)
-	if busy := n.sess.busyBeside(aff, live); busy != nil {
+	recent := n.sess.recentlyActive(live, time.Now())
+	aff := n.chats.affinity(rec.Message.ChatID, n.cfg.Node, recent)
+	if busy := n.sess.busyBeside(aff, recent); busy != nil {
 		// The chat's session is idle while another of its area is in a turn:
 		// the active one wins (no wake), affinity only picks among them.
 		return n.chats.affinity(rec.Message.ChatID, n.cfg.Node, busy)
 	}
 	return aff
+}
+
+// recentlyActive is the subset of live whose sessions had a hook event within
+// AffinityLapse.
+func (r *sessionRegistry) recentlyActive(live map[string]bool, now time.Time) map[string]bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]bool, len(live))
+	for id, ok := range live {
+		if s := r.sessions[id]; ok && s != nil && now.Sub(s.activeAt()) < AffinityLapse {
+			out[id] = true
+		}
+	}
+	return out
 }
 
 // busyBeside is, when session id is idle, the set of the live sessions of its

@@ -94,6 +94,7 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 		// the idle it just registered (the node would not wake the session).
 		if time.Since(lastBeat) >= o.heartbeat && !waiterBusy(st, env.clock(), o.busyFor) {
 			req := sessionRequest(client, in.SessionID, folder, true)
+			req.Heartbeat = true // keeps the session live, not active (node.Session.LastActive)
 			if hookCall(env.api, http.MethodPost, "/sessions", nil, req, nil, hookHTTPTimeout) == nil {
 				lastBeat = time.Now()
 			}

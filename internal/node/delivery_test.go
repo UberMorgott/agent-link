@@ -435,7 +435,7 @@ func TestWakeIdlePriority(t *testing.T) {
 	reg("s-old", sockOld, true)
 	reg("s-new", sockNew, true)
 	a.sess.mu.Lock()
-	a.sess.sessions["s-old"].LastSeen = time.Now().Add(-time.Minute)
+	a.sess.sessions["s-old"].LastActive = time.Now().Add(-time.Minute)
 	a.sess.mu.Unlock()
 	m := ask(t, a, b, "who takes it")
 	a.wakeIdle(context.Background())
@@ -498,5 +498,60 @@ func TestWakeIdleAffinityActiveWins(t *testing.T) {
 	a.wakeIdle(context.Background())
 	if p.count() != 1 || !strings.HasPrefix(p.calls[0], testSocket+"|") {
 		t.Fatalf("posts %v", p.calls)
+	}
+}
+
+// An abandoned session keeps living on its waiter's heartbeats, but those are
+// no activity: after AffinityLapse without a hook event it loses its chats,
+// and a message of them goes to the session of the folder active last.
+func TestAffinityLapsesWithoutEvents(t *testing.T) {
+	p := &fakePoster{}
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, p, nil)
+	const sockNew = `\\.\pipe\LOCAL\cc-msg-0123456789abcdef0123456789abcde0`
+	reg := func(id, sock string, heartbeat bool) {
+		t.Helper()
+		if _, err := a.RegisterSession(SessionRequest{SessionID: id, Provider: "claude", Folder: dir, Wake: WakeRewake,
+			Idle: true, InboxSocket: sock, InboxToken: testToken, Heartbeat: heartbeat}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reg("s-old", testSocket, false)
+	q, err := a.SendRequest(SendRequest{To: "b", Body: "check it", AuthorKind: AuthorAgent, SessionID: "s-old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the request", func() bool { p, _ := b.Unread("", "", 10); return p.Total == 1 })
+	reg("s-new", sockNew, false)
+	m, err := b.SendRequest(SendRequest{ChatID: q.ChatID, Body: "done?", Ask: []string{"a"}, AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has it", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 1 })
+	if to := a.routedTo([]string{m.ID})[m.ID]; to != "s-old" {
+		t.Fatalf("routed to %q, want the chat's session", to)
+	}
+	a.sess.mu.Lock()
+	a.sess.sessions["s-old"].LastActive = time.Now().Add(-AffinityLapse - time.Minute)
+	a.sess.mu.Unlock()
+	reg("s-old", testSocket, true) // the waiter's heartbeat: live, not active
+	a.sess.mu.Lock()
+	old := *a.sess.sessions["s-old"]
+	a.sess.mu.Unlock()
+	if !old.live(time.Now()) || time.Since(old.LastActive) < AffinityLapse {
+		t.Fatalf("heartbeat: live %v, last active %v", old.live(time.Now()), old.LastActive)
+	}
+	if to := a.routedTo([]string{m.ID})[m.ID]; to != "" {
+		t.Fatalf("routed to %q, want nobody in particular", to)
+	}
+	a.wakeIdle(context.Background())
+	if p.count() != 1 || !strings.HasPrefix(p.calls[0], sockNew+"|") || !strings.Contains(p.calls[0], "id "+m.ID) {
+		t.Fatalf("posts %v, want the active session woken", p.calls)
+	}
+	// A hook event makes the old session active again: its chat is its own.
+	a.unclaim("s-new", []string{m.ID})
+	reg("s-old", testSocket, false)
+	if to := a.routedTo([]string{m.ID})[m.ID]; to != "s-old" {
+		t.Fatalf("after an event: routed to %q", to)
 	}
 }
