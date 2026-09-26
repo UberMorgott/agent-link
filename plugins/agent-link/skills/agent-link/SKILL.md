@@ -22,6 +22,12 @@ to start it.
 - `projects {}`, `members {project?}`: project networks and people (`self` = this node).
 - `chats {project?, archive?, legacy?}`: chats, most recent first (without `project`: all).
 - `history {chat, limit?, before_seq?, after_seq?}`: messages of a chat; reads, changes nothing.
+- A project has one chat. «Очистить чат» (by a person) empties it for everyone and keeps the old
+  messages as a dated snapshot: `chats {project, archive: true}` lists the snapshots (`closed_at` =
+  when cleared), `history {chat: <snapshot id>}` reads one. Unread requests from before a clear
+  stay in `unread`; answering them lands in the current chat.
+- Members go by `name` (identity) and may show a nickname (`display`): `to`, `ask`, `new_chat_with`
+  accept either, or an earlier nickname.
 - `unread {project?, folder?, limit?, after?}`: a page of unread messages, not acked; `next` is
   the cursor for `after`. Pass the ids you handled to `ack`.
 - `send {body, chat | to | new_chat_with, ask?, reply_to?, attachments?}`: exactly one of `chat`,
