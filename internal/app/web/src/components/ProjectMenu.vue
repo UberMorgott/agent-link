@@ -11,9 +11,9 @@ import { useProjectsStore, type ProjectDialog } from '@/stores/projects'
 import type { ProjectView } from '@/types'
 
 // A project's "⋯" menu, the project's own controls (the chat has no header):
-// archiving the history of its chat, members, the invite, the shared name,
-// this member's folder, its agents' autonomy (on the settings page), and
-// deleting the project here (leaving it).
+// clearing its one chat for everyone and its history of cleared chats,
+// members, the invite, the shared name, this member's folder, its agents'
+// autonomy (on the settings page), and deleting the project here (leaving it).
 const props = defineProps<{ project: ProjectView; name: string }>()
 const projects = useProjectsStore()
 const inbox = useInboxStore()
@@ -31,9 +31,9 @@ const items = computed<DropdownMenuItem[][]>(() => {
   const chat: DropdownMenuItem[] = []
   if (!p.legacy) {
     chat.push({
-      label: t("inbox.archive_history"), icon: icon('archive'), disabled: !inbox.activeChat(p.id) || inbox.closing,
-      onSelect: () => run(() => inbox.confirmArchive(p.id)),
-    })
+      label: t("inbox.clear"), icon: icon('clear'), disabled: !inbox.activeChat(p.id) || inbox.closing,
+      onSelect: () => run(() => inbox.confirmClear(p.id)),
+    }, item('history', "inbox.history", 'history'))
   }
   // A chat of the network from before projects is closed instead; the open one.
   const open = inbox.chat

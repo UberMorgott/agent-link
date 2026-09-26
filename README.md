@@ -89,13 +89,19 @@ name and chats; nothing crosses between projects. Every member binds its **own**
   status «у участника не выбрана папка проекта», and agent sessions cannot register. A folder change
   or a leave waits until the agent has finished that project's requests («Агент ещё выполняет
   запросы…»); a folder change forgets the agent sessions of the old folder.
-- **Chats**: **＋ Новый чат** picks the participants (every member preselected; none is fine — a
-  chat of you alone); who must answer is still chosen per message. The chat's owner (who started
-  it) invites project members later and removes them in the chat details (ⓘ): an offline member
-  gets the chat when it connects, from then on (not older messages); a removed one keeps its copy
-  in the archive and gets nothing more. Every member needs this version for that. **Завершить чат** ends it for everyone; a finished
-  chat goes to the archive and a new chat continues the topic.
-- **Leave** tells the members, stops the project and moves its data to
+- **Chats**: a project has **one chat**; its row in the sidebar (name, a dot, «⋯») opens it. The
+  dot counts the computers with an agent session (Claude Code, Codex) open in the project: grey —
+  none, yellow — one, green — two or more (the tooltip names them; peers tell it by their presence
+  frames, an older peer counts as none). «⋯» → **Очистить чат** empties the chat for every member:
+  the messages so far stay as a dated, read-only snapshot under **История**, and the chat goes on
+  with the same members (live sessions follow it; requests left unread stay deliverable). The
+  chat's owner (who started it) invites project members and removes them in «Участники»: an
+  offline member gets the chat when it connects, from then on (not older messages).
+- **Profile**: the chip at the foot of the sidebar sets your nickname and chat color. Both travel
+  in your member record to every member (an older version shows your name and a derived color);
+  your name stays your identity, and agents' `--to`/`ask` accept the name, the nickname or an
+  earlier nickname. A nickname another member already has is refused. The palette icon picks the
+  theme, accent color and font (Inter, Manrope, IBM Plex Sans — bundled — or the system font).- **Leave** tells the members, stops the project and moves its data to
   `data\projects\.left\<id>-<time>` (never deleted). Joining again later is a new member identity.
 - **Прежняя сеть**: a network from before projects (a `XXXX-XXXX-XXXX` code or an old long secret)
   keeps running as the project «Прежняя сеть» while its code exists; it is not converted. Its code is

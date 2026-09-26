@@ -6,12 +6,12 @@ const stored = (value: string) => ({ getItem: (key: string) => (key === UI_STORA
 
 describe('the saved appearance', () => {
   it('reads known values and drops the rest', () => {
-    expect(readUiState(stored('{"theme":"dark","primary":"rose","surface":"zinc"}'))).toEqual({ theme: 'dark', primary: 'rose', surface: 'zinc' })
-    expect(readUiState(stored('{"theme":"sepia","primary":"lime","surface":"beige"}'))).toEqual({ theme: 'system', primary: 'emerald', surface: 'neutral' })
-    // A store from before the palettes had only the theme.
-    expect(readUiState(stored('{"theme":"light"}'))).toEqual({ theme: 'light', primary: 'emerald', surface: 'neutral' })
-    expect(readUiState(stored('not json'))).toEqual({ theme: 'system', primary: 'emerald', surface: 'neutral' })
-    expect(readUiState(stored('[1]'))).toEqual({ theme: 'system', primary: 'emerald', surface: 'neutral' })
+    expect(readUiState(stored('{"theme":"dark","primary":"rose","surface":"zinc","font":"plex"}'))).toEqual({ theme: 'dark', primary: 'rose', surface: 'zinc', font: 'plex' })
+    expect(readUiState(stored('{"theme":"sepia","primary":"lime","surface":"beige","font":"comic"}'))).toEqual({ theme: 'system', primary: 'emerald', surface: 'neutral', font: 'inter' })
+    // A store from before the palettes had only the theme; one from before the fonts no font.
+    expect(readUiState(stored('{"theme":"light"}'))).toEqual({ theme: 'light', primary: 'emerald', surface: 'neutral', font: 'inter' })
+    expect(readUiState(stored('not json'))).toEqual({ theme: 'system', primary: 'emerald', surface: 'neutral', font: 'inter' })
+    expect(readUiState(stored('[1]'))).toEqual({ theme: 'system', primary: 'emerald', surface: 'neutral', font: 'inter' })
   })
 
   it('paints the saved scales on <html> and keeps changes', () => {
@@ -31,7 +31,11 @@ describe('the saved appearance', () => {
     expect(css('--ui-color-primary-400')).toBe('#fb7185')
     expect(css('--ui-color-neutral-900')).toBe('#18181b')
     expect(css('--ui-primary')).toBe('var(--ui-color-primary-400)')
-    expect(JSON.parse(localStorage.getItem(UI_STORAGE_KEY)!)).toEqual({ theme: 'dark', primary: 'rose', surface: 'zinc' })
+    expect(JSON.parse(localStorage.getItem(UI_STORAGE_KEY)!)).toEqual({ theme: 'dark', primary: 'rose', surface: 'zinc', font: 'inter' })
+    expect(css('--app-font')).toContain('Inter Variable')
+    layoutConfig.font = 'system'
+    expect(css('--app-font')).toContain('system-ui')
+    layoutConfig.font = 'inter'
 
     // Noir follows the background scale.
     layoutConfig.primary = 'noir'

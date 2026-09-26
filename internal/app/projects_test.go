@@ -42,8 +42,11 @@ func contractValues() map[string]any {
 	self := node.MemberInfo{Name: "alice", Self: true, Online: true, Addrs: []string{"10.147.20.5:7420"}, App: "v0.9.0", Proto: 6}
 	bob := node.MemberInfo{Name: "bob", Online: true, Addrs: []string{"10.147.20.9:7420"}, Seen: at, App: "v0.9.0", Proto: 6}
 	carol := node.MemberInfo{Name: "carol", Addrs: []string{"10.147.20.11:7420"}, Seen: at.Add(-time.Hour), App: "v0.9.0", Proto: 6}
+	// Both alice and bob have an agent session open in the project: two machines.
+	selfAgent, bobAgent := self, bob
+	selfAgent.Agent, bobAgent.Agent = true, true
 	ready := ProjectView{ID: pid, Name: "Сайт", Alias: "", Display: "Сайт", Dir: `C:\work\site`, State: ProjectReady,
-		Online: 1, Total: 2, Members: []node.MemberInfo{self, bob, carol}, CanRename: true, HasInvite: true, LaunchMode: node.LaunchDesktop,
+		Online: 1, Total: 2, Agents: 2, Members: []node.MemberInfo{selfAgent, bobAgent, carol}, CanRename: true, HasInvite: true, LaunchMode: node.LaunchDesktop,
 		Autonomy: &AutonomyView{Mode: settings.AutonomyFull, MaxAutoDepth: 0, MaxAutoDepthDefault: true, TurnsPerHour: 30, MaxRunMinutes: 240,
 			TurnsLastHour: 4, RunMinutes: 25}}
 	busy := ready

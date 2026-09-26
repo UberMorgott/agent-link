@@ -137,6 +137,9 @@ func (a *App) newNodeOf(pid string, cfg config.Config, key []byte) (*node.Node, 
 	n.SetChangeHook(func(t string) { a.events.publish(t, topic) })
 	// The emergency stop is the app's, for every context (SetStopAll).
 	n.SetStopped(a.s.StopAll)
+	// So is this member's chat color, which its record carries to the members.
+	n.SetChatColor(a.s.ChatColor)
+	n.SetDisplay(a.s.Nickname, a.s.NicknameAliases)
 	n.SetAutonomyPauseHook(func(reason string) { go a.autonomyPaused(pid, reason) })
 	return n, nil
 }

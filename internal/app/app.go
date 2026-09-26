@@ -141,6 +141,10 @@ type Status struct {
 	Warning string `json:"warning,omitempty"`
 	// StopAll: the emergency stop of every project's agents is on (SetStopAll).
 	StopAll bool `json:"stop_all,omitempty"`
+	// ChatColor and Nickname: how this member shows itself (SetProfile); ""
+	// for the color derived from its name and for no nickname.
+	ChatColor string `json:"chat_color,omitempty"`
+	Nickname  string `json:"nickname,omitempty"`
 }
 
 // New loads settings from path. log may be nil.
@@ -226,7 +230,7 @@ func (a *App) Status() Status {
 	st := Status{
 		Configured: a.configured, Running: a.n != nil || len(a.projects) > 0,
 		Node: a.s.Node, Handler: a.s.Handler,
-		Listen: a.listen, ZeroTier: a.zeroTier, StopAll: a.s.StopAll,
+		Listen: a.listen, ZeroTier: a.zeroTier, StopAll: a.s.StopAll, ChatColor: a.s.ChatColor, Nickname: a.s.Nickname,
 	}
 	for _, p := range a.s.Peers {
 		if st.Peer == "" {
@@ -336,6 +340,8 @@ func (a *App) apply(ctx context.Context, s settings.Settings) (found settings.Fo
 	}
 	// The emergency stop has its own switch (SetStopAll).
 	s.StopAll = a.s.StopAll
+	// So have the nickname and the chat color (SetProfile).
+	s.ChatColor, s.Nickname, s.NicknameAliases = a.s.ChatColor, a.s.Nickname, a.s.NicknameAliases
 	if len(s.HandlerCommand) == 0 && a.Agents.LookPath != nil && !a.agentPresent(s.AgentPath) {
 		if f, ok := a.Agents.Discover(s.Handler); ok {
 			s.AgentPath, found = "", f

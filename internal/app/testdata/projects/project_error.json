@@ -9,6 +9,7 @@
   "problem": "unknown_project",
   "online": 0,
   "total": 0,
+  "agents": 0,
   "members": [
     {
       "name": "alice",

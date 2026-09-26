@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import {
-  authorLabel, authorName, clock, continues, genitiveName, isAgent, messageTick, others, preview, when, whoColor,
+  authorName, authorTitle, clock, continues, genitiveName, isAgent, messageTick, others, preview, when, whoColor,
 } from '@/lib/chat'
 import { bodyText } from '@/lib/attachments'
 import { fmt, t } from '@/lib/runtime'
@@ -76,9 +76,11 @@ const bubbles = computed<Bubble[]>(() => {
     return {
       m, event: false, out, cont,
       cls: 'msg ' + (out ? 'out' : 'in') + (agent ? ' agent' : ' human') + (cont ? ' cont' : ''),
-      who: whoColor(m.from),
+      // Every member has its own color, its agents' messages too; the icon
+      // after the name tells a person from an agent.
+      who: whoColor(m.from, projects.colorOf(inbox.project, m.from)),
       icon: agent ? 'agent' : 'human',
-      author: authorLabel(m, self),
+      author: authorTitle(m, projects.displayOf(inbox.project, m.from)),
       // A person's own message the local agent has not seen yet: it gets it as
       // information, not as a request.
       fyi: m.own_human && m.unread ? t("inbox.author.fyi") : '',
@@ -184,11 +186,11 @@ watch(source, () => {
               :role="b.out ? 'user' : 'assistant'"
               :parts="[]"
               :side="b.out ? 'right' : 'left'"
-              :variant="b.out ? 'soft' : 'naked'"
+              variant="naked"
               color="neutral"
               compact
               :class="b.cls"
-              :ui="{ content: b.out ? 'px-3.5 py-2 rounded-2xl' : '', container: b.cont ? 'pb-1.5' : 'pb-3' }"
+              :ui="{ content: 'msg-bubble px-3.5 py-2 rounded-2xl', container: b.cont ? 'pb-1.5' : 'pb-3' }"
               :style="{ '--who': b.who }"
               :data-message-id="b.m.id"
               tabindex="-1"
@@ -198,11 +200,13 @@ watch(source, () => {
                 #header
               >
                 <div class="msg-head">
+                  <strong class="msg-author">{{ b.author }}</strong>
                   <UIcon
                     :name="icon(b.icon)"
                     class="msg-icon"
+                    :aria-label="t(b.icon === 'agent' ? 'inbox.author.is_agent' : 'inbox.author.is_human')"
+                    :title="t(b.icon === 'agent' ? 'inbox.author.is_agent' : 'inbox.author.is_human')"
                   />
-                  <strong class="msg-author">{{ b.author }}</strong>
                   <span
                     v-if="b.fyi"
                     class="msg-fyi"

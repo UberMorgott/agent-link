@@ -75,6 +75,15 @@ type Settings struct {
 	// app while it is on; messages wait unread. It has its own switch (web UI,
 	// tray) and is kept when the form is saved.
 	StopAll bool `json:"stop_all,omitempty"`
+	// ChatColor is this member's own chat color in every project
+	// (node.ChatColors; "" the default one its name derives). It has its own
+	// control (the appearance panel) and is kept when the form is saved.
+	ChatColor string `json:"chat_color,omitempty"`
+	// Nickname is how this member shows itself to the others in every project
+	// ("" its Node name); NicknameAliases are its earlier nicknames, which keep
+	// resolving to it. Node stays the identity. Kept like ChatColor.
+	Nickname        string   `json:"nickname,omitempty"`
+	NicknameAliases []string `json:"nickname_aliases,omitempty"`
 
 	// Secret is the long shared secret of configs written before pairing
 	// codes; used only while Code is empty. Never sent to the page.

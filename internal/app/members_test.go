@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -104,5 +105,82 @@ func TestMemberButtons(t *testing.T) {
 	waitFor(t, "bob told", func() bool { return b.app.Status().Problem == "link.removed" })
 	if s, _, _ := settings.Load(a.path); len(s.Peers) != 0 {
 		t.Fatalf("removed member's address kept: %+v", s.Peers)
+	}
+}
+
+// The member's profile: its chat color and nickname are saved and put in its
+// own record in every running project (the members list shows them), kept by
+// a settings save; a bad color or nickname, or one another member already
+// has, is refused with a sentence; the earlier nickname stays an alias.
+func TestProfile(t *testing.T) {
+	h := projectsHarness(t, "alice", "")
+	var site ProjectView
+	if code, raw := h.api(t, http.MethodPost, "projects", map[string]any{"name": "Сайт", "dir": t.TempDir()}, &site); code != http.StatusOK {
+		t.Fatalf("create: %d %s", code, raw)
+	}
+	for _, bad := range []map[string]any{{"color": "magenta-ish"}, {"nickname": "a,b"}, {"nickname": strings.Repeat("я", 40)}} {
+		if code, raw := h.api(t, http.MethodPost, "profile", bad, nil); code != http.StatusBadRequest {
+			t.Fatalf("%v: %d %s", bad, code, raw)
+		}
+	}
+	var st Status
+	if code, raw := h.api(t, http.MethodPost, "profile", map[string]any{"color": "violet", "nickname": "Алиса"}, &st); code != http.StatusOK ||
+		st.ChatColor != "violet" || st.Nickname != "Алиса" {
+		t.Fatalf("set: %d %s", code, raw)
+	}
+	var v ProjectView
+	h.api(t, http.MethodGet, "projects/"+site.ID, nil, &v)
+	if len(v.Members) == 0 || !v.Members[0].Self || v.Members[0].Color != "violet" || v.Members[0].Display != "Алиса" {
+		t.Fatalf("own member %+v", v.Members)
+	}
+	var again Status
+	if code, raw := h.api(t, http.MethodPost, "profile", map[string]any{"nickname": "Лиса"}, &again); code != http.StatusOK || again.ChatColor != "" {
+		t.Fatalf("rename: %d %s", code, raw)
+	}
+	if s := h.app.Settings(); s.Nickname != "Лиса" || !slices.Equal(s.NicknameAliases, []string{"Алиса"}) {
+		t.Fatalf("settings %q %v", s.Nickname, s.NicknameAliases)
+	}
+	if got := h.app.projects[site.ID].n.ResolveMember("алиса"); got != "alice" {
+		t.Fatalf("earlier nickname resolves to %q", got)
+	}
+	// Its own name is no nickname at all.
+	if code, raw := h.api(t, http.MethodPost, "profile", map[string]any{"nickname": "alice"}, &again); code != http.StatusOK || h.app.Settings().Nickname != "" {
+		t.Fatalf("own name: %d %s", code, raw)
+	}
+}
+
+// A nickname another member of a project has (its name, nickname or earlier
+// nickname, ignoring case) is refused.
+func TestProfileNicknameTaken(t *testing.T) {
+	addr := freeAddr(t)
+	alice := projectsHarness(t, "alice", addr)
+	bob := projectsHarness(t, "bob", "")
+	var p ProjectView
+	if code, raw := alice.api(t, http.MethodPost, "projects", map[string]any{"name": "Сайт", "dir": t.TempDir()}, &p); code != http.StatusOK {
+		t.Fatalf("create: %d %s", code, raw)
+	}
+	var inv InviteView
+	alice.api(t, http.MethodPost, "projects/"+p.ID+"/invite", nil, &inv)
+	if code, raw := bob.api(t, http.MethodPost, "projects/join", map[string]any{"invite": inv.Invite, "addr": addr}, nil); code != http.StatusOK {
+		t.Fatalf("join: %d %s", code, raw)
+	}
+	eventuallyLong(t, "alice knows bob", func() bool {
+		var v ProjectView
+		alice.api(t, http.MethodGet, "projects/"+p.ID, nil, &v)
+		return v.Online == 1
+	})
+	if code, raw := bob.api(t, http.MethodPost, "profile", map[string]any{"nickname": "Бобёр"}, nil); code != http.StatusOK {
+		t.Fatalf("bob's nickname: %d %s", code, raw)
+	}
+	eventuallyLong(t, "alice sees bob's nickname", func() bool {
+		var v ProjectView
+		alice.api(t, http.MethodGet, "projects/"+p.ID, nil, &v)
+		return slices.ContainsFunc(v.Members, func(m node.MemberInfo) bool { return m.Name == "bob" && m.Display == "Бобёр" })
+	})
+	for _, taken := range []string{"BOB", "бобёр"} {
+		code, raw := alice.api(t, http.MethodPost, "profile", map[string]any{"nickname": taken}, nil)
+		if code != http.StatusBadRequest || !strings.Contains(raw, uiStrings["error.nickname_taken"]) {
+			t.Fatalf("%q: %d %s", taken, code, raw)
+		}
 	}
 }

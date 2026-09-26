@@ -125,6 +125,9 @@ type Node struct {
 
 	id         string // random node id, kept in the data directory
 	appVersion string
+	chatColor  string   // Member.Color of this node (SetChatColor; guarded by mu)
+	display    string   // Member.Display of this node (SetDisplay; guarded by mu)
+	aliases    []string // Member.Aliases of this node (SetDisplay; guarded by mu)
 	listenPort int
 	netTag     string // discovery network id derived from the key; empty when off
 	oldNetTag  string // the pre-v0.6 tag, only matched in received beacons

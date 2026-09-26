@@ -23,18 +23,25 @@ export function sortProjects(list: ProjectView[]): ProjectView[] {
   return [...list].sort((a, b) => Number(a.legacy) - Number(b.legacy) || a.display.localeCompare(b.display, 'ru'))
 }
 
+// historyOrder sorts cleared chats by when they were cleared, newest first.
+export function historyOrder(list: ChatInfo[] | null | undefined): ChatInfo[] {
+  const at = (c: ChatInfo) => Date.parse(c.closed_at || c.last_at || c.created_at || '') || 0
+  return (Array.isArray(list) ? [...list] : []).sort((a, b) => at(b) - at(a))
+}
+
 // The join dialog: invite → connecting (until the shared name arrives) →
 // folder (bind a folder and an alias) → done.
 export type JoinStep = 'invite' | 'connecting' | 'folder'
 
 // The dialogs of a project's menu, and those that make or join a project.
-export type ProjectDialog = '' | 'members' | 'agents' | 'invite' | 'name' | 'folder' | 'leave' | 'create' | 'join'
+export type ProjectDialog = '' | 'members' | 'agents' | 'history' | 'invite' | 'name' | 'folder' | 'leave' | 'create' | 'join'
 
 export const useProjectsStore = defineStore('projects', () => {
   const list = shallowRef<ProjectView[] | null>(null)
   const chats = shallowRef<Record<string, ChatInfo[]>>({})
-  const archives = shallowRef<Record<string, ChatInfo[]>>({})
-  const archiveOpen = ref<Record<string, boolean>>({})
+  // history: each project's cleared chats (dated, read-only snapshots), read
+  // while its «История» dialog is open.
+  const history = shallowRef<Record<string, ChatInfo[]>>({})
   // seats: each project's local agents, once read (the agents dialog, a chat).
   const seats = shallowRef<Record<string, SeatView[]>>({})
   // The project on screen (a project page or one of its chats); "" elsewhere.
@@ -77,11 +84,11 @@ export const useProjectsStore = defineStore('projects', () => {
   function drop(pid: string) {
     list.value = (list.value || []).filter((p) => p.id !== pid)
     const keptChats = { ...chats.value }
-    const keptArchives = { ...archives.value }
+    const keptHistory = { ...history.value }
     delete keptChats[pid]
-    delete keptArchives[pid]
+    delete keptHistory[pid]
     chats.value = keptChats
-    archives.value = keptArchives
+    history.value = keptHistory
     if (inviteFor.value === pid) hideInvite()
   }
 
@@ -126,15 +133,33 @@ export const useProjectsStore = defineStore('projects', () => {
     }
   }
 
-  // refreshChats reads one project's chats, and its archive while it is open.
+  // refreshChats reads one project's chats, and its history while the
+  // «История» dialog shows it.
   async function refreshChats(pid: string) {
     const ticket = (chatTickets.get(pid) || 0) + 1
     chatTickets.set(pid, ticket)
-    const archive = archiveOpen.value[pid] ? api<ChatInfo[]>('GET', projectPath(pid, 'chats?archive=1')) : null
-    const [main, archived] = await Promise.all([api<ChatInfo[]>('GET', projectPath(pid, 'chats')), archive])
+    const cleared = dialog.value === 'history' && dialogProject.value === pid ? api<ChatInfo[]>('GET', projectPath(pid, 'chats?archive=1')) : null
+    const [main, past] = await Promise.all([api<ChatInfo[]>('GET', projectPath(pid, 'chats')), cleared])
     if (chatTickets.get(pid) !== ticket || !byID(pid)) return
     chats.value = { ...chats.value, [pid]: Array.isArray(main) ? main : [] }
-    if (archived) archives.value = { ...archives.value, [pid]: Array.isArray(archived) ? archived : [] }
+    if (past) history.value = { ...history.value, [pid]: historyOrder(past) }
+  }
+
+  // refreshHistory reads the cleared chats of a project, newest first.
+  async function refreshHistory(pid: string) {
+    const past = await api<ChatInfo[]>('GET', projectPath(pid, 'chats?archive=1'))
+    history.value = { ...history.value, [pid]: historyOrder(past) }
+  }
+
+  // displayOf is how a member of a project shows: its nickname, else its name.
+  function displayOf(pid: string, name: string): string {
+    return byID(pid)?.members.find((m) => m.name === name)?.display || name
+  }
+
+  // colorOf is a member's own chat color in a project ("" = the default one
+  // its name derives).
+  function colorOf(pid: string, name: string): string {
+    return byID(pid)?.members.find((m) => m.name === name)?.color || ''
   }
 
   async function refreshAll() {
@@ -166,10 +191,6 @@ export const useProjectsStore = defineStore('projects', () => {
     await refreshSeats(pid)
   }
 
-  function toggleArchive(pid: string) {
-    archiveOpen.value = { ...archiveOpen.value, [pid]: !archiveOpen.value[pid] }
-    if (archiveOpen.value[pid]) return refreshChats(pid)
-  }
 
   // --- the project on screen and the one to come back to ---
 
@@ -320,9 +341,9 @@ export const useProjectsStore = defineStore('projects', () => {
   watch(list, joinProgress)
 
   return {
-    list, chats, archives, archiveOpen, seats, refreshSeats, seatAction, current, currentProject, hasLegacy, loaded, invite, inviteFor,
+    list, chats, history, refreshHistory, colorOf, displayOf, seats, refreshSeats, seatAction, current, currentProject, hasLegacy, loaded, invite, inviteFor,
     joinStep, joinProject, joinCreated,
-    byID, upsert, listSettled, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped, toggleArchive,
+    byID, upsert, listSettled, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped,
     open, landing, create, rename, bind, resumeAutonomy, addMember, removeMember, leave, createChat, revealInvite, hideInvite,
     joinReset, join, joinProgress, joinCancel, dialog, dialogProject, openDialog, closeDialog,
   }

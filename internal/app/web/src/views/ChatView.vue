@@ -112,7 +112,9 @@ const note = computed(() => {
   const closed = { name: authorName(i.closed_by || '', self.value), when: i.closed_at ? when(i.closed_at) : '' }
   // A project's archived history: the conversation goes on in its one chat.
   if (inProject.value) return { text: fmt("inbox.archived_note", closed), invite: [] as string[], current: true }
-  return { text: fmt("inbox.closed_note", closed), invite: others(i, self.value) }
+  // A closed chat of two continues with the other side (the network from before projects).
+  const rest = others(i, self.value)
+  return { text: fmt("inbox.closed_note", closed), invite: rest.length === 1 ? rest : [] }
 })
 
 // One checkbox per person: a name in the list is a ticked box.
@@ -203,7 +205,7 @@ function back() {
               :key="row.key"
               class="act-node"
               :class="row.cls"
-              :style="{ '--who': whoColor(row.name) }"
+              :style="{ '--who': whoColor(row.name, projects.colorOf(pid, row.name)) }"
             >
               <div
                 v-for="line in [row, ...(row.children || [])]"
@@ -258,11 +260,11 @@ function back() {
                   v-for="name in askNames"
                   :id="'ask_' + name"
                   :key="name"
-                  :label="name"
+                  :label="projects.displayOf(pid, name)"
                   :model-value="asked.includes(name)"
                   size="sm"
                   class="choice"
-                  :style="{ '--who': whoColor(name) }"
+                  :style="{ '--who': whoColor(name, projects.colorOf(pid, name)) }"
                   :ui="{ label: 'text-[var(--who)]' }"
                   @update:model-value="asked = toggle(asked, name, $event)"
                 />
@@ -306,61 +308,66 @@ function back() {
             >
               {{ t("inbox.attach.drop") }}
             </p>
-            <!-- Enter sends, Shift+Enter starts a new line; an IME composition
-                 and a blank message never send (UChatPrompt guards both). -->
+            <p
+              v-if="inbox.replyTo"
+              id="replying"
+              class="replying flex w-full items-center gap-2 px-3 text-xs text-muted"
+            >
+              <span
+                id="replying_text"
+                class="min-w-0 flex-1 truncate"
+              >{{ replying }}</span>
+              <button
+                id="cancel_reply"
+                type="button"
+                class="cursor-pointer hover:underline"
+                @click="inbox.setReply(null)"
+              >
+                {{ t("inbox.cancel_reply") }}
+              </button>
+            </p>
+            <!-- One row: the paperclip, the text (it grows up to ten lines),
+                 the keys hint and the send button. Enter sends, Shift+Enter
+                 starts a new line; an IME composition and a blank message
+                 never send (UChatPrompt guards both), and the button is off
+                 while there is nothing to send. -->
             <UChatPrompt
               id="body"
               v-model="inbox.composer"
               as="div"
               name="body"
+              class="composer-box flex-row items-end gap-1.5 rounded-3xl px-2 py-1.5"
+              variant="naked"
               :aria-label="t('inbox.body.label')"
               :placeholder="t('inbox.body.placeholder')"
               :rows="1"
               :maxrows="10"
               :autofocus="false"
-              :ui="{ root: 'rounded-3xl px-4', base: 'text-[15px]' }"
+              :ui="{ header: 'flex-none pb-0.5', body: 'min-w-0 flex-1 self-center w-full', base: 'text-[15px] py-1.5', footer: 'flex-none gap-2 pb-0.5' }"
               @update:model-value="inbox.saveDraft(inbox.openKey())"
               @submit="inbox.submitMessage()"
             >
-              <template
-                v-if="inbox.replyTo"
-                #header
-              >
-                <p
-                  id="replying"
-                  class="replying flex w-full items-center gap-2 pt-1 text-xs text-muted"
-                >
-                  <span
-                    id="replying_text"
-                    class="min-w-0 flex-1 truncate"
-                  >{{ replying }}</span>
-                  <button
-                    id="cancel_reply"
-                    type="button"
-                    class="cursor-pointer hover:underline"
-                    @click="inbox.setReply(null)"
-                  >
-                    {{ t("inbox.cancel_reply") }}
-                  </button>
-                </p>
+              <template #header>
+                <AttachButton :project="pid" />
               </template>
               <template #footer>
                 <span
                   id="composer_hint"
-                  class="composer-hint text-xs text-[var(--app-off)]"
+                  class="composer-hint hidden text-xs sm:inline"
                 >{{ t("inbox.body.hint") }}</span>
-                <AttachButton :project="pid" />
                 <UButton
                   id="send_button"
                   type="submit"
                   :icon="icon('send')"
                   :aria-label="t('inbox.send')"
-                  :disabled="inbox.sending || files.uploading"
-                  class="rounded-full"
+                  :title="t('inbox.send')"
+                  :disabled="!inbox.canSend()"
+                  class="rounded-full disabled:opacity-35"
                 />
               </template>
             </UChatPrompt>
             <p
+              v-if="inbox.sendResult || files.error"
               id="inbox_result"
               class="composer-result px-1 text-xs text-error"
               role="status"
@@ -380,7 +387,7 @@ function back() {
               :label="fmt('inbox.new_with', { names: note.invite.join(', ') })"
               size="sm"
               variant="link"
-              @click="inbox.showNewChat(pid, note.invite)"
+              @click="inbox.openPeer(pid, note.invite[0]!)"
             />
             <UButton
               v-if="note.current"

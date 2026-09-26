@@ -31,7 +31,6 @@ export interface Toast {
   body: string
 }
 
-export interface NewChatPerson { name: string; online: boolean }
 
 // Storage keys; built so no key reads as a dictionary key.
 const READS_KEY = 'agentlink.reads.v2:'
@@ -71,12 +70,9 @@ export const useInboxStore = defineStore('inbox', () => {
   const askState = ref<Record<string, string[]>>({}) // chatKey -> names asked to answer
   const seatAskState = ref<Record<string, string[]>>({}) // chatKey -> this member's local agents (seat ids) asked
 
-  const newChatOpen = ref(false)
-  const newChatPeople = ref<NewChatPerson[]>([])
-  const newChatChosen = ref<string[]>([])
-  const newChatResult = ref('')
-  const newChatBusy = ref(false)
-  const focusNewChat = ref(0)
+  // starting: the project's one chat is being started (startChat).
+  const starting = ref(false)
+  const startResult = ref('')
 
   // Read cursors (D11): the last seq seen per chatKey; "<pid>:" marks a
   // project whose history has been seeded.
@@ -219,7 +215,7 @@ export const useInboxStore = defineStore('inbox', () => {
       sendResult.value = ''
       subtitleError.value = ''
     }
-    if (project.value !== pid) newChatOpen.value = false
+    if (project.value !== pid) startResult.value = ''
     project.value = pid
     selectedChat.value = id || ''
     selectedMessage.value = messageID || ''
@@ -234,9 +230,17 @@ export const useInboxStore = defineStore('inbox', () => {
 
   // --- the composer ---
 
+  // canSend: there is something to send (text or a ready file) and nothing
+  // on its way; the send button is disabled otherwise.
+  function canSend(): boolean {
+    const files = useAttachmentsStore()
+    return !sending.value && !files.uploading && (composer.value.trim() !== '' || files.ready.length > 0)
+  }
+
   async function submitMessage() {
     const info = chat.value
-    if (sending.value || !info) return
+    // An empty message is never sent, and says nothing: the button is off.
+    if (sending.value || !info || !canSend()) return
     const pid = project.value
     const id = info.id
     const key = chatKey(pid, id)
@@ -267,61 +271,48 @@ export const useInboxStore = defineStore('inbox', () => {
     finally { sending.value = false }
   }
 
-  // --- starting a chat ---
-
-  // showNewChat opens the picker of a project's members: those of preselect,
-  // or else everyone (D5); being in a chat never means being asked.
-  function showNewChat(pid: string, preselect: string[] = []) {
-    saveDraft(openKey())
-    newChatOpen.value = true
-    const view = projects.byID(pid)
-    const people: NewChatPerson[] = (view?.members || []).filter((m) => !m.self).map((m) => ({ name: m.name, online: !!m.online }))
-    for (const name of preselect) if (!people.some((m) => m.name === name)) people.push({ name, online: false })
-    newChatPeople.value = people
-    newChatChosen.value = preselect.length ? preselect.filter((name) => people.some((m) => m.name === name)) : people.map((m) => m.name)
-    newChatResult.value = ''
-    project.value = pid
-    focusNewChat.value++
-  }
-
-  function hideNewChat() {
-    newChatOpen.value = false
-  }
-
-  async function createChat() {
-    const pid = project.value
-    const participants = newChatPeople.value.map((p) => p.name).filter((name) => newChatChosen.value.includes(name))
-    newChatBusy.value = true
-    try {
-      const info = await projects.createChat(pid, participants)
-      newChatOpen.value = false
-      openChat(pid, info.id)
-      focusComposer.value++
-    } catch (error) { newChatResult.value = (error as Error).message }
-    finally { newChatBusy.value = false }
-  }
-
-  // openPeer opens the newest open chat of exactly this node and peer in a
-  // project, or starts one with the peer chosen.
-  function openPeer(pid: string, peer: string) {
-    const want = [app.self, peer].sort().join('\n')
-    const found = (projects.chats[pid] || []).find((c) => !c.legacy && !c.closed && [...(c.participants || [])].sort().join('\n') === want)
-    if (found) openChat(pid, found.id)
-    else showNewChat(pid, [peer])
-  }
+  // --- a project's one chat ---
 
   // activeChat is a project's one active chat, if it has one.
   function activeChat(pid: string): ChatInfo | null {
     return (projects.chats[pid] || []).find((c) => !c.legacy && !c.closed && !c.archived) || null
   }
 
-  // openActive opens a project's one active chat, or starts it.
+  // openActive opens a project's one chat; without one (a new project) the
+  // project's page offers to start it.
   function openActive(pid: string) {
     const found = activeChat(pid)
     if (found) openChat(pid, found.id)
-    else showNewChat(pid)
+    else openProject(pid)
   }
 
+  // startChat starts the project's one chat with every member (the node
+  // returns the chat the project already has, if any) and opens it.
+  async function startChat(pid: string) {
+    if (starting.value) return
+    starting.value = true
+    startResult.value = ''
+    try {
+      const view = projects.byID(pid)
+      const everyone = (view?.members || []).filter((m) => !m.self).map((m) => m.name)
+      const info = await projects.createChat(pid, everyone)
+      openChat(pid, info.id)
+      focusComposer.value++
+    } catch (error) { startResult.value = (error as Error).message }
+    finally { starting.value = false }
+  }
+
+  // openPeer opens the newest open chat of exactly this node and peer (the
+  // network from before projects), or starts it.
+  async function openPeer(pid: string, peer: string) {
+    const want = [app.self, peer].sort().join('\n')
+    const found = (projects.chats[pid] || []).find((c) => !c.legacy && !c.closed && [...(c.participants || [])].sort().join('\n') === want)
+    if (found) { openChat(pid, found.id); return }
+    try {
+      const info = await projects.createChat(pid, [peer])
+      openChat(pid, info.id)
+    } catch (error) { startResult.value = (error as Error).message }
+  }
   // --- members of a project chat: its owner invites and removes them ---
 
   const membersBusy = ref(false)
@@ -373,13 +364,13 @@ export const useInboxStore = defineStore('inbox', () => {
     return closeChat()
   }
 
-  // --- archiving a project chat's history: a fresh chat with the same members
-  // takes its place at once and the view moves to it ---
+  // --- «Очистить чат»: for every member the messages go to the project's
+  // history (a dated snapshot) and the chat goes on empty with the same
+  // members; the view moves to it ---
 
-  // archiveChat archives the history of project pid's active chat; the view
-  // moves to the fresh chat when the archived one was on screen. It throws
-  // on failure.
-  async function archiveChat(pid: string) {
+  // clearChat clears project pid's chat; the view moves to the emptied chat
+  // when the old one was on screen. It throws on failure.
+  async function clearChat(pid: string) {
     const info = activeChat(pid)
     if (!info || closing.value) return
     closing.value = true
@@ -395,9 +386,9 @@ export const useInboxStore = defineStore('inbox', () => {
     } finally { closing.value = false }
   }
 
-  function confirmArchive(pid: string) {
-    if (!browser.confirm(t("inbox.archive_history.confirm"))) return
-    return archiveChat(pid)
+  function confirmClear(pid: string) {
+    if (!browser.confirm(t("inbox.clear.confirm"))) return
+    return clearChat(pid)
   }
 
   function legacyPeerOldOf(info: ChatInfo) {
@@ -480,9 +471,8 @@ export const useInboxStore = defineStore('inbox', () => {
 
   return {
     project, selectedChat, selectedMessage, chat, messages, hasOlder, scrollIntent, drafts, composer, replyTo, sendResult,
-    subtitleError, sending, closing, focusComposer, askState, reads, toasts,
-    newChatOpen, newChatPeople, newChatChosen, newChatResult, newChatBusy, focusNewChat,
-    askFor, setAsk, seatAskFor, setSeatAsk, loadChat, loadOlder, saveDraft, setReply, selectChat, submitMessage, showNewChat, hideNewChat,
-    createChat, openPeer, activeChat, openActive, closeChat, confirmClose, archiveChat, confirmArchive, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, openKey,
+    subtitleError, sending, closing, focusComposer, askState, reads, toasts, starting, startResult,
+    askFor, setAsk, seatAskFor, setSeatAsk, loadChat, loadOlder, saveDraft, setReply, selectChat, canSend, submitMessage,
+    startChat, openPeer, activeChat, openActive, closeChat, confirmClose, clearChat, confirmClear, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, openKey,
   }
 })

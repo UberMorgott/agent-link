@@ -328,6 +328,26 @@ func TestPeerCounts(t *testing.T) {
 	}
 }
 
+// The sidebar's dot counts machines with an open agent session: this node
+// included, one per member however many sessions it runs, and never a member
+// that is offline now (its last presence is gone with its session).
+func TestAgentMachines(t *testing.T) {
+	for _, tc := range []struct {
+		members []node.MemberInfo
+		want    int
+	}{
+		{[]node.MemberInfo{{Name: "me", Self: true, Online: true}}, 0},
+		{[]node.MemberInfo{{Name: "me", Self: true, Online: true, Agent: true}}, 1},
+		{[]node.MemberInfo{{Name: "me", Self: true, Online: true}, {Name: "bob", Online: true, Agent: true}}, 1},
+		{[]node.MemberInfo{{Name: "me", Self: true, Online: true, Agent: true}, {Name: "bob", Online: true, Agent: true}, {Name: "carl", Online: true}}, 2},
+		{[]node.MemberInfo{{Name: "me", Self: true, Online: true, Agent: true}, {Name: "bob", Agent: true}}, 1},
+	} {
+		if got := agentMachines(tc.members); got != tc.want {
+			t.Errorf("%+v: %d machines, want %d", tc.members, got, tc.want)
+		}
+	}
+}
+
 func TestProjectsJoinFlow(t *testing.T) {
 	addr := freeAddr(t)
 	alice := projectsHarness(t, "alice", addr)

@@ -3,6 +3,7 @@ package node
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -168,5 +169,114 @@ func TestAffinityFollowsPrev(t *testing.T) {
 	}
 	if got := cs.affinity(next.ID, "a", map[string]bool{}); got != "" {
 		t.Fatalf("affinity to a dead session %q", got)
+	}
+}
+
+// «Очистить чат» (ArchiveChat) from any member clears the chat for everyone:
+// the history becomes a dated, read-only snapshot on every node, the chat goes
+// on empty with the same members, a message to the old chat lands in the
+// fresh one, the project never gets a second active chat, and a request the
+// clear caught unread stays deliverable (listed unread, ackable) on the node
+// it asks.
+func TestClearChatForAll(t *testing.T) {
+	p := newTestProject(t)
+	a, b := projectPair(t, p)
+	old, err := a.NewProjectChat([]string{"b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := a.SendChat(ChatSend{ChatID: old.ID, Body: "please look", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the request", func() bool { return slices.Contains(chatIDs(b, old.ID), q.ID) })
+
+	// b is not the chat's owner and clears it all the same.
+	fresh, err := b.ArchiveChat("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []*testNode{a, b} {
+		eventually(t, n.cfg.Node+": the snapshot is history, the fresh chat active", func() bool {
+			hist, err := n.Chats(true, false)
+			ids := activeIDs(n)
+			return err == nil && len(hist) == 1 && hist[0].ID == old.ID && !hist[0].ClosedAt.IsZero() &&
+				hist[0].Count == 1 && len(ids) == 1 && ids[0] == fresh.ID
+		})
+	}
+	// The unread request of the cleared chat is still b's to read.
+	page, err := b.Unread("", "", 0)
+	if err != nil || !slices.ContainsFunc(page.Messages, func(m UnreadMessage) bool { return m.ID == q.ID }) {
+		t.Fatalf("b's unread after the clear: %+v, %v", page.Messages, err)
+	}
+	if res, err := b.Ack("", AckRequest{IDs: []string{q.ID}}); err != nil || !res[0].Found || !res[0].WasUnread {
+		t.Fatalf("ack of the cleared request: %+v, %v", res, err)
+	}
+	// Answering it goes on in the fresh chat.
+	r, err := b.SendChat(ChatSend{ChatID: old.ID, ReplyTo: q.ID, Body: "done"})
+	if err != nil || r.ChatID != fresh.ID {
+		t.Fatalf("reply to the cleared chat: %+v, %v", r, err)
+	}
+	eventually(t, "a gets the reply in the fresh chat", func() bool { return slices.Contains(chatIDs(a, fresh.ID), r.ID) })
+	// One chat per project: asking for a new one returns the fresh chat.
+	if again, err := a.NewProjectChat([]string{"b"}); err != nil || again.ID != fresh.ID {
+		t.Fatalf("new chat after a clear: %+v, %v", again.Chat, err)
+	}
+	if ids := activeIDs(a); len(ids) != 1 {
+		t.Fatalf("active chats %v", ids)
+	}
+	// The snapshot is read-only history: its messages are kept as they were.
+	if msgs, _ := a.ChatMessages(old.ID, 0, 0, 0); !slices.ContainsFunc(msgs, func(cm ChatMessage) bool { return cm.ID == q.ID }) ||
+		slices.ContainsFunc(msgs, func(cm ChatMessage) bool { return cm.ID == r.ID }) {
+		t.Fatal("the snapshot changed")
+	}
+}
+
+// A nickname travels in the member record; the member's name stays its
+// identity, and send, ask and chat members resolve the nickname or an earlier
+// one (ignoring case) to it. Another member's name or nickname is taken.
+func TestNicknameResolves(t *testing.T) {
+	p := newTestProject(t)
+	a, b := projectPair(t, p)
+	displayOf := func(n *testNode, name string) string {
+		for _, m := range n.Members() {
+			if m.Name == name {
+				return m.Display
+			}
+		}
+		return "?"
+	}
+	b.SetDisplay("Nikita", nil)
+	eventually(t, "a sees b's nickname", func() bool { return displayOf(a, "b") == "Nikita" })
+	b.SetDisplay("Kpectik", []string{"Nikita"})
+	eventually(t, "a sees the new nickname", func() bool { return displayOf(a, "b") == "Kpectik" })
+	for _, s := range []string{"b", "B", "kpectik", "nikita", " Nikita "} {
+		if got := a.ResolveMember(s); got != "b" {
+			t.Fatalf("ResolveMember(%q) = %q", s, got)
+		}
+	}
+	if got := a.ResolveMember("nobody"); got != "nobody" {
+		t.Fatalf("unknown name resolved to %q", got)
+	}
+	if !a.NameTaken("KPECTIK") || !a.NameTaken("nikita") || !a.NameTaken("B") || a.NameTaken("a") || a.NameTaken("olga") {
+		t.Fatal("NameTaken")
+	}
+	// An old nickname asks the member in a send.
+	m, err := a.SendRequest(SendRequest{To: "nikita", Body: "hi", Ask: []string{"Kpectik"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(m.Responders, []string{"b"}) || !slices.Contains(m.Participants, "b") {
+		t.Fatalf("sent %+v", m)
+	}
+	eventually(t, "b has it", func() bool { return slices.Contains(chatIDs(b, m.ChatID), m.ID) })
+	if !ValidDisplay("Морготт") || ValidDisplay("") || ValidDisplay(" x") || ValidDisplay("a,b") || ValidDisplay(strings.Repeat("я", MaxDisplayLen+1)) {
+		t.Fatal("ValidDisplay")
+	}
+	// A member that takes another's earlier nickname makes it ambiguous: it
+	// never takes over the asks meant for the other one.
+	a.SetDisplay("NIKITA", nil)
+	if got := a.ResolveMember("nikita"); got != "nikita" {
+		t.Fatalf("taken earlier nickname resolved to %q", got)
 	}
 }

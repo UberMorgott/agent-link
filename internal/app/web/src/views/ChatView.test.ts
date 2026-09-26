@@ -164,12 +164,25 @@ describe('the open chat', () => {
     expect(tick('m198')!.title).toContain('bob: inbox.tick.answered')
     expect(tick('m196')!.className).toContain('read')
     expect(tick('m196')!.innerHTML).toContain('<svg')
-    // Authors: a person or an agent, on either side.
-    expect(text(bubble('m194').querySelector('.msg-author'))).toBe('inbox.author.own_agent')
+    // Authors: the name first (yours too), then an icon for a person or an
+    // agent; no «агент» word.
+    const head = (id: string) => bubble(id).querySelector('.msg-head')!
+    expect(text(bubble('m194').querySelector('.msg-author'))).toBe('local')
     expect(bubble('m194').className).toContain('agent')
-    expect(text(bubble('m201').querySelector('.msg-author'))).toBe('агент bob')
+    expect(head('m194').lastElementChild!.getAttribute('title')).toBe('inbox.author.is_agent')
+    expect(head('m194').firstElementChild!.className).toContain('msg-author')
+    expect(text(bubble('m201').querySelector('.msg-author'))).toBe('bob')
+    expect(head('m201').lastElementChild!.getAttribute('title')).toBe('inbox.author.is_agent')
     expect(text(bubble('m199').querySelector('.msg-author'))).toBe('bob')
-    expect(text(bubble('m198').querySelector('.msg-author'))).toBe('inbox.you')
+    expect(head('m199').lastElementChild!.getAttribute('title')).toBe('inbox.author.is_human')
+    expect(text(bubble('m198').querySelector('.msg-author'))).toBe('local')
+    // Every member has its own color, on its name and its bubbles.
+    expect(bubble('m199').getAttribute('style')).toContain('--who: var(--who-')
+    expect(bubble('m199').getAttribute('style')).not.toBe(bubble('m198').getAttribute('style'))
+    expect(bubble('m199').querySelector('.msg-bubble')).not.toBeNull()
+    // An incoming message says whether this computer's agent has read it.
+    expect(tick('m199')!.className).toContain('read')
+    expect(tick('m199')!.title).toBe('inbox.tick.agent_read')
 
     // A project has one chat: it goes by the project's name, and it has no
     // header — the project's row and its menu stand for it.
@@ -258,9 +271,32 @@ describe('the open chat', () => {
     expect(sent[0]).toEqual({ chat_id: group, body: 'first\nsecond', ask: ['bob'], reply_to: 'm203' })
     releaseSend!()
     await settle()
-    expect($<HTMLButtonElement>('#send_button')!.disabled).toBe(false)
     expect($<HTMLTextAreaElement>('#body')!.value).toBe('')
     expect($('#replying')).toBeNull()
+    // Nothing left to send: the button is off, and no error says so.
+    expect($<HTMLButtonElement>('#send_button')!.disabled).toBe(true)
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle()
+    expect(api.calls.filter((c) => c === 'POST projects/PROJ/send')).toHaveLength(1)
+    expect($('#inbox_result')).toBeNull()
+    const again = $<HTMLTextAreaElement>('#body')!
+    again.value = 'more'
+    again.dispatchEvent(new Event('input'))
+    await settle()
+    expect($<HTMLButtonElement>('#send_button')!.disabled).toBe(false)
+  })
+
+  it('keeps the composer one row: paperclip left, text, the hint and send right', async () => {
+    const { inbox } = await openInbox()
+    await inbox.selectChat(P, group, '')
+    await settle()
+    const box = $('#body')!.closest('.composer-box') || $('.composer-box')!
+    const order = ['#attach_button', 'textarea', '#composer_hint', '#send_button'].map((sel) => box.querySelector(sel)!)
+    for (let i = 1; i < order.length; i++) {
+      expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING, i + '').toBeTruthy()
+    }
+    expect($<HTMLButtonElement>('#send_button')!.disabled).toBe(true)
+    expect($('#inbox_result')).toBeNull()
   })
 
   it('sends on Enter like a messenger, keeps Shift+Enter, IME and blank input from sending', async () => {
@@ -308,16 +344,10 @@ describe('the chat list and the ways into a chat', () => {
     await settle()
     projects.chats = { [P]: [chats[group]!.info, { ...second, last_seq: 4, last_message: { id: 'a2', seq: 4, from: 'alice', direction: 'in', body: 'latest from alice', created_at: iso(base) } }] }
     await settle()
-    const rows = $$('#project_tree [data-project="PROJ"] .chat-row')
-    expect(text(rows[0]!)).toContain('правит app.go')
-    expect(rows[0]!.className).toContain('live')
-    expect(text(rows[0]!)).not.toContain('inbox.unread')
-    expect(rows[1]!.className).toContain('fresh')
-    expect(text(rows[1]!)).toContain('inbox.unread')
-    const alice = rows[1]!
-    expect(alice.tagName).toBe('BUTTON')
-    expect(alice.tabIndex).toBeGreaterThanOrEqual(0)
-    alice.click()
+    // The project's row counts its unread chat; no chat is listed under it.
+    expect(text($('#project_tree [data-project="PROJ"] .project-unread'))).toBe('1')
+    expect($$('#project_tree .chat-row')).toHaveLength(0)
+    await router.push('/p/PROJ/c/c2')
     await settle()
     expect(router.currentRoute.value.params.chat).toBe('c2')
 
@@ -337,6 +367,9 @@ describe('the chat list and the ways into a chat', () => {
     await inbox.selectChat(P, 'c4', '')
     await settle()
     expect($('#ask_row')).toBeNull()
+    // Not yet read by this computer's agent: one tick, and it says so.
+    expect(tick('u1')!.className).toContain('delivered')
+    expect(tick('u1')!.title).toBe('inbox.tick.agent_unread')
     expect(text($('#chat_activity'))).toContain('inbox.activity.waiting_session')
     app.sessions = []
     await settle()
@@ -373,16 +406,16 @@ describe('the chat list and the ways into a chat', () => {
       expect($$('#chat_activity > li.presence')).toHaveLength(0)
     }
 
-    // Archiving the history: the chat leaves the list at once and the view
-    // moves to the fresh chat that takes its place.
+    // Clearing the chat: the old chat leaves the list at once and the view
+    // moves to the emptied chat that takes its place.
     await router.push('/p/PROJ/c/c4')
     await settle()
     projects.chats = { [P]: [chats.c4!.info] }
     await settle()
     const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(true)
-    await inbox.confirmArchive(P)
+    await inbox.confirmClear(P)
     await settle()
-    expect(confirm).toHaveBeenCalledWith('inbox.archive_history.confirm')
+    expect(confirm).toHaveBeenCalledWith('inbox.clear.confirm')
     expect(projects.chats[P]!.some((c) => c.id === 'c4')).toBe(false)
     expect($('[data-chat="c4"]')).toBeNull()
     expect(router.currentRoute.value.params.chat).toBe('c6')
@@ -390,15 +423,11 @@ describe('the chat list and the ways into a chat', () => {
 })
 
 describe('the shell of the inbox', () => {
-  it('labels the new chat people and the "who answers" groups', async () => {
+  it('labels the "who answers" group', async () => {
     const { inbox } = await openInbox()
     await inbox.selectChat(P, group, '')
     await settle()
     const ask = $('#ask_choices')!.closest('[role="group"]')!
     expect(document.getElementById(ask.getAttribute('aria-labelledby')!)).not.toBeNull()
-    inbox.showNewChat(P, [])
-    await settle()
-    const people = $('#new_chat_members')!.closest('[role="group"]')!
-    expect(document.getElementById(people.getAttribute('aria-labelledby')!)).not.toBeNull()
   })
 })
