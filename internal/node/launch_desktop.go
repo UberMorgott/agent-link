@@ -273,8 +273,8 @@ type rpcMsg struct {
 // CodexTurn runs spec's first turn through a codex app-server connection
 // (r: its output, w: its input): a new thread in spec.Folder or thread
 // spec.ResumeID (a new one when it cannot be resumed), one turn with
-// spec.Prompt. started gets the thread id once
-// the turn started; it returns at turn/completed with the thread id.
+// spec.Prompt. started gets the thread id only after app-server proves the
+// turn started; it returns at turn/completed with the thread id.
 func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, version string, started func(string)) (string, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel() // ends the reader
@@ -414,11 +414,25 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 		"sandboxPolicy": map[string]any{"type": "dangerFullAccess"}}, &tr); err != nil {
 		return tid, err
 	}
-	started(tid)
+	seenStarted := false
 	for {
 		m, err := notification()
 		if err != nil {
 			return tid, err
+		}
+		if m.Method == "turn/started" {
+			var began struct {
+				ThreadID string `json:"threadId"`
+				Turn     struct {
+					ID string `json:"id"`
+				} `json:"turn"`
+			}
+			if json.Unmarshal(m.Params, &began) == nil && began.ThreadID == tid &&
+				(tr.Turn.ID == "" || began.Turn.ID == "" || began.Turn.ID == tr.Turn.ID) && !seenStarted {
+				seenStarted = true
+				started(tid)
+			}
+			continue
 		}
 		if m.Method != "turn/completed" {
 			continue
@@ -439,6 +453,9 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 		msg := ""
 		if done.Turn.Error != nil {
 			msg = done.Turn.Error.Message
+		}
+		if !seenStarted {
+			return tid, errors.New("codex turn completed without turn/started")
 		}
 		switch done.Turn.Status {
 		case "completed": // the only success

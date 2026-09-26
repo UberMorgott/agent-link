@@ -139,7 +139,8 @@ func fakeAppServer(t *testing.T, r io.Reader, w io.Writer, status string, early 
 				params["approvalPolicy"] != "never" || sandbox["type"] != "dangerFullAccess" {
 				t.Errorf("turn/start %v", params)
 			}
-			_ = enc.Encode(map[string]any{"method": "turn/started", "params": map[string]any{"threadId": "th-1"}})
+			_ = enc.Encode(map[string]any{"method": "turn/started", "params": map[string]any{"threadId": "th-1",
+				"turn": map[string]any{"id": "tu-1"}}})
 			if early { // a fast turn: done before its answer
 				_ = enc.Encode(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "th-1",
 					"turn": map[string]any{"id": "tu-1", "status": status}}})
@@ -209,6 +210,38 @@ func TestCodexTurn(t *testing.T) {
 	_, err := CodexTurn(context.Background(), cr, cw, LaunchSpec{Folder: `C:\p`}, "", func(string) { t.Error("started") })
 	if err == nil || !strings.Contains(err.Error(), "nope") {
 		t.Fatalf("error answer: %v", err)
+	}
+	_ = cw.Close()
+	<-done
+
+	// A turn/start response alone is not proof that execution started. A
+	// lease must not become running when app-server omits turn/started.
+	sr, cw = io.Pipe()
+	cr, sw = io.Pipe()
+	done = make(chan struct{})
+	go func() {
+		defer close(done)
+		sc := bufio.NewScanner(sr)
+		enc := json.NewEncoder(sw)
+		for sc.Scan() {
+			var m map[string]any
+			_ = json.Unmarshal(sc.Bytes(), &m)
+			switch m["method"] {
+			case "initialize":
+				_ = enc.Encode(map[string]any{"id": m["id"], "result": map[string]any{}})
+			case "thread/start":
+				_ = enc.Encode(map[string]any{"id": m["id"], "result": map[string]any{"thread": map[string]any{"id": "th-1"}}})
+			case "turn/start":
+				_ = enc.Encode(map[string]any{"id": m["id"], "result": map[string]any{"turn": map[string]any{"id": "tu-1"}}})
+				_ = enc.Encode(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "th-1",
+					"turn": map[string]any{"id": "tu-1", "status": "completed"}}})
+			}
+		}
+		_ = sw.Close()
+	}()
+	_, err = CodexTurn(context.Background(), cr, cw, LaunchSpec{Folder: `C:\p`}, "", func(string) { t.Error("started") })
+	if err == nil || !strings.Contains(err.Error(), "without turn/started") {
+		t.Fatalf("missing turn/started: %v", err)
 	}
 	_ = cw.Close()
 	<-done
