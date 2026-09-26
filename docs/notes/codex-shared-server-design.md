@@ -47,6 +47,7 @@ probe window but never acknowledges or assigns ownership.
    authoritative to AgentLink. Until Desktop exposes that connection path,
    Desktop-owned threads remain hook-authoritative.
 
-`turn/start` returning successfully is not enough to enter `running`.
-`internal/node.CodexTurn` enforces this now by invoking its `started` callback
-only for the matching `turn/started` notification.
+`turn/start` returning successfully means the prompt may already be running,
+so it prevents fallback/replay. It is not enough to acknowledge delivery or
+complete a lease: `internal/node.CodexTurn` requires the matching
+`turn/started` notification before completion counts as success.

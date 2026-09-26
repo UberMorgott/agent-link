@@ -214,8 +214,9 @@ func TestCodexTurn(t *testing.T) {
 	_ = cw.Close()
 	<-done
 
-	// A turn/start response alone is not proof that execution started. A
-	// lease must not become running when app-server omits turn/started.
+	// A turn/start response means the prompt may already be running, so the
+	// session is reported and must not fall back; without turn/started its
+	// completion still cannot count as success.
 	sr, cw = io.Pipe()
 	cr, sw = io.Pipe()
 	done = make(chan struct{})
@@ -233,15 +234,18 @@ func TestCodexTurn(t *testing.T) {
 				_ = enc.Encode(map[string]any{"id": m["id"], "result": map[string]any{"thread": map[string]any{"id": "th-1"}}})
 			case "turn/start":
 				_ = enc.Encode(map[string]any{"id": m["id"], "result": map[string]any{"turn": map[string]any{"id": "tu-1"}}})
+				_ = enc.Encode(map[string]any{"method": "turn/started", "params": map[string]any{"threadId": "th-1",
+					"turn": map[string]any{"id": ""}}})
 				_ = enc.Encode(map[string]any{"method": "turn/completed", "params": map[string]any{"threadId": "th-1",
 					"turn": map[string]any{"id": "tu-1", "status": "completed"}}})
 			}
 		}
 		_ = sw.Close()
 	}()
-	_, err = CodexTurn(context.Background(), cr, cw, LaunchSpec{Folder: `C:\p`}, "", func(string) { t.Error("started") })
-	if err == nil || !strings.Contains(err.Error(), "without turn/started") {
-		t.Fatalf("missing turn/started: %v", err)
+	var unprovenStarted []string
+	_, err = CodexTurn(context.Background(), cr, cw, LaunchSpec{Folder: `C:\p`}, "", func(s string) { unprovenStarted = append(unprovenStarted, s) })
+	if err == nil || !strings.Contains(err.Error(), "without turn/started") || !slices.Equal(unprovenStarted, []string{"th-1"}) {
+		t.Fatalf("missing turn/started: err %v started %v", err, unprovenStarted)
 	}
 	_ = cw.Close()
 	<-done
