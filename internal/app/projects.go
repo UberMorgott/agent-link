@@ -36,8 +36,11 @@ type ProjectView struct {
 	Problem string `json:"problem"`
 	// Online and Total count the other members: Members lists this node too
 	// (self: true), so Total is len(Members)-1.
-	Online    int               `json:"online"` // other members with a session
-	Total     int               `json:"total"`  // other members, not removed
+	Online int `json:"online"` // other members with a session
+	Total  int `json:"total"`  // other members, not removed
+	// Agents counts the machines, this one included, with an open agent
+	// session in the project now (node.MemberInfo.Agent): the sidebar's dot.
+	Agents    int               `json:"agents"`
 	Members   []node.MemberInfo `json:"members"`
 	CanRename bool              `json:"can_rename"`
 	HasInvite bool              `json:"has_invite"`

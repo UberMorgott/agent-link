@@ -10,6 +10,7 @@
     "problem": "",
     "online": 1,
     "total": 2,
+    "agents": 2,
     "members": [
       {
         "name": "alice",
@@ -19,7 +20,8 @@
           "10.147.20.5:7420"
         ],
         "app": "v0.9.0",
-        "proto": 6
+        "proto": 6,
+        "agent": true
       },
       {
         "name": "bob",
@@ -29,7 +31,8 @@
         ],
         "seen": "2026-09-01T12:00:00Z",
         "app": "v0.9.0",
-        "proto": 6
+        "proto": 6,
+        "agent": true
       },
       {
         "name": "carol",

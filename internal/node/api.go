@@ -64,6 +64,11 @@ type SendRequest struct {
 // A reply (ReplyTo) that is not from the job answering that very request
 // (Parent) is reported to the local reply hook: the request is answered here.
 func (n *Node) SendRequest(req SendRequest) (Message, error) {
+	// Members are named by name, nickname or an earlier nickname.
+	if req.To != "" && !strings.HasPrefix(req.To, AreaPrefix) {
+		req.To = n.ResolveMember(req.To)
+	}
+	req.Ask = n.resolveNames(req.Ask)
 	agent, err := n.senderAgent(req)
 	if err != nil {
 		return Message{}, err

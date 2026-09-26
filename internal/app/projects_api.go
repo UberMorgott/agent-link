@@ -149,6 +149,7 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 		v.Busy = c.w != nil && c.w.Busy()
 	}
 	v.Online, v.Total = peerCounts(v.Members)
+	v.Agents = agentMachines(v.Members)
 	switch {
 	case v.Problem != "":
 		v.State = ProjectError
@@ -176,6 +177,19 @@ func peerCounts(members []node.MemberInfo) (online, total int) {
 		}
 	}
 	return online, total
+}
+
+// agentMachines counts the members, this node included, whose machine has an
+// open agent session in the project: one member is one machine (one node), so
+// two sessions on one computer still count once.
+func agentMachines(members []node.MemberInfo) int {
+	n := 0
+	for _, m := range members {
+		if m.Agent && (m.Self || m.Online) {
+			n++
+		}
+	}
+	return n
 }
 
 // problemCode is the ProjectView problem of a node's last handshake failure;

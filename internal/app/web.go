@@ -128,6 +128,7 @@ func (a *App) Handler() http.Handler {
 	api.HandleFunc("POST /ui/api/update/apply", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, a.InstallUpdate(r.Context())) })
 	api.HandleFunc("POST /ui/api/update/auto", a.setAutoUpdate)
 	api.HandleFunc("POST /ui/api/autonomy/stop", a.setStopAll)
+	api.HandleFunc("POST /ui/api/profile", a.setProfile)
 	api.HandleFunc("POST /ui/api/quit", func(w http.ResponseWriter, _ *http.Request) {
 		if a.QuitFunc == nil {
 			writeError(w, http.StatusNotImplemented, msg("error.internal", nil))

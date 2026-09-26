@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/UberMorgott/agent-link/internal/config"
 )
@@ -44,7 +46,45 @@ type Member struct {
 	// a change of them alone is not gossiped on its own.
 	Seen int64  `json:"seen,omitempty"`
 	App  string `json:"app,omitempty"`
+	// Color is the member's own chat color (one of ChatColors, SetChatColor),
+	// set only by the member itself; "" or an unknown name: the default color
+	// its name derives. An older version drops the field; the member puts it
+	// back (assertSelfLocked).
+	Color string `json:"color,omitempty"`
+	// Display is the member's nickname, shown instead of Name where known;
+	// Aliases are its earlier nicknames. Name stays the member's identity (the
+	// handshake, chats, routing); a name given to send or ask resolves by
+	// either (ResolveMember). Set only by the member itself, like Color.
+	Display string   `json:"display,omitempty"`
+	Aliases []string `json:"aliases,omitempty"`
 }
+
+// Nickname limits (Member.Display, Aliases).
+const (
+	MaxDisplayLen = 32
+	maxAliases    = 8
+)
+
+// ValidDisplay reports whether d is a usable nickname: 1..MaxDisplayLen
+// characters, no control characters, no comma (names are comma-separated),
+// not blank.
+func ValidDisplay(d string) bool {
+	if strings.TrimSpace(d) != d || d == "" || utf8.RuneCountInString(d) > MaxDisplayLen || strings.ContainsAny(d, ",") {
+		return false
+	}
+	for _, r := range d {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// ChatColors are the chat colors a member may pick for itself (Member.Color).
+var ChatColors = []string{"blue", "violet", "pink", "red", "orange", "amber", "green", "teal"}
+
+// ValidChatColor reports whether c is one of ChatColors ("" is not).
+func ValidChatColor(c string) bool { return slices.Contains(ChatColors, c) }
 
 // MemberInfo is one member as listed by Members and GET /members.
 type MemberInfo struct {
@@ -60,6 +100,15 @@ type MemberInfo struct {
 	// OldAuth: connected with the pre-v0.6 handshake (no PAKE), which only a
 	// private address may use.
 	OldAuth bool `json:"old_auth,omitempty"`
+	// Agent: the member's machine has an open agent session (Claude Code,
+	// Codex, a local seat) in this network's working folder now: this node's
+	// own registry (LiveSession) for self, the peer's presence frame for
+	// another (CapPresence). An older peer that sends no presence reads false.
+	Agent bool `json:"agent,omitempty"`
+	// Color is the member's chat color (Member.Color), "" for the default.
+	Color string `json:"color,omitempty"`
+	// Display is the member's nickname (Member.Display), "" for none.
+	Display string `json:"display,omitempty"`
 }
 
 // newer reports whether record r replaces l.
@@ -185,6 +234,120 @@ func (n *Node) takenLocked(name, id string) bool {
 	return pc != nil && pc.id != "" && id != "" && pc.id != id && pc.id < id
 }
 
+// SetChatColor sets this member's chat color (one of ChatColors; anything
+// else is the default, ""): its own record carries it to every member.
+func (n *Node) SetChatColor(c string) {
+	if !ValidChatColor(c) {
+		c = ""
+	}
+	n.mu.Lock()
+	same := n.chatColor == c
+	n.chatColor = c
+	n.mu.Unlock()
+	if !same {
+		n.refreshSelf()
+	}
+}
+
+// SetDisplay sets this member's nickname ("" for none) and its earlier ones
+// (at most the last maxAliases): its own record carries them to every member.
+// Invalid ones are dropped.
+func (n *Node) SetDisplay(display string, aliases []string) {
+	if !ValidDisplay(display) {
+		display = ""
+	}
+	var keep []string
+	for _, a := range aliases {
+		if ValidDisplay(a) && a != display && !slices.Contains(keep, a) {
+			keep = append(keep, a)
+		}
+	}
+	if len(keep) > maxAliases {
+		keep = keep[len(keep)-maxAliases:]
+	}
+	n.mu.Lock()
+	same := n.display == display && slices.Equal(n.aliases, keep)
+	n.display, n.aliases = display, keep
+	n.mu.Unlock()
+	if !same {
+		n.refreshSelf()
+	}
+}
+
+// ResolveMember returns the member name that s means: a member's name as it
+// is, else (ignoring case) exactly one member whose name, nickname or earlier
+// nickname it is, this node included; s itself when none or several match.
+// Names stay the identity of members, nicknames only point at them.
+func (n *Node) ResolveMember(s string) string {
+	s = strings.TrimSpace(s)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if s == "" || s == n.cfg.Node || (n.members[s] != nil && !n.members[s].Removed) || n.known[s] {
+		return s
+	}
+	for _, rank := range []func(name string, m *Member) bool{
+		func(name string, _ *Member) bool { return strings.EqualFold(name, s) },
+		func(_ string, m *Member) bool { return strings.EqualFold(m.Display, s) },
+		func(_ string, m *Member) bool {
+			return slices.ContainsFunc(m.Aliases, func(a string) bool { return strings.EqualFold(a, s) })
+		},
+	} {
+		var hits []string
+		self := &Member{Name: n.cfg.Node, Display: n.display, Aliases: n.aliases}
+		if rank(n.cfg.Node, self) {
+			hits = append(hits, n.cfg.Node)
+		}
+		for name, m := range n.members {
+			if name != n.cfg.Node && !m.Removed && rank(name, m) {
+				hits = append(hits, name)
+			}
+		}
+		if len(hits) == 1 {
+			return hits[0]
+		}
+		if len(hits) > 1 {
+			return s
+		}
+	}
+	return s
+}
+
+// resolveNames is ResolveMember for every name of names (also
+// comma-separated), trimmed; an "area:" address is kept as it is.
+func (n *Node) resolveNames(names []string) []string {
+	var out []string
+	for _, s := range splitNames(names) {
+		if strings.HasPrefix(s, AreaPrefix) {
+			out = append(out, s)
+			continue
+		}
+		out = append(out, n.ResolveMember(s))
+	}
+	return out
+}
+
+// NameTaken reports whether nickname d (ignoring case) is another member's
+// name, nickname or earlier nickname here: this member cannot take it.
+func (n *Node) NameTaken(d string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for name, m := range n.members {
+		if name == n.cfg.Node || m.Removed {
+			continue
+		}
+		if strings.EqualFold(name, d) || strings.EqualFold(m.Display, d) ||
+			slices.ContainsFunc(m.Aliases, func(a string) bool { return strings.EqualFold(a, d) }) {
+			return true
+		}
+	}
+	for name := range n.known {
+		if name != n.cfg.Node && strings.EqualFold(name, d) {
+			return true
+		}
+	}
+	return false
+}
+
 // refreshSelf puts this node's current id, addresses and version in its own record.
 func (n *Node) refreshSelf() {
 	n.mu.Lock()
@@ -204,11 +367,13 @@ func (n *Node) assertSelfLocked(above int64) bool {
 		if l.Removed {
 			return false
 		}
-		if above < l.Ver && containsAll(l.Addrs, n.selfAddrs) && l.App == n.appVersion {
+		if above < l.Ver && containsAll(l.Addrs, n.selfAddrs) && l.App == n.appVersion && l.Color == n.chatColor &&
+			l.Display == n.display && slices.Equal(l.Aliases, n.aliases) {
 			return false
 		}
 	}
-	r := &Member{Name: self, ID: n.id, Addrs: mergeAddrs(n.selfAddrs, nil), App: n.appVersion, Seen: time.Now().Unix()}
+	r := &Member{Name: self, ID: n.id, Addrs: mergeAddrs(n.selfAddrs, nil), App: n.appVersion, Seen: time.Now().Unix(), Color: n.chatColor,
+		Display: n.display, Aliases: slices.Clone(n.aliases)}
 	if l != nil && l.ID == n.id {
 		r.Addrs = mergeAddrs(n.selfAddrs, l.Addrs)
 	}
@@ -267,6 +432,16 @@ func (n *Node) mergeMembers(recs []Member) {
 			continue
 		}
 		r.Addrs = mergeAddrs(r.Addrs, nil)
+		if len(r.Color) > 32 { // a color name of a newer version is kept as sent
+			r.Color = ""
+		}
+		if !ValidDisplay(r.Display) {
+			r.Display = ""
+		}
+		r.Aliases = slices.DeleteFunc(slices.Clone(r.Aliases), func(a string) bool { return !ValidDisplay(a) })
+		if len(r.Aliases) > maxAliases {
+			r.Aliases = r.Aliases[len(r.Aliases)-maxAliases:]
+		}
 		l := n.members[r.Name]
 		if l != nil && r.Seen > l.Seen {
 			l.Seen, seen = r.Seen, true
@@ -359,7 +534,8 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 		n.members[pc.peer] = &Member{Name: pc.peer, ID: pc.id, Addrs: addrs, Ver: nextVer(l), Seen: now, App: pc.app}
 		changed = true
 	case (pc.id != "" && pc.id != l.ID) || !containsAll(l.Addrs, addrs):
-		r := &Member{Name: pc.peer, ID: l.ID, Addrs: mergeAddrs(addrs, l.Addrs), Ver: nextVer(l), Seen: now, App: l.App}
+		r := &Member{Name: pc.peer, ID: l.ID, Addrs: mergeAddrs(addrs, l.Addrs), Ver: nextVer(l), Seen: now, App: l.App, Color: l.Color,
+			Display: l.Display, Aliases: l.Aliases}
 		if pc.id != "" {
 			r.ID = pc.id
 		}
@@ -415,7 +591,8 @@ func (n *Node) revive(name, id string) {
 		oldID = l.ID
 	}
 	if ok {
-		n.members[name] = &Member{Name: name, ID: id, Addrs: l.Addrs, Ver: nextVer(l), Seen: time.Now().Unix(), App: l.App}
+		n.members[name] = &Member{Name: name, ID: id, Addrs: l.Addrs, Ver: nextVer(l), Seen: time.Now().Unix(), App: l.App, Color: l.Color,
+			Display: l.Display, Aliases: l.Aliases}
 		n.known[name] = true
 	}
 	n.mu.Unlock()
@@ -533,9 +710,11 @@ func (n *Node) incarnationGone(name, oldID string) {
 // Members lists this node first, then every member that is not removed,
 // online ones first.
 func (n *Node) Members() []MemberInfo {
+	agent := n.LiveSession("") // before n.mu: the registry has its own lock
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	self := MemberInfo{Name: n.cfg.Node, Self: true, Online: true, Addrs: slices.Clone(n.selfAddrs), App: n.appVersion, Proto: ProtocolVersion}
+	self := MemberInfo{Name: n.cfg.Node, Self: true, Online: true, Addrs: slices.Clone(n.selfAddrs), App: n.appVersion, Proto: ProtocolVersion,
+		Agent: agent, Color: n.chatColor, Display: n.display}
 	var out []MemberInfo
 	names := map[string]bool{}
 	for name, m := range n.members {
@@ -553,12 +732,19 @@ func (n *Node) Members() []MemberInfo {
 		info := MemberInfo{Name: name}
 		if m := n.members[name]; m != nil {
 			info.Addrs, info.App = slices.Clone(m.Addrs), m.App
+			if ValidChatColor(m.Color) {
+				info.Color = m.Color
+			}
+			if ValidDisplay(m.Display) {
+				info.Display = m.Display
+			}
 			if m.Seen > 0 {
 				info.Seen = time.Unix(m.Seen, 0).UTC()
 			}
 		}
 		if pc := n.conns[name]; pc != nil {
 			info.Online, info.Proto, info.Legacy, info.OldAuth = true, pc.proto, !pc.has(CapMembers), !pc.pake
+			info.Agent = pc.presence[""].Session != ""
 			if pc.app != "" {
 				info.App = pc.app
 			}

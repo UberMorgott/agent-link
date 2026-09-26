@@ -276,7 +276,7 @@ func parseLegacyChatID(id string) (root, peer string, ok bool) {
 
 // normalizeParticipants sorts and dedupes names and adds this node.
 func (n *Node) normalizeParticipants(names []string) ([]string, error) {
-	out := slices.Concat([]string{n.cfg.Node}, splitNames(names))
+	out := slices.Concat([]string{n.cfg.Node}, n.resolveNames(names))
 	slices.Sort(out)
 	out = slices.Compact(out)
 	if len(out) < 2 {
@@ -402,7 +402,7 @@ func (n *Node) NewProjectChat(with []string) (ChatInfo, error) {
 	if n.cfg.Project == "" {
 		return ChatInfo{}, ErrNotProject
 	}
-	parts := slices.Concat([]string{n.cfg.Node}, splitNames(with))
+	parts := slices.Concat([]string{n.cfg.Node}, n.resolveNames(with))
 	slices.Sort(parts)
 	parts = slices.Compact(parts)
 	n.ensureMu.Lock()
@@ -692,11 +692,11 @@ func (n *Node) SetChatMembers(id string, add, remove []string) (ChatInfo, error)
 	case n.chatOwner(c) != n.cfg.Node:
 		return ChatInfo{}, ErrNotChatOwner
 	}
-	drop := splitNames(remove)
+	drop := n.resolveNames(remove)
 	if slices.Contains(drop, n.cfg.Node) {
 		return ChatInfo{}, fmt.Errorf("%w: the owner cannot remove itself", ErrBadParticipants)
 	}
-	parts := slices.Concat(slices.DeleteFunc(slices.Clone(c.Participants), func(p string) bool { return slices.Contains(drop, p) }), splitNames(add))
+	parts := slices.Concat(slices.DeleteFunc(slices.Clone(c.Participants), func(p string) bool { return slices.Contains(drop, p) }), n.resolveNames(add))
 	slices.Sort(parts)
 	parts = slices.Compact(parts)
 	if slices.Equal(parts, c.Participants) {
@@ -908,13 +908,8 @@ func (n *Node) SendChat(s ChatSend) (Message, error) {
 	}
 	m := Message{ChatID: s.ChatID, Body: s.Body, ReplyTo: s.ReplyTo, AuthorKind: s.AuthorKind, Attachments: s.Attachments,
 		Agent: s.Agent, AskSeats: s.AskSeats}
-	for _, a := range s.Ask {
-		for p := range strings.SplitSeq(a, ",") {
-			if p = strings.TrimSpace(p); p != "" {
-				m.Responders = append(m.Responders, p)
-			}
-		}
-	}
+	// A nickname (or an earlier one) asks the member it names.
+	m.Responders = append(m.Responders, n.resolveNames(s.Ask)...)
 	if s.Parent != "" {
 		if p, ok := n.chats.message(s.Parent); ok && p.Message.Kind == "" {
 			m.RootID = cmp.Or(p.Message.RootID, p.Message.ID)
