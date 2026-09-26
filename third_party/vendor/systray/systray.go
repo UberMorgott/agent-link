@@ -167,6 +167,16 @@ func SetOnSecondaryTapped(f func()) {
 	tappedRight = f
 }
 
+// agentlink patch: notificationTapped runs on a click on a notification shown
+// by ShowNotification (Windows).
+var notificationTapped func()
+
+// SetOnNotificationTapped sets what a click on a notification shown by
+// ShowNotification does (agentlink patch; Windows only).
+func SetOnNotificationTapped(f func()) {
+	notificationTapped = f
+}
+
 // AddMenuItem adds a menu item with the designated title and tooltip.
 // It can be safely invoked from different goroutines.
 // Created menu items are checkable on Windows and OSX by default. For Linux you have to use AddMenuItemCheckbox

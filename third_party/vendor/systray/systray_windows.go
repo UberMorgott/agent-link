@@ -292,6 +292,40 @@ func (t *winTray) setTooltip(src string) error {
 	return t.nid.modify()
 }
 
+// showNotification shows a balloon notification from the icon (agentlink patch).
+func (t *winTray) showNotification(title, text string) error {
+	if !wt.isReady() {
+		return ErrTrayNotReadyYet
+	}
+
+	const (
+		NIF_INFO  = 0x00000010
+		NIIF_INFO = 0x00000001
+	)
+	ti, err := windows.UTF16FromString(title)
+	if err != nil {
+		return err
+	}
+	tx, err := windows.UTF16FromString(text)
+	if err != nil {
+		return err
+	}
+
+	t.muNID.Lock()
+	defer t.muNID.Unlock()
+	t.nid.InfoTitle = [64]uint16{}
+	copy(t.nid.InfoTitle[:len(t.nid.InfoTitle)-1], ti)
+	t.nid.Info = [256]uint16{}
+	copy(t.nid.Info[:len(t.nid.Info)-1], tx)
+	t.nid.InfoFlags = NIIF_INFO
+	t.nid.Flags |= NIF_INFO
+	t.nid.Size = uint32(unsafe.Sizeof(*t.nid))
+	err = t.nid.modify()
+	// Later icon or tooltip changes must not show it again.
+	t.nid.Flags &^= NIF_INFO
+	return err
+}
+
 var wt = winTray{}
 
 // WindowProc callback function that processes messages sent to a window.
@@ -305,8 +339,9 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 		WM_CLOSE      = 0x0010
 		WM_DESTROY    = 0x0002
 
-		WM_DPICHANGED    = 0x02E0 // agentlink patch
-		WM_DISPLAYCHANGE = 0x007E // agentlink patch
+		WM_DPICHANGED        = 0x02E0 // agentlink patch
+		NIN_BALLOONUSERCLICK = 0x0405 // agentlink patch: WM_USER + 5
+		WM_DISPLAYCHANGE     = 0x007E // agentlink patch
 	)
 	switch message {
 	case WM_COMMAND:
@@ -335,6 +370,10 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 			systrayLeftClick()
 		case WM_RBUTTONUP:
 			systrayRightClick()
+		case NIN_BALLOONUSERCLICK: // agentlink patch
+			if f := notificationTapped; f != nil {
+				go f()
+			}
 		}
 	case WM_DPICHANGED, WM_DISPLAYCHANGE: // agentlink patch: reload at the new small-icon size
 		t.muNID.RLock()
@@ -1122,6 +1161,14 @@ func SetTooltip(tooltip string) {
 	if err := wt.setTooltip(tooltip); err != nil {
 		log.Printf("systray error: unable to set tooltip: %s\n", err)
 		return
+	}
+}
+
+// ShowNotification shows a notification balloon from the tray icon (agentlink
+// patch); a click on it runs the SetOnNotificationTapped function.
+func ShowNotification(title, text string) {
+	if err := wt.showNotification(title, text); err != nil {
+		log.Printf("systray error: unable to show a notification: %s\n", err)
 	}
 }
 

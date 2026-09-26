@@ -211,3 +211,6 @@ func systray_menu_will_open() {
 	default:
 	}
 }
+
+// ShowNotification is a no-op here (agentlink patch; Windows only).
+func ShowNotification(title, text string) {}
