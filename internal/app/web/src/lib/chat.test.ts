@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
-  ACTIVITY_EXPIRE_MS, CONCURRENT_MS, activityLines, activityText, agentTree, attemptText, chatName, keepLastKnown, liveJobs, presenceLines, ticksFor,
+  ACTIVITY_EXPIRE_MS, CHAT_COLORS, CONCURRENT_MS, activityLines, activityText, agentTree, attemptText, authorTitle, chatName, keepLastKnown, liveJobs, messageTick,
+  presenceLines, projectDot, ticksFor, whoColor, whoName,
   type ActivityLine,
 } from './chat'
 import { runtime } from './runtime'
-import type { ChatInfo, ChatMember, ChatMessage, Delivery, Job } from '@/types'
+import type { ChatInfo, ChatMember, ChatMessage, Delivery, Job, MemberInfo, ProjectView } from '@/types'
 
 describe('chat names', () => {
   it('a project chat goes by the project name, an archived one adds when it began', () => {
@@ -193,5 +194,57 @@ describe('agent tree', () => {
     expect(idle!.heard).toBe(ago(5_000))
     expect(keepLastKnown([], chat([], false), memory)).toEqual([])
     expect(memory.size).toBe(0)
+  })
+})
+
+describe('the project dot', () => {
+  const view = (members: MemberInfo[], agents?: number): ProjectView => ({
+    id: 'P', legacy: false, name: 'Сайт', alias: '', display: 'Сайт', dir: 'C:\\s', state: 'ready', problem: '', online: 1, total: 2,
+    members, can_rename: true, has_invite: true, busy: false, agents,
+  })
+  const me: MemberInfo = { name: 'me', self: true, online: true }
+  it('is grey with no agent open, yellow on one computer, green on two or more', () => {
+    runtime.strings = {}
+    expect(projectDot(view([me, { name: 'bob', online: true }]), 'me').cls).toBe('none')
+    expect(projectDot(view([me, { name: 'bob', online: true }]), 'me').label).toContain('projects.dot.none')
+    expect(projectDot(view([{ ...me, agent: true }, { name: 'bob', online: true }]), 'me').cls).toBe('one')
+    expect(projectDot(view([me, { name: 'bob', online: true, agent: true }]), 'me').cls).toBe('one')
+    // An offline member's last presence does not count.
+    expect(projectDot(view([me, { name: 'bob', online: false, agent: true }]), 'me').cls).toBe('none')
+    const both = projectDot(view([{ ...me, agent: true }, { name: 'bob', online: true, agent: true }]), 'me')
+    expect(both.cls).toBe('many')
+    expect(both.label).toContain('projects.dot.many')
+    expect(both.label).toContain('projects.online')
+    // The count the app served wins: it counts machines, not sessions.
+    expect(projectDot(view([me], 2), 'me').cls).toBe('many')
+    runtime.strings = { 'projects.dot.one': 'один: {names}', 'projects.dot.you': '{name} (вы)', 'projects.online': 'на связи {online} из {total}' }
+    expect(projectDot(view([{ ...me, agent: true }]), 'me').label).toBe('один: me (вы)\nна связи 1 из 2')
+  })
+})
+
+describe('member colors and authors', () => {
+  it('derives a stable color from the name unless the member picked one', () => {
+    expect(CHAT_COLORS).toHaveLength(8)
+    expect(whoName('bob')).toBe(whoName('bob'))
+    expect(CHAT_COLORS).toContain(whoName('карл & sons'))
+    expect(whoName('bob', 'teal')).toBe('teal')
+    expect(whoName('bob', 'no-such')).toBe(whoName('bob'))
+    expect(whoColor('bob', 'violet')).toBe('var(--who-violet)')
+  })
+  it('heads a message with the name (or nickname), then the seat', () => {
+    const m: ChatMessage = { id: 'x', seq: 1, from: 'bob', created_at: '', author_kind: 'agent' }
+    expect(authorTitle(m)).toBe('bob')
+    expect(authorTitle(m, 'Бобёр')).toBe('Бобёр')
+    expect(authorTitle({ ...m, agent: { seat: 's', provider: 'codex' } }, 'Бобёр')).toBe('Бобёр · Codex')
+  })
+  it('ticks an incoming message by whether this computer\'s agent read it', () => {
+    runtime.strings = {}
+    const info: ChatInfo = { id: 'c' }
+    const m: ChatMessage = { id: 'x', seq: 1, from: 'bob', created_at: '', direction: 'in' }
+    expect(messageTick({ ...m, unread: true }, info)).toEqual({ state: 'delivered', label: 'inbox.tick.agent_unread' })
+    expect(messageTick(m, info)).toEqual({ state: 'read', label: 'inbox.tick.agent_read' })
+    expect(messageTick({ ...m, held: true }, info)!.state).toBe('held')
+    expect(messageTick({ ...m, kind: 'chat_open' }, info)).toBeNull()
+    expect(messageTick(m, { ...info, legacy: true })).toBeNull()
   })
 })

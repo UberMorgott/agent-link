@@ -22,7 +22,7 @@ const row = computed(() => {
   const chat = props.chat
   const working = workingLines(chat, self)
   const lm = chat.last_message
-  const selected = inbox.openKey() === chatKey(props.project, chat.id) && !inbox.newChatOpen
+  const selected = inbox.openKey() === chatKey(props.project, chat.id)
   return {
     name: chatName(chat, self, projects.byID(props.project)?.legacy ? '' : projects.byID(props.project)?.display),
     selected,

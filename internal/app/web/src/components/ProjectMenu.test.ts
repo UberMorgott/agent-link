@@ -8,6 +8,7 @@ import { useProjectsStore } from '@/stores/projects'
 const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T>(sel)
 const $$ = <T extends Element = HTMLElement>(sel: string) => Array.from(document.querySelectorAll<T>(sel))
 const INVITE = fixture<{ invite: string }>('invite').invite
+const CHAT = '7b8b965ad4bca0e41ab51de7b31363a1'
 
 async function open(path: string) {
   const api = fakeBackend()
@@ -27,13 +28,13 @@ async function menu(pid: string): Promise<HTMLElement[]> {
 }
 
 describe('the project menu', () => {
-  it('offers archiving the history, members, invite, name, folder and delete; the legacy network has no name', async () => {
+  it('offers clearing the chat, its history, members, invite, name, folder and delete; the legacy network has no name', async () => {
     await open('/p/' + SITE)
     const items = await menu(SITE)
     expect(items.map((i) => i.textContent!.trim())).toEqual([
-      'inbox.archive_history', 'project.menu.members', 'project.menu.invite', 'project.menu.agents', 'project.menu.name', 'project.menu.folder', 'project.menu.autonomy', 'project.menu.delete',
+      'inbox.clear', 'inbox.history', 'project.menu.members', 'project.menu.invite', 'project.menu.agents', 'project.menu.name', 'project.menu.folder', 'project.menu.autonomy', 'project.menu.delete',
     ])
-    items[2]!.click()
+    items[3]!.click()
     await settle()
     expect(useProjectsStore().dialog).toBe('invite')
     useProjectsStore().closeDialog()
@@ -41,8 +42,43 @@ describe('the project menu', () => {
     const legacy = (await menu('legacy')).map((i) => i.textContent!.trim())
     expect(legacy).not.toContain('project.menu.name')
     expect(legacy).not.toContain('project.menu.agents')
-    expect(legacy).not.toContain('inbox.archive_history')
+    expect(legacy).not.toContain('inbox.clear')
+    expect(legacy).not.toContain('inbox.history')
     expect(legacy).toContain('project.menu.leave')
+  })
+
+  it('clears the chat for everyone after a confirmation and keeps it in the history, read-only', async () => {
+    const { backend, router, calls } = await open('/p/' + SITE + '/c/' + CHAT)
+    const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(false)
+    ;(await menu(SITE)).find((i) => i.textContent!.trim() === 'inbox.clear')!.click()
+    await settle()
+    expect(confirm).toHaveBeenCalledWith('inbox.clear.confirm')
+    expect(calls).not.toContain('POST projects/' + SITE + '/chats/' + CHAT + '/archive')
+    confirm.mockReturnValue(true)
+    ;(await menu(SITE)).find((i) => i.textContent!.trim() === 'inbox.clear')!.click()
+    await settle()
+    expect(calls).toContain('POST projects/' + SITE + '/chats/' + CHAT + '/archive')
+    const fresh = backend.chats[SITE]![0]!
+    expect(fresh.id).not.toBe(CHAT)
+    expect(fresh.prev).toBe(CHAT)
+    expect(router.currentRoute.value.params.chat).toBe(fresh.id)
+
+    // «История» lists the cleared chat with its date; it opens read-only.
+    ;(await menu(SITE)).find((i) => i.textContent!.trim() === 'inbox.history')!.click()
+    await settle()
+    expect(useProjectsStore().dialog).toBe('history')
+    expect(calls).toContain('GET projects/' + SITE + '/chats?archive=1')
+    const rows = $$('#project_history [data-history]')
+    expect(rows.map((r) => r.dataset.history)).toContain(CHAT)
+    expect(rows[0]!.textContent).toContain('inbox.history.cleared')
+    rows.find((r) => r.dataset.history === CHAT)!.click()
+    await settle()
+    expect(router.currentRoute.value.params.chat).toBe(CHAT)
+    expect($('#send')).toBeNull()
+    expect($('#chat_note_text')!.textContent).toContain('inbox.archived_note')
+    $<HTMLButtonElement>('#chat_note_current')!.click()
+    await settle()
+    expect(router.currentRoute.value.params.chat).toBe(fresh.id)
   })
 
   it('opens the agents\' autonomy on the settings page; the legacy network has none', async () => {

@@ -15,29 +15,51 @@
   --app-soft: var(--ui-bg-elevated);
   --app-text: var(--ui-text);
   --app-muted: var(--ui-text-muted);
-  /* Online and read marks stay green whatever accent the user picks. */
+  /* The accent the user picks (the appearance panel): one token for the send
+     button, the composer's border, the active project, links, focus rings,
+     read ticks and the text selection. */
+  --app-accent: var(--ui-primary);
+  --app-accent-soft: color-mix(in srgb, var(--app-accent) 14%, transparent);
+  /* Online marks stay green whatever accent the user picks. */
   --app-on: var(--ui-color-success-600);
   --app-off: #b45309;
   --app-danger: var(--ui-error);
-  /* Six stable colours for names in a chat (lib/chat.ts whoIndex). */
-  --who-1: #2f6f9f;
-  --who-2: #9a4f8c;
-  --who-3: #a8612a;
-  --who-4: #4f7a2e;
-  --who-5: #6a5bb0;
-  --who-6: #a63f4f;
+  /* The member colors of a chat (lib/chat.ts CHAT_COLORS): a name, its
+     bubbles' tint and its agents' messages. */
+  --who-blue: #2563a8;
+  --who-violet: #7048b8;
+  --who-pink: #b13d86;
+  --who-red: #b83a3a;
+  --who-orange: #b8560f;
+  --who-amber: #946200;
+  --who-green: #2f7a3a;
+  --who-teal: #107269;
+  /* The dot of a project: agents open on one computer, on two or more. */
+  --app-dot-one: #d9a400;
+  --app-dot-many: var(--ui-color-success-500);
+  /* The type scale: sidebar, message author, body, meta. */
+  --app-font: 'Inter Variable', 'Segoe UI', system-ui, sans-serif;
+  --text-side: 0.9rem;
+  --text-author: 0.82rem;
+  --text-body: 0.95rem;
+  --text-meta: 0.72rem;
 }
 
 :root.dark {
   --app-side: var(--ui-color-neutral-950);
   --app-on: var(--ui-color-success-400);
   --app-off: #f59e0b;
-  --who-1: #7fb2dc;
-  --who-2: #d494c7;
-  --who-3: #e0a26c;
-  --who-4: #9cc57a;
-  --who-5: #a99ae6;
-  --who-6: #ea8c99;
+  --app-accent-soft: color-mix(in srgb, var(--app-accent) 20%, transparent);
+  --who-blue: #7fb2ee;
+  --who-violet: #b39af0;
+  --who-pink: #ee93c8;
+  --who-red: #f08c8c;
+  --who-orange: #f2a766;
+  --who-amber: #e6c156;
+  --who-green: #8fd19a;
+  --who-teal: #6fd0c4;
+  --app-dot-one: #f5c518;
+  --app-dot-many: var(--ui-color-success-400);
 }
 
 @layer base {
@@ -46,14 +68,19 @@
     margin: 0;
     color: var(--app-text);
     background: var(--app-bg);
+    font-family: var(--app-font);
     font-size: 15px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
+    font-feature-settings: "cv11", "ss01";
   }
+  button, input, textarea, select { font-family: inherit; }
+  ::selection { background: color-mix(in srgb, var(--app-accent) 30%, transparent); }
+  a { color: var(--app-accent); }
   h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; color: var(--ui-text-highlighted); }
   h2 { font-size: 1rem; font-weight: 600; color: var(--ui-text-highlighted); }
   h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--app-muted); }
-  :focus-visible { outline: 2px solid var(--ui-primary); outline-offset: 2px; }
+  :focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
 }
 
 @layer components {
@@ -70,7 +97,7 @@
     color: var(--app-text); text-decoration: none; font-size: 0.92rem;
   }
   .nav-link:hover { background: var(--app-soft); }
-  .nav-link.active { background: var(--app-soft); font-weight: 600; color: var(--ui-text-highlighted); }
+  .nav-link.active { background: var(--app-accent-soft); font-weight: 600; color: var(--ui-text-highlighted); }
   .nav-link .nav-icon { color: var(--app-muted); }
 
   .chat-row {
@@ -90,63 +117,91 @@
   .chat-row.compact { padding: 0.3rem 0.6rem; }
   .chat-row.compact .row-who { font-weight: 400; font-size: 0.88rem; }
   .chat-row.compact.fresh .row-who { font-weight: 600; }
-  .conversation-unread { flex: none; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--ui-primary); align-self: center; }
+  .conversation-unread { flex: none; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--app-accent); align-self: center; }
 
-  /* The project tree of the sidebar. */
+  /* The projects of the sidebar: one row each. */
   .project-row { display: flex; align-items: center; gap: 0.1rem; border-radius: 0.6rem; }
-  .project-row:hover, .project-row.active { background: var(--app-soft); }
+  .project-row:hover { background: var(--app-soft); }
+  .project-row.active { background: var(--app-accent-soft); box-shadow: inset 3px 0 0 var(--app-accent); }
   .project-row.active .project-name { font-weight: 600; color: var(--ui-text-highlighted); }
-  .project-fold {
-    flex: none; display: inline-flex; align-items: center; justify-content: center; width: 1.6rem; height: 2rem;
-    border: 0; background: transparent; color: var(--app-muted); cursor: pointer; border-radius: 0.5rem;
-  }
   .project-open {
-    flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.4rem 0.4rem 0;
-    border: 0; background: transparent; color: var(--app-text); font: inherit; font-size: 0.92rem; text-align: left; cursor: pointer;
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0.4rem 0.5rem 0.75rem;
+    border: 0; background: transparent; color: var(--app-text); font: inherit; font-size: var(--text-side); text-align: left; cursor: pointer;
   }
   .project-more { opacity: 0; margin-right: 0.2rem; }
   .project-row:hover .project-more, .project-row:focus-within .project-more, .project-row.active .project-more,
   .project-more[data-state="open"] { opacity: 1; }
   @media (hover: none) { .project-more { opacity: 1; } }
   .project-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .project-dot { flex: none; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--app-muted); opacity: 0.5; }
-  .project-dot.on { background: var(--app-on); opacity: 1; }
+  .project-dot { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-muted); opacity: 0.55; }
+  .project-dot.on, .project-dot.many { background: var(--app-dot-many); opacity: 1; }
+  .project-dot.one { background: var(--app-dot-one); opacity: 1; }
   .project-dot.off { background: var(--app-off); opacity: 1; }
   .project-unread {
     flex: none; min-width: 1.2rem; padding: 0 0.35rem; border-radius: 999px; text-align: center;
-    background: var(--ui-primary); color: var(--ui-bg); font-size: 0.7rem; font-weight: 600; line-height: 1.2rem;
+    background: var(--app-accent); color: var(--ui-bg); font-size: 0.7rem; font-weight: 600; line-height: 1.2rem;
   }
-  .project-chats { display: flex; flex-direction: column; gap: 0.05rem; margin: 0.1rem 0 0.4rem 1.2rem; }
-  .project-chats .archived { opacity: 0.7; }
-  .project-action, .project-archive {
-    display: flex; align-items: center; gap: 0.5rem; width: 100%; padding: 0.3rem 0.6rem; border: 0; border-radius: 0.6rem;
-    background: transparent; color: var(--app-muted); font: inherit; font-size: 0.85rem; text-align: left; cursor: pointer;
-  }
-  .project-action:hover, .project-archive:hover { background: var(--app-soft); color: var(--app-text); }
 
+  /* The foot of the sidebar: the member's own chip, then icon buttons. */
+  .user-chip {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.6rem; border: 0; border-radius: 999px;
+    background: color-mix(in srgb, var(--who) 16%, transparent); color: var(--who); font: inherit; font-size: var(--text-side);
+    font-weight: 600; text-align: left; cursor: pointer;
+  }
+  .user-chip:hover { background: color-mix(in srgb, var(--who) 24%, transparent); }
+  .user-chip-dot { flex: none; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--who); }
+  .user-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .panel-icon {
+    flex: none; display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: 0.5rem;
+    color: var(--app-muted);
+  }
+  .panel-icon:hover { background: var(--app-soft); color: var(--app-text); }
+  .panel-icon.active { background: var(--app-accent-soft); color: var(--app-accent); }
+
+  /* The appearance panel's fonts and the history of cleared chats. */
+  .font-choice, .history-row {
+    display: flex; flex-direction: column; align-items: flex-start; width: 100%; padding: 0.45rem 0.7rem; border: 0;
+    border-radius: 0.6rem; background: transparent; color: var(--app-text); text-align: left; cursor: pointer;
+  }
+  .font-choice:hover, .history-row:hover { background: var(--app-soft); }
+  .font-choice.active { background: var(--app-accent-soft); box-shadow: inset 0 0 0 1px var(--app-accent); }
+  .font-choice-name { font-size: 0.92rem; font-weight: 600; }
+  .font-choice-hint, .history-when, .history-count { font-size: var(--text-meta); color: var(--app-muted); }
+  .history-title { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.9rem; font-weight: 500; }
+
+  /* The composer: one row, its border in the accent (dimmer until focused). */
+  .composer-box { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--app-accent) 40%, var(--app-line)); background: var(--app-bg); }
+  .composer-box:focus-within { box-shadow: inset 0 0 0 2px var(--app-accent); }
+  .composer-hint { color: var(--app-muted); opacity: 0.75; white-space: nowrap; }
   /* The open chat: one centered column. */
   .chat-column { width: 100%; max-width: 48rem; margin: 0 auto; padding: 0 1rem; }
   .presence.on { color: var(--app-on); }
   .presence.old, .presence.away { color: var(--app-muted); }
 
-  .msg-head { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--who); }
-  .msg-author { font-weight: 600; }
-  .msg-icon { width: 1rem; height: 1rem; flex: none; }
+  .msg-head { display: flex; align-items: center; gap: 0.35rem; font-size: var(--text-author); color: var(--who); }
+  .msg-author { font-weight: 650; letter-spacing: -0.005em; }
+  .msg-icon { width: 0.95rem; height: 0.95rem; flex: none; opacity: 0.85; }
+  /* Every member's bubbles are a muted tint of its color; your own a bit
+     stronger, on the right. */
+  .msg .msg-bubble { background: color-mix(in srgb, var(--who) 10%, var(--app-bg)); color: var(--app-text); }
+  .msg.out .msg-bubble { background: color-mix(in srgb, var(--who) 17%, var(--app-bg)); }
+  :root.dark .msg .msg-bubble { background: color-mix(in srgb, var(--who) 13%, var(--app-bg)); }
+  :root.dark .msg.out .msg-bubble { background: color-mix(in srgb, var(--who) 21%, var(--app-bg)); }
   .msg-fyi { color: var(--app-muted); font-weight: 400; }
   .msg-body {
     margin: 0; white-space: pre-wrap; word-break: break-word;
-    font: inherit; line-height: 1.6;
+    font: inherit; font-size: var(--text-body); line-height: 1.55;
   }
   .msg-quote {
     display: block; max-width: 100%; margin: 0 0 0.3rem; padding: 0.1rem 0.6rem;
     border: 0; border-left: 2px solid var(--app-line); background: transparent;
     color: var(--app-muted); font: inherit; font-size: 0.8rem; text-align: left; cursor: pointer;
   }
-  .msg-foot { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.25rem; font-size: 0.72rem; color: var(--app-muted); }
+  .msg-foot { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.25rem; font-size: var(--text-meta); color: var(--app-muted); }
   .msg.out .msg-foot { justify-content: flex-end; }
   .msg-ticks { display: inline-flex; }
   .msg-ticks .msg-tick-icon { width: 0.95rem; height: 0.95rem; }
-  .msg-ticks.read { color: var(--app-on); }
+  .msg-ticks.read { color: var(--app-accent); }
   .msg-ticks.held { color: var(--app-off); }
   .msg-reply {
     border: 0; background: transparent; color: var(--app-muted); font: inherit; font-size: 0.75rem; cursor: pointer;
@@ -176,7 +231,7 @@
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-text-highlighted) 12%, transparent);
   }
   .config-swatch:hover { transform: scale(1.08); }
-  .config-swatch.active { outline: 2px solid var(--ui-primary); outline-offset: 2px; }
+  .config-swatch.active { outline: 2px solid var(--app-accent); outline-offset: 2px; }
 
   /* Release notes rendered from Markdown (lib/markdown.ts). */
   .release-md { line-height: 1.55; overflow-wrap: anywhere; }
@@ -185,7 +240,7 @@
   .release-md h1, .release-md h2 { font-size: 0.85rem; }
   .release-md ul { list-style: disc; padding-left: 1.25rem; }
   .release-md ol { list-style: decimal; padding-left: 1.25rem; }
-  .release-md a { color: var(--ui-primary); text-decoration: underline; }
+  .release-md a { color: var(--app-accent); text-decoration: underline; }
   .release-md code { font-family: var(--font-mono, monospace); font-size: 0.95em; padding: 0 0.2rem; border-radius: 0.2rem; background: var(--ui-bg-elevated); }
   .release-md pre { overflow-x: auto; padding: 0.5rem; border-radius: 0.3rem; background: var(--ui-bg-elevated); }
   .release-md pre code { padding: 0; background: none; }

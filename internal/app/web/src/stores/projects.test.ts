@@ -19,9 +19,15 @@ describe('the projects store', () => {
     expect(calls).toContain('GET projects/legacy/chats')
     expect(calls.some((c) => c.includes('archive=1'))).toBe(false)
     expect(projects.chats[SITE]!.map((c) => c.title)).toEqual(['Посмотри вёрстку главной'])
-    await projects.toggleArchive(SITE)
+    // The history of cleared chats is read for its dialog, and again with the
+    // chats while that dialog is open.
+    await projects.refreshHistory(SITE)
     expect(calls).toContain('GET projects/' + SITE + '/chats?archive=1')
-    expect(projects.archives[SITE]!.every((c) => c.archived)).toBe(true)
+    expect(projects.history[SITE]!.every((c) => c.archived)).toBe(true)
+    projects.openDialog('history', SITE)
+    const before = calls.filter((c) => c.includes('archive=1')).length
+    await projects.refreshChats(SITE)
+    expect(calls.filter((c) => c.includes('archive=1')).length).toBe(before + 1)
   })
 
   it('creates, renames and binds a project; a busy folder change keeps the code', async () => {

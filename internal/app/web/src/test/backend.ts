@@ -55,6 +55,8 @@ export interface Backend {
   failNext: string
   // stopAll: the emergency stop of every project's agents (POST autonomy/stop).
   stopAll: boolean
+  // profile: this member's nickname and chat color (POST profile).
+  profile: { nickname: string; color: string }
   // changed names the event topics a request made stale.
   changed: (topics: string[]) => void
 }
@@ -91,6 +93,7 @@ export function createBackend(): Backend {
     legacyNeedsDir: false,
     failNext: '',
     stopAll: false,
+    profile: { nickname: '', color: '' },
     changed: () => {},
   }
 }
@@ -147,7 +150,7 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
 
   if (method === 'GET') {
     switch (path) {
-      case 'status': return { configured: true, connected: true, zerotier: true, node: SELF, online: 1, total: 2, stop_all: b.stopAll }
+      case 'status': return { configured: true, connected: true, zerotier: true, node: SELF, online: 1, total: 2, stop_all: b.stopAll, nickname: b.profile.nickname || undefined, chat_color: b.profile.color || undefined }
       case 'settings': return { node: SELF, handler: 'none', work_dir: 'C:\\work', discovery: true }
       case 'dashboard': return { status: { online: 1, total: 2, handler: 'none' }, total_messages: 3, active_requests: 1, recent: [] }
       case 'participants': return []
@@ -158,6 +161,15 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     }
   }
   if (method === 'POST' && (path === 'agent' || path === 'pick-folder')) return path === 'agent' ? { text: '' } : { path: 'C:\\work\\picked' }
+  if (method === 'POST' && path === 'profile') {
+    // Another member already goes by it (a name, ignoring case).
+    const nick = String(req.nickname || '').trim()
+    if (b.projects.some((p) => p.members.some((m) => !m.self && (m.name.toLowerCase() === nick.toLowerCase() || (m.display || '').toLowerCase() === nick.toLowerCase())))) {
+      throw new HttpError(400, 'Этот ник уже занят')
+    }
+    b.profile = { nickname: nick === SELF ? '' : nick, color: String(req.color || '') }
+    return { configured: true, connected: true, zerotier: true, node: SELF, online: 1, total: 2, stop_all: b.stopAll, nickname: b.profile.nickname || undefined, chat_color: b.profile.color || undefined }
+  }
   if (method === 'POST' && path === 'autonomy/stop') {
     b.stopAll = req.on === true
     b.changed(['status', 'projects'])

@@ -5,14 +5,16 @@ import UInput from '@nuxt/ui/components/Input.vue'
 import UModal from '@nuxt/ui/components/Modal.vue'
 import { pickFolder } from '@/lib/folders'
 import { icon } from '@/lib/icons'
-import { navigate, openProject } from '@/lib/nav'
+import { navigate, openChat, openProject } from '@/lib/nav'
+import { authorName, when } from '@/lib/chat'
 import { browser, fmt, t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore, type ProjectDialog } from '@/stores/projects'
 
-// The dialogs of a project's menu (ProjectMenu.vue): members, the invite, the
-// shared name, this member's folder, deleting the project here (leaving).
+// The dialogs of a project's menu (ProjectMenu.vue): members, the history of
+// cleared chats, the invite, the shared name, this member's folder, deleting
+// the project here (leaving).
 const projects = useProjectsStore()
 const inbox = useInboxStore()
 const app = useAppStore()
@@ -81,7 +83,8 @@ const members = computed(() => (view.value?.members || []).map((m) => {
   if ((m.addrs || []).length) details.push(fmt("participants.addresses", { addresses: m.addrs!.join(', ') }))
   const inChat = (active.value?.participants || []).includes(m.name)
   return {
-    key: m.name, self: !!m.self, inChat, name: m.self ? m.name + ' (' + t("inbox.you") + ')' : m.name,
+    key: m.name, self: !!m.self, inChat,
+    name: (m.display && m.display !== m.name ? m.display + ' (' + m.name + ')' : m.name) + (m.self ? ' (' + t("inbox.you") + ')' : ''),
     online: m.self || m.online, details: details.join(' · '),
   }
 }))
@@ -184,6 +187,24 @@ function seat(action: 'add' | 'start' | 'stop' | 'remove', arg: string) {
 function removeSeat(id: string, label: string) {
   if (!browser.confirm(fmt("project.agents.remove_confirm", { name: label }))) return
   return seat('remove', id)
+}
+
+// --- the history: the project's cleared chats, newest first, read-only ---
+
+const historyOpen = openFor('history')
+watch(() => [projects.dialog, projects.dialogProject] as const, ([kind, pid]) => {
+  if (kind === 'history' && pid) void run(() => projects.refreshHistory(pid))
+})
+const historyRows = computed(() => (projects.history[projects.dialogProject] || []).map((c) => ({
+  id: c.id,
+  when: fmt("inbox.history.cleared", { when: when(c.closed_at || c.last_at || c.created_at || ''), name: authorName(c.closed_by || '', app.self) }),
+  title: c.title || t("inbox.history.untitled"),
+  count: fmt("inbox.history.count", { n: c.count || 0 }),
+})))
+function openHistory(id: string) {
+  const pid = projects.dialogProject
+  projects.closeDialog()
+  openChat(pid, id)
 }
 
 // --- leaving ---
@@ -385,6 +406,52 @@ function leave() {
             @click="seat('add', 'codex')"
           />
         </span>
+        <p
+          class="dialog-result text-sm"
+          role="status"
+        >
+          {{ result }}
+        </p>
+      </div>
+    </template>
+  </UModal>
+
+  <UModal
+    v-model:open="historyOpen"
+    :title="t('inbox.history.title')"
+    :description="name"
+  >
+    <template #body>
+      <div class="flex flex-col gap-3">
+        <p class="hint">
+          {{ t("inbox.history.hint") }}
+        </p>
+        <ul
+          id="project_history"
+          class="flex flex-col gap-1"
+        >
+          <li
+            v-if="!historyRows.length"
+            class="text-sm text-muted"
+          >
+            {{ t("inbox.history.empty") }}
+          </li>
+          <li
+            v-for="h in historyRows"
+            :key="h.id"
+          >
+            <button
+              type="button"
+              class="history-row"
+              :data-history="h.id"
+              @click="openHistory(h.id)"
+            >
+              <span class="history-when">{{ h.when }}</span>
+              <span class="history-title">{{ h.title }}</span>
+              <span class="history-count">{{ h.count }}</span>
+            </button>
+          </li>
+        </ul>
         <p
           class="dialog-result text-sm"
           role="status"

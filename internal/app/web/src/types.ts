@@ -21,6 +21,8 @@ export interface Status {
   handler?: string
   members?: Member[]
   stop_all?: boolean // every project's agents are stopped (emergency stop)
+  chat_color?: string // this member's own chat color ("" = derived from the name)
+  nickname?: string // this member's nickname ("" = its name)
 }
 
 export interface DashboardSummary {
@@ -204,6 +206,11 @@ export interface MemberInfo {
   proto?: number
   legacy?: boolean
   old_auth?: boolean
+  // agent: the member's computer has an agent session (Claude Code, Codex)
+  // open in the project now; color: its own chat color ("" = derived).
+  agent?: boolean
+  color?: string
+  display?: string // the member's nickname, shown instead of its name
 }
 
 export interface ProjectView {
@@ -217,6 +224,8 @@ export interface ProjectView {
   problem: string // "" or unknown_project | wrong_project | auth | name_taken | removed
   online: number
   total: number
+  // agents: computers, this one included, with an agent session open in the project.
+  agents?: number
   members: MemberInfo[] // self first
   can_rename: boolean
   has_invite: boolean

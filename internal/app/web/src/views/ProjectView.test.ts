@@ -20,7 +20,7 @@ async function open(path: string, override?: Parameters<typeof fakeBackend>[0]) 
 }
 
 describe('a project page', () => {
-  it('shows an empty project as one line with its actions, and none of the old texts', async () => {
+  it('shows a project without a chat as one line with its actions, and none of the old texts', async () => {
     await open('/p/' + JOINING)
     const empty = $('#project_empty')!
     expect(empty.querySelector('h1')!.textContent).toContain('projects.connecting')
@@ -30,32 +30,43 @@ describe('a project page', () => {
     await settle()
     expect(empty.querySelector('h1')!.textContent).toContain('project.empty')
     expect($('#project_state')!.textContent).toContain('project.state.needs_folder')
-    expect($('#project_new_chat')).not.toBeNull()
+    expect($('#project_start_chat')).not.toBeNull()
     expect($('#project_chats')).toBeNull()
     const page = document.body.textContent || ''
-    for (const gone of ['inbox.h1', 'inbox.list.label', 'inbox.select', 'inbox.select_hint', 'inbox.list.empty', 'nav.inbox']) {
+    for (const gone of ['inbox.h1', 'inbox.list.label', 'inbox.select', 'inbox.select_hint', 'inbox.list.empty', 'nav.inbox', 'inbox.new.title']) {
       expect(page).not.toContain(gone)
     }
   })
 
-  it('lists the chat of a project; «new chat» from the sidebar opens it, a project has one', async () => {
-    const { router, calls } = await open('/p/' + SITE)
-    expect($('#project_title')!.textContent).toContain('Мой сайт')
-    expect($$('#project_chats .chat-row')).toHaveLength(1)
-    $('[data-project="' + SITE + '"] .project-new-chat')!.click()
+  it('starts the one chat of a project with every member and opens it', async () => {
+    const { router, requests, backend } = await open('/p/' + JOINING)
+    const projects = useProjectsStore()
+    const site = backend.projects.find((p) => p.id === SITE)!
+    backend.projects = backend.projects.map((p) => (p.id === JOINING ? { ...site, id: JOINING, name: 'Дизайн', display: 'Дизайн' } : p))
+    await projects.refreshProject(JOINING)
     await settle()
-    expect($('#new_chat_form')).not.toBeNull()
-    $<HTMLButtonElement>('#new_chat_create')!.click()
+    $<HTMLButtonElement>('#project_start_chat')!.click()
     await settle()
-    expect(calls).toContain('POST projects/' + SITE + '/chats')
+    const made = requests.find((r) => r.url.endsWith('/projects/' + JOINING + '/chats') && r.init.method === 'POST')!
+    expect(JSON.parse(String(made.init.body))).toEqual({ participants: ['bob', 'carol'] })
     expect(router.currentRoute.value.name).toBe('chat')
-    expect(router.currentRoute.value.params.project).toBe(SITE)
+    expect(router.currentRoute.value.params.project).toBe(JOINING)
+    // Starting again returns the same chat: a project has one.
+    const first = router.currentRoute.value.params.chat
+    await useInboxStore().startChat(JOINING)
+    await settle()
+    expect(router.currentRoute.value.params.chat).toBe(first)
+    expect(useProjectsStore().chats[JOINING]).toHaveLength(1)
+  })
+
+  it('goes on to the project\'s one chat', async () => {
+    const { router } = await open('/p/' + SITE)
+    expect(router.currentRoute.value.name).toBe('chat')
     expect(router.currentRoute.value.params.chat).toBe(CHAT)
-    expect(useProjectsStore().chats[SITE]).toHaveLength(1)
   })
 
   it('counts unread chats per project from the read cursors, not from the agent', async () => {
-    const { backend } = await open('/p/' + SITE)
+    const { backend, router } = await open('/p/' + JOINING)
     const projects = useProjectsStore()
     // The history seen on the first visit counts as read.
     expect($$('.project-unread')).toHaveLength(0)
@@ -65,14 +76,13 @@ describe('a project page', () => {
     await projects.refreshChats(SITE)
     await settle()
     expect($('[data-project="' + SITE + '"] .project-unread')!.textContent).toBe('1')
-    expect($('[data-chat="' + CHAT + '"]')!.className).toContain('fresh')
-    // Opening the chat moves the cursor; the badge goes.
-    $<HTMLButtonElement>('[data-chat="' + CHAT + '"]')!.click()
+    // Opening the project's chat moves the cursor; the badge goes.
+    $<HTMLButtonElement>('[data-project="' + SITE + '"] .project-open')!.click()
     await settle()
+    expect(router.currentRoute.value.params.chat).toBe(CHAT)
     expect($('[data-project="' + SITE + '"] .project-unread')).toBeNull()
     expect(JSON.parse(localStorage.getItem('agentlink.reads.v2:alice')!)[SITE + ':' + CHAT]).toBe(3)
   })
-
   it('drops the answer of a chat when the project changed meanwhile', async () => {
     let release: () => void = () => {}
     let hold = false

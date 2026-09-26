@@ -2,13 +2,14 @@
 import { computed, ref } from 'vue'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UPopover from '@nuxt/ui/components/Popover.vue'
-import { useLayout, type ThemeMode } from '@/layout/composables/layout'
+import { FONTS, useLayout, type ThemeMode } from '@/layout/composables/layout'
 import { icon } from '@/lib/icons'
 import { primaryColors, surfaces } from '@/lib/palettes'
 import { t } from '@/lib/runtime'
 
-// The appearance panel under the sidebar: the theme, the accent colour and
-// the background scale, kept in this browser (layout/composables/layout.ts).
+// The appearance panel under the sidebar: the theme, the accent colour, the
+// background scale and the font, kept in this browser
+// (layout/composables/layout.ts).
 const { layoutConfig, storageFailed } = useLayout()
 const open = ref(false)
 
@@ -37,7 +38,7 @@ const label = computed(() => t('theme.panel') + ' · ' + t('theme.' + layoutConf
     <template #content>
       <div
         id="theme_panel"
-        class="config-panel flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-4 p-4"
+        class="config-panel flex max-h-[80vh] w-80 max-w-[calc(100vw-2rem)] flex-col gap-4 overflow-y-auto p-4"
       >
         <div class="flex flex-col gap-2">
           <span
@@ -115,6 +116,33 @@ const label = computed(() => t('theme.panel') + ' · ' + t('theme.' + layoutConf
               :style="{ backgroundColor: s.palette[500] }"
               @click="layoutConfig.surface = s.name"
             />
+          </div>
+        </div>
+        <div class="flex flex-col gap-2">
+          <span
+            id="theme_font_label"
+            class="text-sm font-semibold text-muted"
+          >{{ t('theme.font') }}</span>
+          <div
+            id="theme_font"
+            class="flex flex-col gap-1"
+            role="group"
+            aria-labelledby="theme_font_label"
+          >
+            <button
+              v-for="f in FONTS"
+              :key="f.name"
+              type="button"
+              class="font-choice"
+              :class="{ active: layoutConfig.font === f.name }"
+              :data-font="f.name"
+              :aria-pressed="layoutConfig.font === f.name ? 'true' : 'false'"
+              :style="{ fontFamily: f.stack }"
+              @click="layoutConfig.font = f.name"
+            >
+              <span class="font-choice-name">{{ t('theme.font.' + f.name) }}</span>
+              <span class="font-choice-hint">{{ t('theme.font.' + f.name + '.hint') }}</span>
+            </button>
           </div>
         </div>
         <p

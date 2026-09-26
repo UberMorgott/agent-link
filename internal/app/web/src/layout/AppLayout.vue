@@ -4,14 +4,12 @@ import { useRoute } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
 import MessageToasts from '@/components/MessageToasts.vue'
 import JoinProjectModal from '@/components/JoinProjectModal.vue'
-import NewChatPicker from '@/components/NewChatPicker.vue'
 import NewProjectModal from '@/components/NewProjectModal.vue'
 import ProjectDialogs from '@/components/ProjectDialogs.vue'
 import ProjectSidebar from '@/components/ProjectSidebar.vue'
 import { icon } from '@/lib/icons'
 import { browser, t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
-import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore } from '@/stores/projects'
 import { useLayout } from './composables/layout'
 
@@ -27,8 +25,7 @@ const current = computed(() => String(route.name || ''))
 watch(() => route.fullPath, hideMobileMenu)
 // A dialog opened from the phone drawer shows above the page, not under the drawer.
 const projects = useProjectsStore()
-const inbox = useInboxStore()
-watch(() => projects.dialog || inbox.newChatOpen, (open) => { if (open) hideMobileMenu() })
+watch(() => projects.dialog, (open) => { if (open) hideMobileMenu() })
 watch(current, () => { void nextTick(() => view.value?.focus({ preventScroll: true })) })
 </script>
 
@@ -103,7 +100,6 @@ watch(current, () => { void nextTick(() => view.value?.focus({ preventScroll: tr
       </div>
       <MessageToasts />
     </div>
-    <NewChatPicker />
     <ProjectDialogs />
     <NewProjectModal />
     <JoinProjectModal />
