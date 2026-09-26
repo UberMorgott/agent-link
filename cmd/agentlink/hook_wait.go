@@ -37,12 +37,18 @@ type waitOpts struct {
 	life      time.Duration // the waiter ends after this (before the entry's timeout)
 	busyFor   time.Duration // a session whose last event was a work event this recently is busy
 	stale     time.Duration // a waiter lock not refreshed for this long is stale
-	// alive reports whether the session (the waiter's parent) still runs.
+	// alive reports whether the session (its agent process) still runs.
 	alive func() bool
 }
 
-func defaultWaitOpts() waitOpts {
-	ppid := os.Getppid()
+// defaultWaitOpts: the session's process is the client's agent among the
+// waiter's ancestors (agentPID: Claude Code runs it through cmd.exe and the
+// plugin's agentlink.cmd, so the parent is not the agent), else the parent.
+func defaultWaitOpts(client string) waitOpts {
+	ppid := agentPID(client)
+	if ppid == 0 {
+		ppid = os.Getppid()
+	}
 	return waitOpts{
 		poll:      2 * time.Second,
 		heartbeat: 5 * time.Minute,

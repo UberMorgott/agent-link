@@ -183,7 +183,7 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if *wait {
-		return hookWait(client, stdin, stderr, env, defaultWaitOpts())
+		return hookWait(client, stdin, stderr, env, defaultWaitOpts(client))
 	}
 	// The output is written before the batch is acknowledged (see accept).
 	_ = hookRun(client, *event, stdin, stdout, env)
