@@ -100,7 +100,7 @@ func (n *Node) launchClaim(area string, msgs []UnreadMessage) []UnreadMessage {
 		}
 		want = append(want, m.ID)
 	}
-	granted := n.claimLocked(owner, want, true, "", live)
+	granted := n.claimLocked(owner, want, ViaLaunch, "", live)
 	var out []UnreadMessage
 	for _, m := range msgs {
 		if slices.Contains(granted, m.ID) {
@@ -184,6 +184,11 @@ func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string 
 	}
 	recent := n.sess.recentlyActive(live, time.Now())
 	aff := n.chats.affinity(rec.Message.ChatID, n.cfg.Node, recent)
+	if n.leases.passedOver(id, aff) {
+		// Affinity is a preference: a session whose leases of the message kept
+		// failing does not hold it.
+		aff = ""
+	}
 	if busy := n.sess.busyBeside(aff, recent); busy != nil {
 		// The chat's session is idle while another of its area is in a turn:
 		// the active one wins (no wake), affinity only picks among them.
@@ -263,17 +268,12 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 		// registered (a headless claude -p) must not steal them.
 		return []string{}, nil
 	}
-	want, spent := req.IDs, []string(nil)
+	want, spent, via := req.IDs, []string(nil), ViaHook
 	if req.WakeToken != "" {
-		want, spent = r.waiterWakesLeft(req.IDs, now)
+		want, spent = n.waiterWakesLeft(req.SessionID, req.IDs, now)
+		via = ViaWaiter
 	}
-	granted := n.claimLocked(req.SessionID, want, req.WakeToken != "", req.WakeToken, live)
-	if req.WakeToken != "" {
-		for _, id := range granted {
-			w := r.waiterWakes[id]
-			r.waiterWakes[id] = waiterWake{n: w.n + 1, at: now}
-		}
-	}
+	granted := n.claimLocked(req.SessionID, want, via, req.WakeToken, live)
 	r.claimMu.Unlock()
 	n.report(spent, AttemptNeedsHuman)
 	return granted, nil
@@ -292,22 +292,22 @@ const maxWaiterWakes = 2
 // its last wake.
 const waiterWakeKeep = 24 * time.Hour
 
-// waiterWake counts one message's waiter wakes, the last at at.
-type waiterWake struct {
-	n  int
-	at time.Time
+// waiterSpentMsg reports whether no waiter may wake with the message of key
+// any more: it used up maxWaiterWakes (the lease's count, forgotten
+// waiterWakeKeep after its last waiter wake) or its lease failed.
+func (n *Node) waiterSpentMsg(key string, now time.Time) bool {
+	l, ok := n.leases.get(key)
+	if !ok {
+		return false
+	}
+	return l.State == LeaseFailed || (l.WaiterWakes >= maxWaiterWakes && now.Sub(l.WaiterAt) <= waiterWakeKeep)
 }
 
-// waiterWakesLeft splits ids into those a waiter may still wake with and
-// those that used up maxWaiterWakes. The caller holds r.claimMu.
-func (r *sessionRegistry) waiterWakesLeft(ids []string, now time.Time) (left, spent []string) {
-	for id, w := range r.waiterWakes {
-		if now.Sub(w.at) > waiterWakeKeep {
-			delete(r.waiterWakes, id)
-		}
-	}
+// waiterWakesLeft splits ids into those the waiter of session may still wake
+// with and those that used up maxWaiterWakes (their lease counts them).
+func (n *Node) waiterWakesLeft(session string, ids []string, now time.Time) (left, spent []string) {
 	for _, id := range ids {
-		if r.waiterWakes[id].n >= maxWaiterWakes {
+		if n.waiterSpentMsg(leaseKey(n.seatPendingFor(session, id), id), now) {
 			spent = append(spent, id)
 		} else {
 			left = append(left, id)
@@ -319,12 +319,10 @@ func (r *sessionRegistry) waiterWakesLeft(ids []string, now time.Time) (left, sp
 // waiterSpent drops from page the messages no waiter may wake with anymore
 // (maxWaiterWakes), so a waiter does not poll for them.
 func (n *Node) waiterSpent(page *UnreadPage) {
-	r := n.sess
-	r.claimMu.Lock()
-	defer r.claimMu.Unlock()
+	now := time.Now()
 	kept := page.Messages[:0]
 	for _, m := range page.Messages {
-		if r.waiterWakes[m.ID].n < maxWaiterWakes {
+		if !n.waiterSpentMsg(leaseKey(m.ForSeat, m.ID), now) {
 			kept = append(kept, m)
 		}
 	}
@@ -343,16 +341,34 @@ var wakeTokenPattern = regexp.MustCompile(`^[0-9A-Za-z_-]{8,64}$`)
 // (carrying token). A wake never takes a message a hook claimed (a normal
 // claim that holds, even of the same session): that hook delivers it.
 // The caller holds n.sess.claimMu.
-func (n *Node) claimLocked(session string, want []string, wake bool, token string, live map[string]bool) []string {
+func (n *Node) claimLocked(session string, want []string, via, token string, live map[string]bool) []string {
 	r := n.sess
+	wake := via != ViaHook
+	now := time.Now()
+	deadline := now.Add(claimTTL)
+	switch via {
+	case ViaLaunch:
+		deadline = now.Add(launchHold)
+	case ViaInbox, ViaQueue, ViaWaiter:
+		deadline = now.Add(inboxWakeGrace)
+	}
 	granted := []string{}
 	plain := map[string]bool{}
 	for _, p := range n.store.unreadPlain() {
 		plain[p.Message.ID] = true
 	}
 	for _, id := range want {
-		if handled, ok := n.seatClaim(session, id, wake, token); handled {
-			if ok {
+		if seat := n.seatPendingFor(session, id); seat != "" {
+			if n.leases.blocked(leaseKey(seat, id), session, via, now) {
+				continue
+			}
+			if _, ok := n.seatClaim(session, id, wake, token); ok {
+				if took, err := n.leases.take(id, seat, session, via, token, deadline, now); err != nil {
+					n.log.Warn("save leases", "err", err)
+				} else if !took {
+					n.seatUnclaim(session, []string{id})
+					continue
+				}
 				granted = append(granted, id)
 			}
 			continue
@@ -383,7 +399,15 @@ func (n *Node) claimLocked(session string, want []string, wake bool, token strin
 		if c, ok := r.claims[id]; wake && ok && !c.wake && c.held(live) {
 			continue // a hook is delivering it: waking with it too delivers it twice
 		}
-		r.claims[id] = sessionClaim{session: session, at: time.Now(), wake: wake, token: token}
+		if n.leases.blocked(id, session, via, now) {
+			continue // failed, in its backoff, or another owner's lease holds
+		}
+		if took, err := n.leases.take(id, "", session, via, token, deadline, now); err != nil {
+			n.log.Warn("save leases", "err", err)
+		} else if !took {
+			continue
+		}
+		r.claims[id] = sessionClaim{session: session, at: now, wake: wake, token: token}
 		granted = append(granted, id)
 	}
 	return granted
@@ -391,7 +415,7 @@ func (n *Node) claimLocked(session string, want []string, wake bool, token strin
 
 // wakeClaim claims msgs for the wake prompt of session (claimLocked) under a
 // new wake token and returns the ones granted, in order, with the token.
-func (n *Node) wakeClaim(session string, msgs []UnreadMessage) ([]UnreadMessage, string) {
+func (n *Node) wakeClaim(session, via string, msgs []UnreadMessage) ([]UnreadMessage, string) {
 	r := n.sess
 	r.claimMu.Lock()
 	defer r.claimMu.Unlock()
@@ -400,7 +424,7 @@ func (n *Node) wakeClaim(session string, msgs []UnreadMessage) ([]UnreadMessage,
 		return nil, ""
 	}
 	token := randomHex(8)
-	granted := n.claimLocked(session, ids(msgs), true, token, live)
+	granted := n.claimLocked(session, ids(msgs), via, token, live)
 	var out []UnreadMessage
 	for _, m := range msgs {
 		if slices.Contains(granted, m.ID) {

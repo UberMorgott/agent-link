@@ -665,6 +665,30 @@ func (n *Node) seatClaim(session, id string, wake bool, token string) (handled, 
 	return true, true
 }
 
+// seatPendingFor is the seat of session when message id is pending for it
+// (seatClaim handles it then), else "".
+func (n *Node) seatPendingFor(session, id string) string {
+	st := n.seats
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	s := st.bySessionLocked(session)
+	if s == nil || s.Stopped || !slices.ContainsFunc(s.Pending, func(p SeatPending) bool { return p.ID == id }) {
+		return ""
+	}
+	return s.ID
+}
+
+// seatOfSession is the seat bound to session, or "".
+func (n *Node) seatOfSession(session string) string {
+	st := n.seats
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if s := st.bySessionLocked(session); s != nil {
+		return s.ID
+	}
+	return ""
+}
+
 // seatUnclaim drops the claims of the seat of session on ids (a failed wake).
 func (n *Node) seatUnclaim(session string, ids []string) {
 	st := n.seats
@@ -899,6 +923,13 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 		n.endTurnClaims(seat.ID, msgs)
 		return
 	}
+	owner, now := seatOwner(seat.ID), time.Now()
+	for _, m := range msgs {
+		// The seat keeps its own retry (seatRetry): the lease records the turn.
+		if _, err := n.leases.take(m.ID, seat.ID, owner, ViaSeat, "", now.Add(launchHold), now); err != nil {
+			n.log.Warn("save leases", "err", err)
+		}
+	}
 	chat := ""
 	if len(msgs) > 0 {
 		chat = msgs[0].ChatID
@@ -918,7 +949,12 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 	spec := LaunchSpec{Provider: seat.Provider, Folder: folder, ResumeID: seat.SessionID, Prompt: prompt.String(),
 		Seat: seat.ID, NoOpen: !open, Env: n.seatEnv(seat, chat)}
 	n.log.Info("running a seat's turn", "seat", seat.ID, "provider", seat.Provider, "resume", seat.SessionID, "messages", len(msgs))
-	err := dl.Run(ctx, spec, func(id string) { n.bindSeat(seat.ID, id) })
+	err := dl.Run(ctx, spec, func(id string) {
+		n.bindSeat(seat.ID, id)
+		if _, err := n.leases.start(owner, "", "", ids(msgs), time.Now()); err != nil {
+			n.log.Warn("save leases", "err", err)
+		}
+	})
 	if errors.Is(err, ErrOpenApp) {
 		err = nil
 	}
@@ -931,8 +967,13 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 	}
 	if err == nil && len(msgs) > 0 {
 		// Acknowledged under the turn's claim: no hook takes them in between.
-		n.seatAck("", seat.ID, ids(msgs))
+		done := n.seatAck("", seat.ID, ids(msgs))
+		if err := n.leases.ack(seat.ID, nil, done, time.Now()); err != nil {
+			n.log.Warn("save leases", "err", err)
+		}
 		n.changed("messages")
+	} else if len(msgs) > 0 {
+		n.revokeLeases(owner, ids(msgs), "seat_turn_failed", false)
 	}
 	n.endTurn(seat.ID, msgs, err, stopped)
 }

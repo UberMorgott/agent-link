@@ -195,6 +195,10 @@ func TestSeatAskedRunsTurn(t *testing.T) {
 	if n := len(runs); n != 3 {
 		t.Fatalf("turns %d: %+v", n, runs)
 	}
+	// The turn leased the seat's message; the turn that succeeded acked it.
+	if l, ok := a.leases.get(leaseKey(codex.ID, m.ID)); !ok || l.State != LeaseAcked || l.Owner != seatOwner(codex.ID) || l.Via != ViaSeat || l.Attempts != 1 {
+		t.Fatalf("seat lease %+v", l)
+	}
 	_ = claude
 }
 

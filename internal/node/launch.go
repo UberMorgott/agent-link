@@ -257,6 +257,9 @@ type pendingLaunch struct {
 	ids   []string
 	// direct: a desktop-app launch running its first turn (runDirect ends it).
 	direct bool
+	// before: the live sessions of the area at the launch (nil: none); only
+	// another one confirms it then.
+	before map[string]bool
 }
 
 func newDeliveryState() *deliveryState {
@@ -348,12 +351,15 @@ func (n *Node) launchable(dir string, now time.Time) (eligible, paused []UnreadM
 		return nil, nil
 	}
 	held := n.launchHeld()
+	book := n.leases.all()
 	d := n.deliv
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, m := range page.Messages {
+		l, leased := book[m.ID]
+		leased = leased && (l.State == LeaseLeased || l.State == LeaseRunning || l.State == LeaseFailed)
 		switch {
-		case !m.AsksYou || m.OwnHuman || m.Assigned != "" || held[m.ID]:
+		case !m.AsksYou || m.OwnHuman || m.Assigned != "" || held[m.ID] || leased:
 		case m.Paused:
 			paused = append(paused, m)
 		case d.isSpent(m.ID) || now.Sub(m.ReceivedAt) < launchGrace:
@@ -384,15 +390,25 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 	if p != nil && p.direct {
 		return // its first turn is running
 	}
-	if n.areaLive(area, now) {
-		if p != nil {
-			d.mu.Lock()
-			delete(d.pending, area)
-			d.mu.Unlock()
-			n.spend(p.ids, now, AttemptLaunchConfirmed)
-			n.log.Info("opened session confirmed", "area", area, "provider", p.spec.Provider, "tries", p.tries)
-			n.report(p.ids, AttemptLaunchConfirmed)
-		}
+	live := n.areaLive(area, now)
+	if live {
+		// Sessions live: only the orphans (every one of them passed over for
+		// the message) open a new one.
+		eligible = n.orphans(area, eligible, now)
+	}
+	// A launch is confirmed by a live session of the area that was not live
+	// at the launch.
+	confirmed := p != nil && live && n.areaHasNew(area, p.before, now)
+	if confirmed {
+		d.mu.Lock()
+		delete(d.pending, area)
+		d.mu.Unlock()
+		n.spend(p.ids, now, AttemptLaunchConfirmed)
+		n.log.Info("opened session confirmed", "area", area, "provider", p.spec.Provider, "tries", p.tries)
+		n.report(p.ids, AttemptLaunchConfirmed)
+		return
+	}
+	if p == nil && live && len(eligible) == 0 {
 		return
 	}
 	if p != nil {
@@ -492,6 +508,11 @@ func (n *Node) runDirect(ctx context.Context, dl DirectLauncher, area string, p 
 		mu.Unlock()
 		if first {
 			n.launchSeen(area, p, id)
+			// Proof the first turn runs with them: the lease is the session's now.
+			if _, err := n.leases.start(launchOwner(area), id, "", p.ids, time.Now()); err != nil {
+				n.log.Warn("save leases", "err", err)
+			}
+			n.changed("leases")
 		}
 	})
 	mu.Lock()
@@ -538,6 +559,9 @@ func (n *Node) runDirect(ctx context.Context, dl DirectLauncher, area string, p 
 		// The turn ran: it may have acted in part. Neither Terminal nor a new
 		// launch repeats it; the messages stay unread for the hooks and a
 		// person, and are not launched for again.
+		if ferr := n.leases.fail(id, p.ids, "launch_"+reason, time.Now()); ferr != nil {
+			n.log.Warn("save leases", "err", ferr)
+		}
 		n.spend(p.ids, time.Now(), AttemptLaunchFailed+":"+reason, AttemptNeedsHuman)
 		n.log.Warn("the opened session's first turn failed; not retried", "area", area, "provider", p.spec.Provider,
 			"session", id, "reason", reason, "err", err)
@@ -548,6 +572,7 @@ func (n *Node) runDirect(ctx context.Context, dl DirectLauncher, area string, p 
 	n.log.Warn("opening a session in the desktop app failed; opening Terminal", "area", area, "provider", p.spec.Provider,
 		"reason", reason, "err", err)
 	n.report(p.ids, AttemptLaunchFailed+":"+reason)
+	n.revokeLeases(launchOwner(area), p.ids, "launch_"+reason, false)
 	n.fallbackTerminal(ctx, area, p)
 }
 
@@ -597,10 +622,10 @@ func (n *Node) occupiedFor(area, dir string, eligible []UnreadMessage, now time.
 // takes it from there.
 func (n *Node) fallbackTerminal(ctx context.Context, area string, p *pendingLaunch) {
 	now := time.Now()
-	if n.areaLive(area, now) {
-		return
-	}
 	eligible, _ := n.launchable(p.spec.Folder, now.Add(launchGrace))
+	if n.areaLive(area, now) {
+		eligible = n.orphans(area, eligible, now)
+	}
 	var msgs []UnreadMessage
 	for _, m := range eligible {
 		if slices.Contains(p.ids, m.ID) {
@@ -654,9 +679,81 @@ func (n *Node) startLaunch(ctx context.Context, area string, spec LaunchSpec, ms
 		n.report(list, AttemptLaunchFailed+":"+reason)
 		return
 	}
+	before := n.areaSessions(area, now)
 	d.mu.Lock()
-	d.pending[area] = &pendingLaunch{at: now, tries: tries, spec: spec, ids: list}
+	d.pending[area] = &pendingLaunch{at: now, tries: tries, spec: spec, ids: list, before: before}
 	d.mu.Unlock()
+}
+
+// areaSessions is the set of live sessions of area (nil: none).
+func (n *Node) areaSessions(area string, now time.Time) map[string]bool {
+	r := n.sess
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out map[string]bool
+	for id, s := range r.sessions {
+		if s.Area == area && s.live(now) {
+			if out == nil {
+				out = map[string]bool{}
+			}
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// areaHasNew reports whether a live session of area is not one of before
+// (a launch's own, when others were live already).
+func (n *Node) areaHasNew(area string, before map[string]bool, now time.Time) bool {
+	for id := range n.areaSessions(area, now) {
+		if !before[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// orphans are the msgs no live session of area can take any more, so a new
+// session opens for them although sessions are registered: a message whose
+// leases failed, when every live session of the area was passed over for it
+// (maxOwnerFails) or is idle, cannot be woken and had no hook event for
+// AffinityLapse (a registration alone never counts).
+func (n *Node) orphans(area string, msgs []UnreadMessage, now time.Time) []UnreadMessage {
+	queue := n.canQueue()
+	r := n.sess
+	type cand struct {
+		s        Session
+		wakeable bool
+	}
+	var list []cand
+	r.mu.Lock()
+	for _, s := range r.sessions {
+		if s.Area != area || !s.live(now) {
+			continue
+		}
+		_, inbox := r.inbox[s.SessionID]
+		wakeable := (inbox && n.poster != nil) || (s.Wake == WakeQueue && queue) || s.Wake == WakeRewake
+		list = append(list, cand{*s, wakeable})
+	}
+	r.mu.Unlock()
+	var out []UnreadMessage
+	for _, m := range msgs {
+		l, ok := n.leases.get(m.ID)
+		if !ok || len(l.Fails) == 0 {
+			continue // no lease of it failed: its sessions still get it
+		}
+		can := slices.ContainsFunc(list, func(c cand) bool {
+			recent := now.Sub(c.s.activeAt()) < AffinityLapse
+			if !c.s.Idle && recent {
+				return true // in a turn: its hooks take it
+			}
+			return l.Fails[c.s.SessionID] < maxOwnerFails && (c.wakeable || recent)
+		})
+		if !can {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // launchPrompt is the first prompt of an opened session: «agent-link:

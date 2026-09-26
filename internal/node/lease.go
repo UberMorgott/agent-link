@@ -273,6 +273,9 @@ func (b *leaseBook) take(id, seat, owner, via, token string, deadline, now time.
 		l.Attempts++
 	}
 	if via == ViaWaiter {
+		if now.Sub(l.WaiterAt) > waiterWakeKeep {
+			l.WaiterWakes = 0
+		}
 		l.WaiterWakes++
 		l.WaiterAt = now
 	}
@@ -326,8 +329,8 @@ func (b *leaseBook) hold(session string, ids []string, now time.Time) error {
 	return b.saveLocked()
 }
 
-// ack marks the leases of ids acked: the node's (seat "") and, for seat, the
-// seat's. A lease still leased by the acking owner was proven by that ack.
+// ack marks the leases of ids acked (the node's) and those of seat's
+// messages seatDone (the seat's). A lease still leased by the acking owner was proven by that ack.
 func (b *leaseBook) ack(seat string, ids []string, seatDone map[string]bool, now time.Time) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -343,8 +346,12 @@ func (b *leaseBook) ack(seat string, ids []string, seatDone map[string]bool, now
 	}
 	for _, id := range ids {
 		mark(id)
-		if seat != "" && seatDone[id] {
-			mark(leaseKey(seat, id))
+	}
+	if seat != "" {
+		for id, done := range seatDone {
+			if done {
+				mark(leaseKey(seat, id))
+			}
 		}
 	}
 	if !save {

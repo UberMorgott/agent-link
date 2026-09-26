@@ -60,8 +60,8 @@ Rules:
 - Orphan: every live session of the area is passed over for the message
   (too many failed leases, or idle, not wakeable and no hook event for
   `AffinityLapse`). The launch ladder then opens a native new session for it
-  although sessions are registered (`launch.go`), confirmed only by a session
-  registering after the launch.
+  although sessions are registered (`launch.go`), confirmed only by a live
+  session that was not live at the launch.
 - Caps kept: `maxIdleWakes` per idle period, `maxWaiterWakes` per message,
   `launchTries`, seat `seatRetry`.
 
