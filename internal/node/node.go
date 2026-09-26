@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/UberMorgott/agent-link/internal/config"
@@ -68,6 +69,7 @@ type Node struct {
 	secret  []byte
 	store   *store
 	chats   *chatStore
+	atts    *attachStore
 	log     *slog.Logger
 	targets []*target
 	// open accepts any authenticated peer name: some peer has no configured
@@ -90,18 +92,42 @@ type Node struct {
 
 	ensureMu sync.Mutex // serializes EnsureOpenChat
 	sess     *sessionRegistry
-	folders  folderMap
+	seats    *seatStore
+	// seatExtra is added to the environment of seat turns (SetSeatEnv).
+	seatExtra []string
+	folders   folderMap
 	// autoAnswer: the worker answers requests no live session takes (presence).
 	autoAnswer bool
 	// waker wakes idle WakeQueue sessions (wake.go) every wakeEvery (0:
 	// wakePoll); nil: none.
 	waker     SessionWaker
 	wakeEvery time.Duration
+	// poster wakes idle Claude sessions through their inbox (inbox.go);
+	// launcher opens a visible session when none is live (launch.go), as the
+	// project's autonomy allows (auto, autonomy.go). deliv is the delivery
+	// ladder's state.
+	poster   InboxPoster
+	launcher SessionLauncher
+	auto     *autonomy
+	deliv    *deliveryState
+	// leases: the delivery lease of every message handed to an owner (lease.go).
+	leases *leaseBook
+	// directWG counts the desktop-app first turns running (runDirect).
+	directWG sync.WaitGroup
+	// occupied replaces folderOccupied, launchAck the ack of a desktop
+	// launch's messages (tests); nil: the real ones.
+	occupied  func(dir string, now time.Time) bool
+	launchAck atomic.Pointer[func(req AckRequest) error]
+	// seatBusy replaces seatOccupied (tests); nil: the real one.
+	seatBusy func(s Seat, now time.Time) bool
 
 	selfAddrs []string // this node's own peer addresses, set by Run
 
 	id         string // random node id, kept in the data directory
 	appVersion string
+	chatColor  string   // Member.Color of this node (SetChatColor; guarded by mu)
+	display    string   // Member.Display of this node (SetDisplay; guarded by mu)
+	aliases    []string // Member.Aliases of this node (SetDisplay; guarded by mu)
 	listenPort int
 	netTag     string // discovery network id derived from the key; empty when off
 	oldNetTag  string // the pre-v0.6 tag, only matched in received beacons
@@ -169,8 +195,12 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	atts, err := openAttachStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
 	n := &Node{
-		cfg: cfg, secret: secret, store: st, chats: chats, log: log.With("node", cfg.Node),
+		cfg: cfg, secret: secret, store: st, chats: chats, atts: atts, log: log.With("node", cfg.Node),
 		known: map[string]bool{}, conns: map[string]*peerConn{}, areas: map[string][]string{},
 		offline: map[string]time.Time{}, started: time.Now(),
 		members: map[string]*Member{}, dialing: map[string]bool{}, tried: map[string]time.Time{},
@@ -246,9 +276,26 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	if n.sess, err = openSessions(cfg.DataDir); err != nil {
 		return nil, err
 	}
+	if n.seats, err = openSeats(cfg.DataDir); err != nil {
+		return nil, err
+	}
+	n.deliv = newDeliveryState()
+	if err := n.loadLaunchState(); err != nil {
+		return nil, err
+	}
 	if err := n.repairChats(); err != nil {
 		return nil, err
 	}
+	n.MigrateProjectChats()
+	n.auto = newAutonomy(cfg.DataDir)
+	if err := n.auto.load(); err != nil {
+		n.log.Warn("autonomy state unreadable; starting over", "err", err)
+	}
+	n.leases = newLeaseBook(cfg.DataDir)
+	if err := n.leases.load(); err != nil {
+		n.log.Warn("delivery leases unreadable; starting over", "err", err)
+	}
+	n.restoreLeases(time.Now())
 	return n, nil
 }
 
@@ -334,7 +381,8 @@ func (n *Node) Run(ctx context.Context, peerLn net.Listener) {
 	n.wg.Go(func() { n.acceptLoop(ctx, peerLn) })
 	n.wg.Go(func() { n.meshLoop(ctx) }) // also dials the configured peers
 	n.wg.Go(func() { n.activityLoop(ctx) })
-	if n.waker != nil {
+	n.wg.Go(func() { n.attachSweepLoop(ctx) })
+	if n.waker != nil || n.poster != nil || n.launcher != nil {
 		n.wg.Go(func() { n.wakeLoop(ctx) })
 	}
 	if n.netTag != "" && n.hub == nil { // under a Hub, its socket carries the beacons

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -56,6 +57,60 @@ type Receipt struct {
 	ID    string    `json:"id"`
 	State string    `json:"state"` // StateRead or StateAnswered
 	At    time.Time `json:"at"`
+}
+
+// Delivery attempt events (Attempt.Event): what the recipient node does to get
+// an unread message seen by an agent session, reported back to its author on
+// KindReceipt messages (Message.Attempts) apart from the read states. Older
+// peers ignore them.
+const (
+	// AttemptWakeRequested: an idle live session was asked to start a turn.
+	AttemptWakeRequested = "wake_requested"
+	// AttemptWokenConfirmed: the woken session took the message.
+	AttemptWokenConfirmed = "woken_confirmed"
+	// AttemptLaunchRequested: no live session, a visible one is being opened.
+	AttemptLaunchRequested = "launch_requested"
+	// AttemptLaunchConfirmed: the opened session started (its SessionStart hook).
+	AttemptLaunchConfirmed = "launch_confirmed"
+	// AttemptLaunchFailed is the prefix of "launch_failed:<reason>".
+	AttemptLaunchFailed = "launch_failed"
+	// AttemptNeedsHuman: the message is paused (loop guard); nothing is woken
+	// or opened for it until a person acts.
+	AttemptNeedsHuman = "needs_human"
+)
+
+// Attempt limits: events per KindReceipt message, kept per recipient of one
+// message, and the length of a launch_failed reason.
+const (
+	maxAttemptsPerMessage = 64
+	maxAttemptsKept       = 8
+	maxAttemptReason      = 48
+)
+
+// Attempt is one delivery attempt event on message ID at the recipient node.
+type Attempt struct {
+	ID    string    `json:"id"`
+	Event string    `json:"event"`
+	At    time.Time `json:"at"`
+}
+
+// validAttemptEvent reports whether e is a known attempt event;
+// launch_failed carries a short [a-z0-9_] reason.
+func validAttemptEvent(e string) bool {
+	switch e {
+	case AttemptWakeRequested, AttemptWokenConfirmed, AttemptLaunchRequested, AttemptLaunchConfirmed, AttemptNeedsHuman:
+		return true
+	}
+	reason, ok := strings.CutPrefix(e, AttemptLaunchFailed+":")
+	if !ok || reason == "" || len(reason) > maxAttemptReason {
+		return false
+	}
+	for _, c := range reason {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func stateRank(s string) int {
@@ -187,6 +242,26 @@ type Message struct {
 	ChatRev   uint32 `json:"chat_rev,omitempty"`
 	// Receipts are the read receipts of a KindReceipt message.
 	Receipts []Receipt `json:"receipts,omitempty"`
+	// Attempts are delivery attempt events of a KindReceipt message (at most
+	// maxAttemptsPerMessage); older peers ignore them.
+	Attempts []Attempt `json:"attempts,omitempty"`
+	// Attachments are the files of a chat message (attach.go); their blobs
+	// travel ahead of it to peers with CapAttachments. Older peers ignore them
+	// and read the body's fallback lines.
+	Attachments []Attachment `json:"attachments,omitempty"`
+	// Agent names the local agent session that wrote the message (its seat and
+	// provider), shown as "Morgott · Codex"; AskSeats are the seats of the
+	// author's node asked to answer (seats.go). Older peers ignore both.
+	Agent    *AgentRef `json:"agent,omitempty"`
+	AskSeats []string  `json:"ask_seats,omitempty"`
+}
+
+// AgentRef is the agent session of a node that wrote a message: its seat
+// (Seat, Label; empty for a session that is no seat) and Provider.
+type AgentRef struct {
+	Seat     string `json:"seat,omitempty"`
+	Label    string `json:"label,omitempty"`
+	Provider string `json:"provider,omitempty"`
 }
 
 // IsRequest reports whether m is a request outside chats: neither a reply, a

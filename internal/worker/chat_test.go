@@ -102,6 +102,8 @@ func (f *fakeChats) ClaimRun(m node.Message) (bool, string, error) {
 	return true, "", nil
 }
 
+func (f *fakeChats) AutoHeld(m node.Message) bool { return m.Held() }
+
 func (f *fakeChats) LiveSession(area string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()

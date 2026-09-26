@@ -72,6 +72,9 @@ type chatRecord struct {
 	Session string `json:"session,omitempty"`
 	// Receipts: on this node's own messages, the latest receipt per recipient.
 	Receipts map[string]Receipt `json:"receipts,omitempty"`
+	// Attempts: on this node's own messages, the latest delivery attempt
+	// events per recipient (at most maxAttemptsKept each), oldest first.
+	Attempts map[string][]Attempt `json:"attempts,omitempty"`
 }
 
 var errChatMismatch = errors.New("chat participants or area differ from the stored chat")
@@ -256,6 +259,26 @@ func (cs *chatStore) setMembers(c Chat) (Chat, error) {
 	return next, nil
 }
 
+// setPrev records on known chat id the chat it took over from (Chat.Prev).
+func (cs *chatStore) setPrev(id, prev string) error {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	st := cs.chats[id]
+	if st == nil {
+		return fmt.Errorf("%w %s", ErrUnknownChat, id)
+	}
+	if st.chat.Prev == prev || prev == id {
+		return nil
+	}
+	next := st.chat
+	next.Prev = prev
+	if err := writeJSON(filepath.Join(cs.chatDir(id), "chat.json"), next); err != nil {
+		return err
+	}
+	st.chat = next
+	return nil
+}
+
 func (cs *chatStore) get(id string) (Chat, bool) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
@@ -323,6 +346,7 @@ func (cs *chatStore) updateLocked(id string, fn func(r *chatRecord) bool) (chatR
 	i := st.index[id]
 	r := st.msgs[i]
 	r.Receipts = maps.Clone(r.Receipts)
+	r.Attempts = maps.Clone(r.Attempts)
 	if !fn(&r) {
 		return st.msgs[i], false, nil
 	}
@@ -402,6 +426,34 @@ func (cs *chatStore) applyReceipt(peer string, rc Receipt) (bool, error) {
 			r.Receipts = map[string]Receipt{}
 		}
 		r.Receipts[peer] = rc
+		return true
+	})
+	return changed, err
+}
+
+// applyAttempt records peer's delivery attempt event on this node's message
+// a.ID, keeping the latest maxAttemptsKept per peer. A repeat (same event and
+// time) changes nothing. It reports whether anything changed.
+func (cs *chatStore) applyAttempt(peer string, a Attempt) (bool, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	_, changed, err := cs.updateLocked(a.ID, func(r *chatRecord) bool {
+		if r.Message.Kind != "" || !slices.Contains(cs.chats[r.Message.ChatID].chat.Participants, peer) {
+			return false
+		}
+		list := r.Attempts[peer]
+		if slices.ContainsFunc(list, func(o Attempt) bool { return o.Event == a.Event && o.At.Equal(a.At) }) {
+			return false
+		}
+		list = append(slices.Clone(list), a)
+		slices.SortStableFunc(list, func(x, y Attempt) int { return x.At.Compare(y.At) })
+		if len(list) > maxAttemptsKept {
+			list = list[len(list)-maxAttemptsKept:]
+		}
+		if r.Attempts == nil {
+			r.Attempts = map[string][]Attempt{}
+		}
+		r.Attempts[peer] = list
 		return true
 	})
 	return changed, err
@@ -606,21 +658,26 @@ func (cs *chatStore) message(id string) (chatRecord, bool) {
 
 // affinity is the live session chat id's messages go to (routeOf): the one
 // behind its newest message a session of this node (self) wrote or was
-// assigned; "" when none of them is live.
+// assigned; "" when none of them is live. A chat that took over from another
+// (Chat.Prev: its history was archived) has that chat's sessions until one
+// of its own takes part.
 func (cs *chatStore) affinity(id, self string, live map[string]bool) string {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	st := cs.chats[id]
-	if st == nil {
-		return ""
-	}
-	for _, r := range slices.Backward(st.msgs) {
-		if r.Message.From == self && live[r.Session] {
-			return r.Session
+	for range 8 { // a few archived chats back at most
+		st := cs.chats[id]
+		if st == nil {
+			return ""
 		}
-		if s := assignedSession(r); live[s] {
-			return s
+		for _, r := range slices.Backward(st.msgs) {
+			if r.Message.From == self && live[r.Session] {
+				return r.Session
+			}
+			if s := assignedSession(r); live[s] {
+				return s
+			}
 		}
+		id = st.chat.Prev
 	}
 	return ""
 }

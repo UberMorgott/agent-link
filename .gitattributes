@@ -5,3 +5,4 @@ third_party/** linguist-vendored
 internal/app/web/** text eol=lf
 *.cmd text eol=crlf
 plugins/agent-link/bin/agentlink text eol=lf
+*.woff2 binary

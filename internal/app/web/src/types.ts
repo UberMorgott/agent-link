@@ -20,6 +20,9 @@ export interface Status {
   listen?: string
   handler?: string
   members?: Member[]
+  stop_all?: boolean // every project's agents are stopped (emergency stop)
+  chat_color?: string // this member's own chat color ("" = derived from the name)
+  nickname?: string // this member's nickname ("" = its name)
 }
 
 export interface DashboardSummary {
@@ -92,6 +95,10 @@ export interface Delivery {
   status?: string
   state?: string
   at?: string
+  // attempt: the latest delivery attempt event the recipient's node reported
+  // (wake_requested, launch_requested, launch_failed:<reason>, needs_human…).
+  attempt?: string
+  attempts?: { id: string; event: string; at: string }[]
 }
 
 export interface ChatMessage {
@@ -112,6 +119,39 @@ export interface ChatMessage {
   unread?: boolean
   chat_id?: string
   participants?: string[] // on a chat_members message: the chat's new participants
+  attachments?: Attachment[]
+  // agent: the local agent of its node that wrote it (a seat: Claude, Codex…);
+  // ask_seats: the seats of the author's node it asks.
+  agent?: AgentRef
+  ask_seats?: string[]
+}
+
+export interface AgentRef {
+  seat?: string
+  label?: string
+  provider?: string
+}
+
+// SeatView is one local agent (seat) of this member in a project
+// (GET projects/{pid}/seats): status active | idle | running | closed | stopped.
+export interface SeatView {
+  id: string
+  provider: 'claude' | 'codex'
+  label: string
+  session_id?: string
+  status: string
+  error?: string
+  pending?: { id: string; ask?: boolean }[]
+}
+
+// A file on a chat message: id is the sha256 of its content, mime its sniffed type.
+export interface Attachment {
+  id: string
+  name: string
+  mime: string
+  size: number
+  failed?: boolean // this node does not have the file (it did not arrive)
+  key?: string // capability that opens the file at /ui/files (?k=)
 }
 
 export interface ChatInfo {
@@ -123,6 +163,8 @@ export interface ChatInfo {
   removed?: boolean // project chat: the owner took this node out
   count?: number
   title?: string
+  created_at?: string
+  prev?: string // project chat: the chat whose history it took over (archived)
   closed?: boolean
   archived?: boolean
   legacy?: boolean
@@ -164,6 +206,11 @@ export interface MemberInfo {
   proto?: number
   legacy?: boolean
   old_auth?: boolean
+  // agent: the member's computer has an agent session (Claude Code, Codex)
+  // open in the project now; color: its own chat color ("" = derived).
+  agent?: boolean
+  color?: string
+  display?: string // the member's nickname, shown instead of its name
 }
 
 export interface ProjectView {
@@ -177,10 +224,41 @@ export interface ProjectView {
   problem: string // "" or unknown_project | wrong_project | auth | name_taken | removed
   online: number
   total: number
+  // agents: computers, this one included, with an agent session open in the project.
+  agents?: number
   members: MemberInfo[] // self first
   can_rename: boolean
   has_invite: boolean
   busy: boolean
+  // autonomy: how far this member's agents work by themselves in the project;
+  // absent for the legacy network. launch_mode: where an opened session opens.
+  autonomy?: AutonomyView
+  launch_mode?: 'desktop' | 'terminal'
+}
+
+export type AutonomyMode = 'off' | 'asked' | 'full'
+
+// AutonomyView: the mode, the hop limit in effect (0: none; _default: it
+// follows the mode), the budgets of full mode and what of them is used.
+export interface AutonomyView {
+  mode: AutonomyMode
+  max_auto_depth: number
+  max_auto_depth_default: boolean
+  turns_per_hour: number
+  max_run_minutes: number
+  paused?: boolean
+  pause_reason?: 'turns' | 'run'
+  turns_last_hour: number
+  run_minutes: number
+}
+
+// AutonomyRequest changes a project's autonomy (absent: kept); a negative
+// max_auto_depth follows the mode again, 0 budgets their defaults.
+export interface AutonomyRequest {
+  autonomy?: AutonomyMode
+  max_auto_depth?: number
+  turns_per_hour?: number
+  max_run_minutes?: number
 }
 
 export interface InviteView { invite: string }

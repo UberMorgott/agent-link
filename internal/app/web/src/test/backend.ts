@@ -2,7 +2,7 @@
 // (internal/app/testdata/projects, checked against the Go types by
 // TestContractFixtures). Tests answer fetch with it (harness.ts); it keeps
 // what a request changes, so a page sees its own edits.
-import type { ChatInfo, ChatMessage, InviteView, JoinResult, ProjectView, Session } from '@/types'
+import type { ChatInfo, ChatMessage, InviteView, JoinResult, ProjectView, SeatView, Session } from '@/types'
 
 const files = import.meta.glob<unknown>('../../../testdata/projects/*.json', { eager: true, import: 'default' })
 
@@ -46,12 +46,17 @@ export interface Backend {
   chats: Record<string, ChatInfo[]> // by project id
   messages: Record<string, ChatMessage[]> // by chat id
   sessions: Session[]
+  seats: Record<string, SeatView[]> // by project id: the local agents
   sent: unknown[]
   // legacyNeedsDir: joining the legacy network answers 400 work_dir without
   // a dir (its code joined while an agent answers and no working folder is set).
   legacyNeedsDir: boolean
   // failNext: the next request answers this error fixture (e.g. "internal").
   failNext: string
+  // stopAll: the emergency stop of every project's agents (POST autonomy/stop).
+  stopAll: boolean
+  // profile: this member's nickname and chat color (POST profile).
+  profile: { nickname: string; color: string }
   // changed names the event topics a request made stale.
   changed: (topics: string[]) => void
 }
@@ -83,9 +88,12 @@ export function createBackend(): Backend {
       'legacy-chat-1': [legacyChat().last_message!],
     },
     sessions: fixture<Session[]>('sessions'),
+    seats: {},
     sent: [],
     legacyNeedsDir: false,
     failNext: '',
+    stopAll: false,
+    profile: { nickname: '', color: '' },
     changed: () => {},
   }
 }
@@ -142,7 +150,7 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
 
   if (method === 'GET') {
     switch (path) {
-      case 'status': return { configured: true, connected: true, zerotier: true, node: SELF, online: 1, total: 2 }
+      case 'status': return { configured: true, connected: true, zerotier: true, node: SELF, online: 1, total: 2, stop_all: b.stopAll, nickname: b.profile.nickname || undefined, chat_color: b.profile.color || undefined }
       case 'settings': return { node: SELF, handler: 'none', work_dir: 'C:\\work', discovery: true }
       case 'dashboard': return { status: { online: 1, total: 2, handler: 'none' }, total_messages: 3, active_requests: 1, recent: [] }
       case 'participants': return []
@@ -153,6 +161,20 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     }
   }
   if (method === 'POST' && (path === 'agent' || path === 'pick-folder')) return path === 'agent' ? { text: '' } : { path: 'C:\\work\\picked' }
+  if (method === 'POST' && path === 'profile') {
+    // Another member already goes by it (a name, ignoring case).
+    const nick = String(req.nickname || '').trim()
+    if (b.projects.some((p) => p.members.some((m) => !m.self && (m.name.toLowerCase() === nick.toLowerCase() || (m.display || '').toLowerCase() === nick.toLowerCase())))) {
+      throw new HttpError(400, 'Этот ник уже занят')
+    }
+    b.profile = { nickname: nick === SELF ? '' : nick, color: String(req.color || '') }
+    return { configured: true, connected: true, zerotier: true, node: SELF, online: 1, total: 2, stop_all: b.stopAll, nickname: b.profile.nickname || undefined, chat_color: b.profile.color || undefined }
+  }
+  if (method === 'POST' && path === 'autonomy/stop') {
+    b.stopAll = req.on === true
+    b.changed(['status', 'projects'])
+    return handle(b, 'GET', 'status', undefined)
+  }
 
   if (parts[0] !== 'projects') throw new HttpError(404, 'unexpected ' + method + ' ' + fullPath)
 
@@ -222,9 +244,35 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     const next = { ...p }
     if (typeof req.alias === 'string') next.alias = req.alias.trim()
     if (typeof req.dir === 'string') next.dir = req.dir.trim()
+    if (next.autonomy && !p.legacy) {
+      const a = { ...next.autonomy }
+      if (typeof req.autonomy === 'string') {
+        if (!['off', 'asked', 'full'].includes(req.autonomy)) throw apiError('autonomy')
+        a.mode = req.autonomy as typeof a.mode
+      }
+      if (typeof req.max_auto_depth === 'number') {
+        if (req.max_auto_depth > 250) throw apiError('autonomy')
+        a.max_auto_depth_default = req.max_auto_depth < 0
+        a.max_auto_depth = req.max_auto_depth
+      }
+      if (a.max_auto_depth_default) a.max_auto_depth = a.mode === 'full' ? 0 : 8
+      if (typeof req.turns_per_hour === 'number') {
+        if (req.turns_per_hour < 0 || req.turns_per_hour > 600) throw apiError('autonomy')
+        a.turns_per_hour = req.turns_per_hour || 30
+      }
+      if (typeof req.max_run_minutes === 'number') {
+        if (req.max_run_minutes !== 0 && (req.max_run_minutes < 10 || req.max_run_minutes > 1440)) throw apiError('autonomy')
+        a.max_run_minutes = req.max_run_minutes || 240
+      }
+      next.autonomy = a
+    }
     next.display = next.alias || next.name
     next.state = stateOf(next)
     return setView(b, next)
+  }
+  if (method === 'POST' && rest.join('/') === 'autonomy/resume') {
+    if (!p.autonomy) throw apiError('not_found')
+    return setView(b, { ...p, autonomy: { ...p.autonomy, paused: false, pause_reason: undefined, turns_last_hour: 0, run_minutes: 0 } })
   }
   if (method === 'POST' && rest[0] === 'invite') {
     if (p.legacy) return { invite: LEGACY_CODE } satisfies InviteView
@@ -234,12 +282,42 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     if (!String(req.addr || '').trim()) throw apiError('addr')
     return p
   }
+  if (method === 'POST' && rest.join('/') === 'members/remove') {
+    const name = String(req.name || '').trim()
+    if (!name) throw apiError('bad_request')
+    if (name === SELF) throw apiError('remove_self')
+    if (!p.members.some((m) => m.name === name)) throw apiError('unknown_member')
+    const members = p.members.filter((m) => m.name !== name)
+    const others = members.filter((m) => !m.self)
+    return setView(b, { ...p, members, total: others.length, online: others.filter((m) => m.online).length })
+  }
   if (method === 'POST' && rest[0] === 'leave') {
     if (p.busy) throw apiError('project_busy')
     b.projects = b.projects.filter((x) => x.id !== pid)
     delete b.chats[pid]
     b.changed(['projects'])
     return undefined
+  }
+  if (rest[0] === 'seats') {
+    const list = b.seats[pid] || (b.seats[pid] = [])
+    if (rest.length === 1 && method === 'GET') return list
+    if (rest.length === 1 && method === 'POST') {
+      const provider = String(req.provider || '')
+      if (provider !== 'claude' && provider !== 'codex') throw apiError('bad_request')
+      const base = provider === 'codex' ? 'Codex' : 'Claude'
+      const taken = list.filter((s) => s.provider === provider).length
+      const s: SeatView = { id: 'seat-' + newID().slice(0, 8), provider, label: taken ? base + ' ' + (taken + 1) : base, session_id: provider + '-' + (taken + 1), status: 'closed' }
+      list.push(s)
+      b.changed(['seats', 'project:' + pid])
+      return s
+    }
+    const s = list.find((x) => x.id === rest[1])
+    if (!s) throw apiError('not_found')
+    if (rest[2] === 'start') s.status = 'closed'
+    if (rest[2] === 'stop') s.status = 'stopped'
+    if (rest[2] === 'remove') b.seats[pid] = list.filter((x) => x.id !== s.id)
+    b.changed(['seats', 'project:' + pid])
+    return rest[2] === 'remove' ? b.seats[pid] : s
   }
   if (method === 'POST' && rest[0] === 'send') {
     const text = String(req.body || '').trim()
@@ -252,6 +330,7 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     const m: ChatMessage = {
       id: newID(), seq: (info.last_seq || 0) + 1, from: SELF, direction: 'out', body: text, created_at: at, chat_id: info.id,
       reply_to: typeof req.reply_to === 'string' ? req.reply_to : undefined, author_kind: 'human',
+      ask_seats: Array.isArray(req.ask_seats) ? req.ask_seats.map(String) : undefined,
       delivery: (info.participants || []).filter((n) => n !== SELF).map((peer) => ({ peer, status: 'queued', state: 'queued' })),
     }
     items.push(m)
@@ -269,6 +348,14 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
       if ((p.legacy && !names.some((n) => n !== SELF)) || names.some((n) => !members.has(n) && n !== SELF)) throw apiError('chat_participants')
       const participants = [...new Set([SELF, ...names])].sort()
       const online = new Set(p.members.filter((m) => m.online || m.self).map((m) => m.name))
+      // A project has one active chat: asking for a new one returns it, with the
+      // members asked for added.
+      const active = p.legacy ? undefined : (b.chats[pid] || []).find((c) => !c.archived && !c.legacy)
+      if (active) {
+        const all = [...new Set([...(active.participants || []), ...participants])].sort()
+        Object.assign(active, { participants: all, members: all.map((name) => ({ name, self: name === SELF, connected: online.has(name), compatible: true, queued: 0 })) })
+        return active
+      }
       const at = new Date().toISOString()
       const info: ChatInfo = {
         id: newID(), project: pid, mode: p.legacy ? undefined : 'project', owner: p.legacy ? undefined : SELF, participants, title: '', closed: false, archived: false,
@@ -299,6 +386,22 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
       })
       b.changed(['project:' + pid])
       return info
+    }
+    if (rest[2] === 'archive' && method === 'POST') {
+      if (p.legacy) throw apiError('bad_request')
+      const now = new Date().toISOString()
+      const active = (b.chats[pid] || []).find((c) => !c.archived && !c.legacy)
+      if (!active) throw apiError('unknown_chat')
+      if (active.id !== info.id) return active
+      Object.assign(info, { closed: true, archived: true, closed_by: SELF, closed_at: now })
+      const fresh: ChatInfo = {
+        ...info, id: newID(), prev: info.id, closed: false, archived: false, closed_by: undefined, closed_at: undefined,
+        count: 0, last_seq: 0, last_at: now, created_at: now, last_message: undefined, title: '',
+      }
+      b.chats[pid] = [fresh, ...(b.chats[pid] || [])]
+      b.messages[fresh.id] = []
+      b.changed(['project:' + pid])
+      return fresh
     }
     if (rest[2] === 'close' && method === 'POST') {
       Object.assign(info, { closed: true, archived: true, closed_by: SELF, closed_at: new Date().toISOString() })

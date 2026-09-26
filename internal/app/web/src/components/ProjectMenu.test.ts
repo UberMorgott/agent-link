@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { browser } from '@/lib/runtime'
 import { LEGACY_CODE, SITE, fixture } from '@/test/backend'
 import { fakeBackend, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
@@ -7,6 +8,7 @@ import { useProjectsStore } from '@/stores/projects'
 const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T>(sel)
 const $$ = <T extends Element = HTMLElement>(sel: string) => Array.from(document.querySelectorAll<T>(sel))
 const INVITE = fixture<{ invite: string }>('invite').invite
+const CHAT = '7b8b965ad4bca0e41ab51de7b31363a1'
 
 async function open(path: string) {
   const api = fakeBackend()
@@ -26,19 +28,89 @@ async function menu(pid: string): Promise<HTMLElement[]> {
 }
 
 describe('the project menu', () => {
-  it('offers members, invite, name, folder and leave; the legacy network has no name', async () => {
+  it('offers clearing the chat, its history, members, invite, name, folder and delete; the legacy network has no name', async () => {
     await open('/p/' + SITE)
     const items = await menu(SITE)
     expect(items.map((i) => i.textContent!.trim())).toEqual([
-      'project.menu.members', 'project.menu.invite', 'project.menu.name', 'project.menu.folder', 'project.menu.leave',
+      'inbox.clear', 'inbox.history', 'project.menu.members', 'project.menu.invite', 'project.menu.agents', 'project.menu.name', 'project.menu.folder', 'project.menu.autonomy', 'project.menu.delete',
     ])
-    items[1]!.click()
+    items[3]!.click()
     await settle()
     expect(useProjectsStore().dialog).toBe('invite')
     useProjectsStore().closeDialog()
     await settle()
-    const legacy = await menu('legacy')
-    expect(legacy.map((i) => i.textContent!.trim())).not.toContain('project.menu.name')
+    const legacy = (await menu('legacy')).map((i) => i.textContent!.trim())
+    expect(legacy).not.toContain('project.menu.name')
+    expect(legacy).not.toContain('project.menu.agents')
+    expect(legacy).not.toContain('inbox.clear')
+    expect(legacy).not.toContain('inbox.history')
+    expect(legacy).toContain('project.menu.leave')
+  })
+
+  it('clears the chat for everyone after a confirmation and keeps it in the history, read-only', async () => {
+    const { backend, router, calls } = await open('/p/' + SITE + '/c/' + CHAT)
+    const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(false)
+    ;(await menu(SITE)).find((i) => i.textContent!.trim() === 'inbox.clear')!.click()
+    await settle()
+    expect(confirm).toHaveBeenCalledWith('inbox.clear.confirm')
+    expect(calls).not.toContain('POST projects/' + SITE + '/chats/' + CHAT + '/archive')
+    confirm.mockReturnValue(true)
+    ;(await menu(SITE)).find((i) => i.textContent!.trim() === 'inbox.clear')!.click()
+    await settle()
+    expect(calls).toContain('POST projects/' + SITE + '/chats/' + CHAT + '/archive')
+    const fresh = backend.chats[SITE]![0]!
+    expect(fresh.id).not.toBe(CHAT)
+    expect(fresh.prev).toBe(CHAT)
+    expect(router.currentRoute.value.params.chat).toBe(fresh.id)
+
+    // «История» lists the cleared chat with its date; it opens read-only.
+    ;(await menu(SITE)).find((i) => i.textContent!.trim() === 'inbox.history')!.click()
+    await settle()
+    expect(useProjectsStore().dialog).toBe('history')
+    expect(calls).toContain('GET projects/' + SITE + '/chats?archive=1')
+    const rows = $$('#project_history [data-history]')
+    expect(rows.map((r) => r.dataset.history)).toContain(CHAT)
+    expect(rows[0]!.textContent).toContain('inbox.history.cleared')
+    rows.find((r) => r.dataset.history === CHAT)!.click()
+    await settle()
+    expect(router.currentRoute.value.params.chat).toBe(CHAT)
+    expect($('#send')).toBeNull()
+    expect($('#chat_note_text')!.textContent).toContain('inbox.archived_note')
+    $<HTMLButtonElement>('#chat_note_current')!.click()
+    await settle()
+    expect(router.currentRoute.value.params.chat).toBe(fresh.id)
+  })
+
+  it('opens the agents\' autonomy on the settings page; the legacy network has none', async () => {
+    const { router } = await open('/p/' + SITE)
+    const item = (await menu(SITE)).find((i) => i.textContent!.includes('project.menu.autonomy'))!
+    item.click()
+    await settle()
+    expect(router.currentRoute.value.name).toBe('settings')
+    expect(document.querySelector('[data-autonomy="' + SITE + '"]')).not.toBeNull()
+    await router.push('/p/' + SITE)
+    await settle()
+    expect((await menu('legacy')).map((i) => i.textContent!.trim())).not.toContain('project.menu.autonomy')
+  })
+
+  it('removes a member from the project only after a confirmation', async () => {
+    const { calls } = await open('/p/' + SITE)
+    const projects = useProjectsStore()
+    projects.openDialog('members', SITE)
+    await settle()
+    expect($('#member_remove_alice')).toBeNull()
+    const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(false)
+    $<HTMLButtonElement>('#member_remove_bob')!.click()
+    await settle()
+    expect(confirm).toHaveBeenCalledWith('project.members.remove_confirm')
+    expect(calls).not.toContain('POST projects/' + SITE + '/members/remove')
+    confirm.mockReturnValue(true)
+    $<HTMLButtonElement>('#member_remove_bob')!.click()
+    await settle()
+    expect(calls).toContain('POST projects/' + SITE + '/members/remove')
+    expect(projects.byID(SITE)!.members.map((m) => m.name)).not.toContain('bob')
+    expect($('#member_remove_bob')).toBeNull()
+    expect(document.body.textContent).toContain('project.members.removed')
   })
 
   it('masks the invite, reveals it once on the eye, copies it and forgets it on close', async () => {
@@ -101,7 +173,7 @@ describe('the project menu', () => {
     backend.projects = backend.projects.map((p) => (p.id === SITE ? { ...p, busy: false } : p))
     projects.openDialog('leave', SITE)
     await settle()
-    expect(document.body.textContent).toContain('project.leave.text')
+    expect(document.body.textContent).toContain('project.delete.text')
     $<HTMLButtonElement>('#leave_confirm')!.click()
     await settle()
     expect(calls).toContain('POST projects/' + SITE + '/leave')

@@ -267,7 +267,7 @@ func (a *App) controlAPI() http.Handler {
 		q := r.URL.Query()
 		a.forward(w, r, selector{project: q.Get("project"), cwd: q.Get("cwd")}, false)
 	}
-	for _, p := range []string{"POST /chats", "GET /inbox", "GET /members", "POST /members", "POST /members/remove"} {
+	for _, p := range []string{"POST /chats", "POST /chats/archive", "GET /inbox", "GET /members", "GET /seats", "POST /members", "POST /members/remove", "POST /attachments", "GET /attachments/{id}"} {
 		mux.HandleFunc(p, byProject)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -7,6 +7,8 @@ export const icons: Record<string, string> = {
   settings: 'i-lucide-settings',
   plus: 'i-lucide-plus',
   archive: 'i-lucide-archive',
+  clear: 'i-lucide-eraser',
+  history: 'i-lucide-history',
   finish: 'i-lucide-circle-check',
   // The project menu.
   more: 'i-lucide-ellipsis',
@@ -14,6 +16,8 @@ export const icons: Record<string, string> = {
   rename: 'i-lucide-pencil',
   folder: 'i-lucide-folder',
   leave: 'i-lucide-log-out',
+  delete: 'i-lucide-trash-2',
+  remove: 'i-lucide-user-minus',
   eye: 'i-lucide-eye',
   eyeoff: 'i-lucide-eye-off',
   copy: 'i-lucide-copy',
@@ -37,6 +41,11 @@ export const icons: Record<string, string> = {
   held: 'i-lucide-circle-alert',
   agent: 'i-lucide-bot',
   human: 'i-lucide-user',
+  // Attachments.
+  attach: 'i-lucide-paperclip',
+  file: 'i-lucide-file-text',
+  download: 'i-lucide-download',
+  failed: 'i-lucide-file-x',
 }
 
 export function icon(name: string): string {

@@ -20,10 +20,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 )
 
 // MinVersion is the first Codex CLI with `codex queue`.
 var MinVersion = [3]int{0, 149, 0}
+
+// MaxMessage is the longest text Wake queues, in UTF-16 units: escaped, it
+// still fits a Windows command line (32767) with the rest of the arguments.
+const MaxMessage = 12000
 
 // Timings.
 const (
@@ -98,6 +103,12 @@ func (q *Queue) Binary() (exe, version string) {
 // ("": Codex's default, ~/.codex). A failure makes the queue not Ready for a
 // while; the caller falls back to delivery at the session's next event.
 func (q *Queue) Wake(ctx context.Context, home, thread, text string) error {
+	return q.WakeImages(ctx, home, thread, text, nil)
+}
+
+// WakeImages is Wake that also attaches image files to the prompt (`codex
+// queue --image <path>`, once per image).
+func (q *Queue) WakeImages(ctx context.Context, home, thread, text string, images []string) error {
 	q.mu.Lock()
 	exe := q.exe
 	q.mu.Unlock()
@@ -107,9 +118,22 @@ func (q *Queue) Wake(ctx context.Context, home, thread, text string) error {
 	if thread == "" || strings.HasPrefix(thread, "-") {
 		return fmt.Errorf("codex queue: bad thread %q", thread)
 	}
+	// The text goes as one argv entry (quoted by exec for CommandLineToArgvW
+	// on Windows, whose whole command line is at most 32767 UTF-16 units, and
+	// escaping may double it): refuse, without marking codex down, what may not fit.
+	if n := len(utf16.Encode([]rune(text))); n > MaxMessage {
+		return fmt.Errorf("codex queue: message of %d UTF-16 units, at most %d", n, MaxMessage)
+	}
 	ctx, cancel := context.WithTimeout(ctx, runTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, "queue", "--thread", thread, "--message", text) //nolint:gosec // G204: the codex binary found by Check; the thread id is a registered session id
+	args := []string{"queue", "--thread", thread, "--message", text}
+	for _, img := range images {
+		if img == "" || strings.HasPrefix(img, "-") || !filepath.IsAbs(img) {
+			return fmt.Errorf("codex queue: bad image path %q", img)
+		}
+		args = append(args, "--image", img)
+	}
+	cmd := exec.CommandContext(ctx, exe, args...) //nolint:gosec // G204: the codex binary found by Check; the thread id is a registered session id, images are absolute paths
 	cmd.Env = os.Environ()
 	if home != "" {
 		cmd.Env = append(cmd.Env, "CODEX_HOME="+home)

@@ -3,15 +3,27 @@ import { DEFAULT_PRIMARY, DEFAULT_SURFACE, SHADES, primaryColors, primaryPalette
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
+// The UI fonts (assets/fonts.css bundles the first three; «system» is the
+// computer's own). stack is the font-family the page uses.
+export const FONTS = [
+  { name: 'inter', stack: "'Inter Variable', 'Segoe UI', system-ui, sans-serif" },
+  { name: 'manrope', stack: "'Manrope Variable', 'Segoe UI', system-ui, sans-serif" },
+  { name: 'plex', stack: "'IBM Plex Sans Variable', 'Segoe UI', system-ui, sans-serif" },
+  { name: 'system', stack: "system-ui, 'Segoe UI', Roboto, sans-serif" },
+] as const
+export type FontName = (typeof FONTS)[number]['name']
+export const DEFAULT_FONT: FontName = 'inter'
+
 export interface UiState {
   theme: ThemeMode
   primary: string
   surface: string
+  font: FontName
 }
 
 export const UI_STORAGE_KEY = 'agentlink' + '.ui'
 
-const defaults: UiState = { theme: 'system', primary: DEFAULT_PRIMARY, surface: DEFAULT_SURFACE }
+const defaults: UiState = { theme: 'system', primary: DEFAULT_PRIMARY, surface: DEFAULT_SURFACE, font: DEFAULT_FONT }
 const systemDark = ref(false)
 // storageFailed is set while the browser refuses to keep the choice.
 export const storageFailed = ref(false)
@@ -23,11 +35,12 @@ export function readUiState(storage: Pick<Storage, 'getItem'>): UiState {
     const value = storage.getItem(UI_STORAGE_KEY)
     const stored: unknown = value ? JSON.parse(value) : null
     if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return { ...defaults }
-    const { theme, primary, surface } = stored as Record<string, unknown>
+    const { theme, primary, surface, font } = stored as Record<string, unknown>
     return {
       theme: theme === 'light' || theme === 'dark' ? theme : 'system',
       primary: primaryColors.some((c) => c.name === primary) ? (primary as string) : defaults.primary,
       surface: surfaces.some((s) => s.name === surface) ? (surface as string) : defaults.surface,
+      font: FONTS.some((f) => f.name === font) ? (font as FontName) : defaults.font,
     }
   } catch {
     return { ...defaults }
@@ -56,6 +69,7 @@ function applyTheme() {
     root.style.setProperty(`--ui-color-primary-${shade}`, primary[shade])
   }
   root.style.setProperty('--ui-primary', `var(--ui-color-primary-${primaryShade(layoutConfig.primary, layoutConfig.surface, dark)})`)
+  root.style.setProperty('--app-font', (FONTS.find((f) => f.name === layoutConfig.font) || FONTS[0]).stack)
 }
 
 watch(layoutConfig, (value) => {

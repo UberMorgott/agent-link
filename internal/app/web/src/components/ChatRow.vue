@@ -6,6 +6,7 @@ import { openChat } from '@/lib/nav'
 import { t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore, chatKey } from '@/stores/inbox'
+import { useProjectsStore } from '@/stores/projects'
 import type { ChatInfo } from '@/types'
 
 // One chat in a list: its name, the newest line or what its agents do now,
@@ -14,15 +15,16 @@ const props = defineProps<{ project: string; chat: ChatInfo; compact?: boolean }
 
 const app = useAppStore()
 const inbox = useInboxStore()
+const projects = useProjectsStore()
 
 const row = computed(() => {
   const self = app.self
   const chat = props.chat
   const working = workingLines(chat, self)
   const lm = chat.last_message
-  const selected = inbox.openKey() === chatKey(props.project, chat.id) && !inbox.newChatOpen
+  const selected = inbox.openKey() === chatKey(props.project, chat.id)
   return {
-    name: chatName(chat, self),
+    name: chatName(chat, self, projects.byID(props.project)?.legacy ? '' : projects.byID(props.project)?.display),
     selected,
     working,
     fresh: isUnread(chat, selected, inbox.readOf(props.project, chat.id)),

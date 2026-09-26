@@ -33,8 +33,10 @@ func (a *App) projectRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET "+p+"/{pid}", func(w http.ResponseWriter, r *http.Request) { a.writeView(w, r.PathValue("pid")) })
 	api.HandleFunc("POST "+p+"/{pid}/name", a.renameProject)
 	api.HandleFunc("POST "+p+"/{pid}/binding", a.bindProject)
+	api.HandleFunc("POST "+p+"/{pid}/autonomy/resume", a.resumeAutonomy)
 	api.HandleFunc("POST "+p+"/{pid}/invite", a.revealInvite)
 	api.HandleFunc("POST "+p+"/{pid}/members/add", a.addProjectMember)
+	api.HandleFunc("POST "+p+"/{pid}/members/remove", a.removeProjectMember)
 	api.HandleFunc("POST "+p+"/{pid}/leave", a.leave)
 	api.HandleFunc("GET "+p+"/{pid}/chats", a.projectChats)
 	api.HandleFunc("POST "+p+"/{pid}/chats", a.newProjectChat)
@@ -43,8 +45,58 @@ func (a *App) projectRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST "+p+"/{pid}/chats/{id}/close", a.projectChat(func(n *node.Node, _ *http.Request, id string) (any, error) {
 		return n.CloseChat(id)
 	}))
+	api.HandleFunc("POST "+p+"/{pid}/chats/{id}/archive", a.projectChat(func(n *node.Node, _ *http.Request, id string) (any, error) {
+		return n.ArchiveChat(id)
+	}))
 	api.HandleFunc("POST "+p+"/{pid}/chats/{id}/members", a.projectChat(chatMembers))
 	api.HandleFunc("POST "+p+"/{pid}/send", a.projectSend)
+	api.HandleFunc("GET "+p+"/{pid}/seats", a.projectSeats(func(n *node.Node, _ *http.Request) (any, error) { return n.Seats(), nil }))
+	api.HandleFunc("POST "+p+"/{pid}/seats", a.projectSeats(func(n *node.Node, r *http.Request) (any, error) {
+		var req node.SeatRequest
+		if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxBody)).Decode(&req); err != nil {
+			return nil, node.ErrBadRequest
+		}
+		return n.AddSeat(req)
+	}))
+	api.HandleFunc("POST "+p+"/{pid}/seats/{sid}/start", a.projectSeats(func(n *node.Node, r *http.Request) (any, error) {
+		var req struct {
+			Open bool `json:"open"`
+		}
+		_ = json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxBody)).Decode(&req) // an empty body is fine
+		return n.StartSeat(r.PathValue("sid"), req.Open)
+	}))
+	api.HandleFunc("POST "+p+"/{pid}/seats/{sid}/stop", a.projectSeats(func(n *node.Node, r *http.Request) (any, error) {
+		return n.StopSeat(r.PathValue("sid"))
+	}))
+	api.HandleFunc("POST "+p+"/{pid}/seats/{sid}/remove", a.projectSeats(func(n *node.Node, r *http.Request) (any, error) {
+		if err := n.RemoveSeat(r.PathValue("sid")); err != nil {
+			return nil, err
+		}
+		return n.Seats(), nil
+	}))
+}
+
+// projectSeats serves the local agents (seats) of project pid: 404 not_found
+// for an unknown project or seat, 400 bad_request for a request the node
+// refuses (no folder, a bad provider or label).
+func (a *App) projectSeats(do func(n *node.Node, r *http.Request) (any, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		n, ok := a.contextNode(w, r.PathValue("pid"))
+		if !ok {
+			return
+		}
+		v, err := do(n, r)
+		switch {
+		case errors.Is(err, node.ErrUnknownSeat):
+			writeCodedError(w, http.StatusNotFound, "not_found")
+		case errors.Is(err, node.ErrNeedsFolder):
+			writeCodedError(w, http.StatusBadRequest, "project_needs_folder")
+		case err != nil:
+			writeCodedError(w, http.StatusBadRequest, "bad_request")
+		default:
+			writeJSON(w, v)
+		}
+	}
 }
 
 // Projects lists every project by display name, the legacy network last.
@@ -83,7 +135,8 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 		}
 		b := a.s.Bindings[i]
 		c = a.projects[pid]
-		v = ProjectView{ID: pid, Alias: b.Alias, Dir: b.Dir, CanRename: true, HasInvite: true}
+		v = ProjectView{ID: pid, Alias: b.Alias, Dir: b.Dir, CanRename: true, HasInvite: true, LaunchMode: b.LaunchModeOf(),
+			Autonomy: autonomyViewOf(b, c)}
 		if c != nil {
 			v.Name = c.n.ProjectMeta().Name
 		}
@@ -96,6 +149,7 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 		v.Busy = c.w != nil && c.w.Busy()
 	}
 	v.Online, v.Total = peerCounts(v.Members)
+	v.Agents = agentMachines(v.Members)
 	switch {
 	case v.Problem != "":
 		v.State = ProjectError
@@ -123,6 +177,19 @@ func peerCounts(members []node.MemberInfo) (online, total int) {
 		}
 	}
 	return online, total
+}
+
+// agentMachines counts the members, this node included, whose machine has an
+// open agent session in the project: one member is one machine (one node), so
+// two sessions on one computer still count once.
+func agentMachines(members []node.MemberInfo) int {
+	n := 0
+	for _, m := range members {
+		if m.Agent && (m.Self || m.Online) {
+			n++
+		}
+	}
+	return n
 }
 
 // problemCode is the ProjectView problem of a node's last handshake failure;
@@ -463,19 +530,28 @@ func (a *App) renameProject(w http.ResponseWriter, r *http.Request) {
 	a.writeView(w, pid)
 }
 
-// bindProject changes this member's alias and folder of a project (absent:
-// kept; "": cleared). A folder change needs an idle worker (project_busy).
+// bindProject changes this member's alias, folder, autonomy and launch mode
+// of a project (absent: kept; "": cleared). A folder change needs an idle worker
+// (project_busy).
 func (a *App) bindProject(w http.ResponseWriter, r *http.Request) {
 	pid := r.PathValue("pid")
 	var req struct {
-		Alias *string `json:"alias"`
-		Dir   *string `json:"dir"`
+		Alias      *string `json:"alias"`
+		Dir        *string `json:"dir"`
+		LaunchMode *string `json:"launch_mode"`
+		autonomyRequest
 	}
 	if !decode(w, r, &req) {
 		return
 	}
 	a.mu.Lock()
 	err := a.bindLocked(pid, req.Alias, req.Dir) //nolint:contextcheck // a folder change restarts the context under the Hub's context
+	if err == nil && !req.empty() {
+		err = a.setAutonomyLocked(pid, req.autonomyRequest)
+	}
+	if err == nil && req.LaunchMode != nil {
+		err = a.setLaunchModeLocked(pid, *req.LaunchMode)
+	}
 	a.mu.Unlock()
 	if err != nil {
 		a.failed(w, "bind project", err)
@@ -525,6 +601,30 @@ func (a *App) bindLocked(pid string, alias, dir *string) error {
 		return err
 	}
 	a.s = s
+	return nil
+}
+
+// setLaunchModeLocked sets where a project opens sessions ("desktop" or
+// "terminal") and applies it to its running node; the legacy network and
+// other modes are bad_request.
+func (a *App) setLaunchModeLocked(pid, mode string) error {
+	i := a.bindingIndex(pid)
+	if i < 0 || (mode != node.LaunchDesktop && mode != node.LaunchTerminal) {
+		return &settings.Problem{Key: "bad_request"}
+	}
+	if a.s.Bindings[i].LaunchModeOf() == mode {
+		return nil
+	}
+	s := a.s
+	s.Bindings = slices.Clone(s.Bindings)
+	s.Bindings[i].LaunchMode = mode
+	if err := settings.Save(a.path, s); err != nil {
+		return err
+	}
+	a.s = s
+	if c := a.projects[pid]; c != nil {
+		c.n.SetLaunchMode(mode)
+	}
 	return nil
 }
 
@@ -599,6 +699,89 @@ func (a *App) addBindingPeer(pid, addr string) error {
 	if c := a.projects[pid]; c != nil {
 		return c.n.AddPeer(addr)
 	}
+	return nil
+}
+
+// removeProjectMember removes a member from the project (the tombstone every
+// member applies, node.RemoveMember) and drops its addresses from the binding
+// (the legacy network's peers): body {"name"}.
+func (a *App) removeProjectMember(w http.ResponseWriter, r *http.Request) {
+	pid := r.PathValue("pid")
+	var req node.MemberRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	a.mu.Lock()
+	_, known := a.projectViewLocked(pid)
+	a.mu.Unlock()
+	var err error
+	switch {
+	case !known:
+		writeCodedError(w, http.StatusNotFound, "not_found")
+		return
+	case name == "":
+		writeCodedError(w, http.StatusBadRequest, "bad_request")
+		return
+	case pid == LegacyProjectID:
+		err = a.RemoveMember(name)
+	default:
+		err = a.removeBindingMember(pid, name)
+	}
+	switch {
+	case errors.Is(err, node.ErrSelf):
+		writeCodedError(w, http.StatusBadRequest, "remove_self")
+		return
+	case errors.Is(err, node.ErrUnknownPeer):
+		writeCodedError(w, http.StatusNotFound, "unknown_member")
+		return
+	case err != nil:
+		a.failed(w, "remove member", err)
+		return
+	}
+	a.changed(pid)
+	a.writeView(w, pid)
+}
+
+func (a *App) removeBindingMember(pid, name string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	i := a.bindingIndex(pid)
+	c := a.projects[pid]
+	switch {
+	case i < 0:
+		return ErrUnknownProject
+	case c == nil:
+		return ErrNotRunning
+	}
+	var addrs []string
+	for _, m := range c.n.Members() {
+		if m.Name == name {
+			addrs = m.Addrs
+		}
+	}
+	// The settings are saved first: a failed save leaves the member in place,
+	// a failed removal puts the saved settings back.
+	peers := slices.DeleteFunc(slices.Clone(a.s.Bindings[i].Peers), func(p string) bool { return slices.Contains(addrs, p) })
+	if len(peers) == len(a.s.Bindings[i].Peers) {
+		return c.n.RemoveMember(name)
+	}
+	if len(peers) == 0 {
+		peers = nil
+	}
+	old, s := a.s, a.s
+	s.Bindings = slices.Clone(s.Bindings)
+	s.Bindings[i].Peers = peers
+	if err := settings.Save(a.path, s); err != nil {
+		return err
+	}
+	if err := c.n.RemoveMember(name); err != nil {
+		if rerr := settings.Save(a.path, old); rerr != nil {
+			return errors.Join(err, rerr)
+		}
+		return err
+	}
+	a.s = s
 	return nil
 }
 
@@ -728,10 +911,12 @@ func chatMembers(n *node.Node, r *http.Request, id string) (any, error) {
 func (a *App) projectSend(w http.ResponseWriter, r *http.Request) {
 	pid := r.PathValue("pid")
 	var req struct {
-		ChatID  string   `json:"chat_id"`
-		Body    string   `json:"body"`
-		ReplyTo string   `json:"reply_to"`
-		Ask     []string `json:"ask"`
+		ChatID      string            `json:"chat_id"`
+		Body        string            `json:"body"`
+		ReplyTo     string            `json:"reply_to"`
+		Ask         []string          `json:"ask"`
+		AskSeats    []string          `json:"ask_seats"`   // this node's local agents asked (seat ids)
+		Attachments []node.Attachment `json:"attachments"` // uploaded: id and name
 	}
 	if !decode(w, r, &req) {
 		return
@@ -746,9 +931,11 @@ func (a *App) projectSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m, err := n.SendRequest(node.SendRequest{ChatID: req.ChatID, Body: req.Body, ReplyTo: req.ReplyTo, Ask: req.Ask,
-		AuthorKind: node.AuthorHuman})
+		AuthorKind: node.AuthorHuman, Attachments: req.Attachments, AskSeats: req.AskSeats})
 	if err != nil {
-		a.chatFailed(w, err)
+		if !attachmentFailed(w, err) {
+			a.chatFailed(w, err)
+		}
 		return
 	}
 	writeJSON(w, m)
@@ -767,7 +954,7 @@ func (a *App) chatFailed(w http.ResponseWriter, err error) {
 		writeCodedError(w, http.StatusBadRequest, "empty_body")
 	case errors.Is(err, node.ErrBadParticipants), errors.Is(err, node.ErrUnknownPeer), errors.Is(err, node.ErrNoChatSupport):
 		writeCodedError(w, http.StatusBadRequest, "chat_participants")
-	case errors.Is(err, node.ErrBadRequest):
+	case errors.Is(err, node.ErrBadRequest), errors.Is(err, node.ErrNotProject):
 		writeCodedError(w, http.StatusBadRequest, "bad_request")
 	case errors.Is(err, node.ErrNotChatOwner):
 		writeCodedError(w, http.StatusForbidden, "chat_owner")

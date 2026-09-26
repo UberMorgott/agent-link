@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import {
-  authorLabel, authorName, clock, continues, genitiveName, isAgent, messageTick, others, preview, when, whoColor,
+  authorName, authorTitle, clock, continues, genitiveName, isAgent, messageTick, others, preview, when, whoColor,
 } from '@/lib/chat'
+import { bodyText } from '@/lib/attachments'
 import { fmt, t } from '@/lib/runtime'
+import MessageAttachments from '@/components/MessageAttachments.vue'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UChatMessage from '@nuxt/ui/components/ChatMessage.vue'
 import UChatMessages from '@nuxt/ui/components/ChatMessages.vue'
@@ -11,10 +13,12 @@ import UIcon from '@nuxt/ui/components/Icon.vue'
 import { icon } from '@/lib/icons'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore } from '@/stores/inbox'
+import { useProjectsStore } from '@/stores/projects'
 import type { ChatMessage } from '@/types'
 
 const app = useAppStore()
 const inbox = useInboxStore()
+const projects = useProjectsStore()
 const list = ref<HTMLElement | null>(null)
 
 interface Bubble {
@@ -47,11 +51,15 @@ const bubbles = computed<Bubble[]>(() => {
       }
     }
     if (m.kind === 'chat_open' || m.kind === 'chat_close') {
+      // A project has one chat: closing it archives its history, and the chat
+      // that takes over (prev) opens with the history in the archive.
+      const inProject = inbox.project !== 'legacy' && !info?.legacy
+      const [key, own] = m.kind === 'chat_close'
+        ? (inProject ? ["inbox.event.archive", "inbox.event.archive_self"] : ["inbox.event.close", "inbox.event.close_self"])
+        : (inProject && info?.prev ? ["inbox.event.reopen", "inbox.event.reopen_self"] : ["inbox.event.open", "inbox.event.open_self"])
       return {
         m, event: true, out: false, cont: false, cls: 'msg-event', who: '', icon: '', fyi: '', quote: '', note: '', tick: null, canReply: false,
-        author: m.from === self
-          ? t(m.kind === 'chat_open' ? "inbox.event.open_self" : "inbox.event.close_self")
-          : fmt(m.kind === 'chat_open' ? "inbox.event.open" : "inbox.event.close", { name: authorName(m.from, self) }),
+        author: m.from === self ? t(own) : fmt(key, { name: authorName(m.from, self) }),
       }
     }
     const agent = isAgent(m)
@@ -60,21 +68,28 @@ const bubbles = computed<Bubble[]>(() => {
     const parent = m.reply_to ? byID.get(m.reply_to) : undefined
     // Whom a group message asks; in a chat of two it is always the other side.
     const asks = (m.responders || []).filter((name) => name !== m.from)
+    const names = asks.length && others(info, self).length > 1 ? asks.map((n) => genitiveName(n, self)) : []
+    // The local agents (seats) it asks, by their labels.
+    const seats = projects.seats[inbox.project] || []
+    for (const id of m.ask_seats || []) names.push(m.from + ' · ' + (seats.find((s) => s.id === id)?.label || t("inbox.seats.agent")))
     const tick = messageTick(m, info)
     return {
       m, event: false, out, cont,
       cls: 'msg ' + (out ? 'out' : 'in') + (agent ? ' agent' : ' human') + (cont ? ' cont' : ''),
-      who: whoColor(m.from),
+      // Every member has its own color, its agents' messages too; the icon
+      // after the name tells a person from an agent.
+      who: whoColor(m.from, projects.colorOf(inbox.project, m.from)),
       icon: agent ? 'agent' : 'human',
-      author: authorLabel(m, self),
+      author: authorTitle(m, projects.displayOf(inbox.project, m.from)),
       // A person's own message the local agent has not seen yet: it gets it as
       // information, not as a request.
       fyi: m.own_human && m.unread ? t("inbox.author.fyi") : '',
       quote: parent ? fmt("inbox.reply_to", { name: genitiveName(parent.from, self), text: preview(parent.body, 70) }) : '',
-      note: asks.length && others(info, self).length > 1 ? fmt("inbox.asks", { names: asks.map((n) => genitiveName(n, self)).join(', ') }) : '',
+      note: names.length ? fmt("inbox.asks", { names: names.join(', ') }) : '',
       tick,
-      // Own messages get no reply button: a reference to oneself asks nobody.
-      canReply: !!info && !info.legacy && !info.closed && !out,
+      // Own messages get no reply button: a reference to oneself asks nobody;
+      // a local agent's message does (the reply asks that agent).
+      canReply: !!info && !info.legacy && !info.closed && (!out || !!m.agent?.seat),
     }
   })
 })
@@ -171,11 +186,11 @@ watch(source, () => {
               :role="b.out ? 'user' : 'assistant'"
               :parts="[]"
               :side="b.out ? 'right' : 'left'"
-              :variant="b.out ? 'soft' : 'naked'"
+              variant="naked"
               color="neutral"
               compact
               :class="b.cls"
-              :ui="{ content: b.out ? 'px-3.5 py-2 rounded-2xl' : '', container: b.cont ? 'pb-1.5' : 'pb-3' }"
+              :ui="{ content: 'msg-bubble px-3.5 py-2 rounded-2xl', container: b.cont ? 'pb-1.5' : 'pb-3' }"
               :style="{ '--who': b.who }"
               :data-message-id="b.m.id"
               tabindex="-1"
@@ -185,11 +200,13 @@ watch(source, () => {
                 #header
               >
                 <div class="msg-head">
+                  <strong class="msg-author">{{ b.author }}</strong>
                   <UIcon
                     :name="icon(b.icon)"
                     class="msg-icon"
+                    :aria-label="t(b.icon === 'agent' ? 'inbox.author.is_agent' : 'inbox.author.is_human')"
+                    :title="t(b.icon === 'agent' ? 'inbox.author.is_agent' : 'inbox.author.is_human')"
                   />
-                  <strong class="msg-author">{{ b.author }}</strong>
                   <span
                     v-if="b.fyi"
                     class="msg-fyi"
@@ -205,7 +222,15 @@ watch(source, () => {
                 >
                   {{ b.quote }}
                 </button>
-                <pre class="msg-body">{{ b.m.body || "" }}</pre>
+                <pre
+                  v-if="bodyText(b.m.body, b.m.attachments) || !b.m.attachments?.length"
+                  class="msg-body"
+                >{{ bodyText(b.m.body, b.m.attachments) }}</pre>
+                <MessageAttachments
+                  v-if="b.m.attachments?.length"
+                  :project="inbox.project"
+                  :items="b.m.attachments"
+                />
                 <div class="msg-foot">
                   <span
                     v-if="b.note"

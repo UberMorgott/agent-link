@@ -10,6 +10,7 @@ import { setNavigator, type Params, type Query } from './lib/nav'
 import { runtime } from './lib/runtime'
 import { useAppStore } from './stores/app'
 
+import './assets/fonts.css'
 import './assets/styles.css'
 
 const app = createApp(App)

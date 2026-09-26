@@ -1,21 +1,22 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import UIcon from '@nuxt/ui/components/Icon.vue'
-import ChatRow from '@/components/ChatRow.vue'
 import ProjectMenu from '@/components/ProjectMenu.vue'
+import UserChip from '@/components/UserChip.vue'
 import VersionBadge from '@/components/VersionBadge.vue'
 import AppConfigurator from '@/layout/AppConfigurator.vue'
-import { isUnread } from '@/lib/chat'
+import { isUnread, projectDot } from '@/lib/chat'
 import { icon } from '@/lib/icons'
 import { openProject } from '@/lib/nav'
-import { fmt, t } from '@/lib/runtime'
+import { t } from '@/lib/runtime'
+import { useAppStore } from '@/stores/app'
 import { chatKey, useInboxStore } from '@/stores/inbox'
 import { useProjectsStore } from '@/stores/projects'
-import type { ProjectView } from '@/types'
 
-// The sidebar: the projects as a tree (each with its chats), then the app's
-// own pages and the appearance panel.
+// The sidebar: one row per project (its one chat opens on a click), then the
+// member's own chip with the appearance and the settings.
+const app = useAppStore()
 const projects = useProjectsStore()
 const inbox = useInboxStore()
 const route = useRoute()
@@ -24,35 +25,27 @@ const current = computed(() => String(route.name || ''))
 // The app icon from public/, served next to the page.
 const logo = `${import.meta.env.BASE_URL}icon.svg`
 
-const links = computed(() => [
-  { route: 'dashboard', icon: 'dashboard', label: "nav.dashboard" },
-  // The participants page belongs to the legacy network only.
-  ...(projects.hasLegacy ? [{ route: 'participants', icon: 'participants', label: "nav.participants" }] : []),
-  { route: 'settings', icon: 'settings', label: "nav.settings" },
-])
-
-// Projects opened by hand besides the one on screen, which is always open.
-const unfolded = ref<Record<string, boolean>>({})
-function expanded(p: ProjectView) { return p.id === projects.current || !!unfolded.value[p.id] }
-function fold(p: ProjectView) {
-  unfolded.value = { ...unfolded.value, [p.id]: !expanded(p) }
-}
-
 function unread(pid: string): number {
   return (projects.chats[pid] || []).filter((c) => isUnread(c, inbox.openKey() === chatKey(pid, c.id), inbox.readOf(pid, c.id))).length
 }
 
-const tree = computed(() => (projects.list || []).map((p) => ({
-  p,
-  name: p.display || t("projects.connecting"),
-  dot: p.state === 'error' ? 'off' : p.online > 0 ? 'on' : 'away',
-  online: fmt("projects.online", { online: p.online, total: p.total }),
-  unread: unread(p.id),
-  open: expanded(p),
-  active: projects.current === p.id && current.value === 'project',
-  chats: projects.chats[p.id] || [],
-  archive: projects.archiveOpen[p.id] ? projects.archives[p.id] || [] : null,
-})))
+const tree = computed(() => (projects.list || []).map((p) => {
+  const dot = projectDot(p, app.self)
+  return {
+    p,
+    name: p.display || t("projects.connecting"),
+    dot: dot.cls,
+    dotLabel: dot.label,
+    unread: unread(p.id),
+    active: projects.current === p.id && (current.value === 'project' || current.value === 'chat'),
+  }
+}))
+
+// A project's row opens its one chat (the network from before projects: its page).
+function openRow(pid: string, legacy: boolean) {
+  if (legacy) { void openProject(pid); return }
+  inbox.openActive(pid)
+}
 </script>
 
 <template>
@@ -115,26 +108,17 @@ const tree = computed(() => (projects.list || []).map((p) => ({
           >
             <button
               type="button"
-              class="project-fold"
-              :aria-expanded="item.open ? 'true' : 'false'"
-              :aria-label="fmt('projects.fold', { name: item.name })"
-              @click="fold(item.p)"
-            >
-              <UIcon
-                :name="icon(item.open ? 'expand' : 'fold')"
-                class="size-3.5"
-              />
-            </button>
-            <button
-              type="button"
               class="project-open"
               :aria-current="item.active ? 'page' : undefined"
-              @click="openProject(item.p.id)"
+              @click="openRow(item.p.id, item.p.legacy)"
             >
               <span
                 class="project-dot"
                 :class="item.dot"
-                :title="item.online"
+                :data-dot="item.dot"
+                :title="item.dotLabel"
+                role="img"
+                :aria-label="item.dotLabel.replace(/\n/g, '; ')"
               />
               <span class="project-name">{{ item.name }}</span>
               <span
@@ -148,54 +132,6 @@ const tree = computed(() => (projects.list || []).map((p) => ({
               :name="item.name"
             />
           </div>
-          <ul
-            v-if="item.open"
-            class="project-chats"
-          >
-            <li>
-              <button
-                type="button"
-                class="project-action project-new-chat"
-                @click="inbox.showNewChat(item.p.id)"
-              >
-                <UIcon
-                  :name="icon('plus')"
-                  class="size-3.5"
-                />{{ t("inbox.new.title") }}
-              </button>
-            </li>
-            <li
-              v-for="c in item.chats"
-              :key="c.id"
-            >
-              <ChatRow
-                :project="item.p.id"
-                :chat="c"
-                compact
-              />
-            </li>
-            <li>
-              <button
-                type="button"
-                class="project-archive"
-                :aria-pressed="item.archive ? 'true' : 'false'"
-                @click="projects.toggleArchive(item.p.id)"
-              >
-                {{ t(item.archive ? "inbox.archive.hide" : "inbox.archive.show") }}
-              </button>
-            </li>
-            <li
-              v-for="c in item.archive || []"
-              :key="'a' + c.id"
-              class="archived"
-            >
-              <ChatRow
-                :project="item.p.id"
-                :chat="c"
-                compact
-              />
-            </li>
-          </ul>
         </li>
       </ul>
     </section>
@@ -204,26 +140,39 @@ const tree = computed(() => (projects.list || []).map((p) => ({
       class="sr-only"
     >{{ t("nav.label") }}</span>
     <nav
+      id="user_panel"
       aria-labelledby="nav_label"
-      class="flex flex-col gap-0.5 border-t border-default px-2 pt-2"
+      class="flex items-center gap-1 border-t border-default px-2 py-2"
     >
+      <UserChip />
       <RouterLink
-        v-for="link in links"
-        :key="link.route"
-        :to="'/' + link.route"
-        :data-route="link.route"
-        :title="t(link.label)"
-        class="nav-link"
-        :class="{ active: current === link.route }"
+        v-if="projects.hasLegacy"
+        to="/participants"
+        data-route="participants"
+        class="panel-icon"
+        :class="{ active: current === 'participants' }"
+        :title="t('nav.participants')"
+        :aria-label="t('nav.participants')"
       >
         <UIcon
-          :name="icon(link.icon)"
-          class="nav-icon size-[1.1rem] flex-none"
-        /><span class="nav-text">{{ t(link.label) }}</span>
+          :name="icon('participants')"
+          class="size-[1.1rem]"
+        />
+      </RouterLink>
+      <AppConfigurator />
+      <RouterLink
+        to="/settings"
+        data-route="settings"
+        class="panel-icon"
+        :class="{ active: current === 'settings' }"
+        :title="t('nav.settings')"
+        :aria-label="t('nav.settings')"
+      >
+        <UIcon
+          :name="icon('settings')"
+          class="size-[1.1rem]"
+        />
       </RouterLink>
     </nav>
-    <div class="flex items-center justify-between gap-2 px-3 py-3">
-      <AppConfigurator />
-    </div>
   </div>
 </template>

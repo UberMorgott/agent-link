@@ -70,6 +70,20 @@ type Settings struct {
 	// AutoUpdate installs a newer GitHub release by itself; nil means on.
 	// It has its own switch and is kept when the form is saved.
 	AutoUpdate *bool `json:"auto_update,omitempty"`
+	// StopAll is the emergency stop of every project's agents
+	// (node.SetStopped): no agent session is woken, opened or run by the
+	// app while it is on; messages wait unread. It has its own switch (web UI,
+	// tray) and is kept when the form is saved.
+	StopAll bool `json:"stop_all,omitempty"`
+	// ChatColor is this member's own chat color in every project
+	// (node.ChatColors; "" the default one its name derives). It has its own
+	// control (the appearance panel) and is kept when the form is saved.
+	ChatColor string `json:"chat_color,omitempty"`
+	// Nickname is how this member shows itself to the others in every project
+	// ("" its Node name); NicknameAliases are its earlier nicknames, which keep
+	// resolving to it. Node stays the identity. Kept like ChatColor.
+	Nickname        string   `json:"nickname,omitempty"`
+	NicknameAliases []string `json:"nickname_aliases,omitempty"`
 
 	// Secret is the long shared secret of configs written before pairing
 	// codes; used only while Code is empty. Never sent to the page.
@@ -96,6 +110,107 @@ type ProjectBinding struct {
 	Alias  string   `json:"alias,omitempty"` // this member's own name for it, ≤ maxAlias runes
 	Dir    string   `json:"dir,omitempty"`   // bound folder; "" = none
 	Peers  []string `json:"peers,omitempty"` // bootstrap addresses typed by the user (host:port)
+	// AutoOpen is the auto-open switch of files before Autonomy: Load and
+	// Normalize turn it into Autonomy (true: asked, else off) and drop it.
+	AutoOpen *bool `json:"auto_open,omitempty"`
+	// Autonomy is how far this member's agents work by themselves in the
+	// project (node.SetAutonomy): AutonomyOff ("" too) opens no agent session
+	// by itself, only sessions already there get messages; AutonomyAsked opens
+	// a visible session in Dir when a message asks this member and none is
+	// live there; AutonomyFull also for messages that only inform it, with the
+	// budgets below. An opened session runs with the owner's own agent
+	// permissions.
+	Autonomy string `json:"autonomy,omitempty"`
+	// MaxAutoDepth is the hop limit of an automatic chain of agents: past it a
+	// request waits for a person. nil follows the mode (DefaultMaxAutoDepth,
+	// in full mode none); 0 is none.
+	MaxAutoDepth *int `json:"max_auto_depth,omitempty"`
+	// TurnsPerHour and MaxRunMinutes are the budgets of full mode: autonomous
+	// turns in any hour and minutes of continuous autonomous work before
+	// autonomous delivery pauses and waits for the owner. 0: the default.
+	TurnsPerHour  int `json:"turns_per_hour,omitempty"`
+	MaxRunMinutes int `json:"max_run_minutes,omitempty"`
+	// LaunchMode is where such a session opens (node.SetLaunchMode):
+	// "desktop" (the default, "") the agent's desktop app when installed,
+	// "terminal" Windows Terminal.
+	LaunchMode string `json:"launch_mode,omitempty"`
+}
+
+// Autonomy modes (ProjectBinding.Autonomy), as node.Autonomy*.
+const (
+	AutonomyOff   = "off"
+	AutonomyAsked = "asked"
+	AutonomyFull  = "full"
+)
+
+// Autonomy defaults and limits.
+const (
+	// DefaultMaxAutoDepth is the hop limit of the off and asked modes
+	// (node.MaxAutoDepth).
+	DefaultMaxAutoDepth  = 8
+	MaxMaxAutoDepth      = 250
+	DefaultTurnsPerHour  = 30
+	MaxTurnsPerHour      = 600
+	DefaultMaxRunMinutes = 240
+	MinMaxRunMinutes     = 10
+	MaxMaxRunMinutes     = 24 * 60
+)
+
+// AutonomyOf is b's autonomy mode.
+func (b ProjectBinding) AutonomyOf() string {
+	switch b.Autonomy {
+	case AutonomyAsked, AutonomyFull:
+		return b.Autonomy
+	}
+	return AutonomyOff
+}
+
+// MaxAutoDepthOf is b's hop limit (0: none): the set one, else none in full
+// mode and DefaultMaxAutoDepth otherwise.
+func (b ProjectBinding) MaxAutoDepthOf() int {
+	switch {
+	case b.MaxAutoDepth != nil:
+		return *b.MaxAutoDepth
+	case b.AutonomyOf() == AutonomyFull:
+		return 0
+	}
+	return DefaultMaxAutoDepth
+}
+
+// TurnsPerHourOf is b's budget of autonomous turns per hour.
+func (b ProjectBinding) TurnsPerHourOf() int {
+	if b.TurnsPerHour > 0 {
+		return b.TurnsPerHour
+	}
+	return DefaultTurnsPerHour
+}
+
+// MaxRunMinutesOf is b's budget of continuous autonomous work, in minutes.
+func (b ProjectBinding) MaxRunMinutesOf() int {
+	if b.MaxRunMinutes > 0 {
+		return b.MaxRunMinutes
+	}
+	return DefaultMaxRunMinutes
+}
+
+// validAutonomy reports valid autonomy fields.
+func (b ProjectBinding) validAutonomy() bool {
+	switch b.Autonomy {
+	case "", AutonomyOff, AutonomyAsked, AutonomyFull:
+	default:
+		return false
+	}
+	return (b.MaxAutoDepth == nil || (*b.MaxAutoDepth >= 0 && *b.MaxAutoDepth <= MaxMaxAutoDepth)) &&
+		b.TurnsPerHour >= 0 && b.TurnsPerHour <= MaxTurnsPerHour &&
+		(b.MaxRunMinutes == 0 || (b.MaxRunMinutes >= MinMaxRunMinutes && b.MaxRunMinutes <= MaxMaxRunMinutes))
+}
+
+// LaunchModeOf is b's launch mode: "terminal" or "desktop".
+func (b ProjectBinding) LaunchModeOf() string {
+	if b.LaunchMode == "terminal" {
+		return "terminal"
+	}
+	return "desktop"
 }
 
 // Version is the settings file format this build writes. Version 2 added
@@ -214,9 +329,26 @@ func writeBackup(path string, data []byte) error {
 	return err
 }
 
-// migrated moves the single legacy peer (PeerAddr, PeerName) into Peers.
+// migrated moves the single legacy peer (PeerAddr, PeerName) into Peers and a
+// binding's auto-open switch into its Autonomy (true: asked, false: off).
 // An address that does not parse stays in PeerAddr for Validate to report.
 func (s Settings) migrated() Settings {
+	if slices.ContainsFunc(s.Bindings, func(b ProjectBinding) bool { return b.AutoOpen != nil }) {
+		s.Bindings = slices.Clone(s.Bindings)
+		for i, b := range s.Bindings {
+			if b.AutoOpen == nil {
+				continue
+			}
+			if b.Autonomy == "" {
+				b.Autonomy = AutonomyOff
+				if *b.AutoOpen {
+					b.Autonomy = AutonomyAsked
+				}
+			}
+			b.AutoOpen = nil
+			s.Bindings[i] = b
+		}
+	}
 	s.PeerAddr, s.PeerName = strings.TrimSpace(s.PeerAddr), strings.TrimSpace(s.PeerName)
 	if s.PeerAddr == "" {
 		s.PeerName = ""
@@ -531,6 +663,8 @@ func validateBindings(bs []ProjectBinding) error {
 			return problem("project_binding")
 		case !ValidAlias(b.Alias):
 			return problem("alias")
+		case !b.validAutonomy():
+			return problem("autonomy")
 		}
 		ids[b.ID] = true
 		for _, p := range b.Peers {

@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -124,6 +125,44 @@ func TestProjectsAPI(t *testing.T) {
 	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"dir": dir2}, &v); code != http.StatusOK || v.State != ProjectReady {
 		t.Fatalf("bind folder: %d %s", code, raw)
 	}
+	// Autonomy: off by default with the hop limit 8; full follows with no hop
+	// limit; budgets and a set limit are kept in the settings and applied.
+	binding := func() settings.ProjectBinding { return h.app.Settings().Bindings[h.app.bindingIndex(site.ID)] }
+	if a := v.Autonomy; a == nil || a.Mode != settings.AutonomyOff || a.MaxAutoDepth != 8 || !a.MaxAutoDepthDefault ||
+		a.TurnsPerHour != 30 || a.MaxRunMinutes != 240 || h.app.projects[site.ID].n.Autonomy().Mode != node.AutonomyOff {
+		t.Fatalf("autonomy not off by default: %+v", v.Autonomy)
+	}
+	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"autonomy": "full"}, &v); code != http.StatusOK ||
+		v.Autonomy.Mode != "full" || v.Autonomy.MaxAutoDepth != 0 || binding().Autonomy != "full" ||
+		h.app.projects[site.ID].n.Autonomy() != (node.Autonomy{Mode: node.AutonomyFull, MaxDepth: 0, TurnsPerHour: 30, MaxRun: 4 * time.Hour}) {
+		t.Fatalf("autonomy full: %d %s", code, raw)
+	}
+	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding",
+		map[string]any{"max_auto_depth": 12, "turns_per_hour": 5, "max_run_minutes": 30}, &v); code != http.StatusOK ||
+		v.Autonomy.MaxAutoDepth != 12 || v.Autonomy.MaxAutoDepthDefault || v.Autonomy.TurnsPerHour != 5 || v.Autonomy.MaxRunMinutes != 30 ||
+		h.app.projects[site.ID].n.Autonomy() != (node.Autonomy{Mode: node.AutonomyFull, MaxDepth: 12, TurnsPerHour: 5, MaxRun: 30 * time.Minute}) {
+		t.Fatalf("autonomy budgets: %d %s", code, raw)
+	}
+	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"autonomy": "asked", "max_auto_depth": -1}, &v); code != http.StatusOK ||
+		v.Autonomy.Mode != "asked" || v.Autonomy.MaxAutoDepth != 8 || binding().MaxAutoDepth != nil || h.app.projects[site.ID].n.Autonomy().MaxDepth != 8 {
+		t.Fatalf("autonomy asked: %d %s", code, raw)
+	}
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"autonomy": "always"}, http.StatusBadRequest, "autonomy")
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"turns_per_hour": 100000}, http.StatusBadRequest, "autonomy")
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"max_run_minutes": 1}, http.StatusBadRequest, "autonomy")
+	if binding().AutonomyOf() != settings.AutonomyAsked || binding().TurnsPerHour != 5 {
+		t.Fatalf("a refused autonomy change was kept: %+v", binding())
+	}
+	// Launch mode: desktop by default, terminal kept in the settings and applied.
+	if v.LaunchMode != "desktop" {
+		t.Fatalf("launch mode not desktop by default: %+v", v)
+	}
+	if code, raw := h.api(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"launch_mode": "terminal"}, &v); code != http.StatusOK ||
+		v.LaunchMode != "terminal" || h.app.Settings().Bindings[h.app.bindingIndex(site.ID)].LaunchMode != "terminal" ||
+		h.app.projects[site.ID].n.LaunchMode() != node.LaunchTerminal {
+		t.Fatalf("launch mode terminal: %d %s", code, raw)
+	}
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"launch_mode": "window"}, http.StatusBadRequest, "bad_request")
 	h.wantError(t, http.MethodPost, "projects/"+bare.ID+"/binding", map[string]any{"dir": dir2}, http.StatusBadRequest, "dir_taken")
 	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"dir": "relative"}, http.StatusBadRequest, "dir")
 	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/binding", map[string]any{"alias": "a\x01"}, http.StatusBadRequest, "alias")
@@ -137,6 +176,10 @@ func TestProjectsAPI(t *testing.T) {
 	if got := h.app.Settings().Bindings[0].Peers; !slices.Equal(got, []string{"127.0.0.1:7420"}) {
 		t.Fatalf("binding peers %v", got)
 	}
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/members/remove", map[string]any{"name": "alice"}, http.StatusBadRequest, "remove_self")
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/members/remove", map[string]any{"name": "zed"}, http.StatusNotFound, "unknown_member")
+	h.wantError(t, http.MethodPost, "projects/"+site.ID+"/members/remove", map[string]any{"name": " "}, http.StatusBadRequest, "bad_request")
+	h.wantError(t, http.MethodPost, "projects/"+strings.Repeat("A", 26)+"/members/remove", map[string]any{"name": "bob"}, http.StatusNotFound, "not_found")
 
 	// Join: bad input, a known invite, another secret for the same project.
 	h.wantError(t, http.MethodPost, "projects/join", map[string]any{"invite": "ALP1.nope"}, http.StatusBadRequest, "invite")
@@ -285,6 +328,26 @@ func TestPeerCounts(t *testing.T) {
 	}
 }
 
+// The sidebar's dot counts machines with an open agent session: this node
+// included, one per member however many sessions it runs, and never a member
+// that is offline now (its last presence is gone with its session).
+func TestAgentMachines(t *testing.T) {
+	for _, tc := range []struct {
+		members []node.MemberInfo
+		want    int
+	}{
+		{[]node.MemberInfo{{Name: "me", Self: true, Online: true}}, 0},
+		{[]node.MemberInfo{{Name: "me", Self: true, Online: true, Agent: true}}, 1},
+		{[]node.MemberInfo{{Name: "me", Self: true, Online: true}, {Name: "bob", Online: true, Agent: true}}, 1},
+		{[]node.MemberInfo{{Name: "me", Self: true, Online: true, Agent: true}, {Name: "bob", Online: true, Agent: true}, {Name: "carl", Online: true}}, 2},
+		{[]node.MemberInfo{{Name: "me", Self: true, Online: true, Agent: true}, {Name: "bob", Agent: true}}, 1},
+	} {
+		if got := agentMachines(tc.members); got != tc.want {
+			t.Errorf("%+v: %d machines, want %d", tc.members, got, tc.want)
+		}
+	}
+}
+
 func TestProjectsJoinFlow(t *testing.T) {
 	addr := freeAddr(t)
 	alice := projectsHarness(t, "alice", addr)
@@ -347,11 +410,62 @@ func TestProjectsJoinFlow(t *testing.T) {
 		bob.api(t, http.MethodGet, "projects/"+p.ID, nil, &v)
 		return v.Name == "Сайт 2"
 	})
+	// A project has one active chat: a new one is that chat.
+	var again ChatInfoView
+	if code, raw := alice.api(t, http.MethodPost, "projects/"+p.ID+"/chats", map[string]any{"participants": []string{"bob"}}, &again); code != http.StatusOK ||
+		again.ID != chat.ID {
+		t.Fatalf("second new chat: %d %s", code, raw)
+	}
+	// Archiving its history opens a fresh chat with the same members at once.
+	var fresh ChatInfoView
+	if code, raw := alice.api(t, http.MethodPost, "projects/"+p.ID+"/chats/"+chat.ID+"/archive", nil, &fresh); code != http.StatusOK ||
+		fresh.ID == chat.ID || fresh.Prev != chat.ID || fresh.Archived || !slices.Equal(fresh.Participants, []string{"alice", "bob"}) {
+		t.Fatalf("archive: %d %s", code, raw)
+	}
+	var list []ChatInfoView
+	eventuallyLong(t, "bob has the fresh chat only", func() bool {
+		code, _ := bob.api(t, http.MethodGet, "projects/"+p.ID+"/chats", nil, &list)
+		return code == http.StatusOK && len(list) == 1 && list[0].ID == fresh.ID
+	})
+	alice.wantError(t, http.MethodPost, "projects/legacy/chats/"+chat.ID+"/archive", nil, http.StatusNotFound, "not_found")
+	chat = fresh
 	var closed ChatInfoView
 	if code, raw := alice.api(t, http.MethodPost, "projects/"+p.ID+"/chats/"+chat.ID+"/close", nil, &closed); code != http.StatusOK || !closed.Closed {
 		t.Fatalf("close: %d %s", code, raw)
 	}
 	alice.wantError(t, http.MethodPost, "projects/"+p.ID+"/send", map[string]any{"chat_id": chat.ID, "body": "ещё"}, http.StatusConflict, "chat_closed")
+
+	// A removal whose settings cannot be saved changes nothing: bob keeps
+	// alice as a member and her address in his binding.
+	peers := bob.app.Settings().Bindings[bob.app.bindingIndex(p.ID)].Peers
+	if !slices.Contains(peers, addr) {
+		t.Fatalf("bob's binding peers %v, want %s", peers, addr)
+	}
+	saved, err := os.ReadFile(bob.app.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bob.app.path, []byte(`{"version": 999}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, raw := bob.api(t, http.MethodPost, "projects/"+p.ID+"/members/remove", map[string]any{"name": "alice"}, nil); code != http.StatusInternalServerError {
+		t.Fatalf("remove with a failing save: %d %s", code, raw)
+	}
+	if err := os.WriteFile(bob.app.path, saved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bob.api(t, http.MethodGet, "projects/"+p.ID, nil, &v)
+	if !slices.ContainsFunc(v.Members, func(m node.MemberInfo) bool { return m.Name == "alice" }) ||
+		!slices.Equal(bob.app.Settings().Bindings[bob.app.bindingIndex(p.ID)].Peers, peers) {
+		t.Fatalf("a failed save changed the member list %+v or peers %v", v.Members, bob.app.Settings().Bindings[bob.app.bindingIndex(p.ID)].Peers)
+	}
+
+	// Removing bob: gone from alice's members; a second removal knows no bob.
+	if code, raw := alice.api(t, http.MethodPost, "projects/"+p.ID+"/members/remove", map[string]any{"name": "bob"}, &v); code != http.StatusOK ||
+		slices.ContainsFunc(v.Members, func(m node.MemberInfo) bool { return m.Name == "bob" }) {
+		t.Fatalf("remove member: %d %s", code, raw)
+	}
+	alice.wantError(t, http.MethodPost, "projects/"+p.ID+"/members/remove", map[string]any{"name": "bob"}, http.StatusNotFound, "unknown_member")
 }
 
 // Joining the legacy network while an agent answers needs its working folder:

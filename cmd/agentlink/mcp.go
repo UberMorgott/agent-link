@@ -48,9 +48,11 @@ type (
 		Chat        string   `json:"chat,omitempty" jsonschema:"chat id to write in; exactly one of chat, to, new_chat_with"`
 		To          string   `json:"to,omitempty" jsonschema:"member name (or area:NAME): the one open chat with them; exactly one of chat, to, new_chat_with"`
 		NewChatWith []string `json:"new_chat_with,omitempty" jsonschema:"members to open a new chat with; exactly one of chat, to, new_chat_with"`
-		Body        string   `json:"body" jsonschema:"message text"`
+		Body        string   `json:"body,omitempty" jsonschema:"message text (may be empty when attachments are given)"`
 		Ask         []string `json:"ask,omitempty" jsonschema:"participants who must answer; none: the message only informs"`
+		AskSeats    []string `json:"ask_seats,omitempty" jsonschema:"local agents (seats) of this node who must answer: labels or ids (see the seats tool), or all"`
 		ReplyTo     string   `json:"reply_to,omitempty" jsonschema:"id of the message being answered"`
+		Attachments []string `json:"attachments,omitempty" jsonschema:"absolute paths of files to attach (at most 10): images png/jpeg/gif/webp, pdf or utf-8 text, each at most 10 MB, inside the project folder or the temp folder"`
 	}
 	mcpAck struct {
 		IDs     []string `json:"ids" jsonschema:"message ids to mark read"`
@@ -80,6 +82,9 @@ func newMCPServer(cfg config.Config) *mcp.Server {
 	addTool(s, "members", "List the members of a project, this node first.", func(in mcpProject) (any, error) {
 		return listMembers(cfg, proj(in.Project))
 	})
+	addTool(s, "seats", "List the local agents (seats: Claude Code, Codex sessions) of this node in a project; ask one with send ask_seats.", func(in mcpProject) (any, error) {
+		return listSeats(cfg, proj(in.Project))
+	})
 	addTool(s, "chats", "List chats, most recent first.", func(in mcpChats) (any, error) {
 		return listChats(cfg, in.Archive, in.Legacy, proj(in.Project))
 	})
@@ -92,7 +97,7 @@ func newMCPServer(cfg config.Config) *mcp.Server {
 	addTool(s, "unread", "Unread messages for this node, oldest first; next is the cursor of the next page. Does not mark them read.", func(in mcpUnread) (any, error) {
 		return unread(cfg, in.Folder, in.After, limit(in.Limit), proj(in.Project))
 	})
-	addTool(s, "send", "Send a message: into a chat (chat), the open chat with a member (to), or a new chat (new_chat_with). Returns {id, chat}.", func(in mcpSend) (any, error) {
+	addTool(s, "send", "Send a message: into a chat (chat), the open chat with a member (to), or a new chat (new_chat_with), optionally with file attachments. Returns {id, chat}.", func(in mcpSend) (any, error) {
 		return mcpSendMessage(cfg, in, proj(""))
 	})
 	addTool(s, "ack", "Mark messages read: their authors get read receipts.", func(in mcpAck) (any, error) {
@@ -119,10 +124,10 @@ func mcpSendMessage(cfg config.Config, in mcpSend, project string) (any, error) 
 	if modes != 1 {
 		return nil, errors.New("exactly one of chat, to, new_chat_with is required")
 	}
-	if in.Body == "" {
-		return nil, errors.New("body is required")
+	if in.Body == "" && len(in.Attachments) == 0 {
+		return nil, errors.New("body is required (or attachments)")
 	}
-	a := sendArgs{to: in.To, body: in.Body, replyTo: in.ReplyTo, chat: in.Chat, project: project}
+	a := sendArgs{to: in.To, body: in.Body, replyTo: in.ReplyTo, chat: in.Chat, project: project, files: in.Attachments, askSeats: in.AskSeats}
 	if len(in.NewChatWith) > 0 {
 		info, err := createChat(cfg, in.NewChatWith, "", project)
 		if err != nil {

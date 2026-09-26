@@ -1,6 +1,6 @@
 // Pure chat helpers shared by the chat list, the open chat and the toasts.
 import { fmt, t } from './runtime'
-import type { AppSettings, ChatInfo, ChatMember, ChatMessage, Delivery, Job, Session } from '@/types'
+import type { AppSettings, ChatInfo, ChatMember, ChatMessage, Delivery, Job, ProjectView, Session } from '@/types'
 
 // A message within GROUP_MS of the previous one by the same author continues it
 // without repeating the author line.
@@ -10,11 +10,16 @@ export function others(info: ChatInfo | null | undefined, self: string): string[
   return (info?.participants || []).filter((name) => name !== self)
 }
 
-export function chatName(info: ChatInfo | null | undefined, self: string): string {
+// chatName names a chat in lists and its header. A project has one chat, so
+// its chat goes by the project's name (an archived one adds when it began);
+// projectName is that name, empty for the network from before projects.
+export function chatName(info: ChatInfo | null | undefined, self: string, projectName = ''): string {
   if (!info) return ''
   if (info.legacy && info.peer) return info.peer
-  // A project's own chat goes by its title, its first words.
-  if (info.mode === 'project' && info.title) return info.title
+  if (projectName && info.project !== 'legacy') {
+    const began = info.archived ? clock(info.created_at) : ''
+    return began ? projectName + ' · ' + began : projectName
+  }
   const names = others(info, self)
   return names.length ? names.join(', ') : self
 }
@@ -29,16 +34,54 @@ export function isAgent(m: ChatMessage): boolean { return m.author_kind === 'age
 export function agentName(name: string, self: string): string {
   return name === self ? t("inbox.author.own_agent") : fmt("inbox.author.agent", { name })
 }
-export function authorLabel(m: ChatMessage, self: string): string { return isAgent(m) ? agentName(m.from, self) : authorName(m.from, self) }
+// A local agent (seat) names itself: "Morgott · Codex".
+export function providerName(p: string | undefined): string { return p === 'codex' ? 'Codex' : p === 'claude' ? 'Claude' : p || '' }
+export function authorLabel(m: ChatMessage, self: string): string {
+  if (m.agent && (m.agent.label || m.agent.provider)) return m.from + ' · ' + (m.agent.label || providerName(m.agent.provider))
+  return isAgent(m) ? agentName(m.from, self) : authorName(m.from, self)
+}
 
-// whoIndex gives every name one of six stable colours, so a group chat can be
-// followed by colour as well as by name.
+// authorTitle heads a message: the author's nickname or name (yours too), with
+// its local agent's label for a seat («Morgott · Codex»); an icon beside it
+// tells a person from an agent.
+export function authorTitle(m: ChatMessage, display = ''): string {
+  const who = display || m.from
+  if (m.agent && (m.agent.label || m.agent.provider)) return who + ' · ' + (m.agent.label || providerName(m.agent.provider))
+  return who
+}
+
+// CHAT_COLORS are the member colors (styles.css --who-<name>, the Go
+// node.ChatColors): a member picks its own, else its name derives one, the
+// same on every computer. A member's agents write in its color too.
+export const CHAT_COLORS = ['blue', 'violet', 'pink', 'red', 'orange', 'amber', 'green', 'teal'] as const
 export function whoIndex(name: string): number {
   let hash = 0
   for (const ch of String(name)) hash = (hash * 31 + ch.codePointAt(0)!) >>> 0
-  return (hash % 6) + 1
+  return hash % CHAT_COLORS.length
 }
-export function whoColor(name: string): string { return 'var(--who-' + whoIndex(name) + ')' }
+// whoName is the color of a member: its own choice when known, else derived.
+export function whoName(name: string, own = ''): string {
+  return (CHAT_COLORS as readonly string[]).includes(own) ? own : CHAT_COLORS[whoIndex(name)]!
+}
+export function whoColor(name: string, own = ''): string { return 'var(--who-' + whoName(name, own) + ')' }
+
+// --- the project's dot: how many computers have an agent session open ---
+
+export interface ProjectDot { cls: 'none' | 'one' | 'many'; label: string }
+
+// projectDot: grey with no agent session open anywhere in the project, yellow
+// with one computer, green with two or more different computers (this one
+// counts too). Its tooltip names them and who is online.
+export function projectDot(p: ProjectView, self: string): ProjectDot {
+  const withAgent = (p.members || []).filter((m) => m.agent && (m.self || m.online)).map((m) => (m.self ? fmt("projects.dot.you", { name: m.name || self }) : m.name))
+  const n = p.agents ?? withAgent.length
+  const cls = n >= 2 ? 'many' : n === 1 ? 'one' : 'none'
+  const head = n >= 2 ? fmt("projects.dot.many", { n, names: withAgent.join(', ') })
+    : n === 1 ? fmt("projects.dot.one", { names: withAgent.join(', ') }) : t("projects.dot.none")
+  const lines = [head, fmt("projects.online", { online: p.online, total: p.total })]
+  if (p.state === 'error' && p.problem) lines.push(t("project.problem." + p.problem))
+  return { cls, label: lines.join('\n') }
+}
 
 function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate() }
 export function clock(iso: string | undefined): string {
@@ -218,6 +261,22 @@ export function tickState(d: Delivery): 'queued' | 'delivered' | 'read' {
   return d.status === 'sent' ? 'delivered' : 'queued'
 }
 
+// attemptText: what the recipient's node reported doing to get an unread
+// message seen (its latest delivery attempt), '' when nothing or once read.
+export function attemptText(d: Delivery): string {
+  if (!d.attempt || tickState(d) === 'read') return ''
+  const [event, reason] = d.attempt.split(':', 2)
+  if (event === 'launch_failed') return fmt("inbox.attempt.launch_failed", { reason: reason || '?' })
+  return ATTEMPTS.includes(event!) ? t("inbox.attempt." + event) : ''
+}
+const ATTEMPTS = ['wake_requested', 'woken_confirmed', 'launch_requested', 'launch_confirmed', 'needs_human']
+
+// attemptFailed: the recipient's node gave up getting the message seen
+// (it could not open a session, or the chain is paused): a person must act.
+export function attemptFailed(d: Delivery): boolean {
+  return tickState(d) !== 'read' && !!d.attempt && (d.attempt.startsWith('launch_failed:') || d.attempt === 'needs_human')
+}
+
 // holdsFor lists the participants that were asked message id but will not
 // answer it automatically, with why (their node's text); such a hold is idle.
 export function holdsFor(info: ChatInfo | null, id: string): { name: string; text: string }[] {
@@ -247,20 +306,29 @@ export function ticksFor(m: ChatMessage, info: ChatInfo | null): Tick | null {
     const state = tickState(d)
     if (TICK_RANK[state]! < TICK_RANK[lowest]!) lowest = state
     const word = t("inbox.tick." + (d.state === 'answered' ? 'answered' : state))
-    return d.peer + ': ' + word + (state === 'read' && d.at ? ' ' + clock(d.at) : '')
+    const attempt = attemptText(d)
+    return d.peer + ': ' + word + (state === 'read' && d.at ? ' ' + clock(d.at) : '') + (attempt ? ' — ' + attempt : '')
   })
-  return { state: lowest, label: delivery.length === 1 ? lines[0]! : lines.join('\n') }
+  // A recipient whose node gave up shows «!», not a quiet delivered tick.
+  const state: TickState = delivery.some(attemptFailed) ? 'held' : lowest
+  return { state, label: delivery.length === 1 ? lines[0]! : lines.join('\n') }
 }
 
-// messageTick: an own message's delivery tick, or an incoming held one.
+// messageTick: an own message's delivery tick; on an incoming one whether an
+// agent session of this computer has read it (acknowledged it, or the worker
+// took it): a person only looking at the chat does not count. A held one
+// shows why it waits.
 export function messageTick(m: ChatMessage, info: ChatInfo | null): Tick | null {
   if (m.direction === 'out') return ticksFor(m, info)
-  return m.held ? { state: 'held', label: t("inbox.held") } : null
+  if (m.held) return { state: 'held', label: t("inbox.held") }
+  if (m.kind || !info || info.legacy) return null
+  return m.unread ? { state: 'delivered', label: t("inbox.tick.agent_unread") } : { state: 'read', label: t("inbox.tick.agent_read") }
 }
 
 // continues: m follows prev by the same author and kind, soon after.
 export function continues(prev: ChatMessage | undefined, m: ChatMessage): boolean {
   if (!prev || prev.kind || m.kind || prev.from !== m.from || isAgent(prev) !== isAgent(m) || m.reply_to) return false
+  if ((prev.agent?.seat || prev.agent?.provider || '') !== (m.agent?.seat || m.agent?.provider || '')) return false
   const gap = Date.parse(m.created_at) - Date.parse(prev.created_at)
   return gap >= 0 && gap < GROUP_MS
 }
@@ -313,8 +381,15 @@ export function presenceLines(info: ChatInfo | null, messages: ChatMessage[], no
   for (const d of last.delivery || []) {
     if (tickState(d) !== 'delivered') continue
     const member = (info.members || []).find((m) => !m.self && m.name === d.peer)
+    if (member && liveJobs(member.jobs, now).length) continue
+    // What its node reported doing about the message says more than presence.
+    const attempt = attemptText(d)
+    if (attempt) {
+      out.push({ name: d.peer, text: attempt })
+      continue
+    }
     const p = member?.connected ? member.presence : null
-    if (!p || liveJobs(member!.jobs, now).length) continue
+    if (!p) continue
     const key = PRESENCE_KEY[p.session || ''] || (p.auto_answer ? "inbox.presence.worker" : "inbox.presence.none")
     out.push({ name: d.peer, text: t(key) })
   }

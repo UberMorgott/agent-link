@@ -41,11 +41,20 @@ type fakeNode struct {
 	claims  map[string]string
 	// unreadSession: the session the last GET /unread asked for.
 	unreadSession string
+	// inboxWakes: like a node that wakes the session through its inbox, a
+	// waiter's GET /unread (waiter=1) gets nothing.
+	inboxWakes bool
+	// woken: ids the node woke the session with (UnreadPage.Woken); wakeTok:
+	// the token of a wake claim (POST /claim with wake_token), else tok-<id>.
+	woken   map[string]bool
+	wakeTok map[string]string
+	// lapsed: woken ids whose wake claim lapsed: listed as woken and unread.
+	lapsed map[string]bool
 }
 
 func newFakeNode(t *testing.T, folder string) *fakeNode {
 	f := &fakeNode{folder: folder, sessions: map[string]node.SessionRequest{}, acked: map[string]string{}, worker: map[string]bool{},
-		claims: map[string]string{}}
+		claims: map[string]string{}, woken: map[string]bool{}, wakeTok: map[string]string{}, lapsed: map[string]bool{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	f.api = strings.TrimPrefix(srv.URL, "http://")
@@ -75,6 +84,10 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 		f.gets++
 		q := r.URL.Query()
 		f.unreadSession = q.Get("session")
+		if q.Get("waiter") == "1" && f.inboxWakes {
+			_ = json.NewEncoder(w).Encode(node.UnreadPage{Messages: []node.UnreadMessage{}})
+			return
+		}
 		if !strings.EqualFold(filepath.Clean(q.Get("folder")), filepath.Clean(f.folder)) {
 			http.Error(w, "folder is not the working folder", http.StatusBadRequest)
 			return
@@ -87,6 +100,17 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			if q.Get("actionable") == "1" && m.Paused {
 				continue
+			}
+			if f.woken[m.ID] && q.Get("session") != "" {
+				m.WakeToken = "tok-" + m.ID
+				if tok := f.wakeTok[m.ID]; tok != "" {
+					m.WakeToken = tok
+				}
+				page.Woken = append(page.Woken, m)
+				if !f.lapsed[m.ID] {
+					continue
+				}
+				m.WakeToken = ""
 			}
 			page.Total++
 			if q.Get("after") != "" && m.Cursor <= q.Get("after") {
@@ -121,6 +145,9 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 			if s := f.claims[id]; s == "" || s == req.SessionID {
 				f.claims[id] = req.SessionID
 				granted = append(granted, id)
+				if req.WakeToken != "" {
+					f.woken[id], f.wakeTok[id] = true, req.WakeToken
+				}
 			}
 		}
 		_ = json.NewEncoder(w).Encode(granted)
@@ -171,6 +198,13 @@ func (f *fakeNode) texts() []string {
 	return out
 }
 
+// token is the wake token message id was claimed with ("" when none).
+func (f *fakeNode) token(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.wakeTok[id]
+}
+
 func (f *fakeNode) ackedIDs() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -195,6 +229,9 @@ type hookCase struct {
 
 func newHookCase(t *testing.T) *hookCase {
 	folder := t.TempDir()
+	// The tests may run inside a Claude Code session: never its inbox.
+	t.Setenv(envInboxSocket, "")
+	t.Setenv(envInboxToken, "")
 	c := &hookCase{t: t, f: newFakeNode(t, folder), folder: folder, now: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC), sid: "s-1"}
 	c.env = hookEnv{api: c.f.api, dir: t.TempDir(), now: func() time.Time { return c.now }}
 	return c
@@ -297,11 +334,19 @@ func TestHookCodexReportsIdle(t *testing.T) {
 	if idle() {
 		t.Fatal("a blocking Stop reported idle")
 	}
-	// Claude Code never reports idle (its waiter wakes it).
+	// Claude Code reports idle too (the node wakes it through its inbox,
+	// handed over at every registration), and busy at its next prompt.
+	t.Setenv(envInboxSocket, `\\.\pipe\LOCAL\cc-msg-0123456789abcdef`)
+	t.Setenv(envInboxToken, "fedcba9876543210fedcba9876543210")
 	c.run(hookClaude, evSessionStart)
 	c.run(hookClaude, evStop)
-	if s := c.f.sessions[c.sid]; s.Idle || s.Wake != node.WakeRewake || s.CodexHome != "" {
+	if s := c.f.sessions[c.sid]; !s.Idle || s.Wake != node.WakeRewake || s.CodexHome != "" ||
+		s.InboxSocket != `\\.\pipe\LOCAL\cc-msg-0123456789abcdef` || s.InboxToken != "fedcba9876543210fedcba9876543210" {
 		t.Fatalf("claude %+v", s)
+	}
+	c.run(hookClaude, evPrompt)
+	if idle() {
+		t.Fatal("claude: a prompt did not report busy")
 	}
 }
 
@@ -377,6 +422,49 @@ func TestHookDeliversOnlyClaimedMessages(t *testing.T) {
 	v := parseOut(t, c.run(hookClaude, evSessionStart))
 	if !strings.Contains(v.HookSpecificOutput.AdditionalContext, "PR is fine") || c.f.acked["m1"] != "s-asker" {
 		t.Fatalf("the asking session: %+v, acked %v", v, c.f.acked)
+	}
+}
+
+// The node woke the idle session with the messages themselves (UnreadPage.Woken):
+// the prompt that carries them acknowledges them, and no hook delivers them
+// again; a prompt that does not carry them (the wake still on the way) leaves
+// them.
+func TestHookAcksWokenAtPrompt(t *testing.T) {
+	c := newHookCase(t)
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "woken body", true))
+	c.f.woken["m1"] = true
+	c.run(hookClaude, evSessionStart)
+	if out := c.run(hookClaude, evPostTool, `,"tool_name":"Read"`); out != "" || len(c.f.acked) != 0 {
+		t.Fatalf("woken message delivered again: %q %v", out, c.f.acked)
+	}
+	for _, p := range []string{
+		`,"prompt":"hello there"`,
+		`,"prompt":"what was in message id m1?"`, // a foreign prompt naming it
+		`,"prompt":""`,                           // the agent does not say
+		"",                                       // no prompt at all
+		`,"prompt":"[agent-link wake tok-m9] id m1"`, // another wake's token
+	} {
+		if out := c.run(hookClaude, evPrompt, p); out != "" || len(c.f.acked) != 0 {
+			t.Fatalf("prompt %s took the woken message: %q %v", p, out, c.f.acked)
+		}
+	}
+	c.f.add(chatMsg("c2", "bob", "agent", "plain body", true))
+	v := parseOut(t, c.run(hookClaude, evPrompt, `,"prompt":`+strconv.Quote("agent-link: новые сообщения (1). [agent-link wake tok-m1]\n\nОт KPECTIK (агент) в чате c1, id m1:\nwoken body")))
+	ctx := v.HookSpecificOutput.AdditionalContext
+	if strings.Contains(ctx, "woken body") || !strings.Contains(ctx, "plain body") {
+		t.Fatalf("context %q", ctx)
+	}
+	if got := c.f.ackedIDs(); !slices.Equal(got, []string{"m1", "m2"}) || c.f.acked["m1"] != c.sid {
+		t.Fatalf("acked %v", c.f.acked)
+	}
+	if st := c.state(hookClaude); st.Active["c1"] != "m1" || st.Active["c2"] != "m2" {
+		t.Fatalf("active %v", st.Active)
+	}
+	// Only a woken message: no output, still acknowledged at its prompt.
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "second", true))
+	c.f.woken["m3"] = true
+	if out := c.run(hookCodex, evPrompt, `,"prompt":"[agent-link wake tok-m3] ... id m3 ..."`); out != "" || c.f.acked["m3"] != c.sid {
+		t.Fatalf("codex prompt: %q %v", out, c.f.acked)
 	}
 }
 
@@ -627,7 +715,7 @@ func TestHookSessionEndEndsActivity(t *testing.T) {
 
 func TestHookPagesLargeBatches(t *testing.T) {
 	c := newHookCase(t)
-	c.f.add(chatMsg("c1", "KPECTIK", "agent", strings.Repeat("я", hookMaxBody+100), true))
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", strings.Repeat("я", node.FormatMaxBody+100), true))
 	for range 3 {
 		c.f.add(chatMsg("c1", "KPECTIK", "agent", strings.Repeat("ы", 1500), true))
 	}
@@ -716,6 +804,7 @@ func TestToolActivity(t *testing.T) {
 
 func TestHookWaitWakesIdleSession(t *testing.T) {
 	c := newHookCase(t)
+	c.f.claimOn = true
 	c.run(hookClaude, evSessionStart)
 	c.run(hookClaude, evStop) // idle now
 	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 5 * time.Second, busyFor: time.Hour, stale: time.Minute}
@@ -732,8 +821,9 @@ func TestHookWaitWakesIdleSession(t *testing.T) {
 	if !strings.Contains(errw.String(), "wake up") || !strings.Contains(errw.String(), "agentlink send --chat c1") {
 		t.Fatalf("stderr %q", errw.String())
 	}
-	if !slices.Equal(c.f.ackedIDs(), []string{"m1"}) {
-		t.Fatalf("acked %v", c.f.ackedIDs())
+	// Written is not delivered: no ack until the session shows it got the wake.
+	if tok := c.f.token("m1"); len(c.f.ackedIDs()) != 0 || tok == "" || !strings.Contains(errw.String(), node.WakeMarker(tok)) {
+		t.Fatalf("acked %v token %q stderr %q", c.f.ackedIDs(), tok, errw.String())
 	}
 	// The person sees the line at the session's next event.
 	if v := parseOut(t, c.run(hookClaude, evPreTool, `,"tool_name":"Read"`)); v.SystemMessage != "agent-link: 1 сообщение от KPECTIK — беру в работу" {
@@ -741,6 +831,72 @@ func TestHookWaitWakesIdleSession(t *testing.T) {
 	}
 	if c.state(hookClaude).Notice != "" {
 		t.Fatal("notice shown twice")
+	}
+	// An event whose transcript lacks the wake neither acknowledges nor
+	// delivers it again.
+	transcript := filepath.Join(t.TempDir(), "t.jsonl")
+	if err := os.WriteFile(transcript, []byte(`{"type":"user","message":{"content":"hello"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tp := `,"tool_name":"Read","transcript_path":` + strconv.Quote(transcript)
+	if out := c.run(hookClaude, evPostTool, tp); strings.Contains(out, "wake up") || len(c.f.ackedIDs()) != 0 {
+		t.Fatalf("unproven wake: out %q acked %v", out, c.f.ackedIDs())
+	}
+	// Once the wake is in the transcript, the next event acknowledges it.
+	rec := mustJSON(map[string]any{"type": "user", "message": map[string]string{"content": "Stop hook feedback:\n" + errw.String()}})
+	if err := os.WriteFile(transcript, rec, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := c.run(hookClaude, evPostTool, tp); strings.Contains(out, "wake up") || !slices.Equal(c.f.ackedIDs(), []string{"m1"}) {
+		t.Fatalf("proven wake: out %q acked %v", out, c.f.ackedIDs())
+	}
+}
+
+// A wake whose claim lapsed before the session's next event (a long first
+// tool call) is unread again; a hook that finds it in the transcript
+// acknowledges it instead of delivering it a second time.
+func TestHookLapsedWakeProvenNotRedelivered(t *testing.T) {
+	c := newHookCase(t)
+	c.f.claimOn = true
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evStop)
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "ping", true))
+	var errw bytes.Buffer
+	if code, _ := wakeWith(hookClaude, c.sid, c.folder, hookStatePath(c.env.dir, hookClaude, c.sid), &errw, c.env, time.Hour); code != 2 {
+		t.Fatalf("wake: %d", code)
+	}
+	c.f.mu.Lock()
+	c.f.lapsed["m1"] = true
+	c.f.mu.Unlock()
+	transcript := filepath.Join(t.TempDir(), "t.jsonl")
+	if err := os.WriteFile(transcript, mustJSON(map[string]string{"content": errw.String()}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := c.run(hookClaude, evPostTool, `,"tool_name":"Read","transcript_path":`+strconv.Quote(transcript))
+	if strings.Contains(out, "ping") || !slices.Equal(c.f.ackedIDs(), []string{"m1"}) {
+		t.Fatalf("lapsed proven wake: out %q acked %v", out, c.f.ackedIDs())
+	}
+}
+
+// A Stop whose only batch is a proven wake acknowledges it and lets the
+// session stop.
+func TestHookStopAcksProvenWake(t *testing.T) {
+	c := newHookCase(t)
+	c.f.claimOn = true
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evStop)
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "ping", true))
+	var errw bytes.Buffer
+	if code, done := wakeWith(hookClaude, c.sid, c.folder, hookStatePath(c.env.dir, hookClaude, c.sid), &errw, c.env, time.Hour); code != 2 || !done {
+		t.Fatalf("wake: %d %v", code, done)
+	}
+	transcript := filepath.Join(t.TempDir(), "t.jsonl")
+	if err := os.WriteFile(transcript, mustJSON(map[string]string{"content": errw.String()}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := c.run(hookClaude, evStop, `,"transcript_path":`+strconv.Quote(transcript))
+	if strings.Contains(out, `"decision"`) || !slices.Equal(c.f.ackedIDs(), []string{"m1"}) {
+		t.Fatalf("stop: out %q acked %v", out, c.f.ackedIDs())
 	}
 }
 
@@ -766,6 +922,27 @@ func TestHookGuardedMessageDoesNotRewake(t *testing.T) {
 	}
 }
 
+// While the node wakes the session through its inbox, the waiter leaves it
+// alone; once the node dropped the inbox, the waiter wakes it again.
+func TestHookWaiterDefersToInboxWake(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evStop)
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "hi", true))
+	c.f.mu.Lock()
+	c.f.inboxWakes = true
+	c.f.mu.Unlock()
+	if pendingUnread(c.env, c.folder, c.sid) {
+		t.Fatal("the waiter woke a session the node wakes")
+	}
+	c.f.mu.Lock()
+	c.f.inboxWakes = false
+	c.f.mu.Unlock()
+	if !pendingUnread(c.env, c.folder, c.sid) {
+		t.Fatal("the waiter did not take over")
+	}
+}
+
 func TestHookWaitLeavesBusySessionAndEnds(t *testing.T) {
 	c := newHookCase(t)
 	c.run(hookClaude, evSessionStart)
@@ -775,9 +952,20 @@ func TestHookWaitLeavesBusySessionAndEnds(t *testing.T) {
 	env.now = func() time.Time { return c.now }
 	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 200 * time.Millisecond, busyFor: time.Hour, stale: time.Minute}
 	var errw bytes.Buffer
+	// The state still says busy (the Stop hook that started the waiter has not
+	// saved yet) while the node already has it idle: the waiter's heartbeat
+	// must not undo that.
+	idleReq := c.f.sessions[c.sid]
+	idleReq.Idle = true
+	c.f.sessions[c.sid] = idleReq
+	o.heartbeat = 0
 	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &errw, env, o); code != 0 || errw.Len() != 0 || len(c.f.ackedIDs()) != 0 {
 		t.Fatalf("busy: code %d stderr %q acked %v", code, errw.String(), c.f.ackedIDs())
 	}
+	if !c.f.sessions[c.sid].Idle {
+		t.Fatal("a busy waiter's heartbeat reported the idle session busy")
+	}
+	o.heartbeat = time.Hour
 	// One waiter per session.
 	path := hookStatePath(c.env.dir, hookClaude, c.sid) + ".wait"
 	release, ok := takeWaitLock(path, time.Minute)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"slices"
@@ -36,6 +37,16 @@ type SendRequest struct {
 	// SessionID is the live session of this node that sends (agentlink send
 	// inside it): replies to the message are delivered to it (routeOf).
 	SessionID string `json:"session_id,omitempty"`
+	// Attachments are files uploaded before (POST /attachments): id and name.
+	Attachments []Attachment `json:"attachments,omitempty"`
+	// Files are local files to attach (agentlink send --attach): absolute, or
+	// relative to Folder; only inside this node's folders or the temp folder.
+	Files []string `json:"files,omitempty"`
+	// AskSeats are this node's seats asked to answer (ids or labels, "all"),
+	// in a chat only; Seat is the sending seat (a seat's turn run by the node,
+	// AGENTLINK_SEAT), else the seat of SessionID (seats.go).
+	AskSeats []string `json:"ask_seats,omitempty"`
+	Seat     string   `json:"seat,omitempty"`
 }
 
 // SendRequest sends req like POST /send: every path goes to the one open chat
@@ -53,7 +64,45 @@ type SendRequest struct {
 // A reply (ReplyTo) that is not from the job answering that very request
 // (Parent) is reported to the local reply hook: the request is answered here.
 func (n *Node) SendRequest(req SendRequest) (Message, error) {
-	m, err := n.sendRequest(req)
+	// Members are named by name, nickname or an earlier nickname.
+	if req.To != "" && !strings.HasPrefix(req.To, AreaPrefix) {
+		req.To = n.ResolveMember(req.To)
+	}
+	req.Ask = n.resolveNames(req.Ask)
+	agent, err := n.senderAgent(req)
+	if err != nil {
+		return Message{}, err
+	}
+	sender := ""
+	if agent != nil {
+		sender = agent.Seat
+	}
+	asked, err := n.resolveSeats(req.AskSeats, sender)
+	if err != nil {
+		return Message{}, err
+	}
+	if req.AuthorKind == AuthorHuman && req.ReplyTo != "" {
+		// A person answering a seat's message asks that seat.
+		if r, ok := n.chats.message(req.ReplyTo); ok && r.Message.From == n.cfg.Node && r.Message.Agent != nil && r.Message.Agent.Seat != "" {
+			if extra, err := n.resolveSeats([]string{r.Message.Agent.Seat}, ""); err == nil {
+				asked = slices.Compact(slices.Sorted(slices.Values(append(asked, extra...))))
+			}
+		}
+	}
+	atts, err := n.resolveAttachments(req)
+	if err != nil {
+		return Message{}, err
+	}
+	if len(atts) > 0 {
+		req.Body = withFallback(req.Body, atts)
+	}
+	m, err := n.sendRequest(req, atts, agent, asked)
+	var qerr error
+	if err == nil && m.ChatID != "" {
+		if qerr = n.deliverToSeats(m, sender); qerr != nil {
+			qerr = fmt.Errorf("message %s sent, but the seats' queue was not saved (retried): %w", m.ID, qerr)
+		}
+	}
 	if err == nil && m.ChatID != "" && validSessionID(req.SessionID) {
 		if serr := n.chats.setSession(m.ID, req.SessionID); serr != nil {
 			n.log.Warn("record sending session", "id", m.ID, "err", serr)
@@ -62,11 +111,15 @@ func (n *Node) SendRequest(req SendRequest) (Message, error) {
 	if err == nil && req.ReplyTo != "" && req.Parent != req.ReplyTo && n.onLocalReply != nil {
 		n.onLocalReply(req.ReplyTo)
 	}
+	if err == nil {
+		err = qerr
+	}
 	return m, err
 }
 
-func (n *Node) sendRequest(req SendRequest) (Message, error) {
-	cs := ChatSend{ChatID: req.ChatID, Body: req.Body, ReplyTo: req.ReplyTo, Ask: req.Ask, Parent: req.Parent, AuthorKind: req.AuthorKind}
+func (n *Node) sendRequest(req SendRequest, atts []Attachment, agent *AgentRef, asked []string) (Message, error) {
+	cs := ChatSend{ChatID: req.ChatID, Body: req.Body, ReplyTo: req.ReplyTo, Ask: req.Ask, Parent: req.Parent, AuthorKind: req.AuthorKind, Attachments: atts,
+		Agent: agent, AskSeats: asked}
 	if req.ChatID != "" {
 		if req.To != "" {
 			return Message{}, errors.New("give either to or chat_id")
@@ -112,8 +165,11 @@ func (n *Node) sendRequest(req SendRequest) (Message, error) {
 		plain = plain || (n.Connected(p) && !n.PeerHas(p, CapChat))
 	}
 	if plain {
-		if len(req.Ask) > 0 {
+		if len(req.Ask) > 0 || len(asked) > 0 {
 			return Message{}, errors.New("ask needs a chat")
+		}
+		if len(atts) > 0 {
+			return Message{}, fmt.Errorf("%w: attachments need a chat", ErrAttachment)
 		}
 		return n.Send(to, req.Body, req.ReplyTo)
 	}
@@ -126,7 +182,7 @@ func (n *Node) sendRequest(req SendRequest) (Message, error) {
 		return Message{}, err
 	}
 	cs.ChatID = c.ID
-	if len(cs.Ask) == 0 {
+	if len(cs.Ask) == 0 && len(asked) == 0 {
 		cs.Ask = recipients
 	}
 	return n.SendChat(cs)
@@ -138,14 +194,23 @@ type CreateChatRequest struct {
 	Area         string   `json:"area,omitempty"`
 }
 
+// ArchiveRequest is the body of POST /chats/archive: ChatID names the chat to
+// archive, "" the project's active one.
+type ArchiveRequest struct {
+	ChatID string `json:"chat_id,omitempty"`
+}
+
 // APIHandler serves the loopback control API (agents and the CLI; see
 // docs/agent-usage.md). It has no close: only people close chats, in the app.
 //
 //	POST /send               SendRequest -> Message, written by an agent (AuthorAgent)
+//	POST /attachments        raw body ?name=, or multipart -> Attachment (for SendRequest.Attachments)
+//	GET  /attachments/{id}   the file (?name=, &download=1)
 //	GET  /wait?timeout=30s   200 []Message (marked delivered) or 204 on timeout; 0 waits forever.
 //	                         Requests and replies only: status updates never wake it.
 //	     &chat=ID            only that chat's messages; the others stay for a later wait
-//	POST /chats              CreateChatRequest -> ChatInfo (EnsureOpenChat)
+//	POST /chats              CreateChatRequest -> ChatInfo (EnsureOpenChat; in a project its one active chat)
+//	POST /chats/archive      ArchiveRequest (optional) -> ChatInfo: the project's fresh active chat (ArchiveChat)
 //	GET  /chats?archive=1    200 []ChatInfo: the archive (default the main list); &legacy=1 adds pre-chat history
 //	GET  /chats/{id}         200 ChatInfo
 //	GET  /chats/{id}/messages?before=SEQ&after=SEQ&limit=50   200 []ChatMessage in Seq order
@@ -154,12 +219,14 @@ type CreateChatRequest struct {
 //	POST /ack                AckRequest -> []AckResult, chat and plain messages
 //	GET  /unread?folder=PATH&after=CURSOR&limit=50   200 UnreadPage
 //	     &session=ID         only what that session may take (UnreadFor)
+//	     &waiter=1           a Claude waiter: empty while the node wakes that session (InboxWakes)
 //	POST /claim              ClaimRequest -> []string (ids granted to the session for delivery)
 //	POST /sessions           SessionRequest -> Session (register or heartbeat)
 //	GET  /sessions           200 []Session (live ones)
 //	DELETE /sessions/{id}    204
 //	GET  /inbox?limit=50     200 []Entry, chat messages included (with chat_id)
 //	GET  /members            200 []MemberInfo (this node first)
+//	GET  /seats              200 []SeatView: this node's local agents (seats.go)
 //	POST /members            {"addr"} -> dial that address too (AddPeer)
 //	POST /members/remove     {"name"} -> remove the member from the network
 func (n *Node) APIHandler() http.Handler {
@@ -167,9 +234,24 @@ func (n *Node) APIHandler() http.Handler {
 	mux.HandleFunc("POST /send", n.handleSend)
 	mux.HandleFunc("GET /wait", n.handleWait)
 	mux.HandleFunc("GET /inbox", n.handleInbox)
+	mux.HandleFunc("POST /chats/archive", func(w http.ResponseWriter, r *http.Request) {
+		var req ArchiveRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxFrame)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		info, err := n.ArchiveChat(strings.TrimSpace(req.ChatID))
+		if err != nil {
+			http.Error(w, err.Error(), errorCode(err))
+			return
+		}
+		writeJSONResponse(w, info)
+	})
 	n.ChatRoutes(mux, "", false, func(w http.ResponseWriter, code int, err error) { http.Error(w, err.Error(), code) })
 	n.sessionRoutes(mux)
+	n.AttachmentRoutes(mux, "", func(w http.ResponseWriter, code int, err error) { http.Error(w, err.Error(), code) })
 	mux.HandleFunc("GET /members", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Members()) })
+	mux.HandleFunc("GET /seats", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Seats()) })
 	mux.HandleFunc("POST /members", n.handleAddMember)
 	mux.HandleFunc("POST /members/remove", n.handleRemoveMember)
 	return localOnly(mux)
@@ -420,7 +502,20 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 			}
 			limit = v
 		}
+		// A Claude session's background waiter asks with waiter=1: while the
+		// node wakes that session through its inbox, the waiter has nothing to do.
+		if q.Get("waiter") == "1" && n.InboxWakes(q.Get("session")) {
+			writeJSONResponse(w, UnreadPage{Messages: []UnreadMessage{}})
+			return
+		}
+		waiter := q.Get("waiter") == "1"
+		if waiter {
+			limit = max(limit, hookBatchIDs) // what it may not wake with is dropped below
+		}
 		page, err := n.unreadFor(q.Get("folder"), q.Get("session"), q.Get("after"), limit, q.Get("actionable") == "1")
+		if err == nil && waiter {
+			n.waiterSpent(&page)
+		}
 		reply(w, page, err)
 	})
 	mux.HandleFunc("POST /claim", func(w http.ResponseWriter, r *http.Request) {
@@ -438,6 +533,7 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 		}
 	})
 	mux.HandleFunc("GET /sessions", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Sessions()) })
+	mux.HandleFunc("GET /leases", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Leases()) })
 	mux.HandleFunc("DELETE /sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := n.EndSession(r.PathValue("id")); err != nil {
 			http.Error(w, err.Error(), errorCode(err))

@@ -43,9 +43,10 @@ const usage = `usage:
   agentlink [-config <settings.json>] [-no-tray] [-api <addr>]   (no command: the desktop app with its tray icon)
   agentlink serve --config <path>
   agentlink send  --config <path> [--to <node|area:NAME>] [--area <name>] --body <text> [--reply-to <id>] [--ask <node,...>] [--project <id>]   (into the one open chat with them; no --to: the only peer; the area defaults to this folder's project)
-  agentlink send  --config <path> --chat <id> --body <text> [--ask <node,...>] [--reply-to <id>] [--project <id>]   (to every chat participant; --ask: who must answer)
+  agentlink send  --config <path> --chat <id> --body <text> [--ask <node,...>] [--ask-seat <label>] [--reply-to <id>] [--project <id>]   (to every chat participant; --ask: who must answer; --ask-seat: a local agent of this node, repeatable)
   agentlink wait  --config <path> [--timeout 0] [--chat <id>] [--project <id>]   (seconds or duration; 0 = forever; exit 2 on timeout; --chat: only that chat)
-  agentlink chat new     --config <path> --with <node,...> [--area <name>] [--project <id>]   (prints the chat id; you are added)
+  agentlink chat new     --config <path> --with <node,...> [--area <name>] [--project <id>]   (prints the chat id; you are added; in a project: its one active chat)
+  agentlink chat archive --config <path> [--chat <id>] [--project <id>]   (the project's chat history goes to the archive; a fresh chat with the same members opens; prints its id)
   agentlink chat list    --config <path> [--archive] [--legacy] [--project <id>]   (one JSON line per chat; without a project: every project's)
   agentlink chat history --config <path> --chat <id> [--limit 50] [--before <seq>] [--after <seq>] [--project <id>]   (one JSON line per message, oldest first)
   agentlink chat unread  --config <path> [--folder <path>] [--limit 50] [--after <cursor>] [--project <id>]   (unread messages for this node, oldest first, one JSON line each; a last line {"next":...} when more follow)
@@ -53,8 +54,9 @@ const usage = `usage:
   agentlink close   (no longer here: only people close chats, in the app)
   agentlink inbox --config <path> [--limit 50] [--project <id>]
   agentlink members --config <path> [--project <id>]   (one JSON line per member, this node first)
+  agentlink seats [--project <id>]   (one JSON line per local agent (seat) of this node in the project; send --ask-seat <label> asks one)
   agentlink projects [--config <path>]   (one JSON line per project of the desktop app; online/total count the other members, members lists this node too)
-  agentlink mcp [--config <path>]   (stdio MCP server "agentlink" for an agent session: tools projects, members, chats, history, unread, send, ack)
+  agentlink mcp [--config <path>]   (stdio MCP server "agentlink" for an agent session: tools projects, members, seats, chats, history, unread, send, ack)
   agentlink add    --config <path> --addr <ip[:port]> [--project <id>]   (dial a member's address; it spreads to all members)
   agentlink remove --config <path> --name <node> [--project <id>]   (remove a member from the whole network)
   agentlink hook <claude|codex> [--event auto]   (run by an agent's hooks: tells the session about new messages; never claims them)
@@ -122,7 +124,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	cfgPath := fs.String("config", "", "config file")
 	project := new(string)
 	switch name {
-	case "send", "wait", "chat new", "chat list", "chat history", "chat unread", "chat ack", "inbox", "members", "add", "remove":
+	case "send", "wait", "chat new", "chat archive", "chat list", "chat history", "chat unread", "chat ack", "inbox", "members", "seats", "add", "remove":
 		project = fs.String("project", "", "project id (or legacy); default $"+envProjectID+", else the chat's or this folder's project")
 	}
 	// proj is the project selector: --project, else the agent's own project.
@@ -139,8 +141,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		ask := fs.String("ask", "", "chat participants who must answer, comma-separated; none: the message only informs")
 		area := fs.String("area", "", "project (area) of the conversation; default: this folder's project")
 		session := fs.String("session", "", "the sending agent session's id, which gets the replies; default: the agent's own ($"+envClaudeSession+", $"+envCodexThread+")")
+		var attach, askSeat listFlag
+		fs.Var(&askSeat, "ask-seat", "a local agent (seat) of this node asked to answer: its label or id, or all (repeatable)")
+		fs.Var(&attach, "attach", "file to attach (repeatable): an image (png, jpeg, gif, webp), pdf or text file of at most 10 MB inside the project folder or the temp folder")
 		cmd = func(c config.Config) (int, error) {
-			return 0, send(c, sendArgs{to: *to, body: *body, replyTo: *replyTo, chat: *chat, ask: *ask, area: *area, project: proj(), session: *session}, stdout)
+			return 0, send(c, sendArgs{to: *to, body: *body, replyTo: *replyTo, chat: *chat, ask: *ask, area: *area, project: proj(), session: *session, files: attach, askSeats: askSeat}, stdout)
 		}
 	case "wait":
 		timeout := fs.String("timeout", "0", "seconds or Go duration; 0 waits forever")
@@ -166,6 +171,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		with := fs.String("with", "", "the other participants, comma-separated")
 		area := fs.String("area", "", "area (project) the participants' agents work in")
 		cmd = func(c config.Config) (int, error) { return 0, chatNew(c, *with, *area, proj(), stdout) }
+	case "chat archive":
+		chat := fs.String("chat", "", "chat id to archive (default: the project's active chat)")
+		cmd = func(c config.Config) (int, error) { return 0, chatArchive(c, *chat, proj(), stdout) }
 	case "chat list":
 		archive := fs.Bool("archive", false, "list the archive instead of the main list")
 		legacy := fs.Bool("legacy", false, "add history from before chats as virtual chats")
@@ -183,6 +191,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmd = func(c config.Config) (int, error) { return 0, inbox(c, *limit, proj(), stdout) }
 	case "members":
 		cmd = func(c config.Config) (int, error) { return 0, members(c, "", nil, proj(), stdout) }
+	case "seats":
+		cmd = func(c config.Config) (int, error) {
+			list, err := listSeats(c, proj())
+			if err != nil {
+				return 0, err
+			}
+			return 0, encodeLines(stdout, list)
+		}
 	case "projects":
 		cmd = func(c config.Config) (int, error) { return 0, projects(c, stdout) }
 	case "mcp":
@@ -257,6 +273,7 @@ func serve(cfg config.Config) error {
 	}
 	n.SetAppVersion(selfupdate.Version)
 	n.SetSessionWaker(codexqueue.New())
+	n.SetInboxPoster(node.PipePoster{})
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	var lc net.ListenConfig
@@ -282,6 +299,8 @@ const (
 	envProjectID = "AGENTLINK_PROJECT_ID"
 	envChatID    = "AGENTLINK_CHAT_ID"
 	envJobID     = "AGENTLINK_JOB_ID"
+	// envSeat is the seat whose turn the node runs (node.Seat): send writes as it.
+	envSeat = "AGENTLINK_SEAT"
 )
 
 // withProject adds the project selector to q (a new one when q is nil).
@@ -307,7 +326,17 @@ func inFolder(q url.Values, project string) url.Values {
 	return q
 }
 
-type sendArgs struct{ to, body, replyTo, chat, ask, area, project, session string }
+type sendArgs struct {
+	to, body, replyTo, chat, ask, area, project, session string
+	files                                                []string // local files to attach
+	askSeats                                             []string // local agents (seats) asked
+}
+
+// listFlag is a repeatable string flag.
+type listFlag []string
+
+func (l *listFlag) String() string     { return strings.Join(*l, ",") }
+func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
 
 // Environment of the agent sessions agentlink send runs in: the session's id,
 // so replies go back to that session.
@@ -333,8 +362,8 @@ func agentSession() (id, client string) {
 }
 
 func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
-	if a.body == "" {
-		return errors.New("--body is required")
+	if a.body == "" && len(a.files) == 0 {
+		return errors.New("--body is required (or --attach)")
 	}
 	if a.chat == "" && a.to == "" {
 		a.chat = os.Getenv(envChatID)
@@ -361,9 +390,17 @@ func sendMessage(cfg config.Config, a sendArgs, ask []string) (node.Message, err
 	if a.session == "" {
 		a.session, _ = agentSession()
 	}
-	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat, Area: a.area, SessionID: a.session, Ask: ask}
+	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat, Area: a.area, SessionID: a.session, Ask: ask,
+		AskSeats: a.askSeats, Seat: os.Getenv(envSeat)}
 	if wd, err := os.Getwd(); err == nil {
 		r.Folder = wd // the node picks the project of this folder
+	}
+	for _, f := range a.files {
+		p, err := filepath.Abs(f) // the node resolves no relative paths of its own
+		if err != nil {
+			return node.Message{}, err
+		}
+		r.Files = append(r.Files, p)
 	}
 	// A job's agent names its request: in a chat that continues its chain, and
 	// its own reply to it never counts as answered by someone else.
@@ -437,6 +474,17 @@ func createChat(cfg config.Config, with []string, area, project string) (node.Ch
 	var info node.ChatInfo
 	err := apiJSON(http.MethodPost, apiURL(cfg, "/chats", inFolder(nil, project)), node.CreateChatRequest{Participants: with, Area: area}, &info)
 	return info, err
+}
+
+// chatArchive moves the project's chat history to the archive and prints the
+// id of the fresh active chat.
+func chatArchive(cfg config.Config, chat, project string, stdout io.Writer) error {
+	var info node.ChatInfo
+	if err := apiJSON(http.MethodPost, apiURL(cfg, "/chats/archive", inFolder(nil, project)), node.ArchiveRequest{ChatID: chat}, &info); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(stdout, info.ID)
+	return err
 }
 
 func chatList(cfg config.Config, archive, legacy bool, project string, stdout io.Writer) error {
@@ -602,6 +650,13 @@ func members(cfg config.Config, path string, req *node.MemberRequest, project st
 		return err
 	}
 	return encodeLines(stdout, list)
+}
+
+// listSeats lists the local agents (seats) of the project's node.
+func listSeats(cfg config.Config, project string) ([]node.SeatView, error) {
+	var list []node.SeatView
+	err := apiJSON(http.MethodGet, apiURL(cfg, "/seats", inFolder(nil, project)), nil, &list)
+	return list, err
 }
 
 func listMembers(cfg config.Config, project string) ([]node.MemberInfo, error) {

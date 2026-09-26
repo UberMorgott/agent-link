@@ -93,6 +93,36 @@ func TestQueueWake(t *testing.T) {
 	}
 }
 
+// The prompt reaches codex as one argument, byte for byte: several lines,
+// quotes, backslashes and shell characters (Windows: exec's argv quoting),
+// up to MaxMessage even when escaping doubles it; a longer one is refused
+// without marking codex down.
+func TestQueueWakeArgv(t *testing.T) {
+	q, out := fake(t, "0.155.1")
+	for _, text := range []string{
+		"agent-link: новые сообщения (1). [agent-link wake ab12]\n\nОт bob, id m1:\nsay \"hi\" to C:\\dir\\ & 100% ^ ! <x> 'q'\r\n\ttab\\",
+		`\\"` + strings.Repeat(`\"`, MaxMessage/2-2),
+		strings.Repeat("я", MaxMessage),
+	} {
+		if err := q.Wake(context.Background(), "", "thread-1", text); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(out) //nolint:gosec // G304: the test's own temp file
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "queue|--thread|thread-1|--message|" + text + "|home="; string(got) != want {
+			t.Fatalf("codex got %d bytes, want %d: %.200q", len(got), len(want), got)
+		}
+	}
+	if err := q.Wake(context.Background(), "", "thread-1", strings.Repeat("x", MaxMessage+1)); err == nil {
+		t.Fatal("an over-long message was queued")
+	}
+	if !q.Ready() {
+		t.Fatal("an over-long message marked codex down")
+	}
+}
+
 func TestQueueNeedsNewCodex(t *testing.T) {
 	q, _ := fake(t, "0.148.9")
 	if q.Ready() {
@@ -115,6 +145,24 @@ func TestAtLeast(t *testing.T) {
 	} {
 		if got := AtLeast(v, MinVersion); got != want {
 			t.Errorf("AtLeast(%q) = %v, want %v", v, got, want)
+		}
+	}
+}
+
+// Images go with the prompt as --image flags, absolute paths only.
+func TestQueueWakeImages(t *testing.T) {
+	q, out := fake(t, "0.155.1")
+	img := filepath.Join(t.TempDir(), "a b.png")
+	if err := q.WakeImages(context.Background(), "", "thread-1", "look", []string{img}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(out) //nolint:gosec // G304: the test's own temp file
+	if want := "queue|--thread|thread-1|--message|look|--image|" + img + "|home="; string(got) != want {
+		t.Fatalf("codex ran with %q, want %q", got, want)
+	}
+	for _, bad := range []string{"rel.png", "-x"} {
+		if err := q.WakeImages(context.Background(), "", "thread-1", "look", []string{bad}); err == nil {
+			t.Fatalf("image %q queued", bad)
 		}
 	}
 }

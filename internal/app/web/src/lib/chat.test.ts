@@ -1,7 +1,56 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { ACTIVITY_EXPIRE_MS, CONCURRENT_MS, activityLines, activityText, agentTree, keepLastKnown, liveJobs, type ActivityLine } from './chat'
+import {
+  ACTIVITY_EXPIRE_MS, CHAT_COLORS, CONCURRENT_MS, activityLines, activityText, agentTree, attemptText, authorTitle, chatName, keepLastKnown, liveJobs, messageTick,
+  presenceLines, projectDot, ticksFor, whoColor, whoName,
+  type ActivityLine,
+} from './chat'
 import { runtime } from './runtime'
-import type { ChatInfo, ChatMember, Job } from '@/types'
+import type { ChatInfo, ChatMember, ChatMessage, Delivery, Job, MemberInfo, ProjectView } from '@/types'
+
+describe('chat names', () => {
+  it('a project chat goes by the project name, an archived one adds when it began', () => {
+    const info: ChatInfo = { id: 'c', project: 'P', mode: 'project', participants: ['bob', 'me'], title: 'first words', created_at: '2026-01-02T03:04:05Z' }
+    expect(chatName(info, 'me', 'Сайт')).toBe('Сайт')
+    expect(chatName({ ...info, archived: true }, 'me', 'Сайт')).toMatch(/^Сайт · \d\d\.\d\d \d\d:\d\d$/)
+    expect(chatName(info, 'me')).toBe('bob')
+    expect(chatName({ ...info, project: 'legacy', legacy: true, peer: 'bob' }, 'me', 'Сайт')).toBe('bob')
+  })
+})
+
+describe('delivery attempts', () => {
+  beforeEach(() => {
+    runtime.strings = {
+      'inbox.tick.delivered': 'доставлено', 'inbox.tick.read': 'прочитано',
+      'inbox.attempt.wake_requested': 'разбужена', 'inbox.attempt.launch_requested': 'открывается',
+      'inbox.attempt.launch_failed': 'не открылась ({reason})', 'inbox.attempt.needs_human': 'нужен человек',
+    }
+  })
+  const out = (d: Delivery): ChatMessage => ({ id: 'm1', direction: 'out', from: 'me', created_at: '', delivery: [d] }) as unknown as ChatMessage
+
+  it('names the latest attempt until the message is read', () => {
+    expect(attemptText({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'wake_requested' })).toBe('разбужена')
+    expect(attemptText({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'launch_failed:no_agent' })).toBe('не открылась (no_agent)')
+    expect(attemptText({ peer: 'bob', status: 'sent', state: 'read', attempt: 'wake_requested' })).toBe('')
+    expect(attemptText({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'future_event' })).toBe('')
+  })
+
+  it('shows a failed attempt as a hold, not a delivered tick', () => {
+    const waking = ticksFor(out({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'launch_requested' }), null)!
+    expect(waking.state).toBe('delivered')
+    expect(waking.label).toBe('bob: доставлено — открывается')
+    const failed = ticksFor(out({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'launch_failed:timeout' }), null)!
+    expect(failed.state).toBe('held')
+    expect(failed.label).toBe('bob: доставлено — не открылась (timeout)')
+    expect(ticksFor(out({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'needs_human' }), null)!.state).toBe('held')
+    expect(ticksFor(out({ peer: 'bob', status: 'sent', state: 'read', attempt: 'needs_human' }), null)!.state).toBe('read')
+  })
+
+  it('puts the attempt under the chat instead of presence', () => {
+    const info = { id: 'c', members: [{ name: 'bob', connected: true, presence: { session: 'rewake' } }] } as unknown as ChatInfo
+    expect(presenceLines(info, [out({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'wake_requested' })]))
+      .toEqual([{ name: 'bob', text: 'разбужена' }])
+  })
+})
 
 const job = (type: string, text: string): Job => ({ reply_to: 'm1', job_status: 'running', activity_info: { type, text } }) as Job
 const count = (s: string, word: string) => s.split(word).length - 1
@@ -145,5 +194,57 @@ describe('agent tree', () => {
     expect(idle!.heard).toBe(ago(5_000))
     expect(keepLastKnown([], chat([], false), memory)).toEqual([])
     expect(memory.size).toBe(0)
+  })
+})
+
+describe('the project dot', () => {
+  const view = (members: MemberInfo[], agents?: number): ProjectView => ({
+    id: 'P', legacy: false, name: 'Сайт', alias: '', display: 'Сайт', dir: 'C:\\s', state: 'ready', problem: '', online: 1, total: 2,
+    members, can_rename: true, has_invite: true, busy: false, agents,
+  })
+  const me: MemberInfo = { name: 'me', self: true, online: true }
+  it('is grey with no agent open, yellow on one computer, green on two or more', () => {
+    runtime.strings = {}
+    expect(projectDot(view([me, { name: 'bob', online: true }]), 'me').cls).toBe('none')
+    expect(projectDot(view([me, { name: 'bob', online: true }]), 'me').label).toContain('projects.dot.none')
+    expect(projectDot(view([{ ...me, agent: true }, { name: 'bob', online: true }]), 'me').cls).toBe('one')
+    expect(projectDot(view([me, { name: 'bob', online: true, agent: true }]), 'me').cls).toBe('one')
+    // An offline member's last presence does not count.
+    expect(projectDot(view([me, { name: 'bob', online: false, agent: true }]), 'me').cls).toBe('none')
+    const both = projectDot(view([{ ...me, agent: true }, { name: 'bob', online: true, agent: true }]), 'me')
+    expect(both.cls).toBe('many')
+    expect(both.label).toContain('projects.dot.many')
+    expect(both.label).toContain('projects.online')
+    // The count the app served wins: it counts machines, not sessions.
+    expect(projectDot(view([me], 2), 'me').cls).toBe('many')
+    runtime.strings = { 'projects.dot.one': 'один: {names}', 'projects.dot.you': '{name} (вы)', 'projects.online': 'на связи {online} из {total}' }
+    expect(projectDot(view([{ ...me, agent: true }]), 'me').label).toBe('один: me (вы)\nна связи 1 из 2')
+  })
+})
+
+describe('member colors and authors', () => {
+  it('derives a stable color from the name unless the member picked one', () => {
+    expect(CHAT_COLORS).toHaveLength(8)
+    expect(whoName('bob')).toBe(whoName('bob'))
+    expect(CHAT_COLORS).toContain(whoName('карл & sons'))
+    expect(whoName('bob', 'teal')).toBe('teal')
+    expect(whoName('bob', 'no-such')).toBe(whoName('bob'))
+    expect(whoColor('bob', 'violet')).toBe('var(--who-violet)')
+  })
+  it('heads a message with the name (or nickname), then the seat', () => {
+    const m: ChatMessage = { id: 'x', seq: 1, from: 'bob', created_at: '', author_kind: 'agent' }
+    expect(authorTitle(m)).toBe('bob')
+    expect(authorTitle(m, 'Бобёр')).toBe('Бобёр')
+    expect(authorTitle({ ...m, agent: { seat: 's', provider: 'codex' } }, 'Бобёр')).toBe('Бобёр · Codex')
+  })
+  it('ticks an incoming message by whether this computer\'s agent read it', () => {
+    runtime.strings = {}
+    const info: ChatInfo = { id: 'c' }
+    const m: ChatMessage = { id: 'x', seq: 1, from: 'bob', created_at: '', direction: 'in' }
+    expect(messageTick({ ...m, unread: true }, info)).toEqual({ state: 'delivered', label: 'inbox.tick.agent_unread' })
+    expect(messageTick(m, info)).toEqual({ state: 'read', label: 'inbox.tick.agent_read' })
+    expect(messageTick({ ...m, held: true }, info)!.state).toBe('held')
+    expect(messageTick({ ...m, kind: 'chat_open' }, info)).toBeNull()
+    expect(messageTick(m, { ...info, legacy: true })).toBeNull()
   })
 })

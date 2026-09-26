@@ -5,13 +5,19 @@ import UInput from '@nuxt/ui/components/Input.vue'
 import UModal from '@nuxt/ui/components/Modal.vue'
 import { pickFolder } from '@/lib/folders'
 import { icon } from '@/lib/icons'
-import { navigate, openProject } from '@/lib/nav'
-import { fmt, t } from '@/lib/runtime'
+import { navigate, openChat, openProject } from '@/lib/nav'
+import { authorName, when } from '@/lib/chat'
+import { browser, fmt, t } from '@/lib/runtime'
+import { useAppStore } from '@/stores/app'
+import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore, type ProjectDialog } from '@/stores/projects'
 
-// The dialogs of a project's menu (ProjectMenu.vue): members, the invite, the
-// shared name, this member's folder, leaving.
+// The dialogs of a project's menu (ProjectMenu.vue): members, the history of
+// cleared chats, the invite, the shared name, this member's folder, deleting
+// the project here (leaving).
 const projects = useProjectsStore()
+const inbox = useInboxStore()
+const app = useAppStore()
 
 const view = computed(() => projects.byID(projects.dialogProject))
 const name = computed(() => view.value?.display || t("projects.connecting"))
@@ -61,14 +67,45 @@ async function run(action: () => Promise<unknown>) {
 
 // --- members ---
 
+// The project's active chat: its owner invites project members into it and
+// removes them from it, here (the chat has no header of its own).
+const active = computed(() => inbox.activeChat(projects.dialogProject))
+const canManageChat = computed(() => {
+  const c = active.value
+  return !!c && c.mode === 'project' && !!app.self && c.owner === app.self && !c.closed && !c.removed
+})
+
 const members = computed(() => (view.value?.members || []).map((m) => {
   const details: string[] = []
   if (!m.self) details.push(t(m.online ? "participants.online" : "participants.lost"))
   if (!m.self && !m.online && m.seen) details.push(fmt("participants.seen", { when: new Date(m.seen).toLocaleString('ru-RU') }))
   if (m.app) details.push(fmt("participants.version", { version: m.app }))
   if ((m.addrs || []).length) details.push(fmt("participants.addresses", { addresses: m.addrs!.join(', ') }))
-  return { name: m.self ? m.name + ' (' + t("inbox.you") + ')' : m.name, online: m.self || m.online, details: details.join(' · ') }
+  const inChat = (active.value?.participants || []).includes(m.name)
+  return {
+    key: m.name, self: !!m.self, inChat,
+    name: (m.display && m.display !== m.name ? m.display + ' (' + m.name + ')' : m.name) + (m.self ? ' (' + t("inbox.you") + ')' : ''),
+    online: m.self || m.online, details: details.join(' · '),
+  }
 }))
+
+function chatMembers(name: string, add: boolean) {
+  const c = active.value
+  if (!c) return
+  return run(async () => {
+    if (add) await inbox.setMembers(projects.dialogProject, c.id, [name])
+    else await inbox.confirmRemove(projects.dialogProject, c.id, name)
+  })
+}
+
+// removeMember removes a member from the whole project, after a confirmation.
+function removeMember(name: string) {
+  if (!browser.confirm(fmt("project.members.remove_confirm", { name }))) return
+  return run(async () => {
+    await projects.removeMember(projects.dialogProject, name)
+    result.value = fmt("project.members.removed", { name })
+  })
+}
 
 function addMember() {
   const value = addr.value.trim()
@@ -133,6 +170,43 @@ function saveFolder() {
   })
 }
 
+// --- this member's local agents (seats): Claude Code and Codex ---
+
+const agentsOpen = openFor('agents')
+watch(() => [projects.dialog, projects.dialogProject] as const, ([kind, pid]) => {
+  if (kind === 'agents' && pid) void run(() => projects.refreshSeats(pid))
+})
+const seatRows = computed(() => (projects.seats[projects.dialogProject] || []).map((s) => ({
+  ...s,
+  statusText: t('project.agents.status.' + s.status),
+  pendingText: s.pending?.length ? fmt("project.agents.pending", { n: s.pending.length }) : '',
+})))
+function seat(action: 'add' | 'start' | 'stop' | 'remove', arg: string) {
+  return run(() => projects.seatAction(projects.dialogProject, action, arg))
+}
+function removeSeat(id: string, label: string) {
+  if (!browser.confirm(fmt("project.agents.remove_confirm", { name: label }))) return
+  return seat('remove', id)
+}
+
+// --- the history: the project's cleared chats, newest first, read-only ---
+
+const historyOpen = openFor('history')
+watch(() => [projects.dialog, projects.dialogProject] as const, ([kind, pid]) => {
+  if (kind === 'history' && pid) void run(() => projects.refreshHistory(pid))
+})
+const historyRows = computed(() => (projects.history[projects.dialogProject] || []).map((c) => ({
+  id: c.id,
+  when: fmt("inbox.history.cleared", { when: when(c.closed_at || c.last_at || c.created_at || ''), name: authorName(c.closed_by || '', app.self) }),
+  title: c.title || t("inbox.history.untitled"),
+  count: fmt("inbox.history.count", { n: c.count || 0 }),
+})))
+function openHistory(id: string) {
+  const pid = projects.dialogProject
+  projects.closeDialog()
+  openChat(pid, id)
+}
+
 // --- leaving ---
 
 function leave() {
@@ -166,10 +240,43 @@ function leave() {
               class="project-dot mt-2"
               :class="m.online ? 'on' : 'away'"
             />
-            <span class="flex min-w-0 flex-col">
+            <span class="flex min-w-0 flex-1 flex-col">
               <strong class="text-sm text-highlighted">{{ m.name }}</strong>
               <span class="text-xs break-all text-muted">{{ m.details }}</span>
             </span>
+            <template v-if="!m.self">
+              <UButton
+                v-if="canManageChat && !m.inChat"
+                :id="'chat_invite_' + m.key"
+                :label="t('inbox.members.add_button')"
+                :title="t('inbox.members.add')"
+                size="xs"
+                variant="soft"
+                :disabled="busy || inbox.membersBusy"
+                @click="chatMembers(m.key, true)"
+              />
+              <UButton
+                v-if="canManageChat && m.inChat"
+                :id="'chat_remove_' + m.key"
+                :label="t('inbox.members.remove')"
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                :disabled="busy || inbox.membersBusy"
+                @click="chatMembers(m.key, false)"
+              />
+              <UButton
+                :id="'member_remove_' + m.key"
+                :icon="icon('remove')"
+                :aria-label="t('project.members.remove') + ': ' + m.key"
+                :title="t('project.members.remove')"
+                size="xs"
+                color="error"
+                variant="ghost"
+                :disabled="busy"
+                @click="removeMember(m.key)"
+              />
+            </template>
           </li>
         </ul>
         <form
@@ -201,6 +308,150 @@ function leave() {
             {{ t("participants.add.hint") }}
           </p>
         </form>
+        <p
+          class="dialog-result text-sm"
+          role="status"
+        >
+          {{ result }}
+        </p>
+      </div>
+    </template>
+  </UModal>
+
+  <UModal
+    v-model:open="agentsOpen"
+    :title="t('project.agents.title')"
+    :description="name"
+  >
+    <template #body>
+      <div class="flex flex-col gap-4">
+        <p class="hint">
+          {{ t("project.agents.hint") }}
+        </p>
+        <ul
+          id="project_seats"
+          class="flex flex-col gap-2"
+        >
+          <li
+            v-if="!seatRows.length"
+            class="text-sm text-muted"
+          >
+            {{ t("project.agents.empty") }}
+          </li>
+          <li
+            v-for="s in seatRows"
+            :key="s.id"
+            :data-seat="s.id"
+            class="flex items-start gap-2"
+          >
+            <span
+              class="project-dot mt-2"
+              :class="s.status === 'active' || s.status === 'running' || s.status === 'idle' ? 'on' : 'away'"
+            />
+            <span class="flex min-w-0 flex-1 flex-col">
+              <strong class="text-sm text-highlighted">{{ s.label }}</strong>
+              <span class="text-xs break-all text-muted">{{ [s.statusText, s.pendingText].filter(Boolean).join(' · ') }}</span>
+              <span
+                v-if="s.error"
+                class="text-xs break-all text-error"
+              >{{ s.error }}</span>
+            </span>
+            <UButton
+              v-if="s.status === 'stopped' || s.error || !s.session_id"
+              :id="'seat_start_' + s.id"
+              :label="t('project.agents.start')"
+              size="xs"
+              variant="soft"
+              :disabled="busy"
+              @click="seat('start', s.id)"
+            />
+            <UButton
+              v-else
+              :id="'seat_stop_' + s.id"
+              :label="t('project.agents.stop')"
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              :disabled="busy"
+              @click="seat('stop', s.id)"
+            />
+            <UButton
+              :id="'seat_remove_' + s.id"
+              :icon="icon('remove')"
+              :aria-label="t('project.agents.remove') + ': ' + s.label"
+              :title="t('project.agents.remove')"
+              size="xs"
+              color="error"
+              variant="ghost"
+              :disabled="busy"
+              @click="removeSeat(s.id, s.label)"
+            />
+          </li>
+        </ul>
+        <span class="flex flex-wrap gap-2">
+          <UButton
+            id="seat_add_claude"
+            :label="t('project.agents.add_claude')"
+            color="neutral"
+            variant="outline"
+            :disabled="busy"
+            @click="seat('add', 'claude')"
+          />
+          <UButton
+            id="seat_add_codex"
+            :label="t('project.agents.add_codex')"
+            color="neutral"
+            variant="outline"
+            :disabled="busy"
+            @click="seat('add', 'codex')"
+          />
+        </span>
+        <p
+          class="dialog-result text-sm"
+          role="status"
+        >
+          {{ result }}
+        </p>
+      </div>
+    </template>
+  </UModal>
+
+  <UModal
+    v-model:open="historyOpen"
+    :title="t('inbox.history.title')"
+    :description="name"
+  >
+    <template #body>
+      <div class="flex flex-col gap-3">
+        <p class="hint">
+          {{ t("inbox.history.hint") }}
+        </p>
+        <ul
+          id="project_history"
+          class="flex flex-col gap-1"
+        >
+          <li
+            v-if="!historyRows.length"
+            class="text-sm text-muted"
+          >
+            {{ t("inbox.history.empty") }}
+          </li>
+          <li
+            v-for="h in historyRows"
+            :key="h.id"
+          >
+            <button
+              type="button"
+              class="history-row"
+              :data-history="h.id"
+              @click="openHistory(h.id)"
+            >
+              <span class="history-when">{{ h.when }}</span>
+              <span class="history-title">{{ h.title }}</span>
+              <span class="history-count">{{ h.count }}</span>
+            </button>
+          </li>
+        </ul>
         <p
           class="dialog-result text-sm"
           role="status"
@@ -385,13 +636,13 @@ function leave() {
 
   <UModal
     v-model:open="leaveOpen"
-    :title="t('project.leave.title')"
+    :title="t(view?.legacy ? 'project.leave.title' : 'project.delete.title')"
     :description="name"
     :ui="{ footer: 'justify-end' }"
   >
     <template #body>
       <p class="text-sm">
-        {{ view?.legacy ? t("project.leave.text_legacy") : fmt("project.leave.text", { name }) }}
+        {{ view?.legacy ? t("project.leave.text_legacy") : fmt("project.delete.text", { name }) }}
       </p>
       <p
         class="dialog-result mt-2 text-sm text-error"
@@ -409,7 +660,7 @@ function leave() {
       />
       <UButton
         id="leave_confirm"
-        :label="t('project.leave.submit')"
+        :label="t(view?.legacy ? 'project.leave.submit' : 'project.delete.submit')"
         color="error"
         :disabled="busy"
         @click="leave"

@@ -10,6 +10,7 @@
     "problem": "",
     "online": 1,
     "total": 2,
+    "agents": 2,
     "members": [
       {
         "name": "alice",
@@ -19,7 +20,8 @@
           "10.147.20.5:7420"
         ],
         "app": "v0.9.0",
-        "proto": 6
+        "proto": 6,
+        "agent": true
       },
       {
         "name": "bob",
@@ -29,7 +31,8 @@
         ],
         "seen": "2026-09-01T12:00:00Z",
         "app": "v0.9.0",
-        "proto": 6
+        "proto": 6,
+        "agent": true
       },
       {
         "name": "carol",
@@ -44,7 +47,17 @@
     ],
     "can_rename": true,
     "has_invite": true,
-    "busy": false
+    "busy": false,
+    "autonomy": {
+      "mode": "full",
+      "max_auto_depth": 0,
+      "max_auto_depth_default": true,
+      "turns_per_hour": 30,
+      "max_run_minutes": 240,
+      "turns_last_hour": 4,
+      "run_minutes": 25
+    },
+    "launch_mode": "desktop"
   },
   "created": false
 }

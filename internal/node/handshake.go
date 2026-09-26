@@ -90,6 +90,8 @@ type frame struct {
 	Presence []AreaPresence `json:"presence,omitempty"`
 	// ProjectMeta: the project's shared name (project frames, CapProjects).
 	ProjectMeta *ProjectMeta `json:"project_meta,omitempty"`
+	// Att: one chunk of an attachment blob (att frames, CapAttachments).
+	Att *attChunk `json:"att,omitempty"`
 }
 
 // ProtocolVersion is announced in hello. It only grows; it never gates a
@@ -128,7 +130,7 @@ const (
 )
 
 // Capabilities is the list sent in hello by a legacy node; a project node adds CapProjects.
-var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE, CapChat, CapReceipts, CapPresence, CapChatMembers}
+var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE, CapChat, CapReceipts, CapPresence, CapChatMembers, CapAttachments}
 
 // caps is the capability list this node announces.
 func (n *Node) caps() []string {

@@ -90,13 +90,48 @@ agentlink send         --to nikita --area dev --body "<question>"   # the same, 
 agentlink send         --to area:dev --body "<question>"       # the chat of you + every member of area dev, asks them all
 agentlink send         --chat <id> [--ask nikita] --body "<text>"   # into that chat's conversation (a closed one: its next chat)
 agentlink send         --reply-to <id> --body "<answer>"       # into the conversation of the message you answer
+agentlink send         --chat <id> --attach shot.png [--attach log.txt] [--body "<text>"]   # with files (see Attachments below)
 agentlink chat unread  [--folder <path>]                       # what this node has not read yet, oldest first
 agentlink chat ack     --ids <id,...> [--session <id>]         # mark read: the authors see «прочитано»
 agentlink chat history --chat <id> [--limit 50] [--before <seq>] [--after <seq>]
 agentlink chat list    [--archive] [--legacy]
 agentlink chat new     --with nikita[,olga] [--area dev]       # prints the chat id (the open one; created when missing)
+agentlink chat archive [--chat <id>]                           # project: «Очистить чат» for everyone; the history keeps a snapshot
 agentlink wait         [--chat <id>] --timeout 0               # blocks until the next message
 ```
+
+Attachments: images (PNG, JPEG, GIF, WebP), PDF and UTF-8 text files, by content (not by
+extension), at most 10 MB each, 10 files and 50 MB per message; `--attach` (MCP `send`:
+`attachments: [path]`) takes only files inside the project folder or the temp folder. Received
+files are copied to `<project folder>/.agentlink/attachments/<sha8>-<name>` (git-ignored) and
+listed by absolute path in unread messages and wake prompts: open images and PDFs with your file
+viewer, text by reading the file. A Codex session woken by the node also gets the images with
+the prompt (`codex queue --image`). Peers older than attachments see a line
+`[attachment: <name>]` in the text instead.
+
+A project has exactly one active chat, shown under the project's name: `chat new`, `send --to`
+and MCP `send` with `new_chat_with` all land in it (members it lacks are added), and a message to
+an archived chat of the project continues there.
+
+**Clearing and the history («Очистить чат», «История»).** `chat archive` (MCP has no tool for it;
+a person uses the project's «⋯» → «Очистить чат») clears the chat **for every member**: each node
+keeps the messages so far as a dated, read-only snapshot and the chat goes on empty with the same
+members (technically a new chat id that takes over from the old one: live sessions, routing and
+delivery leases follow it). Snapshots are the project's history:
+
+- list them: `chat list --archive` / MCP `chats {project, archive: true}` — each entry is one
+  cleared chat: `id`, `closed_at` (when it was cleared), `closed_by` (who), `title`, `count`;
+- read one: `chat history --chat <id>` / MCP `history {chat: <id>}` (read-only, changes nothing).
+
+A request the clear caught unread stays unread and deliverable: `unread` still lists it, `ack`
+acknowledges it, and a reply (`send --reply-to <id>` or `--chat <old id>`) lands in the emptied chat.
+A member offline during the clear gets it (the old chat's close, the new chat's open) when it connects.
+
+**Names and nicknames.** A member's `name` is its identity and never changes; it may also show a
+nickname (`members[].display`, set in the app's own chip) and a chat color (`members[].color`).
+`--to`, `--ask`, MCP `to`/`ask`/`new_chat_with` accept the name, the current nickname or any earlier
+nickname (ignoring case) and resolve it to the member's name. `members[].agent: true` means that
+member's computer has an agent session (Claude Code or Codex) open in the project now.
 
 0. The network can have many members (everyone with the same code). `members` lists them:
    `name`, `online`, `addrs`, `app` (version), `self: true` for this node. Pick the recipient
@@ -232,7 +267,10 @@ it), so the node knows someone is there. All on the control API (loopback, no to
   may take. Chat affinity: every message of a chat (new roots and replies alike) goes to the
   live session behind the chat's newest message a session here sent (`agentlink send` inside a
   session names it: `--session`, default `$CLAUDE_CODE_SESSION_ID` / `$CODEX_THREAD_ID`) or was
-  assigned; a session that never took part in the chat does not get it. A chat with no such
+  assigned; a session that never took part in the chat does not get it. A session without a
+  hook event for 30 minutes (its waiter's heartbeats do not count) has lost its chats: their
+  messages go to no session in particular, and an idle one wakes the folder's session with
+  the latest hook event. An active session (in a turn) wins: while one lives in the folder, only active sessions count for the chat, so an idle chat session is not woken and the active one's hooks take the message. A chat with no such
   live session goes to the first session that `claim`s it. A claim holds until the ack, the
   session ends, or 1 minute passes unacked (then the message goes back to its route).
 - `activity` shows every member what the session does (like the worker's activity) for
@@ -288,10 +326,19 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   `agentlink hook claude --wait` in the background (`"asyncRewake": true`, `timeout` 86400 s;
   [command hook fields](https://code.claude.com/docs/en/hooks#command-hook-fields)). It polls
   the node every 2 s; when the session is idle (its last event was `Stop`) and unread messages
-  arrive, it writes the batch to stderr, acknowledges it and exits 2, which wakes Claude with
-  the batch as a system reminder. The next `Stop` arms it again. One waiter per session runs
-  at a time; it heartbeats the idle session every 5 minutes and ends with the session
-  (`SessionEnd`, or its parent process gone) or shortly before its timeout. The line for the
+  arrive, it claims them as a wake (`POST /claim` with a random `wake_token`), writes the batch
+  with the marker `[agent-link wake <token>]` to stderr and exits 2, which wakes Claude with
+  the batch as a system reminder. It does not acknowledge them: the session's next hook event
+  does, for the ones whose marker and id are in the session's transcript (`transcript_path`),
+  also after the wake lapsed. A wake nobody took lapses after 2 minutes and the messages are
+  unread again; a waiter wakes for one message at most twice, then leaves it for the
+  session's next event and its author sees «needs a person» (`needs_human`). The waiter's
+  `wake_token` and `heartbeat` need a node of the same agentlink version (one `agentlink.exe`
+  runs both): an older node ignores them and a woken message is delivered once more. The next
+  `Stop` arms it again. One waiter per session runs at a time; it heartbeats the idle session
+  every 5 minutes (`heartbeat: true`: it keeps the session live, not active) and ends with the
+  session (`SessionEnd`, or the Claude process among its ancestors gone) or shortly before its
+  timeout. The line for the
   person comes with the session's next event. Codex has no such hook (a background hook
   "doesn't start a new turn", [hooks](https://learn.chatgpt.com/docs/hooks)); see the next
   item. The waiter is not
@@ -304,13 +351,90 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   when its next event comes (`idle: false`). While the node finds a codex 0.149 or later (on
   `PATH`, the npm package's native `codex.exe`, a standalone install, or the copy the desktop
   app runs from `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>`), it checks every 2 s: an idle live session with unread
-  messages it may take gets one `codex queue --thread <session_id> --message "agent-link: N
-  новых сообщений — прочитай их"` per idle period. A Codex app-server that holds that thread
+  messages it may take gets one `codex queue --thread <session_id> --message "<the messages>"`
+  per idle period. A Codex app-server that holds that thread
   loaded and idle (the CLI, the desktop app sharing that `CODEX_HOME`) starts a turn with it
-  within about 10 s, and `UserPromptSubmit` delivers the batch as always. A thread nobody has
-  open keeps the prompt until it is opened. Without such a codex, or for 10 minutes after a
+  within about 10 s. A thread nobody has open keeps the prompt until it is opened.
+  The wake prompt (Codex queue and Claude inbox alike) is the messages themselves, formatted
+  as the hooks inject them (sender, chat, id, body, reply command), as many as fit 4500 runes,
+  then «Ещё N непрочитанных: agentlink chat unread --folder …». The node claims exactly those
+  for the session first: its hooks leave them out (`GET /unread?session=` lists them under
+  `woken`, each with the wake's random `wake_token`), and a hook event acknowledges only
+  the ones whose wake marker `[agent-link wake <token>]` and id are in its prompt or the
+  session's transcript (a hook with neither acknowledges none). A wake never takes a message a hook has
+  claimed. A failed wake drops the claim; one the session never took lapses after 2 minutes,
+  and the hooks deliver them as usual; a session still idle then is woken once more (at most 2
+  wakes per idle period; a Claude session's waiter may take over too). Messages over 12000
+  UTF-16 units are not queued. Without such a codex, or for 10 minutes after a
   failed `codex queue` (logged), the node gives the session `wake: "next-event"`: it hears of
   messages at its next event.
+- **One recipient per message.** A session in a turn (not idle) in the folder gets its
+  messages through its hooks, so the node wakes no idle session there for a message that is
+  for no session in particular. A message for one session (its claim, the session assigned to
+  answer it, or the chat's session: the one behind the chat's newest message it wrote) goes to
+  that one, woken if idle (the chat's session only while no session of the folder is in a turn). Else the idle session seen last in the folder is woken, and only it.
+  By design, a message explicitly routed to one session (its claim, or the session assigned
+  to answer it, e.g. the reply to a question that session asked) goes to that session even
+  while it is idle and another session of the folder is in a turn: it is woken for it, the
+  active one does not get it.
+- **Opening a session (project autonomy, off by default).** When a message asks this member and
+  no session at all (in a turn or idle) is live in the project's folder, the node opens a new
+  one there, only while the project's autonomy (settings page «Автономия агентов», API
+  `POST /ui/api/projects/{pid}/binding {"autonomy": "off|asked|full"}`, settings key
+  `project_bindings[].autonomy`) is `asked` or `full`; `full` also opens one for a chat message
+  of another member that only informs this member, within the hop limit (`max_auto_depth`:
+  unset follows the mode, 8 for off/asked and none for full; 0 = none). In full mode every
+  autonomous turn (a wake, a launch, a seat's turn) counts against `turns_per_hour` (default
+  30) and `max_run_minutes` of continuous work (default 240; a quiet gap of 15 minutes starts a
+  new run); an exhausted budget pauses autonomous delivery of that project (kept in
+  `autonomy.json` across restarts), the tray shows one notification, and
+  `POST /ui/api/projects/{pid}/autonomy/resume` («Продолжить») goes on. Projects from before
+  this setting keep their auto-open as `asked` (on) or `off`; new ones are off: the message then
+  waits until a session of the folder appears and gets it the usual way.
+- **Emergency stop.** `POST /ui/api/autonomy/stop {"on": true}` (settings page, tray menu
+  «Остановить всех агентов»; settings key `stop_all`) releases every active automatic lease
+  (back to retry, no failure counted; a late proof still counts), ends the seat and
+  desktop-launch turns the node runs, and takes no automatic lease, wake, launch, seat turn or
+  worker job in any project until switched off. Messages stay unread; the hook of a session in
+  a turn still delivers. The node always starts a
+  **new** session (never resumes an old one: nothing proves it is closed). Launch mode
+  `desktop` (default, when the agent's desktop app is installed) claims the messages for the
+  launch (no session's hooks take them meanwhile), runs the first turn headless with the
+  messages as its prompt (`claude -p --output-format stream-json`, or Codex `app-server`
+  `thread/start` + `turn/start`) and opens the session in the app (`claude://resume?session=`,
+  `codex://threads/`) as soon as its id is known. Only a turn that succeeded (Claude: a
+  `result` with `is_error: false`; Codex: `turn/completed` with status `completed`)
+  acknowledges the messages as that session's (`launch_confirmed`; an ack that still fails
+  after 3 tries keeps them claimed by that session, delivered to no other session, hook or
+  launch, and is retried every 30 s until it succeeds, then `launch_confirmed`). A turn that started and
+  then fails, is interrupted or runs out of its 60 minutes (its whole process tree is killed)
+  drops the claim and reports `launch_failed:<reason>` (`turn_error`, `interrupted`,
+  `timeout`) plus `needs_human`: it may have acted in part, so nothing is opened again for
+  those messages; they stay unread for a session's hooks or a person (only the automatic
+  launch is suppressed). Which messages were launched for (and the events reported for them)
+  and the pending acks are kept in `launch_state.json` in the node's data directory, so a
+  restart neither reopens a session for them nor reports them again; an entry goes once its
+  message is read, or after 7 days. Only a launch that
+  failed before its turn started (`start_error`, `no_agent`) opens Windows Terminal once
+  instead. No session is opened in a folder a session that is not registered yet occupies (a
+  Claude Code transcript in `~/.claude/projects/<folder, every character but ASCII letters and digits
+  as ->/`, or a Codex rollout in `~/.codex/sessions/` with that `cwd`, written to
+  within 10 minutes): `needs_human` instead. This occupancy check is a heuristic (the
+  transcript's or rollout's modification time within 10 minutes) until the agents give a
+  native presence signal: a session that was left open but quiet longer does not occupy the
+  folder, and one that just ended still does for up to 10 minutes. Launch mode `terminal`
+  opens `wt -w new -d <folder> claude|codex "<prompt>"` and the session's hooks deliver the
+  messages; it counts as confirmed when a session of the folder registers within 90 s, else
+  it is retried once, then `launch_failed:timeout`.
+  **Permissions: an auto-opened session runs with full rights, like the owner's own** — Claude
+  `--permission-mode bypassPermissions`; Codex `approvalPolicy: "never"` and
+  `sandbox: "danger-full-access"` (Terminal: `--dangerously-bypass-approvals-and-sandbox`). It
+  acts on what other members' agents write, without asking anyone: choose asked or full only
+  for projects whose members you trust, and off (per project) or the emergency stop to stop it.
+- **Known gaps.** A session open in a desktop app whose hooks have not fired yet (nothing typed
+  since it opened) is invisible to the node: it may open another one. A closed session counts
+  as live until its registration lapses (900 s for Claude, 3600 s for Codex, when `SessionEnd`
+  never came): nothing opens meanwhile and its messages wait.
 - **Activity.** Only for chats whose batch the session accepted (requests that ask it):
   `PreToolUse` posts what it does to `POST /chats/{id}/activity` — «читает <path>», «правит
   <path>» (relative to the folder, else the file name), «запускает <program>» (no arguments),

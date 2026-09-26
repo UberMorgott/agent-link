@@ -2,20 +2,38 @@ package node
 
 import (
 	"context"
-	"fmt"
 	"time"
 )
 
-// Waking idle sessions (WakeQueue). A Codex session has no background hook
-// that could wake it (unlike Claude Code's asyncRewake waiter), so the node
-// does it: when a live WakeQueue session is idle (its last hook event was a
-// Stop that let it stop) and actionable unread messages it may take wait, the
-// node queues one short prompt for it in its agent, once per idle period. The
-// agent starts a turn with it, and the session's own hooks (UserPromptSubmit)
-// claim, deliver and acknowledge the messages as always. A session whose app
-// is closed keeps the prompt queued until it is opened again; the node never
-// resumes one itself. Without a usable waker (no codex 0.149 or later, or a
-// failed wake) such a session gets WakeNextEvent and reads at its next event.
+// Waking idle sessions. The node wakes a live session that ended its turn
+// (Idle) and has actionable unread messages to take, once per idle period
+// plus one retry of a wake it never took (maxIdleWakes):
+//
+//   - Codex (WakeQueue): it queues one prompt in the session's agent
+//     (`codex queue`, SessionWaker); the agent starts a turn with it. A session
+//     whose app is closed keeps the prompt queued until it is opened again.
+//     Without a usable waker (no codex 0.149 or later, or a failed wake) such
+//     a session gets WakeNextEvent and reads at its next event.
+//   - Claude Code: it posts the prompt to the session's inbox (inbox.go,
+//     InboxPoster). A failed post drops the inbox, and the session's
+//     background waiter (asyncRewake, which defers to the node while it holds
+//     the inbox) wakes it instead.
+//
+// The prompt is the messages themselves (WakePrompt, as the hooks format
+// them), as many as fit FormatBudget. The node claims them for the session as
+// a wake claim first (wakeClaim): its hooks then do not deliver them again but
+// acknowledge them at that prompt (UnreadPage.Woken); a failed wake drops the
+// claim, and one the session never took lapses after inboxWakeGrace, and the
+// hooks deliver them as always. Each woken message's author hears of it
+// (AttemptWakeRequested, then AttemptWokenConfirmed at the ack).
+//
+// One recipient per message, by priority: a session in a turn (not Idle)
+// gets it through its hooks, so no idle session of its area is woken for a
+// message for no session in particular; a message routed to an idle session
+// (its claim, assignment or chat affinity, routeOf; affinity never names an
+// idle session while one of its area is in a turn) wakes that one; else the
+// area's wakeable idle session active last (LastActive) is woken, and only it.
+// The same loop runs the launch ladder (launch.go).
 
 // wakePoll is how often the node looks for idle sessions to wake.
 const wakePoll = 2 * time.Second
@@ -31,6 +49,12 @@ type SessionWaker interface {
 	Wake(ctx context.Context, home, session, text string) error
 }
 
+// ImageWaker is a SessionWaker that can also hand the agent image files
+// with the prompt (`codex queue --image`).
+type ImageWaker interface {
+	WakeImages(ctx context.Context, home, session, text string, images []string) error
+}
+
 // SetSessionWaker sets the waker of WakeQueue sessions. It must be set before
 // Serve or Run; without one such sessions get WakeNextEvent.
 func (n *Node) SetSessionWaker(w SessionWaker) { n.waker = w }
@@ -38,7 +62,7 @@ func (n *Node) SetSessionWaker(w SessionWaker) { n.waker = w }
 // canQueue reports whether a WakeQueue session can be woken now.
 func (n *Node) canQueue() bool { return n.waker != nil && n.waker.Ready() }
 
-// wakeLoop wakes idle WakeQueue sessions until ctx is done.
+// wakeLoop wakes idle sessions and runs the launch ladder until ctx is done.
 func (n *Node) wakeLoop(ctx context.Context) {
 	every := n.wakeEvery
 	if every <= 0 {
@@ -47,9 +71,22 @@ func (n *Node) wakeLoop(ctx context.Context) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
-		n.waker.Check(ctx, false)
-		n.syncQueueWake()
-		n.wakeIdle(ctx)
+		if n.waker != nil {
+			n.waker.Check(ctx, false)
+			n.syncQueueWake()
+		}
+		n.leaseSweep(time.Now())
+		// Stopped (SetStopped) or paused by the budgets (autonomy.go): no
+		// wake, seat turn or launch starts; messages wait unread.
+		auto := n.autoOK()
+		if auto {
+			n.wakeIdle(ctx)
+		}
+		n.seatsDue(ctx, time.Now())
+		n.launchMaintain(ctx, time.Now())
+		if auto {
+			n.launchDue(ctx, time.Now())
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -84,59 +121,218 @@ func (n *Node) syncQueueWake() {
 	}
 }
 
-// wakeIdle queues a wake for every idle WakeQueue session not woken in this
-// idle period that has unread messages to take. A failed wake leaves the
-// session to its next event (WakeNextEvent) and is logged.
+// wakeIdle wakes every idle session not woken in this idle period that has
+// actionable unread messages to take: WakeQueue ones through the waker,
+// Claude ones through their inbox. What it takes is re-read right before each
+// wake.
 func (n *Node) wakeIdle(ctx context.Context) {
-	if !n.canQueue() {
+	queue := n.canQueue()
+	if !queue && n.poster == nil {
 		return
 	}
 	r := n.sess
 	now := time.Now()
-	var due []Session
+	type due struct {
+		s     Session
+		inbox inboxAddr
+	}
+	var list []due
+	// active: areas with a live session in a turn (its hooks deliver);
+	// cands: per area, the wakeable idle sessions, among which pickIdle picks
+	// the one a message for no session in particular wakes.
+	active := map[string]bool{}
+	cands := map[string][]Session{}
 	r.mu.Lock()
 	for _, s := range r.sessions {
-		if s.Wake == WakeQueue && s.Idle && !s.Woken && s.live(now) {
-			due = append(due, *s)
+		if s.live(now) && !s.Idle {
+			active[s.Area] = true
 		}
 	}
-	r.mu.Unlock()
-	for _, s := range due {
-		page, err := n.unreadFor(s.Folder, s.SessionID, "", 1, true)
-		if err != nil || page.Total == 0 {
+	for _, s := range r.sessions {
+		if !s.Idle || !s.live(now) || !s.wakeDue(now) {
 			continue
 		}
-		err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, WakeText(page.Total))
+		if a, ok := r.inbox[s.SessionID]; ok && n.poster != nil {
+			list = append(list, due{s: *s, inbox: a})
+		} else if s.Wake == WakeQueue && queue {
+			list = append(list, due{s: *s})
+		} else {
+			continue
+		}
+		cands[s.Area] = append(cands[s.Area], *s)
+	}
+	r.mu.Unlock()
+	for _, d := range list {
+		s := d.s
+		page, err := n.unreadFor(s.Folder, s.SessionID, "", hookBatchIDs, true)
+		if err != nil || len(page.Messages) == 0 {
+			continue
+		}
+		// One recipient per message: the session it is routed to (its claim,
+		// assignment or chat), else, while no session of the area is in a turn,
+		// the area's idle session pickIdle picks for it.
+		mine := n.routedTo(ids(page.Messages))
+		take := page.Messages[:0:0]
+		for _, m := range page.Messages {
+			to := mine[m.ID]
+			if m.ForSeat != "" || to == s.SessionID || (to == "" && !active[s.Area] && n.pickIdle(m.ID, cands[s.Area]) == s.SessionID) {
+				take = append(take, m)
+			}
+		}
+		if len(take) == 0 {
+			continue
+		}
+		if !n.autoTake(time.Now()) {
+			return // stopped, or a budget just paused autonomous delivery
+		}
+		byInbox := d.inbox.socket != ""
+		via := ViaQueue
+		if byInbox {
+			via = ViaInbox
+		}
+		msgs, token := n.wakeClaim(s.SessionID, via, take[:FitUnread(take)])
+		if len(msgs) == 0 {
+			continue
+		}
+		text := WakePrompt(msgs, len(take)-len(msgs)+page.Total-len(page.Messages), s.Folder, token)
+		images := wakeImages(msgs)
+		iw, withImages := n.waker.(ImageWaker)
+		switch {
+		case byInbox:
+			err = n.poster.Post(ctx, d.inbox.socket, d.inbox.token, text)
+		case withImages && len(images) > 0:
+			err = iw.WakeImages(ctx, s.CodexHome, s.SessionID, text, images)
+		default:
+			err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, text)
+		}
+		if err != nil {
+			// Its hooks, another session or a launch deliver them instead.
+			n.revokeLeases(s.SessionID, ids(msgs), "wake_failed", true)
+		} else if !byInbox {
+			go n.observeQueueStart(ctx, s, token, ids(msgs))
+		}
 		r.mu.Lock()
-		cur := r.sessions[s.SessionID]
-		if cur != nil {
-			if err == nil {
-				cur.Woken = true
-			} else {
+		if cur := r.sessions[s.SessionID]; cur != nil {
+			switch {
+			case err == nil:
+				cur.Woken, cur.WokeAt = true, time.Now()
+				cur.Wakes++
+				if a, ok := r.inbox[s.SessionID]; ok && byInbox {
+					a.woke = time.Now()
+					r.inbox[s.SessionID] = a
+				}
+			case byInbox:
+				delete(r.inbox, s.SessionID) // its waiter wakes it from now on
+			default:
 				cur.Wake = WakeNextEvent
 			}
 			_ = r.saveLocked(time.Now())
 		}
 		r.mu.Unlock()
 		if err != nil {
-			n.log.Warn("waking an idle session failed; it reads its messages at its next event", "session", s.SessionID, "provider", s.Provider, "err", err)
+			n.log.Warn("waking an idle session failed; it reads its messages at its next event", "session", s.SessionID, "provider", s.Provider, "inbox", byInbox, "err", err)
 			n.presenceChanged()
 			n.changed("sessions")
-			return
+			continue
 		}
-		n.log.Info("idle session woken", "session", s.SessionID, "provider", s.Provider, "unread", page.Total)
+		n.log.Info("idle session woken", "session", s.SessionID, "provider", s.Provider, "inbox", byInbox, "messages", len(msgs), "unread", page.Total)
+		n.noteWoken(msgs)
 	}
 }
 
-// WakeText is the prompt queued for an idle session with n unread messages:
-// «agent-link: 3 новых сообщения — прочитай их».
-func WakeText(n int) string {
-	form := "новых сообщений"
-	switch n10, n100 := n%10, n%100; {
-	case n10 == 1 && n100 != 11:
-		form = "новое сообщение"
-	case n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14):
-		form = "новых сообщения"
+// pickIdle is the session of cands a wake with message id goes to: the one
+// whose leases of it failed least, then the one active last (LastActive, not
+// its registration); none passed over for it (maxOwnerFails). "" when every
+// one is.
+func (n *Node) pickIdle(id string, cands []Session) string {
+	var best *Session
+	bestFails := 0
+	for i := range cands {
+		c := &cands[i]
+		f := n.leases.fails(id, c.SessionID)
+		if f >= maxOwnerFails {
+			continue
+		}
+		if best == nil || f < bestFails || (f == bestFails && (c.activeAt().After(best.activeAt()) ||
+			(c.activeAt().Equal(best.activeAt()) && c.SessionID < best.SessionID))) {
+			best, bestFails = c, f
+		}
 	}
-	return fmt.Sprintf("agent-link: %d %s — прочитай их", n, form)
+	if best == nil {
+		return ""
+	}
+	return best.SessionID
+}
+
+func (n *Node) observeQueueStart(ctx context.Context, s Session, token string, ids []string) {
+	home := s.CodexHome
+	if home == "" {
+		home = agentHome("CODEX_HOME", ".codex")
+	}
+	path := codexRollout(home, s.SessionID)
+	if path == "" {
+		n.log.Warn("queued Codex turn has no rollout to observe", "session", s.SessionID)
+		return // missing proof is not evidence that the queued prompt was dropped
+	}
+	tick := time.NewTicker(wakePoll)
+	defer tick.Stop()
+	for {
+		if rolloutContains(path, WakeMarker(token)) {
+			n.LeaseStart(s.SessionID, token, ids)
+			return
+		}
+		select {
+		case <-tick.C:
+			if !n.queueLeaseActive(s.SessionID, token, ids) {
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (n *Node) queueLeaseActive(owner, token string, ids []string) bool {
+	for _, id := range ids {
+		l, ok := n.leases.get(id)
+		if ok && l.Owner == owner && l.Token == token && (l.State == LeaseLeased || l.State == LeaseRunning) {
+			return true
+		}
+	}
+	return false
+}
+
+// maxIdleWakes bounds the node's wakes of one idle period: the first, and one
+// retry after it lapsed untaken (inboxWakeGrace; its claim lapses with it and
+// the messages are unread again). A lapsed wake also frees the session's
+// waiter (Claude, InboxWakes); a message goes to one of them only (claims).
+// After that the waiter or the session's next event takes them.
+const maxIdleWakes = 2
+
+// wakeDue reports whether the node may wake the idle session now: not woken
+// in this idle period yet, or its last wake lapsed untaken (a session that
+// took it left the idle period) and a retry is left.
+func (s Session) wakeDue(now time.Time) bool {
+	if !s.Woken {
+		return true
+	}
+	return s.Wakes < maxIdleWakes && now.Sub(s.WokeAt) >= inboxWakeGrace
+}
+
+// hookBatchIDs bounds the unread messages one wake looks at.
+const hookBatchIDs = 50
+
+// wakeImages are the image attachments of msgs, by absolute path: a waker that
+// can (ImageWaker, `codex queue --image`) hands them to the agent with the
+// prompt, which lists every attachment's path (FormatUnread).
+func wakeImages(msgs []UnreadMessage) []string {
+	var images []string
+	for _, m := range msgs {
+		for _, a := range m.Attachments {
+			if !a.Failed && a.Path != "" && a.IsImage() {
+				images = append(images, a.Path)
+			}
+		}
+	}
+	return images
 }

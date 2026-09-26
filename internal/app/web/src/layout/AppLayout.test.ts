@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SITE } from '@/test/backend'
+import { JOINING, SITE } from '@/test/backend'
 import { fakeBackend, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
 import { useProjectsStore } from '@/stores/projects'
@@ -10,7 +10,8 @@ const $$ = <T extends Element = HTMLElement>(sel: string) => Array.from(document
 
 const CHAT = '7b8b965ad4bca0e41ab51de7b31363a1'
 const PATHS: Record<string, string> = {
-  dashboard: '/dashboard', welcome: '/welcome', project: '/p/' + SITE, chat: '/p/' + SITE + '/c/' + CHAT,
+  // A project with its chat goes on to the chat; one without shows its page.
+  dashboard: '/dashboard', welcome: '/welcome', project: '/p/' + JOINING, chat: '/p/' + SITE + '/c/' + CHAT,
   participants: '/participants', settings: '/settings',
 }
 
@@ -42,11 +43,17 @@ describe('the application shell', () => {
       expect($$('[aria-live]')).toHaveLength(1)
       const nav = $('nav')!
       expect(nav.getAttribute('aria-labelledby') && document.getElementById(nav.getAttribute('aria-labelledby')!)).toBeTruthy()
-      for (const name of ['dashboard', 'participants', 'settings']) {
-        expect($('a[data-route="' + name + '"]')!.getAttribute('href')).toBe('/ui/' + name)
+      // The foot of the sidebar: icons only (with their names as labels).
+      for (const name of ['participants', 'settings']) {
+        const link = $('a[data-route="' + name + '"]')!
+        expect(link.getAttribute('href')).toBe('/ui/' + name)
+        expect(link.getAttribute('aria-label')).toBe('nav.' + name)
+        expect(link.textContent!.trim()).toBe('')
       }
-      // The old "messages" page is gone from the navigation.
+      // The old "messages" page and the overview are gone from the navigation.
       expect($('a[data-route="inbox"]')).toBeNull()
+      expect($('a[data-route="dashboard"]')).toBeNull()
+      expect($('#user_chip')).not.toBeNull()
       if ($('a[data-route="' + route + '"]')) expect($('a[data-route="' + route + '"]')!.className).toContain('active')
       const views = $$('[data-view]')
       expect(views.map((v) => v.dataset.view)).toEqual([route])
@@ -62,18 +69,23 @@ describe('the application shell', () => {
     })
   }
 
-  it('lists the projects as a tree, legacy last, the open one unfolded', async () => {
-    await open('/p/' + SITE)
+  it('lists the projects one row each, legacy last; a row opens the project\'s one chat', async () => {
+    const { router } = await open('/p/' + JOINING)
     const tree = $$('#project_tree > li')
-    expect(tree.map((li) => li.dataset.project)).toEqual(['NBSWY3DPEB3W64TMMQQGC3DUMU', SITE, 'legacy'])
+    expect(tree.map((li) => li.dataset.project)).toEqual([JOINING, SITE, 'legacy'])
     expect(tree[0]!.textContent).toContain('projects.connecting')
     expect(tree[1]!.querySelector('.project-name')!.textContent).toBe('Мой сайт')
-    expect(tree[1]!.querySelector('.project-dot')!.className).toContain('on')
-    expect(tree[1]!.querySelectorAll('.chat-row')).toHaveLength(1)
-    expect(tree[2]!.querySelector('.project-chats')).toBeNull()
-    tree[2]!.querySelector<HTMLButtonElement>('.project-fold')!.click()
+    // Two computers (alice and bob) have an agent open in the site: green.
+    expect(tree[1]!.querySelector('.project-dot')!.className).toContain('many')
+    expect(tree[1]!.querySelector('.project-dot')!.getAttribute('title')).toContain('projects.dot.many')
+    // Nothing but the row: no chats, no «new chat», no archive under it.
+    for (const gone of ['.chat-row', '.project-fold', '.project-chats', '.project-new-chat', '.project-archive']) {
+      expect(document.querySelector('#project_tree ' + gone), gone).toBeNull()
+    }
+    tree[1]!.querySelector<HTMLButtonElement>('.project-open')!.click()
     await settle()
-    expect(tree[2]!.querySelectorAll('.chat-row')).toHaveLength(1)
+    expect(router.currentRoute.value.name).toBe('chat')
+    expect(router.currentRoute.value.params.chat).toBe(CHAT)
   })
 
   it('picks the theme, accent and background in the appearance panel', async () => {
@@ -95,7 +107,14 @@ describe('the application shell', () => {
     expect($('#theme_surface [data-surface="zinc"]')!.getAttribute('aria-pressed')).toBe('true')
     expect($('#theme_mode [data-mode="dark"]')!.getAttribute('aria-pressed')).toBe('true')
     expect($('#theme_saved')!.textContent).toContain('theme.saved')
-    expect(JSON.parse(localStorage.getItem(UI_STORAGE_KEY)!)).toEqual({ theme: 'dark', primary: 'rose', surface: 'zinc' })
+    expect(JSON.parse(localStorage.getItem(UI_STORAGE_KEY)!)).toEqual({ theme: 'dark', primary: 'rose', surface: 'zinc', font: 'inter' })
+    // The font: four choices, each described.
+    expect($$('#theme_font button').map((b) => b.dataset.font)).toEqual(['inter', 'manrope', 'plex', 'system'])
+    $<HTMLButtonElement>('#theme_font [data-font="manrope"]')!.click()
+    await settle()
+    expect($('#theme_font [data-font="manrope"]')!.getAttribute('aria-pressed')).toBe('true')
+    expect(document.documentElement.style.getPropertyValue('--app-font')).toContain('Manrope')
+    expect(JSON.parse(localStorage.getItem(UI_STORAGE_KEY)!).font).toBe('manrope')
   })
 
   it('closes the phone drawer when a project dialog opens from it', async () => {

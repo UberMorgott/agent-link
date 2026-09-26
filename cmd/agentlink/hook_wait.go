@@ -9,8 +9,11 @@ package main
 // https://code.claude.com/docs/en/hooks#run-hooks-in-the-background).
 //
 // The waiter polls the node's unread messages of the session's folder. When
-// the session is idle and some arrive it writes the batch to stderr,
-// acknowledges it and exits 2; the next Stop arms a new waiter. While the
+// the session is idle and some arrive it claims the batch as a wake (with a
+// token), writes it to stderr and exits 2; the session's next hook event
+// acknowledges it once the wake is in its transcript, and an unproven wake
+// lapses (the messages are delivered again). The next Stop arms a new
+// waiter. While the
 // session is busy it leaves delivery to the synchronous hooks. Claude Code
 // does not deduplicate async hooks, so one waiter per session runs at a time
 // (a lock file); it also keeps the idle session registered (heartbeats) and
@@ -18,6 +21,8 @@ package main
 // before the entry's timeout.
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -37,12 +42,18 @@ type waitOpts struct {
 	life      time.Duration // the waiter ends after this (before the entry's timeout)
 	busyFor   time.Duration // a session whose last event was a work event this recently is busy
 	stale     time.Duration // a waiter lock not refreshed for this long is stale
-	// alive reports whether the session (the waiter's parent) still runs.
+	// alive reports whether the session (its agent process) still runs.
 	alive func() bool
 }
 
-func defaultWaitOpts() waitOpts {
-	ppid := os.Getppid()
+// defaultWaitOpts: the session's process is the client's agent among the
+// waiter's ancestors (agentPID: Claude Code runs it through cmd.exe and the
+// plugin's agentlink.cmd, so the parent is not the agent), else the parent.
+func defaultWaitOpts(client string) waitOpts {
+	ppid := agentPID(client)
+	if ppid == 0 {
+		ppid = os.Getppid()
+	}
 	return waitOpts{
 		poll:      2 * time.Second,
 		heartbeat: 5 * time.Minute,
@@ -82,8 +93,13 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 			_ = hookCall(env.api, http.MethodDelete, "/sessions/"+url.PathEscape(in.SessionID), nil, nil, nil, hookHTTPTimeout)
 			return 0
 		}
-		if time.Since(lastBeat) >= o.heartbeat {
-			req := node.SessionRequest{SessionID: in.SessionID, Provider: client, Folder: folder, Wake: node.WakeRewake, TTLSec: hookTTLClaude}
+		// Only an idle session's heartbeat: a busy one's hooks keep it
+		// registered, and the Stop hook that started this waiter may not have
+		// saved its state yet, so "busy" here may be stale and must not undo
+		// the idle it just registered (the node would not wake the session).
+		if time.Since(lastBeat) >= o.heartbeat && !waiterBusy(st, env.clock(), o.busyFor) {
+			req := sessionRequest(client, in.SessionID, folder, true)
+			req.Heartbeat = true // keeps the session live, not active (node.Session.LastActive)
 			if hookCall(env.api, http.MethodPost, "/sessions", nil, req, nil, hookHTTPTimeout) == nil {
 				lastBeat = time.Now()
 			}
@@ -108,15 +124,16 @@ func waiterBusy(st hookState, now time.Time, busyFor time.Duration) bool {
 }
 
 // pendingUnread reports whether actionable unread messages for session wait in folder
-// (not those for another session of the folder).
+// (not those for another session of the folder). It asks as the waiter: a
+// node that wakes the session through its inbox answers none.
 func pendingUnread(env hookEnv, folder, session string) bool {
 	var page node.UnreadPage
-	q := url.Values{"folder": {folder}, "session": {session}, "limit": {"1"}, "actionable": {"1"}}
+	q := url.Values{"folder": {folder}, "session": {session}, "limit": {"1"}, "actionable": {"1"}, "waiter": {"1"}}
 	return hookCall(env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout) == nil && page.Total > 0
 }
 
-// wakeWith delivers a batch to the idle session under its lock: the batch on
-// stderr, then the ack. done is false when there was nothing after all or the
+// wakeWith delivers a batch to the idle session under its lock: claimed as a
+// wake, on stderr with the wake's marker. done is false when there was nothing after all or the
 // session became busy.
 func wakeWith(client, sid, folder, path string, stderr io.Writer, env hookEnv, busyFor time.Duration) (int, bool) {
 	unlock, err := lockFile(path + ".lock")
@@ -128,17 +145,21 @@ func wakeWith(client, sid, folder, path string, stderr io.Writer, env hookEnv, b
 	if st.Ended || waiterBusy(st, env.clock(), busyFor) {
 		return 0, st.Ended
 	}
-	h := &hookSession{env: env, st: &st, sid: sid, folder: folder, client: client}
-	b, err := h.collect(false, true)
+	token := randomToken()
+	h := &hookSession{env: env, st: &st, sid: sid, folder: folder, client: client, wakeToken: token}
+	b, err := h.collect(false, true, nil)
 	if err != nil || b.empty() {
 		return 0, false
 	}
-	text := withNotes(st.Notes, b.text)
+	text := withNotes(st.Notes, b.text+"\n"+node.WakeMarker(token))
 	st.Notes = nil
 	if _, err := io.WriteString(stderr, text+"\n"); err != nil {
 		return 0, false
 	}
-	h.accept(b)
+	// Not acknowledged here: stderr is no proof the session got it (it may be
+	// gone). The batch is claimed as a wake; the session's next event
+	// acknowledges it once the wake is in its transcript (collect), else the
+	// claim lapses and the messages are delivered again.
 	st.Notice = joinNotice(st.Notice, b.notice) // shown at the session's next event
 	st.LastEvent, st.LastEventAt = "wake", env.clock()
 	_ = saveHookState(path, st)
@@ -161,6 +182,13 @@ func takeWaitLock(path string, stale time.Duration) (func(), bool) {
 		_ = os.Remove(path)
 	}
 	return nil, false
+}
+
+// randomToken is a new wake token (node.WakeMarker).
+func randomToken() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func touch(path string) {

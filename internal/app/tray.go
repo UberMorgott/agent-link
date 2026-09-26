@@ -10,6 +10,7 @@ const (
 	TrayAutostart   = "tray.autostart"
 	TrayOpenBrowser = "tray.open_browser"
 	TrayQuit        = "tray.quit"
+	TrayStopAll     = "tray.stop_all"
 )
 
 // maxTooltip is the tray tooltip's room in UTF-16 units, without the

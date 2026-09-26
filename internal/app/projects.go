@@ -36,12 +36,21 @@ type ProjectView struct {
 	Problem string `json:"problem"`
 	// Online and Total count the other members: Members lists this node too
 	// (self: true), so Total is len(Members)-1.
-	Online    int               `json:"online"` // other members with a session
-	Total     int               `json:"total"`  // other members, not removed
+	Online int `json:"online"` // other members with a session
+	Total  int `json:"total"`  // other members, not removed
+	// Agents counts the machines, this one included, with an open agent
+	// session in the project now (node.MemberInfo.Agent): the sidebar's dot.
+	Agents    int               `json:"agents"`
 	Members   []node.MemberInfo `json:"members"`
 	CanRename bool              `json:"can_rename"`
 	HasInvite bool              `json:"has_invite"`
 	Busy      bool              `json:"busy"` // the worker has unfinished jobs
+	// Autonomy: how far this member's agents work by themselves in the project
+	// (settings.ProjectBinding.Autonomy, autonomy.go); nil for the legacy network.
+	Autonomy *AutonomyView `json:"autonomy,omitempty"`
+	// LaunchMode: where an opened session opens, "desktop" or "terminal"
+	// (settings.ProjectBinding.LaunchMode).
+	LaunchMode string `json:"launch_mode,omitempty"`
 }
 
 // InviteView is the answer of the invite reveal endpoint, the only way a

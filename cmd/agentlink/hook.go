@@ -15,11 +15,15 @@ package main
 //     (agentlink send, noteSent), PreToolUse, UserPromptSubmit and Stop report
 //     what it does to those chats (POST /chats/{id}/activity), one line per
 //     session.
+//   - Both clients tell the node when the session is idle (a Stop that lets
+//     it stop) and busy again. The node wakes an idle Claude Code session
+//     through its cross-session inbox (the hooks hand it
+//     CLAUDE_CODE_MESSAGING_SOCKET and _TOKEN; node/inbox.go) and an idle Codex
+//     session with `codex queue` (node.WakeQueue; without a usable codex it
+//     hears of messages at its next event).
 //   - Claude Code also runs `agentlink hook claude --wait` in the background
-//     (asyncRewake): it waits for unread messages and wakes an idle session;
-//     see hook_wait.go. Codex has no such hook: its session tells the node
-//     when it is idle, and the node wakes it with `codex queue` (node.WakeQueue;
-//     without a usable codex it hears of messages at its next event).
+//     (asyncRewake): the fallback that wakes an idle session while the node
+//     holds no usable inbox of it; see hook_wait.go.
 //
 // A hook never breaks or stalls its session: every failure (node down, bad
 // input) ends quietly with exit 0.
@@ -71,9 +75,7 @@ const (
 
 // Limits and timings of the hook.
 const (
-	hookBudget      = 4500 // runes of message text in one batch (Codex: ~2500 tokens per hook output)
-	hookMaxBody     = 2500 // runes of one message body
-	hookPageSize    = 50   // unread messages fetched per event
+	hookPageSize    = 50 // unread messages fetched per event
 	hookHTTPTimeout = 1500 * time.Millisecond
 	hookStateTTL    = 14 * 24 * time.Hour // state files older than this are removed
 	// hookHeartbeat: a session re-registers at an event at most this often.
@@ -93,11 +95,15 @@ type hookInput struct {
 	SessionID      string          `json:"session_id"`
 	HookEventName  string          `json:"hook_event_name"`
 	StopHookActive bool            `json:"stop_hook_active"`
+	Prompt         string          `json:"prompt"` // UserPromptSubmit
 	Cwd            string          `json:"cwd"`
 	ToolName       string          `json:"tool_name"`
 	ToolInput      json.RawMessage `json:"tool_input"`
 	AgentID        string          `json:"agent_id"`
 	AgentType      string          `json:"agent_type"`
+	// TranscriptPath is the session's transcript (Claude Code): a wake's
+	// marker in it shows the session got that wake (collect).
+	TranscriptPath string `json:"transcript_path"`
 }
 
 // hookState is what the hooks of one session keep between events.
@@ -180,7 +186,7 @@ func runHook(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if *wait {
-		return hookWait(client, stdin, stderr, env, defaultWaitOpts())
+		return hookWait(client, stdin, stderr, env, defaultWaitOpts(client))
 	}
 	// The output is written before the batch is acknowledged (see accept).
 	_ = hookRun(client, *event, stdin, stdout, env)
@@ -308,13 +314,17 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		writeHookJSON(stdout, takeNotice(&st), nil)
 		return nil
 	}
-	b, err := h.collect(event == evStop, event == evStop)
+	b, err := h.collect(event == evStop, event == evStop, func() string { return in.Prompt + "\n" + transcriptTail(in.TranscriptPath) })
 	if err != nil {
 		quiet()
 		return err
 	}
 	notes := st.Notes
 	if event == evStop {
+		if b.text == "" {
+			h.accept(b) // only woken messages the session got: acknowledged, nothing to add
+			b = hookBatch{}
+		}
 		switch {
 		case b.empty():
 			st.Blocks = 0
@@ -344,6 +354,7 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	text := withNotes(notes, b.text)
 	notice := joinNotice(takeNotice(&st), b.notice)
 	if text == "" && notice == "" {
+		h.accept(b) // only what the prompt that woke the session carried
 		return nil
 	}
 	st.Notes = nil
@@ -376,17 +387,10 @@ func hookFolder(cwd string) string {
 // (`codex queue` in the session's CODEX_HOME), else it reads at its next event.
 func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force, idle bool) bool {
 	now := env.clock()
-	if client != hookCodex {
-		idle = false
-	}
 	if !force && st.Folder == folder && st.Idle == idle && now.Sub(st.Registered) < hookHeartbeat {
 		return !st.Unbound
 	}
-	req := node.SessionRequest{SessionID: sid, Provider: client, Folder: folder, Wake: node.WakeRewake, TTLSec: hookTTLClaude}
-	if client == hookCodex {
-		req.Wake, req.TTLSec, req.Idle, req.CodexHome = node.WakeQueue, hookTTLCodex, idle, codexHome()
-	}
-	err := hookCall(env.api, http.MethodPost, "/sessions", nil, req, nil, hookHTTPTimeout)
+	err := hookCall(env.api, http.MethodPost, "/sessions", nil, sessionRequest(client, sid, folder, idle), nil, hookHTTPTimeout)
 	var se *statusError
 	switch {
 	case err == nil:
@@ -398,6 +402,30 @@ func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force, id
 	default:
 		return false // node down: try again at the next event
 	}
+}
+
+// Claude Code's cross-session inbox of the session, exported to its hooks
+// (https://code.claude.com/docs/en/cross-session-messaging.md).
+const (
+	envInboxSocket = "CLAUDE_CODE_MESSAGING_SOCKET"
+	envInboxToken  = "CLAUDE_CODE_MESSAGING_TOKEN"
+)
+
+// sessionRequest is the registration of a session of client: Codex asks for
+// node.WakeQueue; Claude Code for node.WakeRewake and hands the node its
+// inbox (the node wakes it there while idle, else its waiter does). Both
+// report whether the session is idle (its turn ended).
+func sessionRequest(client, sid, folder string, idle bool) node.SessionRequest {
+	req := node.SessionRequest{SessionID: sid, Provider: client, Folder: folder, Wake: node.WakeRewake, TTLSec: hookTTLClaude, Idle: idle}
+	if client == hookCodex {
+		req.Wake, req.TTLSec, req.CodexHome = node.WakeQueue, hookTTLCodex, codexHome()
+		return req
+	}
+	sock, tok := strings.TrimSpace(os.Getenv(envInboxSocket)), strings.TrimSpace(os.Getenv(envInboxToken))
+	if sock != "" && tok != "" {
+		req.InboxSocket, req.InboxToken = sock, tok
+	}
+	return req
 }
 
 // codexHome is the session's CODEX_HOME, absolute, or "" for Codex's default.
@@ -469,6 +497,8 @@ type hookSession struct {
 	sid    string
 	folder string
 	client string
+	// wakeToken (the waiter's only) makes its claim a wake (node.ClaimRequest).
+	wakeToken string
 }
 
 // hookBatch is the unread messages one event delivers.
@@ -486,7 +516,14 @@ func (b hookBatch) empty() bool { return len(b.ids) == 0 }
 // collect reads the unread messages of the session's folder that are for this
 // session, claims them and formats what fits one hook output. The rest stays
 // unread for the next event.
-func (h *hookSession) collect(stop, actionable bool) (hookBatch, error) {
+//
+// The batch also takes, to acknowledge only, the messages the session was
+// woken with (UnreadPage.Woken: by the node's inbox wake or its waiter) that
+// proof carries (the prompt, the end of the transcript): the model has them
+// already, also when that wake's claim lapsed (then they are listed as
+// unread too, and are not delivered again). A nil proof (the waiter's) takes
+// none.
+func (h *hookSession) collect(stop, actionable bool, proof func() string) (hookBatch, error) {
 	var page node.UnreadPage
 	q := url.Values{"folder": {h.folder}, "session": {h.sid}, "limit": {fmt.Sprint(hookPageSize)}}
 	if actionable {
@@ -495,11 +532,70 @@ func (h *hookSession) collect(stop, actionable bool) (hookBatch, error) {
 	if err := hookCall(h.env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout); err != nil {
 		return hookBatch{}, err
 	}
+	var got []node.UnreadMessage
+	if len(page.Woken) > 0 && proof != nil {
+		got = provenWoken(page.Woken, proof())
+		n := len(page.Messages)
+		page.Messages = slices.DeleteFunc(page.Messages, func(m node.UnreadMessage) bool {
+			return slices.ContainsFunc(got, func(g node.UnreadMessage) bool { return g.ID == m.ID })
+		})
+		page.Total -= n - len(page.Messages)
+	}
 	page, err := h.claim(page)
 	if err != nil {
 		return hookBatch{}, err
 	}
-	return formatBatch(page, h.folder, h.sid, stop), nil
+	b := formatBatch(page, h.folder, h.sid, stop)
+	b.takeWoken(got)
+	return b, nil
+}
+
+// provenWoken is the woken messages proof verifiably carries (node.WokenBy:
+// that wake's token and the id). None when the agent does not say what the
+// prompt was and there is no transcript: they stay the wake's until it
+// lapses, and the hooks deliver them then.
+func provenWoken(woken []node.UnreadMessage, proof string) []node.UnreadMessage {
+	var out []node.UnreadMessage
+	for _, m := range woken {
+		if node.WokenBy(proof, m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// transcriptTailSize bounds how much of a transcript's end collect reads.
+const transcriptTailSize = 4 << 20
+
+// transcriptTail is the end of the session's transcript ("" when there is
+// none or it cannot be read): a wake the session got is in it.
+func transcriptTail(path string) string {
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	if info, err := f.Stat(); err == nil && info.Size() > transcriptTailSize {
+		if _, err := f.Seek(-transcriptTailSize, io.SeekEnd); err != nil {
+			return ""
+		}
+	}
+	data, _ := io.ReadAll(io.LimitReader(f, transcriptTailSize))
+	return string(data)
+}
+
+// takeWoken adds to the batch, to acknowledge, the woken messages the session
+// is proven to have got (provenWoken).
+func (b *hookBatch) takeWoken(got []node.UnreadMessage) {
+	for _, m := range got {
+		b.ids = append(b.ids, m.ID)
+		if m.ChatID != "" && !m.OwnHuman && !m.Paused && m.Assigned != "worker" {
+			b.chats[m.ChatID] = m.ID
+		}
+	}
 }
 
 // claim keeps the messages of page the node grants this session (POST
@@ -511,7 +607,7 @@ func (h *hookSession) claim(page node.UnreadPage) (node.UnreadPage, error) {
 	if len(page.Messages) == 0 {
 		return page, nil
 	}
-	req := node.ClaimRequest{SessionID: h.sid, Folder: h.folder}
+	req := node.ClaimRequest{SessionID: h.sid, Folder: h.folder, WakeToken: h.wakeToken}
 	for _, m := range page.Messages {
 		req.IDs = append(req.IDs, m.ID)
 	}
@@ -570,7 +666,7 @@ func (h *hookSession) accept(b hookBatch) {
 }
 
 // formatBatch turns an unread page into the text for the model and the line
-// for the person, within hookBudget runes.
+// for the person, within node.FormatBudget runes.
 func formatBatch(page node.UnreadPage, folder, sid string, stop bool) hookBatch {
 	b := hookBatch{chats: map[string]string{}}
 	if len(page.Messages) == 0 {
@@ -580,9 +676,9 @@ func formatBatch(page node.UnreadPage, folder, sid string, stop bool) hookBatch 
 	used := 0
 	var shown []node.UnreadMessage
 	for _, m := range page.Messages {
-		entry := formatUnread(m)
+		entry := node.FormatUnread(m)
 		n := utf8.RuneCountInString(entry)
-		if len(shown) > 0 && used+n > hookBudget {
+		if len(shown) > 0 && used+n > node.FormatBudget {
 			break
 		}
 		used += n
@@ -610,66 +706,6 @@ func formatBatch(page node.UnreadPage, folder, sid string, stop bool) hookBatch 
 	b.text = strings.TrimRight(t.String(), "\n")
 	b.notice = batchNotice(shown)
 	return b
-}
-
-// formatUnread is one message for the model: who wrote it, where, the text
-// and what to do with it.
-func formatUnread(m node.UnreadMessage) string {
-	var b strings.Builder
-	at := m.CreatedAt.Local().Format("2006-01-02 15:04")
-	switch {
-	case m.OwnHuman:
-		fmt.Fprintf(&b, "Ваш человек написал всем (%s, чат %s, id %s) — к сведению, отвечать не нужно:\n", at, m.ChatID, m.ID)
-	case m.ChatID != "":
-		fmt.Fprintf(&b, "От %s (%s) в чате %s (участники: %s), id %s, %s:\n", m.From, authorKind(m.AuthorKind), m.ChatID, strings.Join(m.Participants, ", "), m.ID, at)
-	default:
-		fmt.Fprintf(&b, "От %s (%s), id %s, %s:\n", m.From, authorKind(m.AuthorKind), m.ID, at)
-	}
-	b.WriteString(capBody(m))
-	b.WriteString("\n")
-	if m.OwnHuman {
-		return b.String()
-	}
-	reply := fmt.Sprintf("agentlink send --to %s --reply-to %s --body \"<текст>\"", m.From, m.ID)
-	if m.ChatID != "" {
-		reply = fmt.Sprintf("agentlink send --chat %s --reply-to %s --body \"<текст>\"", m.ChatID, m.ID)
-	}
-	switch {
-	case m.Assigned == "worker":
-		b.WriteString("Это уже обрабатывает агент-обработчик этого узла — не отвечайте.\n")
-	case m.Paused:
-		b.WriteString("К сведению, ответ не требуется.\n")
-	case m.AsksYou:
-		fmt.Fprintf(&b, "Просит ответа от вас. Ответить: %s\n", reply)
-	default:
-		fmt.Fprintf(&b, "К сведению, ответ не обязателен. Ответить: %s\n", reply)
-	}
-	return b.String()
-}
-
-func authorKind(k string) string {
-	switch k {
-	case "human":
-		return "человек"
-	case "agent":
-		return "агент"
-	case "worker":
-		return "агент-обработчик"
-	}
-	return "автор не указан"
-}
-
-// capBody cuts a long body, pointing at the command that shows all of it.
-func capBody(m node.UnreadMessage) string {
-	if utf8.RuneCountInString(m.Body) <= hookMaxBody {
-		return m.Body
-	}
-	full := "agentlink inbox"
-	if m.ChatID != "" {
-		full = "agentlink chat history --chat " + m.ChatID
-	}
-	r := []rune(m.Body)
-	return string(r[:hookMaxBody]) + fmt.Sprintf("\n[… обрезано, всего %d символов; полностью: %s]", len(r), full)
 }
 
 // batchNotice is the line the person sees: «agent-link: 2 сообщения от
