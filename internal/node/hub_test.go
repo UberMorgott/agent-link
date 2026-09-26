@@ -424,6 +424,18 @@ func TestHubAddLimits(t *testing.T) {
 	}
 }
 
+func TestHubAddReturnsAfterNodeStarts(t *testing.T) {
+	h := startHub(t)
+	tn := newProjectNode(t, "a", newTestProject(t), h.ln, nil)
+	if err := h.Add(tn.Node); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Remove(tn.cfg.Project) })
+	if !tn.running() {
+		t.Fatal("Hub.Add returned before the new project node could accept an agent turn")
+	}
+}
+
 func TestHubAddAfterWait(t *testing.T) {
 	h := NewHub(listen(t), HubConfig{})
 	if err := h.Add(newTestNode(t, "a", testSecret, nil, t.TempDir(), h.ln, nil).Node); !errors.Is(err, ErrHubNotRunning) {

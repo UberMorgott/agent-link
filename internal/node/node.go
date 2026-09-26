@@ -370,6 +370,10 @@ func (n *Node) Serve(ctx context.Context, peerLn, apiLn net.Listener) error {
 // Run serves peers only (listener and dialers) until ctx is cancelled, then
 // closes peerLn. Hosts that serve the control API themselves mount APIHandler.
 func (n *Node) Run(ctx context.Context, peerLn net.Listener) {
+	n.run(ctx, peerLn, nil)
+}
+
+func (n *Node) run(ctx context.Context, peerLn net.Listener, ready chan<- struct{}) {
 	addrs, port := listenAddrs(peerLn.Addr())
 	n.mu.Lock()
 	n.selfAddrs, n.listenPort = addrs, port
@@ -389,6 +393,9 @@ func (n *Node) Run(ctx context.Context, peerLn net.Listener) {
 		n.wg.Go(func() { n.discoveryLoop(ctx) })
 	}
 	n.log.Info("serving peers", "listen", peerLn.Addr(), "addrs", addrs, "discovery", n.netTag != "", "project", n.cfg.Project)
+	if ready != nil {
+		close(ready)
+	}
 	<-ctx.Done()
 	n.runMu.Lock()
 	n.runCtx = nil

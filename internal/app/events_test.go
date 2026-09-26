@@ -63,15 +63,21 @@ func TestReactiveEventsEndpointRequiresTokenAndStreamsChanges(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("events response = %d %q", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
-	read := make(chan changeEvent, 2)
+	read := make(chan changeEvent, 4)
 	go func() {
-		dec := json.NewDecoder(newSSEDataReader(resp.Body))
-		for range 2 {
+		stream := newSSEDataReader(resp.Body)
+		defer func() { _ = stream.Close() }()
+		dec := json.NewDecoder(stream)
+		for {
 			var event changeEvent
 			if dec.Decode(&event) != nil {
 				return
 			}
-			read <- event
+			select {
+			case read <- event:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 	select {
@@ -85,13 +91,17 @@ func TestReactiveEventsEndpointRequiresTokenAndStreamsChanges(t *testing.T) {
 	if code, body := h.do(t, http.MethodPost, "/ui/api/settings", validJSON(t), h.tokenHdr()); code != http.StatusOK {
 		t.Fatalf("settings mutation: %d %s", code, body)
 	}
-	select {
-	case event := <-read:
-		if event.Revision == 0 || !slices.Contains(event.Topics, "settings") || !slices.Contains(event.Topics, "status") {
-			t.Fatalf("change stream event = %+v", event)
+	deadline := time.After(2 * time.Second)
+waitForSettings:
+	for {
+		select {
+		case event := <-read:
+			if event.Revision > 0 && slices.Contains(event.Topics, "settings") && slices.Contains(event.Topics, "status") {
+				break waitForSettings
+			}
+		case <-deadline:
+			t.Fatal("change event was not flushed")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("change event was not flushed")
 	}
 	cancel()
 	eventuallyApp(t, "event stream unsubscribe", func() bool {
@@ -102,7 +112,7 @@ func TestReactiveEventsEndpointRequiresTokenAndStreamsChanges(t *testing.T) {
 }
 
 // newSSEDataReader extracts JSON data lines from the stream for the endpoint test.
-func newSSEDataReader(r io.Reader) io.Reader {
+func newSSEDataReader(r io.Reader) io.ReadCloser {
 	pr, pw := io.Pipe()
 	go func() {
 		defer func() { _ = pw.Close() }()

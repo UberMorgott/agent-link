@@ -142,12 +142,13 @@ func (h *Hub) Wait() {
 // until Remove or the end of the Hub's context. n must not run elsewhere.
 func (h *Hub) Add(n *Node) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.ctx == nil || h.ctx.Err() != nil || h.closed {
+		h.mu.Unlock()
 		return ErrHubNotRunning
 	}
 	pid := n.cfg.Project
 	if h.nodes[pid] != nil {
+		h.mu.Unlock()
 		return fmt.Errorf("%w: %q", ErrContextExists, pid)
 	}
 	if pid != "" {
@@ -158,6 +159,7 @@ func (h *Hub) Add(n *Node) error {
 			}
 		}
 		if count >= MaxHubProjects {
+			h.mu.Unlock()
 			return ErrTooManyProjects
 		}
 	}
@@ -165,10 +167,15 @@ func (h *Hub) Add(n *Node) error {
 	ctx, cancel := context.WithCancel(h.ctx)
 	e := &hubEntry{n: n, ln: newChanListener(h.ln.Addr()), ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	h.nodes[pid] = e
+	ready := make(chan struct{})
 	h.wg.Go(func() {
 		defer close(e.done)
-		n.Run(ctx, e.ln)
+		n.run(ctx, e.ln, ready)
 	})
+	h.mu.Unlock()
+	// The caller may create a seat immediately after Add. Wait until Run can
+	// accept its turn, without holding the Hub lock while Run initializes.
+	<-ready
 	return nil
 }
 
