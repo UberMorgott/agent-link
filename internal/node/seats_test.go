@@ -390,10 +390,10 @@ func TestSeatBusySessionNotResumed(t *testing.T) {
 	}
 	l.open.Store(false)
 	a.seatsDue(context.Background(), time.Now())
-	eventually(t, "the turn after the app left it", func() bool { return len(seatByLabel(t, a, "Codex").Pending) == 0 })
-	if s := seatByLabel(t, a, "Codex"); s.Status != SeatOffline || s.LastTurn.IsZero() {
-		t.Fatalf("after the turn %+v", s)
-	}
+	eventually(t, "the completed turn after the app left it", func() bool {
+		s := seatByLabel(t, a, "Codex")
+		return len(s.Pending) == 0 && s.Status == SeatOffline && !s.LastTurn.IsZero()
+	})
 }
 
 // sessionOccupied: the session's own transcript, written after the node's
