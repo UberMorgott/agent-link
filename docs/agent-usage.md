@@ -310,8 +310,12 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   arrive, it claims them as a wake (`POST /claim` with a random `wake_token`), writes the batch
   with the marker `[agent-link wake <token>]` to stderr and exits 2, which wakes Claude with
   the batch as a system reminder. It does not acknowledge them: the session's next hook event
-  does, for the ones whose marker and id are in the session's transcript (`transcript_path`);
-  a wake nobody took lapses after 2 minutes and the messages are delivered again. The next
+  does, for the ones whose marker and id are in the session's transcript (`transcript_path`),
+  also after the wake lapsed. A wake nobody took lapses after 2 minutes and the messages are
+  unread again; a waiter wakes for one message at most twice, then leaves it for the
+  session's next event and its author sees «needs a person» (`needs_human`). The waiter's
+  `wake_token` and `heartbeat` need a node of the same agentlink version (one `agentlink.exe`
+  runs both): an older node ignores them and a woken message is delivered once more. The next
   `Stop` arms it again. One waiter per session runs at a time; it heartbeats the idle session
   every 5 minutes (`heartbeat: true`: it keeps the session live, not active) and ends with the
   session (`SessionEnd`, or the Claude process among its ancestors gone) or shortly before its

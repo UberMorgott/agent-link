@@ -254,15 +254,82 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 		return nil, fmt.Errorf("%w: invalid wake_token", ErrBadRequest)
 	}
 	r := n.sess
+	now := time.Now()
 	r.claimMu.Lock()
-	defer r.claimMu.Unlock()
-	live := r.liveIDs(time.Now())
+	live := r.liveIDs(now)
 	if !live[req.SessionID] {
+		r.claimMu.Unlock()
 		// Only a registered session takes messages: a hook of a run that never
 		// registered (a headless claude -p) must not steal them.
 		return []string{}, nil
 	}
-	return n.claimLocked(req.SessionID, req.IDs, req.WakeToken != "", req.WakeToken, live), nil
+	want, spent := req.IDs, []string(nil)
+	if req.WakeToken != "" {
+		want, spent = r.waiterWakesLeft(req.IDs, now)
+	}
+	granted := n.claimLocked(req.SessionID, want, req.WakeToken != "", req.WakeToken, live)
+	if req.WakeToken != "" {
+		for _, id := range granted {
+			w := r.waiterWakes[id]
+			r.waiterWakes[id] = waiterWake{n: w.n + 1, at: now}
+		}
+	}
+	r.claimMu.Unlock()
+	n.report(spent, AttemptNeedsHuman)
+	return granted, nil
+}
+
+// maxWaiterWakes bounds the wakes of one message by Claude waiters (Claim
+// with a WakeToken), like maxIdleWakes the node's own: a wake no hook event
+// proved lapses and may be tried again, but a session that never shows it
+// got one (it is gone, or its transcript lacks the wakes) is not woken for
+// that message forever. After that no waiter wakes for it: it stays unread
+// for the session's next event, and its author hears it needs a person
+// (AttemptNeedsHuman).
+const maxWaiterWakes = 2
+
+// waiterWakeKeep: a message's waiter wake count is forgotten this long after
+// its last wake.
+const waiterWakeKeep = 24 * time.Hour
+
+// waiterWake counts one message's waiter wakes, the last at at.
+type waiterWake struct {
+	n  int
+	at time.Time
+}
+
+// waiterWakesLeft splits ids into those a waiter may still wake with and
+// those that used up maxWaiterWakes. The caller holds r.claimMu.
+func (r *sessionRegistry) waiterWakesLeft(ids []string, now time.Time) (left, spent []string) {
+	for id, w := range r.waiterWakes {
+		if now.Sub(w.at) > waiterWakeKeep {
+			delete(r.waiterWakes, id)
+		}
+	}
+	for _, id := range ids {
+		if r.waiterWakes[id].n >= maxWaiterWakes {
+			spent = append(spent, id)
+		} else {
+			left = append(left, id)
+		}
+	}
+	return left, spent
+}
+
+// waiterSpent drops from page the messages no waiter may wake with anymore
+// (maxWaiterWakes), so a waiter does not poll for them.
+func (n *Node) waiterSpent(page *UnreadPage) {
+	r := n.sess
+	r.claimMu.Lock()
+	defer r.claimMu.Unlock()
+	kept := page.Messages[:0]
+	for _, m := range page.Messages {
+		if r.waiterWakes[m.ID].n < maxWaiterWakes {
+			kept = append(kept, m)
+		}
+	}
+	page.Total -= len(page.Messages) - len(kept)
+	page.Messages = kept
 }
 
 // validWakeToken accepts a short token of letters, digits, '-' and '_' (it

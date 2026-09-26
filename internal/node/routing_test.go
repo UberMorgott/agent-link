@@ -181,4 +181,67 @@ func TestClaimAsWake(t *testing.T) {
 	if g, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-w"}); len(g) != 0 {
 		t.Fatalf("the woken message was claimed for delivery again: %v", g)
 	}
+	lapse := func() {
+		a.sess.claimMu.Lock()
+		c := a.sess.claims[m.ID]
+		c.at = time.Now().Add(-inboxWakeGrace - time.Second)
+		a.sess.claims[m.ID] = c
+		a.sess.claimMu.Unlock()
+	}
+	// A lapsed wake is unread again, and still listed as woken: a hook that
+	// sees the session got it acknowledges it instead of delivering it.
+	lapse()
+	p, _ = a.UnreadFor(dir, "s-w", "", 10)
+	if p.Total != 1 || len(p.Woken) != 1 || p.Woken[0].WakeToken != "0123456789abcdef" {
+		t.Fatalf("after the wake lapsed: %+v", p)
+	}
+	// A waiter wakes for one message at most maxWaiterWakes times.
+	if g, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-w", WakeToken: "fedcba9876543210"}); len(g) != 1 {
+		t.Fatalf("second wake: %v", g)
+	}
+	lapse()
+	if g, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-w", WakeToken: "00112233445566778"}); len(g) != 0 {
+		t.Fatalf("a wake past maxWaiterWakes: %v", g)
+	}
+	p, _ = a.UnreadFor(dir, "s-w", "", 10)
+	a.waiterSpent(&p)
+	if p.Total != 0 || len(p.Messages) != 0 {
+		t.Fatalf("a waiter still sees the spent message: %+v", p)
+	}
+	// Its hooks still deliver it at the session's next event.
+	if g, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-w"}); len(g) != 1 {
+		t.Fatalf("hook claim after the wakes: %v", g)
+	}
+}
+
+// A waiter's heartbeat is no activity: a record from before LastActive keeps
+// its last seen time, a real event sets now.
+func TestHeartbeatKeepsOldActivity(t *testing.T) {
+	a, _ := pair(t, testSecret, testSecret)
+	dir := t.TempDir()
+	reg := func(heartbeat bool) {
+		t.Helper()
+		if _, err := a.RegisterSession(SessionRequest{SessionID: "s-h", Provider: "claude", Folder: dir, Wake: WakeRewake, Idle: true, Heartbeat: heartbeat}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reg(false)
+	old := time.Now().Add(-10 * time.Minute).UTC()
+	a.sess.mu.Lock()
+	a.sess.sessions["s-h"].LastActive, a.sess.sessions["s-h"].LastSeen = time.Time{}, old
+	a.sess.mu.Unlock()
+	reg(true)
+	a.sess.mu.Lock()
+	got := a.sess.sessions["s-h"].LastActive
+	a.sess.mu.Unlock()
+	if !got.Equal(old) {
+		t.Fatalf("heartbeat seeded LastActive %v, want the old LastSeen %v", got, old)
+	}
+	reg(false)
+	a.sess.mu.Lock()
+	got = a.sess.sessions["s-h"].LastActive
+	a.sess.mu.Unlock()
+	if time.Since(got) > time.Minute {
+		t.Fatalf("an event left LastActive at %v", got)
+	}
 }

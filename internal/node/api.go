@@ -503,7 +503,14 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 			writeJSONResponse(w, UnreadPage{Messages: []UnreadMessage{}})
 			return
 		}
+		waiter := q.Get("waiter") == "1"
+		if waiter {
+			limit = max(limit, hookBatchIDs) // what it may not wake with is dropped below
+		}
 		page, err := n.unreadFor(q.Get("folder"), q.Get("session"), q.Get("after"), limit, q.Get("actionable") == "1")
+		if err == nil && waiter {
+			n.waiterSpent(&page)
+		}
 		reply(w, page, err)
 	})
 	mux.HandleFunc("POST /claim", func(w http.ResponseWriter, r *http.Request) {

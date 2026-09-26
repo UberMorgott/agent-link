@@ -134,6 +134,9 @@ type sessionRegistry struct {
 	// Taken before mu and the chat store's lock, never inside them.
 	claimMu sync.Mutex
 	claims  map[string]sessionClaim
+	// waiterWakes counts each message's wakes by Claude waiters
+	// (maxWaiterWakes), under claimMu.
+	waiterWakes map[string]waiterWake
 
 	// inbox is each live Claude session's inbox address (memory only, never
 	// persisted or sent); recent is the last session seen per area, kept in
@@ -154,7 +157,7 @@ type LastSession struct {
 
 func openSessions(dir string) (*sessionRegistry, error) {
 	r := &sessionRegistry{path: filepath.Join(dir, "sessions.json"), sessions: map[string]*Session{}, last: map[string]ActivityState{},
-		on: map[string]map[string]string{}, claims: map[string]sessionClaim{}, inbox: map[string]inboxAddr{},
+		on: map[string]map[string]string{}, claims: map[string]sessionClaim{}, waiterWakes: map[string]waiterWake{}, inbox: map[string]inboxAddr{},
 		recent: map[string]LastSession{}, recentPath: filepath.Join(dir, "last_sessions.json")}
 	var list []Session
 	if err := readJSON(r.path, &list); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -264,9 +267,18 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 		s = &Session{SessionID: req.SessionID, RegisteredAt: now}
 		r.sessions[req.SessionID] = s
 	}
+	seen := s.LastSeen // before this registration
 	s.Provider, s.Folder, s.Area, s.Wake, s.TTLSec, s.LastSeen = req.Provider, filepath.Clean(req.Folder), area, req.Wake, ttl, now
-	if !req.Heartbeat || s.LastActive.IsZero() {
+	switch {
+	case !req.Heartbeat:
 		s.LastActive = now
+	case s.LastActive.IsZero():
+		// A heartbeat is no activity: a record from before LastActive keeps
+		// when it was last seen (a new session: now, its registration).
+		s.LastActive = seen
+		if s.LastActive.IsZero() {
+			s.LastActive = now
+		}
 	}
 	// A new idle period (or none) may be woken again.
 	s.Woken = s.Woken && s.Idle && req.Idle

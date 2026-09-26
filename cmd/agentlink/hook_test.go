@@ -48,11 +48,13 @@ type fakeNode struct {
 	// the token of a wake claim (POST /claim with wake_token), else tok-<id>.
 	woken   map[string]bool
 	wakeTok map[string]string
+	// lapsed: woken ids whose wake claim lapsed: listed as woken and unread.
+	lapsed map[string]bool
 }
 
 func newFakeNode(t *testing.T, folder string) *fakeNode {
 	f := &fakeNode{folder: folder, sessions: map[string]node.SessionRequest{}, acked: map[string]string{}, worker: map[string]bool{},
-		claims: map[string]string{}, woken: map[string]bool{}, wakeTok: map[string]string{}}
+		claims: map[string]string{}, woken: map[string]bool{}, wakeTok: map[string]string{}, lapsed: map[string]bool{}}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	f.api = strings.TrimPrefix(srv.URL, "http://")
@@ -105,7 +107,10 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 					m.WakeToken = tok
 				}
 				page.Woken = append(page.Woken, m)
-				continue
+				if !f.lapsed[m.ID] {
+					continue
+				}
+				m.WakeToken = ""
 			}
 			page.Total++
 			if q.Get("after") != "" && m.Cursor <= q.Get("after") {
@@ -837,6 +842,32 @@ func TestHookWaitWakesIdleSession(t *testing.T) {
 	}
 	if out := c.run(hookClaude, evPostTool, tp); strings.Contains(out, "wake up") || !slices.Equal(c.f.ackedIDs(), []string{"m1"}) {
 		t.Fatalf("proven wake: out %q acked %v", out, c.f.ackedIDs())
+	}
+}
+
+// A wake whose claim lapsed before the session's next event (a long first
+// tool call) is unread again; a hook that finds it in the transcript
+// acknowledges it instead of delivering it a second time.
+func TestHookLapsedWakeProvenNotRedelivered(t *testing.T) {
+	c := newHookCase(t)
+	c.f.claimOn = true
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evStop)
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "ping", true))
+	var errw bytes.Buffer
+	if code, _ := wakeWith(hookClaude, c.sid, c.folder, hookStatePath(c.env.dir, hookClaude, c.sid), &errw, c.env, time.Hour); code != 2 {
+		t.Fatalf("wake: %d", code)
+	}
+	c.f.mu.Lock()
+	c.f.lapsed["m1"] = true
+	c.f.mu.Unlock()
+	transcript := filepath.Join(t.TempDir(), "t.jsonl")
+	if err := os.WriteFile(transcript, mustJSON(map[string]string{"content": errw.String()}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := c.run(hookClaude, evPostTool, `,"tool_name":"Read","transcript_path":`+strconv.Quote(transcript))
+	if strings.Contains(out, "ping") || !slices.Equal(c.f.ackedIDs(), []string{"m1"}) {
+		t.Fatalf("lapsed proven wake: out %q acked %v", out, c.f.ackedIDs())
 	}
 }
 
