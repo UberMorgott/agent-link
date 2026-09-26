@@ -120,11 +120,6 @@ function sinceTitle(row: ActivityLine) {
 // A legacy chat is writable too: the node continues it in a real chat with the
 // peer, or with a plain message when the peer's version has no chats.
 const writable = computed(() => !!info.value && !info.value.closed && !info.value.removed)
-const askNames = computed(() => localChat.value ? [] : others(info.value, self.value))
-const asked = computed<string[]>({
-  get: () => (info.value ? inbox.askFor(info.value) : []),
-  set: (names) => { if (info.value) inbox.setAsk(info.value, names) },
-})
 const replying = computed(() => (inbox.replyTo ? fmt("inbox.replying", { text: authorLabel(inbox.replyTo, self.value) + ': ' + preview(inbox.replyTo.body, 60) }) : ''))
 
 // This member's local agents (seats) the message asks: none by default.
@@ -420,40 +415,6 @@ function back() {
             @dragleave="dragging = false"
             @drop.prevent="onDrop"
           >
-            <div
-              v-if="!localChat && askNames.length > 0 && (inProject || askNames.length >= 2)"
-              id="ask_row"
-              class="ask-row flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm"
-              role="group"
-              aria-labelledby="ask_label"
-            >
-              <span
-                id="ask_label"
-                class="field-label text-muted"
-              >{{ t("inbox.ask.label") }}</span>
-              <span
-                id="ask_choices"
-                class="ask-choices flex flex-wrap gap-x-4 gap-y-1"
-              >
-                <UCheckbox
-                  v-for="name in askNames"
-                  :id="'ask_' + name"
-                  :key="name"
-                  :label="projects.displayOf(pid, name)"
-                  :model-value="asked.includes(name)"
-                  size="sm"
-                  class="choice"
-                  :style="{ '--who': whoColor(name, projects.colorOf(pid, name)) }"
-                  :ui="{ label: 'text-[var(--who)]' }"
-                  @update:model-value="asked = toggle(asked, name, $event)"
-                />
-              </span>
-              <span
-                v-if="!asked.length"
-                id="ask_hint"
-                class="ask-hint text-xs text-[var(--app-off)]"
-              >{{ t("inbox.ask.none") }}</span>
-            </div>
             <div
               v-if="localChat && seatList.length"
               id="seat_row"

@@ -425,8 +425,6 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"inbox.activity.type.tool":       "инструмент",
 
 	// Inbox page: the composer.
-	"inbox.ask.label":        "Ответ нужен от",
-	"inbox.ask.none":         "Никто не отмечен — сообщение уйдёт всем для сведения.",
 	"inbox.body.label":       "Текст",
 	"inbox.body.placeholder": "Напишите сообщение…",
 	"inbox.body.hint":        "Enter — отправить, Shift+Enter — новая строка",

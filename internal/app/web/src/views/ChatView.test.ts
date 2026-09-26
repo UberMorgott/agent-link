@@ -117,9 +117,6 @@ const tick = (id: string) => bubble(id).querySelector<HTMLElement>('.msg-ticks')
 const text = (el: Element | null) => el?.textContent || ''
 // The timeline's rows: the older-page button, then one per message or event.
 const timeline = () => $$('#messages .msg-older, #messages [data-message-id]')
-// Ticked people among the checkboxes of a group (Nuxt UI checkboxes are buttons).
-const ticked = (sel: string) => $$(sel + ' [role="checkbox"]').filter((box) => box.getAttribute('aria-checked') === 'true').map((box) => box.id)
-
 beforeEach(() => {
   chats = fixtures()
   releaseSend = null
@@ -148,12 +145,6 @@ async function openInbox() {
 }
 
 describe('the open chat', () => {
-  it('retains the single-peer default in the legacy network', async () => {
-    const { inbox } = await openInbox()
-    inbox.project = 'legacy'
-    expect(inbox.askFor(chats.c3!.info)).toEqual(['bob'])
-  })
-
   it('shows a per-project pause button and keeps human chat usable while paused', async () => {
     const { api, app, inbox, projects } = await openInbox()
     await inbox.selectChat(P, 'c3', '')
@@ -190,7 +181,7 @@ describe('the open chat', () => {
     expect(text($('#chat_global_pause'))).toContain('Общая пауза')
   })
 
-  it('keeps a project message informational until a remote member is explicitly asked', async () => {
+  it('sends a project message without a recipient selector', async () => {
     const { inbox, projects } = await openInbox()
     await inbox.selectChat(P, 'c3', '')
     projects.seats = { [P]: [
@@ -198,9 +189,8 @@ describe('the open chat', () => {
       { id: 'codex2', provider: 'codex', label: 'Codex', status: 'idle' },
     ] }
     await settle()
-    expect($('#ask_row')).not.toBeNull()
-    expect(ticked('#ask_choices')).toEqual([])
-    expect(text($('#ask_hint'))).toContain('inbox.ask.none')
+    expect($('#ask_row')).toBeNull()
+    expect($('#ask_hint')).toBeNull()
     expect($('#seat_row')).toBeNull()
 
     const body = $<HTMLTextAreaElement>('#body')!
@@ -212,13 +202,6 @@ describe('the open chat', () => {
     }
     await send('for everyone')
     expect(sent[0]).toEqual({ chat_id: 'c3', body: 'for everyone', ask: [] })
-    releaseSend!()
-    await settle()
-
-    $<HTMLButtonElement>('#ask_bob')!.click()
-    await settle()
-    await send('for Bob')
-    expect(sent[1]).toEqual({ chat_id: 'c3', body: 'for Bob', ask: ['bob'] })
     releaseSend!()
     await settle()
   })
@@ -278,10 +261,8 @@ describe('the open chat', () => {
     expect($('#conversation_panel header')).toBeNull()
     expect($('#chat_archive')).toBeNull()
     expect($('#send')).not.toBeNull()
-    // A group chat asks nobody by default and says so.
-    expect($('#ask_row')).not.toBeNull()
-    expect(ticked('#ask_choices')).toEqual([])
-    expect($('#ask_hint')).not.toBeNull()
+    expect($('#ask_row')).toBeNull()
+    expect($('#ask_hint')).toBeNull()
 
     // Activity is in a compact top control, never between the timeline and composer.
     expect($('#chat_activity_toggle')).not.toBeNull()
@@ -373,7 +354,7 @@ describe('the open chat', () => {
     await settle()
     expect(top).toBe(20500)
 
-    // The older page, then a reply with its author asked, guarded against a double submit.
+    // The older page, then an ordinary reply, guarded against a double submit.
     $<HTMLButtonElement>('.msg-older button')!.click()
     await settle()
     expect(timeline()).toHaveLength(207)
@@ -382,14 +363,14 @@ describe('the open chat', () => {
     await settle()
     expect($('#replying')).not.toBeNull()
     expect(inbox.replyTo?.id).toBe('m203')
-    expect(ticked('#ask_choices')).toEqual(['ask_bob'])
+    expect($('#ask_row')).toBeNull()
     const form = $<HTMLFormElement>('#send')!
     form.dispatchEvent(new Event('submit', { cancelable: true }))
     form.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle()
     expect(api.calls.filter((c) => c === 'POST projects/PROJ/send')).toHaveLength(1)
     expect($<HTMLButtonElement>('#send_button')!.disabled).toBe(true)
-    expect(sent[0]).toEqual({ chat_id: group, body: 'first\nsecond', ask: ['bob'], reply_to: 'm203' })
+    expect(sent[0]).toEqual({ chat_id: group, body: 'first\nsecond', ask: [], reply_to: 'm203' })
     releaseSend!()
     await settle()
     expect($<HTMLTextAreaElement>('#body')!.value).toBe('')
@@ -482,12 +463,11 @@ describe('the chat list and the ways into a chat', () => {
     await settle()
     expect(router.currentRoute.value.params.chat).toBe('c3')
 
-    // A project chat of two still lets the author explicitly ask the peer.
+    // A project chat of two also has no recipient selector.
     app.sessions = [{ session_id: 's', provider: 'claude', folder: 'W:/work', area: '', wake: 'next-event' }]
     await inbox.selectChat(P, 'c4', '')
     await settle()
-    expect($('#ask_row')).not.toBeNull()
-    expect(ticked('#ask_choices')).toEqual([])
+    expect($('#ask_row')).toBeNull()
     // Not yet read by this computer's agent: one tick, and it says so.
     expect(tick('u1')!.className).toContain('delivered')
     expect(tick('u1')!.title).toBe('inbox.tick.agent_unread')
@@ -540,15 +520,5 @@ describe('the chat list and the ways into a chat', () => {
     expect(projects.chats[P]!.some((c) => c.id === 'c4')).toBe(false)
     expect($('[data-chat="c4"]')).toBeNull()
     expect(router.currentRoute.value.params.chat).toBe('c6')
-  })
-})
-
-describe('the shell of the inbox', () => {
-  it('labels the "who answers" group', async () => {
-    const { inbox } = await openInbox()
-    await inbox.selectChat(P, group, '')
-    await settle()
-    const ask = $('#ask_choices')!.closest('[role="group"]')!
-    expect(document.getElementById(ask.getAttribute('aria-labelledby')!)).not.toBeNull()
   })
 })

@@ -67,7 +67,6 @@ export const useInboxStore = defineStore('inbox', () => {
   const sending = ref(false)
   const closing = ref(false)
   const focusComposer = ref(0)
-  const askState = ref<Record<string, string[]>>({}) // chatKey -> names asked to answer
   const seatAskState = ref<Record<string, string[]>>({}) // local chat -> this member's seat ids
 
   // starting: the project's one chat is being started (startChat).
@@ -129,26 +128,12 @@ export const useInboxStore = defineStore('inbox', () => {
   // readOf is the read cursor of a chat.
   function readOf(pid: string, id: string): number { return reads.value[chatKey(pid, id)] || 0 }
 
-  // --- whom a message asks ---
-
-  // Project messages inform everyone unless the author explicitly asks a
-  // member. The legacy network retains its two-person default.
-  function askFor(info: ChatInfo): string[] {
-    if (projects.byID(project.value)?.scope === 'local') return []
-    const saved = askState.value[chatKey(project.value, info.id)]
-    if (saved) return saved
+  // Legacy two-person chats still ask their only peer by default. Project
+  // chat messages are ordinary messages to the group.
+  function messageAsk(info: ChatInfo): string[] {
     if (project.value !== 'legacy') return []
     const names = others(info, app.self)
     return names.length === 1 ? names : []
-  }
-  function keepAsk(info: ChatInfo) {
-    // The default needs to know who is "me".
-    const key = chatKey(project.value, info.id)
-    if (!askState.value[key] && app.self) askState.value = { ...askState.value, [key]: askFor(info) }
-  }
-  function setAsk(info: ChatInfo, names: string[]) {
-    if (projects.byID(project.value)?.scope === 'local') return
-    askState.value = { ...askState.value, [chatKey(project.value, info.id)]: names }
   }
   function seatAskFor(info: ChatInfo): string[] {
     return projects.byID(project.value)?.scope === 'local' ? seatAskState.value[chatKey(project.value, info.id)] || [] : []
@@ -173,7 +158,6 @@ export const useInboxStore = defineStore('inbox', () => {
     if (reset) hasOlder.value = Array.isArray(items) && items.length === PAGE_SIZE
     messages.value = Array.isArray(items) ? [...items].sort((a, b) => a.seq - b.seq) : []
     chat.value = info
-    keepAsk(info)
     markRead(pid, info)
     intend(reset ? 'reset' : 'auto')
   }
@@ -200,8 +184,6 @@ export const useInboxStore = defineStore('inbox', () => {
 
   function setReply(m: ChatMessage | null) {
     replyTo.value = m
-    const info = chat.value
-    if (m && info && m.from !== app.self && others(info, app.self).includes(m.from)) setAsk(info, [m.from])
     if (m) focusComposer.value++
   }
 
@@ -252,7 +234,7 @@ export const useInboxStore = defineStore('inbox', () => {
     sending.value = true
     sendResult.value = ''
     try {
-      const body: Record<string, unknown> = { chat_id: id, body: composer.value, ask: [...askFor(info)].sort() }
+      const body: Record<string, unknown> = { chat_id: id, body: composer.value, ask: messageAsk(info) }
       if (replyTo.value) body.reply_to = replyTo.value.id
       const seats = seatAskFor(info)
       if (seats.length) body.ask_seats = [...seats].sort()
@@ -476,8 +458,8 @@ export const useInboxStore = defineStore('inbox', () => {
 
   return {
     project, selectedChat, selectedMessage, chat, messages, hasOlder, scrollIntent, drafts, composer, replyTo, sendResult,
-    subtitleError, sending, closing, focusComposer, askState, reads, toasts, starting, startResult,
-    askFor, setAsk, seatAskFor, setSeatAsk, loadChat, loadOlder, saveDraft, setReply, selectChat, canSend, submitMessage,
+    subtitleError, sending, closing, focusComposer, reads, toasts, starting, startResult,
+    seatAskFor, setSeatAsk, loadChat, loadOlder, saveDraft, setReply, selectChat, canSend, submitMessage,
     startChat, openPeer, activeChat, openActive, closeChat, confirmClose, clearChat, confirmClear, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, openKey,
   }
 })
