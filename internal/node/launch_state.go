@@ -140,6 +140,9 @@ func (n *Node) holdForAck(area string, ids []string, session string, now time.Ti
 	d.acks = append(d.acks, &ackJob{IDs: slices.Clone(ids), Session: session, Area: area, At: now, next: now.Add(launchAckRetry)})
 	n.saveLaunchStateLocked()
 	d.mu.Unlock()
+	if err := n.leases.hold(session, ids, now); err != nil {
+		n.log.Warn("save leases", "err", err)
+	}
 }
 
 // launchAckFunc is the ack of a desktop launch's messages.

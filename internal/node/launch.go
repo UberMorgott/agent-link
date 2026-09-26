@@ -246,6 +246,8 @@ type deliveryState struct {
 	// statePath: launch_state.json; pruned: last pruneLaunchState.
 	statePath string
 	pruned    time.Time
+	// leasePruned: last prune of the lease book (leaseSweep).
+	leasePruned time.Time
 }
 
 type pendingLaunch struct {

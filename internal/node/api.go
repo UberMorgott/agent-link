@@ -528,6 +528,7 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 		}
 	})
 	mux.HandleFunc("GET /sessions", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Sessions()) })
+	mux.HandleFunc("GET /leases", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Leases()) })
 	mux.HandleFunc("DELETE /sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := n.EndSession(r.PathValue("id")); err != nil {
 			http.Error(w, err.Error(), errorCode(err))

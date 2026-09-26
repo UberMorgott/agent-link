@@ -75,6 +75,7 @@ func (n *Node) wakeLoop(ctx context.Context) {
 			n.waker.Check(ctx, false)
 			n.syncQueueWake()
 		}
+		n.leaseSweep(time.Now())
 		n.wakeIdle(ctx)
 		n.seatsDue(ctx, time.Now())
 		n.launchMaintain(ctx, time.Now())

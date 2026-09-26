@@ -109,6 +109,8 @@ type Node struct {
 	launcher SessionLauncher
 	autoOpen atomic.Bool
 	deliv    *deliveryState
+	// leases: the delivery lease of every message handed to an owner (lease.go).
+	leases *leaseBook
 	// directWG counts the desktop-app first turns running (runDirect).
 	directWG sync.WaitGroup
 	// occupied replaces folderOccupied, launchAck the ack of a desktop
@@ -281,6 +283,11 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		return nil, err
 	}
 	n.MigrateProjectChats()
+	n.leases = newLeaseBook(cfg.DataDir)
+	if err := n.leases.load(); err != nil {
+		n.log.Warn("delivery leases unreadable; starting over", "err", err)
+	}
+	n.restoreLeases(time.Now())
 	return n, nil
 }
 
