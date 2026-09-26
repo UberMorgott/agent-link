@@ -26,6 +26,9 @@ if [ -f "$marker" ]; then
 	fi
 fi
 self=$(cd "${0%/*}" && pwd)
+if [ -f "$self/agentlink.exe" ]; then
+	exec "$self/agentlink.exe" "$@"
+fi
 IFS=:
 for dir in $PATH; do
 	[ "$(cd "$dir" 2>/dev/null && pwd)" = "$self" ] && continue

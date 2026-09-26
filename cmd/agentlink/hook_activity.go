@@ -59,6 +59,27 @@ func (h *hookSession) report(typ, text, phase string) {
 	}
 }
 
+// reportMain reports only what hooks can honestly attribute to the main
+// agent. Codex tool hooks do not identify the agent that ran them, so while
+// children are active their tool calls must not be presented as the parent's.
+func (h *hookSession) reportMain(typ, text, phase string) {
+	if h.client == hookCodex && phase != node.PhaseIdle && len(h.st.Subagents) > 0 {
+		typ, text = "thinking", "работает с субагентами"
+	}
+	h.report(typ, text, phase)
+}
+
+// reportCodexAgentState replaces stale parent activity immediately when a
+// child starts or the last child stops. Codex exposes child lifecycle, but not
+// child ownership on tool hooks.
+func (h *hookSession) reportCodexAgentState() {
+	if h.client != hookCodex || len(h.st.Active) == 0 {
+		return
+	}
+	h.st.ActivityAt = time.Time{}
+	h.reportMain("thinking", "думает", "")
+}
+
 // agentActivity is a subagent's last activity posted (hookState.AgentActivity).
 type agentActivity struct {
 	Text string    `json:"text"`
@@ -163,7 +184,7 @@ func noteSent(env hookEnv, sid, chatID, msgID string) {
 		}
 		st.Active[chatID] = msgID
 		st.Activity, st.ActivityAt = "", time.Time{} // shows at once
-		(&hookSession{env: env, st: &st, sid: sid, folder: st.Folder}).report("thinking", "думает", "")
+		(&hookSession{env: env, st: &st, sid: sid, folder: st.Folder, client: client}).reportMain("thinking", "думает", "")
 		_ = saveHookState(path, st)
 		return
 	}
