@@ -44,6 +44,8 @@ type waitOpts struct {
 	stale     time.Duration // a waiter lock not refreshed for this long is stale
 	// alive reports whether the session (its agent process) still runs.
 	alive func() bool
+	// replaced reports whether a newer executable occupies this process's launch path.
+	replaced func() bool
 }
 
 // defaultWaitOpts: the session's process is the client's agent among the
@@ -59,6 +61,7 @@ func defaultWaitOpts(client string) waitOpts {
 		busyFor:   10 * time.Minute,
 		stale:     20 * time.Second,
 		alive:     func() bool { return processAlive(ppid) },
+		replaced:  executableReplaced(),
 	}
 }
 
@@ -90,6 +93,18 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 		if o.alive != nil && !o.alive() {
 			_ = hookCall(env.api, http.MethodDelete, "/sessions/"+url.PathEscape(in.SessionID), env.withProject(nil), nil, nil, hookHTTPTimeout)
 			return 0
+		}
+		if o.replaced != nil && o.replaced() {
+			// Stop can launch this waiter before it saves idle state. Wait for
+			// that state, instead of exiting silently and stranding an idle
+			// session. An actual running turn also gets its own next Stop.
+			if !waiterBusy(st, env.clock(), o.busyFor) {
+				// Claude's asyncRewake treats exit 2 plus stderr as a new turn;
+				// its next Stop launches the current executable. No unread message
+				// is claimed here, so ordinary delivery remains intact.
+				_, _ = io.WriteString(stderr, "AgentLink was updated. Finish this turn so the Stop hook starts the updated message waiter.\n")
+				return 2
+			}
 		}
 		// Only an idle session's heartbeat: a busy one's hooks keep it
 		// registered, and the Stop hook that started this waiter may not have

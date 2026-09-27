@@ -13,7 +13,8 @@
 # checks and installs 0.0.2 through the web UI; the old app quits the normal
 # way and the new one starts from the same path, reports 0.0.2 and reattaches
 # to the agent, which was never restarted: the job completes once. The one
-# executable is replaced, the parked old file is swept, the CLI then reports
+# executable is replaced, a host-owned MCP helper retires, the parked old file
+# is swept, the CLI then reports
 # up to date, a release whose file does not match its digest is refused, and
 # with the API rate-limited a check still works while an install is refused.
 [CmdletBinding()]
@@ -108,6 +109,7 @@ $b.settings.auto_answer = $true
 @{ handler_command = @($fake); auto_update = $false } | ConvertTo-Json | Set-Content -Path $b.config
 
 $gh = $null
+$mcp = $null
 try {
     $gh = Start-Process -FilePath $fakeRelease -ArgumentList @('-addr', $ghAddr, '-dir', $release, '-tag', 'v0.0.2') -PassThru -WindowStyle Hidden
     Wait-Until { (Invoke-WebRequest "http://$ghAddr/UberMorgott/agent-link/releases/latest" -MaximumRedirection 0 -SkipHttpErrorCheck -TimeoutSec 2 -ErrorAction SilentlyContinue).StatusCode -eq 302 } 'fake releases API' | Out-Null
@@ -141,6 +143,26 @@ try {
     $agent = @(Get-CimInstance Win32_Process -Filter "Name='fakeagent.exe'" | Where-Object { $_.ExecutablePath -eq $fake })
     if ($agent.Count -ne 1) { throw "expected one agent, found $($agent.Count)" }
 
+    Write-Host '== an MCP helper is open during the update'
+    $mcpStart = [System.Diagnostics.ProcessStartInfo]::new($b.exe)
+    $mcpStart.ArgumentList.Add('mcp')
+    $mcpStart.Environment['AGENTLINK_API'] = $b.api
+    $mcpStart.UseShellExecute = $false
+    $mcpStart.CreateNoWindow = $true
+    $mcpStart.RedirectStandardInput = $true
+    $mcpStart.RedirectStandardOutput = $true
+    $mcpStart.RedirectStandardError = $true
+    $mcp = [System.Diagnostics.Process]::Start($mcpStart)
+    $mcp.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"e2e-update","version":"0"}}}')
+    $mcp.StandardInput.Flush()
+    $helloTask = $mcp.StandardOutput.ReadLineAsync()
+    if (-not $helloTask.Wait(5000)) { throw 'MCP helper did not initialize' }
+    $hello = $helloTask.Result | ConvertFrom-Json
+    if ($hello.id -ne 1 -or -not $hello.result) { throw "MCP initialize failed: $($helloTask.Result)" }
+    $mcp.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}')
+    $mcp.StandardInput.Flush()
+    if ($mcp.HasExited) { throw "MCP helper exited before the update: $($mcp.StandardError.ReadToEnd())" }
+
     Write-Host '== node-b: check, then install 0.0.2 while the job runs'
     $st = Invoke-Ui $b POST update/check
     Write-Host "check: $($st.text)"
@@ -152,6 +174,7 @@ try {
     Write-Host "old node-b exited with code $($b.proc.ExitCode)"
     Connect-Node $b
     $st = Wait-Until { $s = Invoke-Ui $b GET update; if ($s.current -eq '0.0.2') { $s } } 'node-b answering as 0.0.2'
+    Wait-Until { $mcp.HasExited } 'old MCP helper retiring after the update' | Out-Null
     $trays = Get-Trays
     if ($trays.Count -ne 1) { throw "expected one node-b process after the update, found $($trays.Count)" }
     $b.proc = Get-Process -Id $trays[0].ProcessId
@@ -210,6 +233,8 @@ try {
     Write-Host 'E2E UPDATE PASS'
 }
 finally {
+    if ($mcp -and -not $mcp.HasExited) { $mcp.Kill(); $mcp.WaitForExit() }
+    if ($mcp) { $mcp.Dispose() }
     foreach ($n in $a, $b) {
         if ($n.ContainsKey('proc') -and -not $n.proc.HasExited) { Stop-Process -Id $n.proc.Id -Force }
     }

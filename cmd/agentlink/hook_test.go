@@ -894,6 +894,64 @@ func TestHookWaitWakesIdleSession(t *testing.T) {
 	}
 }
 
+func TestHookWaitRearmsAfterExecutableReplacement(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evStop)
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "after update", true))
+	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: time.Second, busyFor: time.Hour, stale: time.Minute, replaced: func() bool { return true }}
+	var stderr bytes.Buffer
+	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, o); code != 2 {
+		t.Fatalf("updated waiter: code %d stderr %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "updated") || !strings.Contains(stderr.String(), "Stop") {
+		t.Fatalf("rearm instruction missing: %q", stderr.String())
+	}
+	if len(c.f.ackedIDs()) != 0 || len(c.f.token("m1")) != 0 {
+		t.Fatalf("replacement acknowledged or claimed messages: %v", c.f.ackedIDs())
+	}
+	// The old process releases the per-session lock before Claude's next Stop.
+	o.replaced = func() bool { return false }
+	stderr.Reset()
+	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, o); code != 2 || !strings.Contains(stderr.String(), "after update") {
+		t.Fatalf("new waiter: code %d stderr %q", code, stderr.String())
+	}
+}
+
+func TestHookWaitExecutableReplacementDoesNotWakeBusySession(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evPreTool, `,"tool_name":"Read"`)
+	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 50 * time.Millisecond, busyFor: time.Hour, stale: time.Minute, replaced: func() bool { return true }}
+	var stderr bytes.Buffer
+	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, o); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("busy waiter was rewoken: code %d stderr %q", code, stderr.String())
+	}
+}
+
+func TestHookWaitReplacementWaitsForStopState(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evPreTool, `,"tool_name":"Read"`)
+	path := hookStatePath(c.env.dir, hookClaude, c.sid)
+	updated := make(chan error, 1)
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		st := loadHookState(path)
+		st.LastEvent, st.LastEventAt = evStop, c.now
+		updated <- saveHookState(path, st)
+	}()
+	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: time.Second, busyFor: time.Hour, stale: time.Minute, replaced: func() bool { return true }}
+	var stderr bytes.Buffer
+	code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, o)
+	if err := <-updated; err != nil {
+		t.Fatal(err)
+	}
+	if code != 2 || !strings.Contains(stderr.String(), "updated") {
+		t.Fatalf("did not rearm after Stop state: code %d stderr %q", code, stderr.String())
+	}
+}
+
 // A wake whose claim lapsed before the session's next event (a long first
 // tool call) is unread again; a hook that finds it in the transcript
 // acknowledges it instead of delivering it a second time.

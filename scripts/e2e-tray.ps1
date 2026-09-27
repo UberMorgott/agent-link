@@ -27,8 +27,13 @@ $data = Join-Path $root '.data/e2e-tray'
 
 function Get-RealState {
     $dir = Join-Path $env:APPDATA 'agentlink'
+    # A real Claude session refreshes its .wait lock every two seconds while
+    # this isolated E2E runs. Its hook state belongs to that session, not to
+    # either test node; keep checking config, data and autostart below.
+    $hooks = Join-Path $dir 'hooks'
     $files = if (Test-Path $dir) {
-        Get-ChildItem -Recurse -Force $dir | ForEach-Object { "$($_.FullName)|$($_.PSIsContainer ? 'dir' : $_.Length)|$($_.LastWriteTimeUtc.Ticks)" }
+        Get-ChildItem -Recurse -Force $dir | Where-Object { $_.FullName -ne $hooks -and -not $_.FullName.StartsWith($hooks + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) } |
+            ForEach-Object { "$($_.FullName)|$($_.PSIsContainer ? 'dir' : $_.Length)|$($_.LastWriteTimeUtc.Ticks)" }
     } else { 'absent' }
     $run = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name agentlink -ErrorAction SilentlyContinue)?.agentlink
     "$($files -join "`n")`nrun=$run"

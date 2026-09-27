@@ -213,8 +213,11 @@ after that time instead of waiting the usual hours. Only then does it swap `agen
 renamed to a hidden `.agentlink.exe.old` and the new one takes its place; a failure puts the old
 one back. The app then starts the new executable
 (with `-restarted`, which waits up to 30 s for the API address) and quits the normal way, never
-the kill path: running agent jobs stay up and the new app reattaches to them. The next start
-deletes the `.old` file, and an `agentlink-tray.exe` left next to it by an older release
+the kill path: running agent jobs stay up and the new app reattaches to them. A Claude Code
+background message waiter from the old version wakes its session to rearm on the new version;
+an old stdio MCP server exits after its current tool call completes. Restart an open Claude
+Code or Codex session if its MCP tools do not reconnect. The next start deletes the `.old`
+file after the old processes exit, and an `agentlink-tray.exe` left next to it by an older release
 (0.4.x shipped the tray app separately); an autostart entry that still starts
 `agentlink-tray.exe` is pointed at `agentlink.exe`. 0.4.x apps cannot update to this layout by
 themselves: download `agentlink.exe` once by hand, quit the old tray app and start the new one. A plain `go build` has version `dev` and never updates itself;
