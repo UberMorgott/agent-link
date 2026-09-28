@@ -61,6 +61,42 @@ func TestLocalProjectInheritsNetworkAutonomy(t *testing.T) {
 	}
 }
 
+// Temporary and topic chats of a folder follow its local project's autonomy,
+// and through it the network project's; later changes there apply too.
+func TestLocalChatsInheritFolderAutonomy(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
+	dir := repoDir(t)
+	var network ProjectView
+	if code, raw := h.api(t, http.MethodPost, "projects", map[string]any{"name": "Shared", "dir": dir}, &network); code != http.StatusOK {
+		t.Fatalf("create: %d %s", code, raw)
+	}
+	if code, raw := h.api(t, http.MethodPost, "projects/"+network.ID+"/binding", map[string]any{"autonomy": "full", "max_auto_depth": 0}, &network); code != http.StatusOK {
+		t.Fatalf("full: %d %s", code, raw)
+	}
+	project := discussIn(t, h, map[string]any{"folder": dir})
+	temp := discussIn(t, h, map[string]any{"folder": dir, "temporary": true, "session_id": "s1"})
+	topic := discussIn(t, h, map[string]any{"folder": dir, "topic": "Design"})
+	chats := map[string]string{"temporary": temp.Project, "topic": topic.Project}
+	check := func(when string, mode string, depth int) {
+		t.Helper()
+		for name, pid := range chats {
+			if got := h.app.projects[pid].n.Autonomy(); got.Mode != mode || got.MaxDepth != depth {
+				t.Fatalf("%s: %s chat autonomy %+v, want %s/%d", when, name, got, mode, depth)
+			}
+		}
+	}
+	check("network full", node.AutonomyFull, 0)
+	if code, raw := h.api(t, http.MethodPost, "projects/"+network.ID+"/binding", map[string]any{"autonomy": "asked", "max_auto_depth": 5}, &network); code != http.StatusOK {
+		t.Fatalf("asked: %d %s", code, raw)
+	}
+	check("network changed", node.AutonomyAsked, 5)
+	// The folder's local project's own setting wins, for its chats too.
+	if code, raw := h.api(t, http.MethodPost, "projects/"+project.Project+"/binding", map[string]any{"max_auto_depth": 3}, nil); code != http.StatusOK {
+		t.Fatalf("own: %d %s", code, raw)
+	}
+	check("local project's own", node.AutonomyAsked, 3)
+}
+
 type discussHeldAPI struct {
 	discussResultAPI
 	HoldReason string `json:"hold_reason"`

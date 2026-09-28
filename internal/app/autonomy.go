@@ -79,12 +79,21 @@ func (a *App) autonomyBaseLocked(parent, dir string) (settings.ProjectBinding, b
 // effectiveBindingLocked is b with the autonomy in effect: a local project
 // without its own reads it through from the network project bound to the same
 // folder (autonomyBaseLocked), so the owner's later changes there apply too;
-// with none bound, b's own defaults.
+// with none bound, b's own defaults. A local chat (b.Chat, no Dir of its own)
+// follows the local project of its folder, and so what that one follows; a
+// folderless chat the network project bound to its folder.
 func (a *App) effectiveBindingLocked(b settings.ProjectBinding) settings.ProjectBinding {
 	if b.ScopeOf() != settings.ProjectScopeLocal || ownAutonomy(b) {
 		return b
 	}
-	if base, ok := a.autonomyBaseLocked("", b.Dir); ok {
+	parent, dir := "", b.Dir
+	if b.Chat != nil {
+		if i := a.bindingIndex(b.Chat.Project); i >= 0 && a.s.Bindings[i].Chat == nil {
+			return withAutonomy(b, a.effectiveBindingLocked(a.s.Bindings[i]))
+		}
+		parent, dir = b.Chat.Project, b.Chat.Folder
+	}
+	if base, ok := a.autonomyBaseLocked(parent, dir); ok {
 		return withAutonomy(b, base)
 	}
 	return b
