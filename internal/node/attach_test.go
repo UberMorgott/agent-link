@@ -302,7 +302,11 @@ func TestMaterializePathSafety(t *testing.T) {
 		t.Fatal(err)
 	}
 	work := t.TempDir()
-	out := filepath.Join(work, ".agentlink", "attachments")
+	realWork, err := realDir(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(realWork, ".agentlink", "attachments")
 	for _, name := range []string{"../../evil.txt", `..\..\evil.txt`, "..", "/abs/x.txt", "C:\\x.txt", "a/../../b.txt"} {
 		a.Name = name
 		p, err := s.materialize(a, work)
@@ -424,7 +428,11 @@ func TestAttachmentEndToEnd(t *testing.T) {
 		t.Fatalf("attachments %+v", got.Attachments)
 	}
 	att := got.Attachments[0]
-	wantDir := filepath.Join(workA, ".agentlink", "attachments")
+	realWorkA, err := realDir(workA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDir := filepath.Join(realWorkA, ".agentlink", "attachments")
 	if att.Failed || att.MIME != MIMEPNG || att.Size != int64(len(img)) || filepath.Dir(att.Path) != wantDir ||
 		filepath.Base(att.Path) != att.ID[:8]+"-screen shot.png" {
 		t.Fatalf("attachment %+v", att)
