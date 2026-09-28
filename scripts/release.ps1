@@ -23,29 +23,62 @@ New-Item -ItemType Directory -Force $dist | Out-Null
 
 $ldVersion = "-X github.com/UberMorgott/agent-link/internal/selfupdate.Version=$Version"
 $exe = Join-Path $dist 'agentlink.exe'
-Remove-Item $exe -ErrorAction SilentlyContinue
-$env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+
+# dist/agentlink.exe is live: the tray app, MCP servers and hooks run it and
+# may start it at any moment, which locks the file (upx: Permission denied).
+# Build, pack and test in a private folder on the same volume, then swap the
+# result in the way the self-updater does: the running file is renamed aside
+# (a running executable cannot be deleted, only renamed) and removed later by
+# the app's cleanup (internal/selfupdate OldPath and its numbered slots).
+$work = Join-Path $dist ".build-$PID"
+$built = Join-Path $work 'agentlink.exe'
+New-Item -ItemType Directory -Force $work | Out-Null
+
+function Move-Aside([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $old = Join-Path (Split-Path $Path -Parent) ('.' + (Split-Path $Path -Leaf) + '.old')
+    for ($slot = 0; $slot -le 64; $slot++) {
+        $target = if ($slot) { "$old.$slot" } else { $old }
+        if (Test-Path -LiteralPath $target) {
+            # Still running an older build: try the next slot.
+            try { Remove-Item -LiteralPath $target -Force -ErrorAction Stop } catch { continue }
+        }
+        [IO.File]::Move($Path, $target)
+        return
+    }
+    throw "no free slot to move $Path aside"
+}
+
 try {
-    go build -C $root -trimpath -ldflags "-s -w $ldVersion" -o $exe ./cmd/agentlink
-    if ($LASTEXITCODE) { throw 'go build failed for ./cmd/agentlink (windows/amd64)' }
+    $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+    try {
+        go build -C $root -trimpath -ldflags "-s -w $ldVersion" -o $built ./cmd/agentlink
+        if ($LASTEXITCODE) { throw 'go build failed for ./cmd/agentlink (windows/amd64)' }
+    }
+    finally {
+        $env:GOOS = $null; $env:GOARCH = $null; $env:CGO_ENABLED = $null
+    }
+    $stripped = (Get-Item $built).Length
+    upx --best --lzma -q $built | Out-Null
+    if ($LASTEXITCODE) { throw "upx failed for $built" }
+    upx -t -q $built | Out-Null
+    if ($LASTEXITCODE) { throw "upx test failed for $built" }
+    '{0}: {1:N0} -> {2:N0} bytes' -f (Split-Path $exe -Leaf), $stripped, (Get-Item $built).Length | Write-Host
+
+    # Smoke: the packed executable must start as the CLI, know its version and
+    # report it on stdout with exit code 0.
+    if ($IsWindows) {
+        $got = & $built version
+        if ($LASTEXITCODE -or $got -ne $Version) { throw "packed $built reports '$got', want $Version" }
+    }
+
+    Move-Aside $exe
+    [IO.File]::Move($built, $exe)
 }
 finally {
-    $env:GOOS = $null; $env:GOARCH = $null; $env:CGO_ENABLED = $null
+    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
-$stripped = (Get-Item $exe).Length
-upx --best --lzma -q $exe | Out-Null
-if ($LASTEXITCODE) { throw "upx failed for $exe" }
-upx -t -q $exe | Out-Null
-if ($LASTEXITCODE) { throw "upx test failed for $exe" }
-'{0}: {1:N0} -> {2:N0} bytes' -f (Split-Path $exe -Leaf), $stripped, (Get-Item $exe).Length | Write-Host
 $assets = @($exe)
-
-# Smoke: the packed executable must start as the CLI, know its version and
-# report it on stdout with exit code 0.
-if ($IsWindows) {
-    $got = & $exe version
-    if ($LASTEXITCODE -or $got -ne $Version) { throw "packed $exe reports '$got', want $Version" }
-}
 if ($Publish) {
     $tag = "v$Version"
     gh release view $tag --repo UberMorgott/agent-link *> $null
