@@ -979,6 +979,33 @@ func TestHookWaitExecutableReplacementDoesNotWakeBusySession(t *testing.T) {
 	}
 }
 
+// A reader holding the state file open for a moment (the waiter polling it)
+// must not make a hook's save fail: on Windows the rename is then refused.
+func TestWriteFileAtomicWaitsForReader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := writeFileAtomic(path, []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := make(chan struct{})
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_ = f.Close()
+		close(closed)
+	}()
+	err = writeFileAtomic(path, []byte("new"))
+	<-closed
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Clean(path)); string(got) != "new" {
+		t.Fatalf("state = %q", got)
+	}
+}
+
 func TestHookWaitReplacementWaitsForStopState(t *testing.T) {
 	c := newHookCase(t)
 	c.run(hookClaude, evSessionStart)

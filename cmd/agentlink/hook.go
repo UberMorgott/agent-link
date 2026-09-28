@@ -945,7 +945,19 @@ func writeFileAtomic(path string, data []byte) error {
 		_ = os.Remove(tmp.Name())
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	// On Windows the rename fails while another process (the session's
+	// waiter polling this state) has the file open for a moment: retry.
+	for try := 0; ; try++ {
+		err = os.Rename(tmp.Name(), path)
+		if err == nil || try == 50 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+	}
+	return err
 }
 
 // mustJSON encodes v without HTML escaping; v is always encodable here.
