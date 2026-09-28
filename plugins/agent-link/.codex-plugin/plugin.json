@@ -1,6 +1,6 @@
 {
   "name": "agent-link",
-  "version": "0.6.31+codex.20260928181110",
+  "version": "0.6.33+codex.20260928170535",
   "description": "Connect coding agents through project chats, delivered messages, and local MCP tools.",
   "author": {
     "name": "UberMorgott",
