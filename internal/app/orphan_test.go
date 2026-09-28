@@ -85,6 +85,40 @@ func TestOrphanedLocalSeatReplyOfNetworkSession(t *testing.T) {
 	eventuallyApp(t, "the session back takes its reply", func() bool { return !msg().NeedsHuman })
 	end()
 	eventuallyApp(t, "needs a person again", func() bool { return msg().NeedsHuman })
+	// Events are hints: a late "live" run (reordered after the end) keeps
+	// the mark; a "gone" run that comes after the session registered again
+	// does not orphan it.
+	alice.reconcileSession("claude-one")
+	if !msg().NeedsHuman {
+		t.Fatal("a late run cleared the mark of a session that is gone")
+	}
+	mu := alice.sessionLock("claude-one")
+	mu.Lock()
+	register("claude-one") // its own run waits for the lock
+	mu.Unlock()
+	alice.reconcileSession("claude-one") // the end's run, late
+	eventuallyApp(t, "registered again: its reply", func() bool { return !msg().NeedsHuman })
+	end()
+	eventuallyApp(t, "gone again", func() bool { return msg().NeedsHuman })
+
+	// A reassign whose target ends meanwhile: under the target's lock it
+	// sees the end (404), and the reply stays the owner's to decide.
+	two := alice.sessionLock("claude-two")
+	two.Lock()
+	type result struct {
+		code int
+		body string
+	}
+	done := make(chan result, 1)
+	go func() { c, b := reassign("claude-two", false); done <- result{c, b} }()
+	if code, body := call(t, srv, http.MethodDelete, "/sessions/claude-two", ""); code != http.StatusNoContent {
+		t.Fatalf("end claude-two: %d %s", code, body)
+	}
+	two.Unlock()
+	if r := <-done; r.code != http.StatusNotFound || !msg().NeedsHuman || msg().OrphanedSession != "claude-one" {
+		t.Fatalf("reassign racing its target's end: %d %s, %+v", r.code, r.body, msg())
+	}
+	register("claude-two")
 
 	if code, body := reassign("claude-gone", false); code != http.StatusNotFound {
 		t.Fatalf("reassign to no live session: %d %s", code, body)
@@ -101,4 +135,12 @@ func TestOrphanedLocalSeatReplyOfNetworkSession(t *testing.T) {
 	if code != http.StatusOK || json.Unmarshal([]byte(body), &granted) != nil || !slices.Equal(granted, []string{reply.ID}) {
 		t.Fatalf("claim by the new session: %d %s", code, body)
 	}
+	// The session it was handed to ends: the reply needs a person again.
+	if code, body := call(t, srv, http.MethodDelete, "/sessions/claude-two", ""); code != http.StatusNoContent {
+		t.Fatalf("end claude-two: %d %s", code, body)
+	}
+	eventuallyApp(t, "reassigned reply orphaned by its new session's end", func() bool {
+		m := msg()
+		return m.NeedsHuman && m.OrphanedSession == "claude-two"
+	})
 }

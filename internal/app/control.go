@@ -323,19 +323,19 @@ func (a *App) controlReassign(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, node.ErrUnknownMessage.Error()+" "+body.ID, http.StatusNotFound)
 		return
 	}
-	var target node.Session
-	found := false
-	for _, x := range ctxs {
-		if s, ok := x.n.SessionLive(body.SessionID); ok {
-			target, found = s, true
-			break
-		}
-	}
+	// Under the target's reconciliation lock: its end or expiry cannot slip
+	// between the liveness check and the new route; its reconcileSession runs
+	// after and finds the reply waiting for it (needs a person).
+	mu := a.sessionLock(body.SessionID)
+	mu.Lock()
+	target, found := a.liveSession(ctxs, body.SessionID)
 	if !found {
+		mu.Unlock()
 		http.Error(w, node.ErrUnknownSession.Error()+" "+body.SessionID, http.StatusNotFound)
 		return
 	}
 	m, err := c.n.ReassignTo(body.ID, target, body.Force)
+	mu.Unlock()
 	switch {
 	case err == nil:
 		writeJSON(w, m)

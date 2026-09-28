@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/UberMorgott/agent-link/internal/config"
@@ -141,28 +143,48 @@ func (a *App) newNodeOf(pid string, cfg config.Config, key []byte) (*node.Node, 
 	n.SetChatColor(a.s.ChatColor)
 	n.SetDisplay(a.s.Nickname, a.s.NicknameAliases)
 	n.SetAutonomyPauseHook(func(reason string) { go a.autonomyPaused(pid, reason) })
-	n.SetSessionHook(func(sid string, live bool) { go a.sessionChanged(sid, live) })
+	// The event only says something changed: reconcileSession reads the
+	// session's current state, so late or reordered events do no harm.
+	n.SetSessionHook(func(sid string, _ bool) { go a.reconcileSession(sid) })
 	return n, nil
 }
 
-// sessionChanged reconciles the replies of session sid across the contexts:
-// a session registered in one (a network project) gets replies in others too
-// (a local seat's reply in the folder's local chat, sessionContexts) without
-// being registered there. Gone (ended or expired) and live in no context,
-// its replies in every context need a person (OrphanReplies); live again, it
-// takes them back everywhere (ReclaimReplies).
-func (a *App) sessionChanged(sid string, live bool) {
+// sessionLock is the lock of session sid's reconciliation (App.sessLocks).
+func (a *App) sessionLock(sid string) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(sid))
+	return &a.sessLocks[h.Sum32()%uint32(len(a.sessLocks))]
+}
+
+// liveSession finds session sid live in any context.
+func (a *App) liveSession(ctxs []routeCtx, sid string) (node.Session, bool) {
+	for _, c := range ctxs {
+		if s, ok := c.n.SessionLive(sid); ok {
+			return s, true
+		}
+	}
+	return node.Session{}, false
+}
+
+// reconcileSession reconciles the replies of session sid across the
+// contexts after it registered, ended or expired: a session registered in
+// one (a network project) gets replies in others too (a local seat's reply
+// in the folder's local chat, sessionContexts) without being registered
+// there. Live in no context, its replies in every context need a person
+// (OrphanReplies); live, it holds them everywhere (ReclaimReplies). It runs
+// under the session's lock and decides by its current liveness, not by the
+// event that started it: every change is followed by a run, and the last
+// run sees the last state, whatever order the runs take.
+func (a *App) reconcileSession(sid string) {
+	mu := a.sessionLock(sid)
+	mu.Lock()
+	defer mu.Unlock()
 	ctxs := a.routeContexts()
-	if live {
+	if _, live := a.liveSession(ctxs, sid); live {
 		for _, c := range ctxs {
 			c.n.ReclaimReplies(sid)
 		}
 		return
-	}
-	for _, c := range ctxs {
-		if _, ok := c.n.SessionLive(sid); ok {
-			return
-		}
 	}
 	for _, c := range ctxs {
 		c.n.OrphanReplies(sid)

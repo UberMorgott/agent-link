@@ -187,6 +187,17 @@ func TestExpiredSessionOrphansReplies(t *testing.T) {
 	if p, _ := a.UnreadFor(dir, "s-ttl", "", 10); slices.ContainsFunc(p.Messages, func(m UnreadMessage) bool { return m.ID == r.ID }) {
 		t.Fatalf("forced reply still for its old session: %+v", p.Messages)
 	}
+	// The session it was handed to ends: the reply needs a person again.
+	if err := a.EndSession("s-two"); err != nil {
+		t.Fatal(err)
+	}
+	if m := chatMsg(t, a, q.ChatID, r.ID); !m.NeedsHuman || m.OrphanedSession != "s-two" {
+		t.Fatalf("reassigned reply after its new session ended: %+v", m)
+	}
+	// A reassign to a session that ended is refused, even from a stale check.
+	if _, err := a.reassignTo(r.ID, Session{SessionID: "s-two", Folder: dir}, false, true); !errors.Is(err, ErrUnknownSession) {
+		t.Fatalf("reassign to an ended session past the first check: %v", err)
+	}
 }
 
 // An expired session another session's heartbeat dropped (gone) that

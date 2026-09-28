@@ -516,7 +516,9 @@ func (n *Node) Reassign(req ReassignRequest) (ChatMessage, error) {
 	if !ok {
 		return ChatMessage{}, fmt.Errorf("%w %s", ErrUnknownSession, req.SessionID)
 	}
-	return n.ReassignTo(req.ID, s, req.Force)
+	// Checked again under claimMu: a session that ends or expires after that
+	// finds the reply routed to it (OrphanReplies runs under claimMu too).
+	return n.reassignTo(req.ID, s, req.Force, true)
 }
 
 // ReassignTo hands unread chat message id (a reply orphaned by its session's
@@ -528,8 +530,15 @@ func (n *Node) Reassign(req ReassignRequest) (ChatMessage, error) {
 // holds it, its lease starts over, and the session's hooks or a wake deliver
 // it; its Claim and Ack go by (project, id, session) as for any message.
 // Only the owner or an agent asking explicitly moves a reply: nothing
-// reroutes one by itself.
+// reroutes one by itself. The caller keeps target's liveness from changing
+// unseen until it returns (the app's session lock), or reconciles after.
 func (n *Node) ReassignTo(id string, target Session, force bool) (ChatMessage, error) {
+	return n.reassignTo(id, target, force, false)
+}
+
+// reassignTo is ReassignTo; local checks under claimMu that target is still
+// a live session of this node.
+func (n *Node) reassignTo(id string, target Session, force, local bool) (ChatMessage, error) {
 	switch {
 	case !validID(id):
 		return ChatMessage{}, fmt.Errorf("%w: invalid id", ErrBadRequest)
@@ -547,6 +556,10 @@ func (n *Node) ReassignTo(id string, target Session, force bool) (ChatMessage, e
 	}
 	r := n.sess
 	r.claimMu.Lock()
+	if local && !r.liveIDs(time.Now())[target.SessionID] {
+		r.claimMu.Unlock()
+		return ChatMessage{}, fmt.Errorf("%w %s", ErrUnknownSession, target.SessionID)
+	}
 	rec, err := n.chats.reassign(id, target.SessionID, force)
 	if err == nil {
 		delete(r.claims, id) // the old route's claim or wake no longer holds it

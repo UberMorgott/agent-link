@@ -95,6 +95,9 @@ type App struct {
 	picking atomic.Bool    // a Windows dialog is open
 	saves   sync.WaitGroup // background saves of a rediscovered agent path
 	gcOnce  sync.Once      // starts gcLoop of temporary local chats
+	// sessLocks serialize, per session id (sessionLock), the reconciliation
+	// of its replies (reconcileSession) and a reassign to it.
+	sessLocks [64]sync.Mutex
 
 	mu         sync.Mutex
 	s          settings.Settings
