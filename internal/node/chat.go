@@ -22,6 +22,8 @@ const CapChat = "chat-v1"
 var (
 	// ErrUnknownChat: no chat with that id is known here.
 	ErrUnknownChat = errors.New("unknown chat")
+	// ErrUnknownMessage: no chat message with that id is known here.
+	ErrUnknownMessage = errors.New("unknown message")
 	// ErrChatClosed: the chat is closed; continuing the topic takes a new chat.
 	ErrChatClosed = errors.New("chat is closed")
 	// ErrNoChatSupport: a participant is not connected with chat support now.
@@ -187,6 +189,11 @@ type ChatMessage struct {
 	OwnHuman bool `json:"own_human,omitempty"`
 	// Assigned: who on this node answers it ("worker", "session:<id>").
 	Assigned string `json:"assigned,omitempty"`
+	// NeedsHuman: unread, and the session it waited for (OrphanedSession)
+	// ended or expired. No other session takes it by itself: a person reads it
+	// or hands it to a live session (POST /reassign, agentlink chat reassign).
+	NeedsHuman      bool   `json:"needs_human,omitempty"`
+	OrphanedSession string `json:"orphaned_session,omitempty"`
 	Message
 }
 
@@ -251,6 +258,9 @@ type ChatInfo struct {
 	Keyed bool `json:"keyed,omitempty"`
 	// Unread counts the messages this node's sessions have not acknowledged.
 	Unread int `json:"unread,omitempty"`
+	// NeedsHuman counts the unread ones whose session ended
+	// (ChatMessage.NeedsHuman).
+	NeedsHuman int `json:"needs_human,omitempty"`
 	// Count and LastMessage cover messages (kind ""), not control messages.
 	Count       int          `json:"count"`
 	LastSeq     uint64       `json:"last_seq"`
@@ -1709,6 +1719,9 @@ func (n *Node) chatMessage(c Chat, r chatRecord) ChatMessage {
 	msg.Attachments = n.withKeys(msg.Attachments)
 	cm := ChatMessage{Seq: r.Seq, Direction: "in", Message: msg,
 		Unread: r.Unread && r.ReadAt.IsZero(), Assigned: r.Assigned}
+	if cm.Unread && r.Orphaned != "" {
+		cm.NeedsHuman, cm.OrphanedSession = true, r.Orphaned
+	}
 	if r.Message.From == n.cfg.Node {
 		cm.Direction = "out"
 		cm.OwnHuman = r.Message.AuthorKind == AuthorHuman
@@ -1778,6 +1791,9 @@ func (n *Node) chatInfo(s chatSnapshot, queued map[string]map[string]int) ChatIn
 		}
 		if r.Unread && r.ReadAt.IsZero() {
 			info.Unread++
+			if r.Orphaned != "" {
+				info.NeedsHuman++
+			}
 		}
 		if info.Count == 0 {
 			info.Title = title(r.Message.Body)

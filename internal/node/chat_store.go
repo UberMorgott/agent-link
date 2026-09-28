@@ -75,6 +75,11 @@ type chatRecord struct {
 	// lives (UnreadMessage.ForAgent). Local only, never sent.
 	Agent     string `json:"agent,omitempty"`
 	AgentType string `json:"agent_type,omitempty"`
+	// Orphaned is the session this unread message waited for when it ended or
+	// expired (reportOrphaned): it needs a person, who reads it or hands it to
+	// a live session (Reassign). Local only, never sent.
+	Orphaned   string    `json:"orphaned,omitempty"`
+	OrphanedAt time.Time `json:"orphaned_at,omitzero"`
 	// Receipts: on this node's own messages, the latest receipt per recipient.
 	Receipts map[string]Receipt `json:"receipts,omitempty"`
 	// Attempts: on this node's own messages, the latest delivery attempt
@@ -395,6 +400,82 @@ func (cs *chatStore) setSession(id, session, agent, typ string) error {
 		return true
 	})
 	return err
+}
+
+// markOrphaned marks the unread messages ids as waiting for session sid,
+// which is gone (chatRecord.Orphaned). It returns the ones newly marked.
+func (cs *chatStore) markOrphaned(ids []string, sid string) ([]string, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	now := time.Now().UTC()
+	var out []string
+	for _, id := range ids {
+		_, changed, err := cs.updateLocked(id, func(r *chatRecord) bool {
+			if !r.Unread || !r.ReadAt.IsZero() || r.Orphaned == sid {
+				return false
+			}
+			r.Orphaned, r.OrphanedAt = sid, now
+			return true
+		})
+		if err != nil {
+			return out, err
+		}
+		if changed {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// clearOrphaned drops the Orphaned mark of session sid (it is live again):
+// its replies are its own again. It returns the ids cleared.
+func (cs *chatStore) clearOrphaned(sid string) ([]string, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	var ids []string
+	for _, st := range cs.chats {
+		for _, r := range st.msgs {
+			if r.Orphaned == sid {
+				ids = append(ids, r.Message.ID)
+			}
+		}
+	}
+	for _, id := range ids {
+		if _, _, err := cs.updateLocked(id, func(r *chatRecord) bool {
+			r.Orphaned, r.OrphanedAt = "", time.Time{}
+			return true
+		}); err != nil {
+			return ids, err
+		}
+	}
+	return ids, nil
+}
+
+// reassign assigns unread message id to owner ("session:<id>") in place of
+// whoever it was for, and drops its Orphaned mark. It fails for a message
+// that is not unread (ErrBadRequest) or not known (ErrUnknownMessage).
+func (cs *chatStore) reassign(id, owner string) (chatRecord, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if cs.chats[cs.byMsg[id]] == nil {
+		return chatRecord{}, fmt.Errorf("%w %s", ErrUnknownMessage, id)
+	}
+	var bad error
+	r, _, err := cs.updateLocked(id, func(r *chatRecord) bool {
+		if r.Message.Kind != "" || !r.Unread || !r.ReadAt.IsZero() {
+			bad = fmt.Errorf("%w: message %s is not unread", ErrBadRequest, id)
+			return false
+		}
+		if r.Assigned == owner && r.Orphaned == "" {
+			return false
+		}
+		r.Assigned, r.Orphaned, r.OrphanedAt = owner, "", time.Time{}
+		return true
+	})
+	if bad != nil {
+		return chatRecord{}, bad
+	}
+	return r, err
 }
 
 // claim assigns request id to owner unless someone is assigned already or a

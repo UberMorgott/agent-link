@@ -228,6 +228,8 @@ func (a *App) gcLoop(ctx context.Context) {
 // gcLocalChats removes every temporary chat none of whose sessions is live,
 // with nothing pending (a seat's queue or turn, an unread message, a running
 // job) and no activity for TempChatIdle. Its data goes to .left, as a leave's.
+// An unread reply whose session ended (ChatInfo.NeedsHuman) keeps the chat
+// until a person reads it or reassigns it: it is never dropped unseen.
 func (a *App) gcLocalChats(now time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

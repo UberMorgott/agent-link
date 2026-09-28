@@ -599,6 +599,19 @@ func (b *leaseBook) prune(now time.Time, unread func(key string) bool) error {
 	return b.saveLocked()
 }
 
+// forget drops key's record unless it is acked (Reassign: the owner hands the
+// message to a new session, which starts with no attempts or failures).
+func (b *leaseBook) forget(key string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	l, ok := b.m[key]
+	if !ok || l.State == LeaseAcked {
+		return nil
+	}
+	delete(b.m, key)
+	return b.saveLocked()
+}
+
 // all returns copies of every record.
 func (b *leaseBook) all() map[string]Lease {
 	b.mu.Lock()

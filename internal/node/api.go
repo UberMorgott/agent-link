@@ -475,7 +475,7 @@ func (n *Node) ChatRoutes(mux *http.ServeMux, prefix string, withClose bool, fai
 // errorCode is the HTTP status of a control API error.
 func errorCode(err error) int {
 	switch {
-	case errors.Is(err, ErrUnknownChat), errors.Is(err, ErrUnknownSession):
+	case errors.Is(err, ErrUnknownChat), errors.Is(err, ErrUnknownSession), errors.Is(err, ErrUnknownMessage):
 		return http.StatusNotFound
 	case errors.Is(err, ErrChatClosed), errors.Is(err, ErrLegacyChat):
 		return http.StatusConflict
@@ -525,6 +525,13 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 		if decode(w, r, &req) {
 			ids, err := n.Claim(req)
 			reply(w, ids, err)
+		}
+	})
+	mux.HandleFunc("POST /reassign", func(w http.ResponseWriter, r *http.Request) {
+		var req ReassignRequest
+		if decode(w, r, &req) {
+			m, err := n.Reassign(req)
+			reply(w, m, err)
 		}
 	})
 	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {

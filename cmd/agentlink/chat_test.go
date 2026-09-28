@@ -59,6 +59,10 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 			_ = json.NewEncoder(w).Encode(node.Message{ID: "m1"})
 		case r.URL.Path == "/chats" && r.Method == http.MethodPost, strings.HasSuffix(r.URL.Path, "/close"), strings.HasSuffix(r.URL.Path, "/archive"):
 			_ = json.NewEncoder(w).Encode(node.ChatInfo{ID: "c1"})
+		case r.URL.Path == "/reassign":
+			var req node.ReassignRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewEncoder(w).Encode(node.ChatMessage{Assigned: "session:" + req.SessionID, ID: req.ID})
 		case strings.HasSuffix(r.URL.Path, "/ack"):
 			_ = json.NewEncoder(w).Encode([]node.AckResult{{ID: "m1", Found: true}, {ID: "m2", Found: true}})
 		case r.URL.Path == "/wait" && r.URL.Query().Get("timeout") == "2s":
@@ -164,6 +168,22 @@ func TestChatCommands(t *testing.T) {
 	}
 	if strings.Join(f.reqs, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests:\n%s\nwant:\n%s", strings.Join(f.reqs, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// chat reassign hands one unread message to a live session in its project.
+func TestChatReassign(t *testing.T) {
+	f := newFakeAPI(t)
+	out := f.run("chat", "reassign", "--id", "m9", "--session", "s2", "--project", "P1")
+	if !strings.Contains(out, `"assigned":"session:s2"`) || !strings.Contains(out, `"id":"m9"`) {
+		t.Fatalf("chat reassign printed %q", out)
+	}
+	if len(f.reqs) != 1 || f.reqs[0] != "POST /reassign?project=P1" {
+		t.Fatalf("requests %q", f.reqs)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"chat", "reassign", "--id", "m9", "--config", f.cfg}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "--session") {
+		t.Fatalf("reassign without a session: code %d, stderr %q", code, stderr.String())
 	}
 }
 

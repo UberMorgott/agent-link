@@ -481,6 +481,22 @@ func TestControlAPIRoutes(t *testing.T) {
 	if code, body := claim(""); code != http.StatusOK {
 		t.Fatalf("claim without a folder: %d %s", code, body)
 	}
+	// Reassign goes to the context of the message: a read one is refused, an
+	// unread one is handed to the live session.
+	reassign := func(id string) (int, string) {
+		return call(t, srv, http.MethodPost, "/reassign", jsonOf(t, node.ReassignRequest{ID: id, SessionID: "s1"}))
+	}
+	if code, body := reassign(fromBob.ID); code != http.StatusBadRequest || !strings.Contains(body, "not unread") {
+		t.Fatalf("reassign a read message: %d %s", code, body)
+	}
+	again, err := bobProj.SendRequest(node.SendRequest{ChatID: projChat.ID, Body: "from bob again"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventuallyLong(t, "alice got bob's second message", func() bool { return projN.OwnsMessage(again.ID) })
+	if code, body := reassign(again.ID); code != http.StatusOK || !strings.Contains(body, `"assigned":"session:s1"`) {
+		t.Fatalf("reassign an unread message: %d %s", code, body)
+	}
 	if code, _ := call(t, srv, http.MethodDelete, "/sessions/s1", ""); code != http.StatusNoContent {
 		t.Fatalf("end session: %d", code)
 	}

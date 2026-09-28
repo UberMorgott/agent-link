@@ -262,6 +262,17 @@ func (a *App) controlAPI() http.Handler {
 		}
 	})
 	mux.HandleFunc("POST /ack", a.controlAck)
+	// POST /reassign hands an unread message to a live session: the context
+	// of the message (or --project) decides, like a reply's send.
+	mux.HandleFunc("POST /reassign", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Project string `json:"project"`
+			ID      string `json:"id"`
+		}
+		if peekJSON(w, r, &body) {
+			a.forward(w, r, selector{project: pick(r, body.Project), ids: []string{body.ID}}, false)
+		}
+	})
 	byChat := func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		ctxs := a.routeContexts()
