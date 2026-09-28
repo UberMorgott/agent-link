@@ -184,8 +184,8 @@ type LastSession struct {
 	At        time.Time `json:"at"`
 }
 
-// PinnedSession is the Codex thread that receives every message in this
-// project, even after another session sends in its chats. It is local only.
+// PinnedSession is the live Codex thread preferred for untargeted messages in
+// its local project area.
 type PinnedSession struct {
 	SessionID string `json:"session_id"`
 	Provider  string `json:"provider"`
@@ -227,7 +227,7 @@ func openSessions(dir string) (*sessionRegistry, error) {
 	return r, nil
 }
 
-// PinSession makes one live Codex thread this project's permanent recipient.
+// PinSession prefers one live Codex thread for its local project area.
 func (n *Node) PinSession(req PinSessionRequest) (PinnedSession, error) {
 	s, ok := n.SessionLive(req.SessionID)
 	if !ok {

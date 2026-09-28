@@ -213,7 +213,7 @@ func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string 
 		return s
 	}
 	area := n.localArea(rec.Message.Area)
-	if p, ok := n.sess.pinned(area); ok && live[p.SessionID] {
+	if p, ok := n.sess.pinned(area); ok && live[p.SessionID] && !n.leases.passedOver(id, p.SessionID) {
 		return p.SessionID
 	}
 	recent := n.sess.recentlyActive(live, time.Now())

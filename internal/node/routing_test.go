@@ -164,6 +164,12 @@ func TestPinnedSessionOwnsProjectMessages(t *testing.T) {
 	if got := a.routedTo([]string{root.ID})[root.ID]; got != "s-chef" {
 		t.Fatalf("new root routed to %q, want pinned s-chef", got)
 	}
+	a.leases.mu.Lock()
+	a.leases.m[root.ID] = &Lease{ID: root.ID, Fails: map[string]int{"s-chef": maxOwnerFails}}
+	a.leases.mu.Unlock()
+	if got := a.routedTo([]string{root.ID})[root.ID]; got != "s-other" {
+		t.Fatalf("passed-over pin routed to %q, want normal affinity s-other", got)
+	}
 	loaded, err := openSessions(a.cfg.DataDir)
 	if err != nil {
 		t.Fatal(err)
