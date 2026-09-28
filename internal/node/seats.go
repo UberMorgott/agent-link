@@ -1,7 +1,6 @@
 package node
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -1129,34 +1128,41 @@ func (st *seatStore) setHandling(seat string, msgs []UnreadMessage) {
 	st.handling[seat] = list
 }
 
-// seatTurnBase is the active chain base (inheritChain) of seat's message in
-// chat during the node's turn of it, nil outside a turn or for a turn of its
-// introduction alone. Of the messages the turn handles in chat (all of them
-// when none is in chat, so switching chats escapes nothing), a person's is
-// the base (the newest): the turn answers a new prompt, which resets its own
-// answer; else the deepest, so the hop limit is not escaped through the
-// shallowest of several agent requests. A person's prompt in the turn is the
-// only reset: every escape from the limit takes a person writing.
-func (n *Node) seatTurnBase(seat, chat string) *Message {
+// seatTurnBase is the part of the active chain base (activeChainBase) of
+// seat's message in chat c that the node's running turn of it gives, nil
+// outside a turn or for a turn of its introduction alone:
+//   - reset: the newest person's prompt the turn handles in c while the seat
+//     has not answered it yet (answeredSince): a new prompt resets its own
+//     answer, and only its first one;
+//   - else the deepest agent message the turn handles in c (in any chat when
+//     none is in c, so switching chats escapes nothing; a prompt of another
+//     chat never resets c's chain). The caller takes the deeper of it and
+//     what reached the seat since it last wrote, so hops within one long
+//     turn keep counting.
+func (n *Node) seatTurnBase(seat string, c Chat) (base *Message, reset bool) {
 	st := n.seats
 	st.mu.Lock()
 	handled := slices.Clone(st.handling[seat])
 	st.mu.Unlock()
-	inChat := slices.DeleteFunc(slices.Clone(handled), func(m Message) bool { return m.ChatID != chat })
+	inChat := slices.DeleteFunc(slices.Clone(handled), func(m Message) bool { return m.ChatID != c.ID })
+	var human *Message
+	for _, m := range inChat {
+		if m.AuthorKind == AuthorHuman && (human == nil || m.CreatedAt.After(human.CreatedAt)) {
+			human = &m
+		}
+	}
+	if human != nil && !n.answeredSince(c, seat, human.ID) {
+		return human, true
+	}
 	if len(inChat) > 0 {
 		handled = inChat
 	}
-	var human, base *Message
 	for _, m := range handled {
-		if m.AuthorKind == AuthorHuman {
-			if human == nil || m.CreatedAt.After(human.CreatedAt) {
-				human = &m
-			}
-			continue
+		if m.AuthorKind != AuthorHuman {
+			base = deeper(base, m)
 		}
-		base = deeper(base, m)
 	}
-	return cmp.Or(human, base)
+	return base, false
 }
 
 // endTurnClaims drops the turn's claims of msgs of seat (a turn that did not

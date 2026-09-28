@@ -996,16 +996,28 @@ func (n *Node) inheritChain(c Chat, m *Message) {
 }
 
 // activeChainBase is the base of the next message in chat c by this node's
-// agents (seat: by that seat) apart from its reply: for a seat during the
-// node's turn of it, seatTurnBase; else scanChainBase (fallback: whether it
-// may look before the author's last message, for a message without a reply).
+// agents (seat: by that seat) apart from its reply: the deeper of what
+// reached the author since it last wrote there (scanChainBase; fallback:
+// whether it may look before that, for a message without a reply) and, for
+// a seat during the node's turn of it, what the turn handles (seatTurnBase),
+// unless the turn answers a person's new prompt there (that prompt).
 func (n *Node) activeChainBase(c Chat, id, seat string, fallback bool) *Message {
+	var turn *Message
 	if seat != "" {
-		if b := n.seatTurnBase(seat, c.ID); b != nil {
+		b, reset := n.seatTurnBase(seat, c)
+		if reset {
 			return b
 		}
+		turn = b
 	}
-	return n.scanChainBase(c, id, seat, fallback)
+	scan := n.scanChainBase(c, id, seat, fallback && turn == nil)
+	if scan == nil {
+		return turn
+	}
+	if turn == nil {
+		return scan
+	}
+	return deeper(turn, *scan)
 }
 
 // ownChain reports whether r was written by the author of a message of this
@@ -1021,8 +1033,9 @@ func (n *Node) ownChain(r Message, seat string) bool {
 	return r.Agent == nil || r.Agent.Seat == ""
 }
 
-// answeredSince reports whether the author (ownChain) wrote in chat c after
-// message id (or id is not there).
+// answeredSince reports whether the author (ownChain) answered message id in
+// chat c (or id is not there): wrote after it a reply to it or a message
+// without a reply (which may answer it); a reply to another message does not.
 func (n *Node) answeredSince(c Chat, seat, id string) bool {
 	s, ok := n.chats.snapshot(c.ID)
 	if !ok {
@@ -1032,7 +1045,7 @@ func (n *Node) answeredSince(c Chat, seat, id string) bool {
 		switch r := rec.Message; {
 		case r.ID == id:
 			return false
-		case r.Kind == "" && n.ownChain(r, seat):
+		case r.Kind == "" && n.ownChain(r, seat) && (r.ReplyTo == "" || r.ReplyTo == id):
 			return true
 		}
 	}

@@ -162,6 +162,39 @@ func TestChainBaseInformAndDeepest(t *testing.T) {
 	}
 }
 
+// A person's prompt a seat's turn handles in one chat resets nothing in
+// another chat: the seat's message there continues that chat's deep loop.
+func TestSeatTurnPromptOtherChatNoReset(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	h, err := a.SendRequest(SendRequest{To: "b", Body: "prompt", AuthorKind: AuthorHuman})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := a.CreateChat([]string{"b"}, "other")
+	if err != nil || other.ID == h.ChatID {
+		t.Fatalf("other chat %+v %v", other, err)
+	}
+	eventually(t, "b knows the chat", func() bool { _, ok := b.ChatOf(other.ID); return ok })
+	deep, err := b.SendMessage(Message{ChatID: other.ID, Body: "a, deep", Responders: []string{"a"}, RootID: newID(), AutoDepth: MaxAutoDepth - 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the deep ask", func() bool { return slices.Contains(chatIDs(a, other.ID), deep.ID) })
+	stored, ok := a.chats.message(h.ID)
+	if !ok {
+		t.Fatal("prompt not stored")
+	}
+	a.seats.setHandling("seat-x", []UnreadMessage{{Message: stored.Message}})
+	defer a.seats.setHandling("seat-x", nil)
+	got, err := a.SendChat(ChatSend{ChatID: other.ID, Body: "answer", Ask: []string{"b"}, Agent: &AgentRef{Seat: "seat-x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RootID != deep.RootID || got.AutoDepth != MaxAutoDepth {
+		t.Fatalf("another chat's prompt reset the loop: depth %d root %s (deep %s)", got.AutoDepth, got.RootID, deep.RootID)
+	}
+}
+
 // Agents replying again and again to the same old message of a person still
 // reach the hop limit: only the first answer to the prompt starts over.
 func TestChainStaleReplyLoopHeld(t *testing.T) {

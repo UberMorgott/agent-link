@@ -876,8 +876,87 @@ func TestSeatTurnChainBase(t *testing.T) {
 			reply.AutoDepth, reply.RootID, first.ID, queued.RootID)
 	}
 	eventually(t, "turn over", func() bool { return seatByLabel(t, a, codex.Label).Status != SeatRunning })
-	if b := a.seatTurnBase(codex.ID, chat.ID); b != nil {
-		t.Fatalf("turn state left behind: %+v", b)
+	a.seats.mu.Lock()
+	left := a.seats.handling[codex.ID]
+	a.seats.mu.Unlock()
+	if left != nil {
+		t.Fatalf("turn state left behind: %+v", left)
+	}
+}
+
+// Seats asking each other again and again within one long turn of one of
+// them keep counting hops up to the limit, whether the turn started from an
+// agent's request or a person's prompt (which resets only its first answer,
+// a stale reply to it included).
+func TestSeatLongTurnLoopBounded(t *testing.T) {
+	for _, human := range []bool{false, true} {
+		t.Run(fmt.Sprint("human=", human), func(t *testing.T) {
+			l := &seatLauncher{}
+			a := seatNode(t, t.TempDir(), t.TempDir(), l)
+			claude, codex := addSeats(t, a)
+			chat, _ := a.NewProjectChat(nil)
+			claudeRef := &AgentRef{Seat: claude.ID, Label: claude.Label, Provider: claude.Provider}
+			var q Message
+			var err error
+			if human {
+				q, err = a.SendRequest(SendRequest{ChatID: chat.ID, Body: "start", AuthorKind: AuthorHuman, AskSeats: []string{codex.ID}})
+			} else {
+				q, err = a.SendMessage(Message{ChatID: chat.ID, Body: "start", AskSeats: []string{codex.ID}, Agent: claudeRef, RootID: newID(), AutoDepth: 1})
+				if err == nil {
+					err = a.deliverToSeats(q, claude.ID)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var (
+				once sync.Once
+				mu   sync.Mutex
+				fail string
+				done bool
+			)
+			failf := func(format string, args ...any) { fail = fmt.Sprintf(format, args...) }
+			l.set(nil, func(spec LaunchSpec) {
+				if spec.Seat != codex.ID || !strings.Contains(spec.Prompt, "start") {
+					return
+				}
+				once.Do(func() {
+					defer func() { mu.Lock(); done = true; mu.Unlock() }()
+					mu.Lock()
+					defer mu.Unlock()
+					prev := q
+					for i := 0; !prev.Held(); i++ {
+						if i > 2*MaxAutoDepth+4 {
+							failf("loop within one turn not bounded: depth %d", prev.AutoDepth)
+							return
+						}
+						req := SendRequest{ChatID: chat.ID, Body: "again", Seat: codex.ID, AskSeats: []string{claude.ID}}
+						if i%2 == 1 {
+							req.Seat, req.AskSeats = claude.ID, []string{codex.ID}
+						} else if human && i == 4 {
+							req.ReplyTo = q.ID // a stale reply to the prompt
+						}
+						next, err := a.SendRequest(req)
+						if err != nil {
+							failf("hop %d: %v", i, err)
+							return
+						}
+						if next.RootID != q.RootID && next.RootID != q.ID || next.AutoDepth != prev.AutoDepth+1 {
+							failf("hop %d: depth %d after %d, root %s", i, next.AutoDepth, prev.AutoDepth, next.RootID)
+							return
+						}
+						prev = next
+					}
+				})
+			})
+			a.seatsDue(context.Background(), time.Now())
+			eventually(t, "the turn", func() bool { mu.Lock(); defer mu.Unlock(); return done })
+			mu.Lock()
+			defer mu.Unlock()
+			if fail != "" {
+				t.Fatal(fail)
+			}
+		})
 	}
 }
 
