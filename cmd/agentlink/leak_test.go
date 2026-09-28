@@ -27,7 +27,7 @@ func clearAgentEnv() {
 		}
 	}
 	for _, k := range []string{"AGENTLINK_API", "AGENTLINK_PROJECT_ID", "AGENTLINK_CHAT_ID", "AGENTLINK_JOB_ID", "AGENTLINK_SEAT",
-		"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID"} {
+		"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID", envInboxSocket, envInboxToken, envAttended} {
 		_ = os.Unsetenv(k)
 	}
 }
