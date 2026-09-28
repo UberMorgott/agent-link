@@ -72,4 +72,20 @@ func TestChainDepthPerThread(t *testing.T) {
 	if after.RootID != fyi.RootID || after.AutoDepth != 6 {
 		t.Fatalf("after an fyi: depth %d root %s", after.AutoDepth, after.RootID)
 	}
+
+	// A handoff: b replies to a's message but asks only c. That is c's
+	// thread; a's next message without a reply does not take its depth.
+	handoff, err := b.SendMessage(Message{ChatID: info.ID, Body: "c, take it over", ReplyTo: after.ID, Responders: []string{"c"},
+		RootID: newID(), AutoDepth: MaxAutoDepth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the handoff", func() bool { return slices.Contains(chatIDs(a, info.ID), handoff.ID) })
+	own, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "b, one more thing", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if own.RootID == handoff.RootID || own.AutoDepth != 6 || own.Held() {
+		t.Fatalf("a took the handoff's depth: depth %d root %s", own.AutoDepth, own.RootID)
+	}
 }

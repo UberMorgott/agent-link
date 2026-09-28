@@ -1003,7 +1003,8 @@ func (n *Node) inheritChain(c Chat, m *Message) {
 // chainBaseFor reports whether r, a message of another node, is meant for
 // this node's agents and so may be the base of their next message without a
 // reply (inheritChain): it asks this node, informs everyone (asks nobody, no
-// seat either) or replies to a message of this node.
+// seat either) or replies to a message of this node without asking other
+// members instead (a handoff to a third member is that member's thread).
 func (n *Node) chainBaseFor(r Message) bool {
 	if r.From == n.cfg.Node {
 		return false
@@ -1011,7 +1012,7 @@ func (n *Node) chainBaseFor(r Message) bool {
 	if slices.Contains(r.Responders, n.cfg.Node) || (len(r.Responders) == 0 && len(r.AskSeats) == 0) {
 		return true
 	}
-	if r.ReplyTo == "" {
+	if r.ReplyTo == "" || len(r.Responders) > 0 {
 		return false
 	}
 	p, ok := n.chats.message(r.ReplyTo)
