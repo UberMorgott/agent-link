@@ -195,7 +195,7 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if found {
-			a.discussReplied(w, c.n, chat, reply)
+			writeJSON(w, reply.Message) // unread until the caller acknowledges it (discussMessage)
 			return
 		}
 		if discussQueued(c.n, seat) {
@@ -207,7 +207,7 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-timer.C:
 			if reply, found, err := discussAnswer(c.n, chat, id, seat, &cursor); err == nil && found {
-				a.discussReplied(w, c.n, chat, reply)
+				writeJSON(w, reply.Message) // unread until the caller acknowledges it (discussMessage)
 				return
 			} else if err != nil {
 				a.failed(w, "discuss reply", err)
@@ -219,17 +219,6 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 			sub.snapshot()
 		}
 	}
-}
-
-// discussReplied answers the waiting discuss call with reply and reads it:
-// the caller has it, so the session's hooks do not deliver it again.
-func (a *App) discussReplied(w http.ResponseWriter, n *node.Node, chat string, reply node.ChatMessage) {
-	if reply.Unread {
-		if _, err := n.Ack(chat, node.AckRequest{IDs: []string{reply.ID}}); err != nil {
-			a.log.Warn("read discuss reply", "id", reply.ID, "err", err)
-		}
-	}
-	writeJSON(w, reply.Message)
 }
 
 func discussQueued(n *node.Node, seat string) bool {

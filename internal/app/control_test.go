@@ -235,6 +235,19 @@ func TestOriginRoutingAcrossNetworkAndLocalProject(t *testing.T) {
 			t.Fatalf("%s still has unread: %v", sid, got)
 		}
 	}
+	// The asking session reports its work on the reply in the local chat,
+	// though registered in the network project; a stranger may not.
+	activity := func(sid string) int {
+		code, _ := call(t, srv, http.MethodPost, "/chats/"+asks[0].Chat+"/activity",
+			jsonOf(t, node.ActivityRequest{SessionID: sid, ReplyTo: replies[0].ID, Type: "read", Text: "читает"}))
+		return code
+	}
+	if code := activity(sids[0]); code != http.StatusOK {
+		t.Fatalf("origin session activity in the local chat: %d", code)
+	}
+	if code := activity("claude-stranger"); code != http.StatusNotFound {
+		t.Fatalf("stranger activity in the local chat: %d", code)
+	}
 	for _, b := range alice.Settings().Bindings {
 		if b.ScopeOf() == settings.ProjectScopeLocal && len(alice.projects[b.ID].n.Sessions()) != 0 {
 			t.Fatal("external network hook session was registered in the local project")
@@ -242,9 +255,10 @@ func TestOriginRoutingAcrossNetworkAndLocalProject(t *testing.T) {
 	}
 }
 
-// A direct discuss wait that returns the seat's reply reads it: the asking
-// session's hooks do not deliver it a second time.
-func TestDiscussReplyReadsTheReply(t *testing.T) {
+// A direct discuss wait hands the seat's reply over without reading it: only
+// the caller that decoded it acknowledges it (discussMessage), so a reply a
+// timed-out or failed caller never got stays unread for the session's hooks.
+func TestDiscussReplyWaitKeepsReplyUnread(t *testing.T) {
 	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
 	dir := t.TempDir()
 	code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
@@ -266,8 +280,16 @@ func TestDiscussReplyReadsTheReply(t *testing.T) {
 	if code, body := h.do(t, http.MethodGet, path, "", nil); code != http.StatusOK || !strings.Contains(body, reply.ID) {
 		t.Fatalf("reply wait: %d %s", code, body)
 	}
+	if p, _ := n.UnreadFor("", "claude-ext", "", 10); p.Total != 1 {
+		t.Fatalf("reply read before the caller got it: %+v", p)
+	}
+	// The caller's ack (its project, as discussMessage sends it) reads it.
+	if code, body := h.do(t, http.MethodPost, "/ack?project="+ask.Project,
+		jsonOf(t, node.AckRequest{IDs: []string{reply.ID}, SessionID: "claude-ext"}), nil); code != http.StatusOK || !strings.Contains(body, `"was_unread":true`) {
+		t.Fatalf("caller ack: %d %s", code, body)
+	}
 	if p, _ := n.UnreadFor("", "claude-ext", "", 10); p.Total != 0 {
-		t.Fatalf("reply delivered again: %+v", p)
+		t.Fatalf("reply unread after the caller's ack: %+v", p)
 	}
 }
 

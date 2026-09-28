@@ -433,6 +433,12 @@ func discussMessage(cfg config.Config, provider, body, folder string, async bool
 		return result, err
 	}
 	result.Reply = &reply
+	// Read only now that this call has it: a reply the caller never got stays
+	// unread, and the session's hooks deliver it (at least once, never lost).
+	ack, acked := node.AckRequest{IDs: []string{reply.ID}, SessionID: session}, []node.AckResult{}
+	if err := apiJSON(http.MethodPost, apiURL(cfg, "/ack", url.Values{"project": {result.Project}}), ack, &acked); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "agentlink: reply not marked read:", err)
+	}
 	return result, nil
 }
 

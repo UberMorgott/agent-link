@@ -76,6 +76,8 @@ func TestUnreadRoutesRepliesToTheSendingSession(t *testing.T) {
 	if p, _ := a.UnreadFor(dir, "s-other", "", 10); !slices.Equal(ids(p), []string{u.ID}) {
 		t.Fatalf("after the sender ended: %+v", p)
 	}
+	// Its author hears the reply waits for a person.
+	eventually(t, "needs_human on the orphaned reply", func() bool { return slices.Contains(attemptsOf(b, r), AttemptNeedsHuman) })
 	// A session that is not registered (a headless run, an ended one) takes
 	// nothing, not even a message for nobody in particular; only the reply to
 	// its own message is its own still.

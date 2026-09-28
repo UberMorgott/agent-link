@@ -328,9 +328,33 @@ func (n *Node) EndSession(id string) error {
 	if !ok {
 		return fmt.Errorf("%w %s", ErrUnknownSession, id)
 	}
+	n.reportOrphaned(id)
 	n.presenceChanged()
 	n.changed("sessions")
 	return err
+}
+
+// reportOrphaned tells the authors of the unread replies that wait for session
+// id, which ended, that they need a person (AttemptNeedsHuman): no other
+// session takes them (routeOf), the owner sees them unread.
+func (n *Node) reportOrphaned(id string) {
+	var ids []string
+	for _, u := range n.chats.unread() {
+		if n.originSession(u.rec.Message) == id {
+			ids = append(ids, u.rec.Message.ID)
+		}
+	}
+	n.report(ids, AttemptNeedsHuman)
+}
+
+// wroteInChat reports whether session sid wrote one of this node's messages
+// in chat id (chatRecord.Session): the origin of the replies there.
+func (n *Node) wroteInChat(id, sid string) bool {
+	snap, ok := n.chats.snapshot(id)
+	if !ok || !validSessionID(sid) {
+		return false
+	}
+	return slices.ContainsFunc(snap.msgs, func(r chatRecord) bool { return r.Message.From == n.cfg.Node && r.Session == sid })
 }
 
 // Sessions lists the live sessions, oldest first, primary ones marked.
@@ -430,12 +454,20 @@ func (n *Node) SessionActivity(chatID string, req ActivityRequest) (Message, err
 	r := n.sess
 	now := time.Now().UTC()
 	r.mu.Lock()
+	// A session registered in another context of this process reports on the
+	// replies to its own messages here (routeOf): it asked in this chat. It is
+	// not tracked here (no registration to refresh, no activity to re-send).
 	s := r.sessions[req.SessionID]
-	if s == nil || !s.live(now) {
+	tracked := s != nil && s.live(now)
+	if !tracked {
 		r.mu.Unlock()
-		return Message{}, fmt.Errorf("%w %s", ErrUnknownSession, req.SessionID)
+		if !n.wroteInChat(c.ID, req.SessionID) {
+			return Message{}, fmt.Errorf("%w %s", ErrUnknownSession, req.SessionID)
+		}
+		r.mu.Lock()
+	} else {
+		s.LastSeen, s.LastActive = now, now
 	}
-	s.LastSeen, s.LastActive = now, now
 	prev, had := r.last[req.SessionID]
 	a := ActivityState{ID: req.ID, Type: req.Type, Text: req.Text, Phase: req.Phase, StartedAt: now, Seq: uint64(now.UnixNano()),
 		Session: ShortSession(req.SessionID), Role: "main"}
@@ -447,7 +479,7 @@ func (n *Node) SessionActivity(chatID string, req ActivityRequest) (Message, err
 	if had && prev.ID == a.ID && prev.Type == a.Type && (prev.Text == a.Text || a.Phase == PhaseDone) {
 		a.StartedAt = prev.StartedAt
 	}
-	if req.AgentID == "" {
+	if req.AgentID == "" && tracked {
 		r.last[req.SessionID] = a
 	}
 	r.mu.Unlock()
@@ -477,7 +509,7 @@ func (n *Node) SessionActivity(chatID string, req ActivityRequest) (Message, err
 			}
 		}
 	}
-	if req.AgentID == "" {
+	if req.AgentID == "" && tracked {
 		r.mu.Lock()
 		on := r.on[req.SessionID]
 		switch {

@@ -40,9 +40,12 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 			_ = json.NewDecoder(r.Body).Decode(&f.discuss)
 			_ = json.NewEncoder(w).Encode(discussResult{Project: "p1", Chat: "c1", ID: "m1", Seat: "seat-codex"})
 		case r.URL.Path == "/discuss/reply":
-			if r.URL.Query().Get("timeout") == "20ms" {
+			switch r.URL.Query().Get("timeout") {
+			case "20ms":
 				w.WriteHeader(http.StatusNoContent)
-			} else {
+			case "21ms":
+				_, _ = w.Write([]byte(`{"id":"m2",`)) // the reply is cut off: the caller never gets it
+			default:
 				_ = json.NewEncoder(w).Encode(node.Message{ID: "m2", ReplyTo: "m1", Body: "answer", Agent: &node.AgentRef{Seat: "seat-codex"}})
 			}
 		case r.URL.Path == "/send":
@@ -86,7 +89,8 @@ func TestDiscussCLIWaitsAndReadsPromptFile(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil || got.ID != "m1" || got.Reply == nil || got.Reply.Body != "answer" {
 		t.Fatalf("discuss result: %q: %v", out, err)
 	}
-	if f.discuss["body"] != "line one\nline two" || f.discuss["folder"] != dir || len(f.reqs) != 2 {
+	// The reply is read only after the call decoded it, in its project.
+	if f.discuss["body"] != "line one\nline two" || f.discuss["folder"] != dir || len(f.reqs) != 3 || f.reqs[2] != "POST /ack?project=p1" {
 		t.Fatalf("discuss requests: %q, body %+v", f.reqs, f.discuss)
 	}
 	f.reqs = nil
@@ -100,6 +104,17 @@ func TestDiscussCLIWaitsAndReadsPromptFile(t *testing.T) {
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil || !got.TimedOut || got.ID != "m1" {
 		t.Fatalf("timeout result: %q: %v", stdout.String(), err)
+	}
+	// A reply the call failed to read stays unread: the hooks deliver it.
+	f.reqs = nil
+	stdout.Reset()
+	if code := run([]string{"discuss", "--with", "codex", "--body", "cut", "--timeout", "21ms", "--config", f.cfg}, &stdout, &stderr); code == 0 {
+		t.Fatalf("cut reply succeeded: %q", stdout.String())
+	}
+	for _, r := range f.reqs {
+		if strings.Contains(r, "/ack") {
+			t.Fatalf("a reply the caller never got was read: %q", f.reqs)
+		}
 	}
 }
 
