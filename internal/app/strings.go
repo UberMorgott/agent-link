@@ -538,6 +538,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"inbox.project_pause.remove":        "Снять паузу проекта",
 	"inbox.project_pause.global":        "Общая пауза",
 	"inbox.project_pause.hint":          "Управляет вашими агентами в этом проекте. Сообщения людей продолжают идти; агенты получат накопившееся после снятия паузы.",
+	"inbox.session_pin":                 "AgentLink → Codex-чат {id}",
 	"inbox.seats.agent":                 "агент",
 	"project.invite":                    "Пригласить",
 	"project.members.title":             "Участники проекта",

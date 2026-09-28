@@ -202,6 +202,11 @@ func TestSessionPin(t *testing.T) {
 	if len(f.reqs) != 1 || f.reqs[0] != "POST /session-pin?project=P1" {
 		t.Fatalf("requests %q", f.reqs)
 	}
+	f.reqs = nil
+	f.run("session", "unpin", "--session", "thread-chef", "--project", "P1")
+	if len(f.reqs) != 1 || f.reqs[0] != "DELETE /session-pin?project=P1" {
+		t.Fatalf("unpin requests %q", f.reqs)
+	}
 }
 
 // Agents never close chats: only people do, in the app.

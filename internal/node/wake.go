@@ -162,17 +162,6 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		cands[s.Area] = append(cands[s.Area], *s)
 	}
 	r.mu.Unlock()
-	if p, ok := r.pinned(); ok && p.Provider == ProviderCodex {
-		if _, live := n.SessionLive(p.SessionID); !live {
-			area, bound := n.FolderArea(p.Folder)
-			if bound {
-				s := Session{SessionID: p.SessionID, Provider: p.Provider, Folder: p.Folder, Area: area,
-					Wake: WakeQueue, Asked: WakeQueue, Idle: true, CodexHome: p.CodexHome}
-				list = append(list, due{s: s})
-				cands[area] = append(cands[area], s)
-			}
-		}
-	}
 	for _, d := range list {
 		s := d.s
 		page, err := n.unreadFor(s.Folder, s.SessionID, "", hookBatchIDs, true, false, AgentFilter{Skip: s.liveAgents(time.Now())})

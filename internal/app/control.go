@@ -289,7 +289,7 @@ func (a *App) controlAPI() http.Handler {
 		q := r.URL.Query()
 		a.forward(w, r, selector{project: q.Get("project"), cwd: q.Get("cwd")}, false)
 	}
-	for _, p := range []string{"POST /chats", "POST /chats/archive", "POST /session-pin", "GET /inbox", "GET /members", "GET /seats", "POST /members", "POST /members/remove", "POST /attachments", "GET /attachments/{id}"} {
+	for _, p := range []string{"POST /chats", "POST /chats/archive", "POST /session-pin", "DELETE /session-pin", "GET /inbox", "GET /members", "GET /seats", "POST /members", "POST /members/remove", "POST /attachments", "GET /attachments/{id}"} {
 		mux.HandleFunc(p, byProject)
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -567,7 +567,8 @@ func (a *App) allSessions() []SessionView {
 	out := []SessionView{}
 	for _, c := range a.routeContexts() {
 		for _, s := range c.n.Sessions() {
-			out = append(out, SessionView{Session: s, Project: c.id})
+			p, _ := c.n.PinnedSession(s.Area)
+			out = append(out, SessionView{Session: s, Project: c.id, Pinned: p.SessionID == s.SessionID})
 		}
 	}
 	return out

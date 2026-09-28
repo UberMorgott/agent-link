@@ -541,6 +541,13 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 			reply(w, p, err)
 		}
 	})
+	mux.HandleFunc("DELETE /session-pin", func(w http.ResponseWriter, r *http.Request) {
+		var req PinSessionRequest
+		if decode(w, r, &req) {
+			p, err := n.UnpinSession(req)
+			reply(w, p, err)
+		}
+	})
 	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
 		var req SessionRequest
 		if decode(w, r, &req) {

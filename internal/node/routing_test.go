@@ -153,15 +153,38 @@ func TestPinnedSessionOwnsProjectMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "a has the answer", func() bool { _, ok := a.chats.message(r.ID); return ok })
-	if got := a.routedTo([]string{r.ID})[r.ID]; got != "s-chef" {
-		t.Fatalf("reply routed to %q, want pinned s-chef", got)
+	if got := a.routedTo([]string{r.ID})[r.ID]; got != "s-other" {
+		t.Fatalf("reply routed to %q, want its asking session s-other", got)
+	}
+	root, err := b.SendRequest(SendRequest{ChatID: q.ChatID, Body: "new root", AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the new root", func() bool { _, ok := a.chats.message(root.ID); return ok })
+	if got := a.routedTo([]string{root.ID})[root.ID]; got != "s-chef" {
+		t.Fatalf("new root routed to %q, want pinned s-chef", got)
 	}
 	loaded, err := openSessions(a.cfg.DataDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p, ok := loaded.pinned(); !ok || p.SessionID != "s-chef" {
+	if p, ok := loaded.pinned(""); !ok || p.SessionID != "s-chef" {
 		t.Fatalf("persisted pin: %+v, %v", p, ok)
+	}
+	if _, err := a.UnpinSession(PinSessionRequest{SessionID: "s-chef"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.PinnedSession(""); ok {
+		t.Fatal("pin remained after unpin")
+	}
+	if _, err := a.PinSession(PinSessionRequest{SessionID: "s-chef"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.EndSession("s-chef"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.PinnedSession(""); ok {
+		t.Fatal("pin remained after session ended")
 	}
 }
 

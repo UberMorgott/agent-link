@@ -53,7 +53,8 @@ const usage = `usage:
   agentlink chat unread  --config <path> [--folder <path>] [--limit 50] [--after <cursor>] [--project <id>]   (unread messages for this node, oldest first, one JSON line each; a last line {"next":...} when more follow)
   agentlink chat ack     --config <path> [--chat <id>] --ids <id,...> [--session <id>] [--project <id>]   (mark read: the authors get read receipts)
   agentlink chat reassign --config <path> --id <id> --session <id> [--force] [--project <id>]   (hand a reply whose session ended (needs_human) to a live session; --force also moves one a live session waits for)
-  agentlink session pin --config <path> --session <id> [--project <id>]   (send every project message directly to this Codex thread, persistently)
+  agentlink session pin --config <path> --session <id> [--project <id>]   (prefer this Codex thread for new untargeted project messages)
+  agentlink session unpin --config <path> --session <id> [--project <id>]   (remove that preferred recipient)
   agentlink close   (no longer here: only people close chats, in the app)
   agentlink inbox --config <path> [--limit 50] [--project <id>]
   agentlink members --config <path> [--project <id>]   (one JSON line per member, this node first)
@@ -134,7 +135,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	cfgPath := fs.String("config", "", "config file")
 	project := new(string)
 	switch name {
-	case "send", "wait", "chat new", "chat archive", "chat list", "chat history", "chat unread", "chat ack", "chat reassign", "session pin", "inbox", "members", "seats", "add", "remove":
+	case "send", "wait", "chat new", "chat archive", "chat list", "chat history", "chat unread", "chat ack", "chat reassign", "session pin", "session unpin", "inbox", "members", "seats", "add", "remove":
 		project = fs.String("project", "", "project id (or legacy); default $"+envProjectID+", else the chat's or this folder's project")
 	}
 	// proj is the project selector: --project, else the agent's own project.
@@ -219,8 +220,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		force := fs.Bool("force", false, "also move a message that does not need a person (a live session waits for it)")
 		cmd = func(c config.Config) (int, error) { return 0, chatReassign(c, *id, *session, *force, proj(), stdout) }
 	case "session pin":
-		session := fs.String("session", "", "id of the live Codex thread that receives every project message")
-		cmd = func(c config.Config) (int, error) { return 0, sessionPin(c, *session, proj(), stdout) }
+		session := fs.String("session", "", "id of the live Codex thread preferred for new untargeted project messages")
+		cmd = func(c config.Config) (int, error) { return 0, sessionPin(c, *session, proj(), false, stdout) }
+	case "session unpin":
+		session := fs.String("session", "", "id of the pinned Codex thread")
+		cmd = func(c config.Config) (int, error) { return 0, sessionPin(c, *session, proj(), true, stdout) }
 	case "chat new":
 		with := fs.String("with", "", "the other participants, comma-separated")
 		area := fs.String("area", "", "area (project) the participants' agents work in")
@@ -786,13 +790,17 @@ func chatReassign(cfg config.Config, id, session string, force bool, project str
 	return encodeLines(stdout, []node.ChatMessage{m})
 }
 
-func sessionPin(cfg config.Config, session, project string, stdout io.Writer) error {
+func sessionPin(cfg config.Config, session, project string, remove bool, stdout io.Writer) error {
 	session = strings.TrimSpace(session)
 	if session == "" {
 		return errors.New("--session is required")
 	}
 	var p node.PinnedSession
-	if err := apiJSON(http.MethodPost, apiURL(cfg, "/session-pin", withProject(nil, project)), node.PinSessionRequest{SessionID: session}, &p); err != nil {
+	method := http.MethodPost
+	if remove {
+		method = http.MethodDelete
+	}
+	if err := apiJSON(method, apiURL(cfg, "/session-pin", withProject(nil, project)), node.PinSessionRequest{SessionID: session}, &p); err != nil {
 		return err
 	}
 	return json.NewEncoder(stdout).Encode(p)

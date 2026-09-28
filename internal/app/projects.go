@@ -80,6 +80,7 @@ type ChatInfoView struct {
 type SessionView struct {
 	node.Session
 	Project string `json:"project"` // project id or LegacyProjectID
+	Pinned  bool   `json:"pinned,omitempty"`
 }
 
 // apiError is the body of every projects API error: one sentence for the

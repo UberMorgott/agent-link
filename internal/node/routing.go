@@ -207,13 +207,14 @@ func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string 
 	if s := assignedSession(*rec); live[s] {
 		return s
 	}
-	if p, ok := n.sess.pinned(); ok {
-		return p.SessionID
-	}
 	if s := n.originSession(rec.Message); s != "" {
 		// A reply goes to the session that asked, never to the chat's newest
 		// one; while that session is gone it waits (unread, for the owner).
 		return s
+	}
+	area := n.localArea(rec.Message.Area)
+	if p, ok := n.sess.pinned(area); ok && live[p.SessionID] {
+		return p.SessionID
 	}
 	recent := n.sess.recentlyActive(live, time.Now())
 	aff := n.chats.affinity(rec.Message.ChatID, n.cfg.Node, recent)
@@ -513,10 +514,7 @@ func (n *Node) wakeClaim(session, via string, msgs []UnreadMessage) ([]UnreadMes
 	defer r.claimMu.Unlock()
 	live := r.liveIDs(time.Now())
 	if !live[session] {
-		p, ok := r.pinned()
-		if !ok || p.SessionID != session {
-			return nil, ""
-		}
+		return nil, ""
 	}
 	token := randomHex(8)
 	granted := n.claimLocked(session, ids(msgs), via, token, live)
