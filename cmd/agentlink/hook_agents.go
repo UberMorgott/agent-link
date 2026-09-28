@@ -26,6 +26,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"maps"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -86,7 +87,7 @@ func (st *hookState) trackAgent(event, id, typ string, now time.Time) bool {
 		switch event {
 		case evSubagentStop:
 			delete(st.Live, id)
-		case evSubagentStart, evPreTool, evPostTool:
+		case evSubagentStart, evPreTool, evPostTool, evPostToolFail:
 			if _, ok := st.Live[id]; ok || len(st.Live) < maxLiveAgents {
 				if st.Live == nil {
 					st.Live = map[string]liveAgent{}
@@ -199,32 +200,39 @@ func (st *hookState) pruneStamps(now time.Time) {
 	})
 }
 
-// takeStamp takes the oldest stamp of key; for a shell ask (cliAskKey) the
-// oldest whose command line holds body's start, else the oldest.
+// dropAgentStamps removes every stamp of subagent agent (its SubagentStop:
+// an ask it never ran must not name it later).
+func (st *hookState) dropAgentStamps(agent string) {
+	if agent == "" {
+		return
+	}
+	st.Stamps = slices.DeleteFunc(st.Stamps, func(s askStamp) bool { return s.Agent == agent })
+}
+
+// takeStamp takes the oldest stamp matching the ask: of key, and for a shell
+// ask (cliAskKey) one whose command line holds the whole body. It never
+// guesses: no match, or matches of different agents (identical asks run
+// concurrently, in an order the stamps need not show), take nothing, and the
+// ask stays the session's.
 func (st *hookState) takeStamp(key, body string, now time.Time) (askStamp, bool) {
 	st.pruneStamps(now)
-	i := -1
-	if key == cliAskKey {
-		if probe := firstRunes(strings.TrimSpace(body), 24); probe != "" {
-			i = slices.IndexFunc(st.Stamps, func(s askStamp) bool { return s.Key == key && strings.Contains(s.Cmd, probe) })
-		}
+	body = strings.TrimSpace(body)
+	if key == cliAskKey && body == "" {
+		return askStamp{}, false // an ask from a file: nothing to match
 	}
-	if i < 0 {
-		i = slices.IndexFunc(st.Stamps, func(s askStamp) bool { return s.Key == key })
+	match := func(s askStamp) bool {
+		return s.Key == key && (key != cliAskKey || strings.Contains(s.Cmd, body))
 	}
+	i := slices.IndexFunc(st.Stamps, match)
 	if i < 0 {
 		return askStamp{}, false
 	}
 	s := st.Stamps[i]
+	if slices.ContainsFunc(st.Stamps, func(o askStamp) bool { return match(o) && o.Agent != s.Agent }) {
+		return askStamp{}, false
+	}
 	st.Stamps = slices.Delete(st.Stamps, i, i+1)
 	return s, true
-}
-
-func firstRunes(s string, n int) string {
-	if r := []rune(s); len(r) > n {
-		return string(r[:n])
-	}
-	return s
 }
 
 // hookStateDir is where the hooks keep their state (defaultHookEnv).
@@ -275,6 +283,19 @@ func askOrigin(key, body string) (agent, typ string) {
 	return takeAskStamp(dir, sid, key, body, time.Now())
 }
 
+// agentQuery asks the node for this run's messages before it cuts the page
+// (node.AgentFilter): a subagent's run only its replies (for_agent), the main
+// agent's none of its live subagents' (skip_agents). An older node ignores
+// both; forMe filters again.
+func (h *hookSession) agentQuery(q url.Values) {
+	switch {
+	case h.agent != "":
+		q.Set("for_agent", h.agent)
+	case h.st != nil && len(h.st.Live) > 0:
+		q.Set("skip_agents", strings.Join(liveAgentIDs(*h.st), ","))
+	}
+}
+
 // forMe keeps the messages of page this hook run delivers: a subagent's run
 // (h.agent) only the replies for it; the main agent's none for a live
 // subagent, and the replies for an ended one marked as such.
@@ -288,7 +309,7 @@ func (h *hookSession) forMe(page node.UnreadPage) node.UnreadPage {
 				continue
 			}
 		case m.ForAgent != "":
-			if _, live := h.st.Live[m.ForAgent]; live {
+			if h.st != nil && h.isLive(m.ForAgent) {
 				continue
 			}
 			m.Body = "[ответ для завершившегося субагента " + agentName(m.ForAgentType, m.ForAgent) + "]\n" + m.Body
@@ -298,6 +319,12 @@ func (h *hookSession) forMe(page node.UnreadPage) node.UnreadPage {
 	page.Messages = kept
 	page.Total -= n - len(kept)
 	return page
+}
+
+// isLive reports whether subagent id is live (hookState.Live).
+func (h *hookSession) isLive(id string) bool {
+	_, ok := h.st.Live[id]
+	return ok
 }
 
 // agentName is how a subagent is named to the model: type/id.

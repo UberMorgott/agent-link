@@ -96,3 +96,100 @@ func TestHookCLIAskStampAndAgentExpiry(t *testing.T) {
 		t.Fatalf("a silent subagent still live: %v", live)
 	}
 }
+
+// Never guess: identical asks of two subagents (they may run in either order)
+// take no stamp, and the ask stays the parent's; so does a CLI ask whose
+// body no stamp holds, or one sent from a file.
+func TestHookAskStampAmbiguityStaysWithParent(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	const tool = `,"tool_name":"mcp__plugin_agent-link_agentlink__send","tool_input":{"chat":"c1","body":"same"}`
+	c.run(hookClaude, evPreTool, `,"agent_id":"a1","agent_type":"Explore"`+tool)
+	c.run(hookClaude, evPreTool, `,"agent_id":"a2","agent_type":"Plan"`+tool)
+	key, _ := mcpAskKey("send", []byte(`{"chat":"c1","body":"same"}`))
+	// a2's call runs first: no stamp may name a1 (or a2).
+	if agent, _ := takeAskStamp(c.env.dir, c.sid, key, "same", c.now); agent != "" {
+		t.Fatalf("ambiguous ask routed to %q", agent)
+	}
+	// a1's call ended (PostToolUse drops its stamp): a2's alone is certain.
+	c.run(hookClaude, evPostTool, `,"agent_id":"a1","agent_type":"Explore"`+tool)
+	if agent, _ := takeAskStamp(c.env.dir, c.sid, key, "same", c.now); agent != "a2" {
+		t.Fatalf("after a1 ended: %q", agent)
+	}
+
+	c.run(hookClaude, evPreTool, `,"agent_id":"a3","tool_name":"Bash","tool_input":{"command":"agentlink send --chat c1 --body-file q.txt"}`)
+	for _, body := range []string{"", "text the command does not hold"} {
+		if agent, _ := takeAskStamp(c.env.dir, c.sid, cliAskKey, body, c.now); agent != "" {
+			t.Fatalf("unmatched CLI ask (%q) routed to %q", body, agent)
+		}
+	}
+}
+
+// A stamp does not outlive its call: a failed call (PostToolUseFailure) and
+// its subagent's end (SubagentStop) drop it.
+func TestHookAskStampDroppedOnFailureAndStop(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	const sub = `,"agent_id":"a1","agent_type":"Explore"`
+	const tool = `,"tool_name":"mcp__plugin_agent-link_agentlink__discuss","tool_input":{"with":"codex","body":"q"}`
+	c.run(hookClaude, evPreTool, sub+tool)
+	c.run(hookClaude, evPostToolFail, sub+tool)
+	if n := len(c.state(hookClaude).Stamps); n != 0 {
+		t.Fatalf("failed call left %d stamps", n)
+	}
+	c.run(hookClaude, evPreTool, sub+tool)
+	c.run(hookClaude, evPreTool, sub+`,"tool_name":"Bash","tool_input":{"command":"agentlink send --body x"}`)
+	c.run(hookClaude, evSubagentStop, sub)
+	if st := c.state(hookClaude); len(st.Stamps) != 0 || len(st.Live) != 0 {
+		t.Fatalf("after SubagentStop: %+v %+v", st.Stamps, st.Live)
+	}
+}
+
+// Without a PreToolUse stamp (hooks not installed, older hooks) and in Codex
+// (its tool hooks name no agent) an ask is the session's, and a reply for no
+// subagent reaches the main agent even while subagents live.
+func TestHookAskWithoutStampOrInCodexStaysWithParent(t *testing.T) {
+	c := newHookCase(t)
+	key, _ := mcpAskKey("send", []byte(`{"chat":"c1","body":"q"}`))
+	if agent, _ := takeAskStamp(c.env.dir, c.sid, key, "q", c.now); agent != "" {
+		t.Fatalf("no hook state: %q", agent)
+	}
+	c.run(hookCodex, evSessionStart)
+	c.run(hookCodex, evSubagentStart, `,"agent_id":"child-1","agent_type":"reviewer"`)
+	c.run(hookCodex, evPreTool, `,"tool_name":"mcp__agentlink__send","tool_input":{"chat":"c1","body":"q"}`)
+	if st := c.state(hookCodex); len(st.Stamps) != 0 || len(st.Live) != 0 {
+		t.Fatalf("Codex stamped: %+v %+v", st.Stamps, st.Live)
+	}
+	if agent, _ := takeAskStamp(c.env.dir, c.sid, key, "q", c.now); agent != "" {
+		t.Fatalf("Codex ask routed to %q", agent)
+	}
+	t.Setenv(envClaudeSession, "")
+	t.Setenv(envCodexThread, c.sid)
+	if agent, _ := askOrigin(key, "q"); agent != "" {
+		t.Fatalf("askOrigin in Codex: %q", agent)
+	}
+
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evSubagentStart, `,"agent_id":"a1","agent_type":"Explore"`)
+	plain := chatMsg("c1", "KPECTIK", "agent", "reply for the session", false)
+	plain.ID = "p1"
+	c.f.add(plain)
+	out := parseOut(t, c.run(hookClaude, evPostTool, `,"tool_name":"Read"`))
+	if !strings.Contains(out.HookSpecificOutput.AdditionalContext, "reply for the session") {
+		t.Fatalf("the main agent did not get a reply for no subagent: %+v", out)
+	}
+}
+
+// An idle parent has no hook events: its waiter lets a silent subagent lapse,
+// so the reply for it is the parent's again.
+func TestHookWaiterLapsesSilentSubagent(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	st := hookState{Live: map[string]liveAgent{"a1": {Type: "Explore", At: c.now.Add(-liveAgentTTL - time.Minute)}}}
+	m := chatMsg("c1", "KPECTIK", "agent", "late", true)
+	m.ForAgent = "a1"
+	c.f.add(m)
+	if !pendingUnread(c.env, c.folder, c.sid, &st) || len(st.Live) != 0 {
+		t.Fatalf("a silent subagent held its reply: %+v", st.Live)
+	}
+}

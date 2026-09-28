@@ -1,6 +1,7 @@
 package node
 
 import (
+	"net/url"
 	"slices"
 	"testing"
 	"time"
@@ -167,9 +168,56 @@ func TestReplyForSubagentSkipsWakeWhileItLives(t *testing.T) {
 	if g, _ := a.Claim(ClaimRequest{IDs: []string{r.ID}, SessionID: "s-main", WakeToken: "wake-token-1"}); len(g) != 0 {
 		t.Fatalf("a wake took the live subagent's reply: %v", g)
 	}
+	// A keep-alive (the waiter's heartbeat) neither clears nor refreshes them;
+	// they lapse agentLiveTTL after the last hook event that reported them.
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-main", Provider: "claude", Folder: dir, Wake: WakeRewake, Heartbeat: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !a.sess.agentLive("s-main", "agent-1") {
+		t.Fatal("a heartbeat cleared the live subagent")
+	}
+	a.sess.mu.Lock()
+	a.sess.sessions["s-main"].AgentsAt = time.Now().Add(-agentLiveTTL - time.Minute)
+	a.sess.mu.Unlock()
+	if a.sess.agentLive("s-main", "agent-1") {
+		t.Fatal("a subagent silent past agentLiveTTL still live")
+	}
 	reg() // the subagent ended
 	if g, _ := a.Claim(ClaimRequest{IDs: []string{r.ID}, SessionID: "s-main", WakeToken: "wake-token-2"}); !slices.Equal(g, []string{r.ID}) {
 		t.Fatalf("wake after the subagent ended: %v", g)
+	}
+}
+
+// The subagent filter applies before the page is cut: one subagent's reply
+// is not hidden behind older replies for another.
+func TestUnreadAgentFilterBeforePagination(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	dir := t.TempDir()
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-main", Provider: "claude", Folder: dir, Wake: WakeRewake, Agents: []string{"agent-1", "agent-2"}}); err != nil {
+		t.Fatal(err)
+	}
+	var replies []string
+	for _, agent := range []string{"agent-1", "agent-1", "agent-2"} {
+		q, err := a.SendRequest(SendRequest{To: "b", Body: "question " + agent, AuthorKind: AuthorAgent, SessionID: "s-main", AgentID: agent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "b has the request", func() bool { _, ok := b.chats.message(q.ID); return ok })
+		r, err := b.SendRequest(SendRequest{ChatID: q.ChatID, ReplyTo: q.ID, Body: "answer", AuthorKind: AuthorAgent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		replies = append(replies, r.ID)
+		eventually(t, "a has the reply", func() bool { _, ok := a.chats.message(r.ID); return ok })
+	}
+	for name, af := range map[string]AgentFilter{"only": {Only: "agent-2"}, "skip": {Skip: []string{"agent-1"}}} {
+		p, err := a.unreadFor(dir, "s-main", "", 1, false, false, af)
+		if err != nil || len(p.Messages) != 1 || p.Messages[0].ID != replies[2] || p.Total != 1 {
+			t.Fatalf("%s: %+v, %v", name, p, err)
+		}
+	}
+	if _, err := a.UnreadQuery(url.Values{"for_agent": {"bad id"}}); err == nil {
+		t.Fatal("an invalid for_agent was taken")
 	}
 }
 

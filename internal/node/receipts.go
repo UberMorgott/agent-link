@@ -115,6 +115,21 @@ type UnreadMessage struct {
 	ForAgentType string `json:"for_agent_type,omitempty"`
 }
 
+// AgentFilter selects unread messages by the subagent they are for
+// (UnreadMessage.ForAgent): Only keeps the replies for that one subagent (its
+// own hooks), Skip drops those for these live ones (their parent's hooks).
+type AgentFilter struct {
+	Only string
+	Skip []string
+}
+
+func (f AgentFilter) keeps(m UnreadMessage) bool {
+	if f.Only != "" {
+		return m.ForAgent == f.Only
+	}
+	return m.ForAgent == "" || !slices.Contains(f.Skip, m.ForAgent)
+}
+
 // UnreadPage is one page of Unread.
 type UnreadPage struct {
 	Messages []UnreadMessage `json:"messages"`
@@ -138,14 +153,15 @@ func (n *Node) Unread(folder, after string, limit int) (UnreadPage, error) {
 // the messages it may take (routeOf: the ones for it and the ones for no
 // session in particular), never those another live session is to get.
 func (n *Node) UnreadFor(folder, session, after string, limit int) (UnreadPage, error) {
-	return n.unreadFor(folder, session, after, limit, false, false)
+	return n.unreadFor(folder, session, after, limit, false, false, AgentFilter{})
 }
 
 // unreadFor optionally excludes guarded messages from automatic wake and Stop;
 // exact keeps only the messages for session in particular (routeOf), not
 // those for no session: a session registered in another context of this
-// process takes here only the replies to its own messages.
-func (n *Node) unreadFor(folder, session, after string, limit int, actionable, exact bool) (UnreadPage, error) {
+// process takes here only the replies to its own messages. af keeps the replies
+// of one subagent, or drops those of live ones, before the page is cut.
+func (n *Node) unreadFor(folder, session, after string, limit int, actionable, exact bool, af AgentFilter) (UnreadPage, error) {
 	if session != "" {
 		n.auto.stopMu.RLock()
 		defer n.auto.stopMu.RUnlock()
@@ -242,6 +258,7 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable, e
 		}
 		woken = append(woken, w...)
 	}
+	all = slices.DeleteFunc(all, func(m UnreadMessage) bool { return !af.keeps(m) })
 	for i := range all {
 		all[i].Cursor = fmt.Sprintf("%020d-%s", all[i].ReceivedAt.UnixNano(), all[i].ID)
 	}

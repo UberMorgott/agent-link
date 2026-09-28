@@ -351,7 +351,7 @@ func (n *Node) areaLive(area string, now time.Time) bool {
 // launchable splits area's unread messages (folder dir) into the ones a
 // launch is for and the paused ones that need a person.
 func (n *Node) launchable(dir string, now time.Time) (eligible, paused []UnreadMessage) {
-	page, err := n.unreadFor(dir, "", "", 1000, false, false)
+	page, err := n.unreadFor(dir, "", "", 1000, false, false, AgentFilter{})
 	if err != nil {
 		return nil, nil
 	}

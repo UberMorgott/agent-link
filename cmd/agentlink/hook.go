@@ -71,6 +71,7 @@ const (
 	evSessionEnd    = agenthook.SessionEnd
 	evSubagentStart = agenthook.SubagentStart
 	evSubagentStop  = agenthook.SubagentStop
+	evPostToolFail  = agenthook.PostToolFailure
 )
 
 // Limits and timings of the hook.
@@ -277,7 +278,7 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	if event == "" || event == "auto" {
 		event = in.HookEventName
 	}
-	if !slices.Contains(agenthook.Events, event) || in.SessionID == "" {
+	if !slices.Contains(agenthook.EventsFor(client), event) || in.SessionID == "" {
 		return nil
 	}
 	quiet := func() {
@@ -313,7 +314,7 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		return nil
 	}
 	h := &hookSession{env: env, st: &st, sid: in.SessionID, folder: folder, client: client}
-	if client == hookClaude && (event == evPreTool || event == evPostTool) {
+	if client == hookClaude && (event == evPreTool || event == evPostTool || event == evPostToolFail) {
 		if key, cmd, ok := askKey(in.ToolName, in.ToolInput); ok {
 			if event == evPreTool {
 				st.stamp(in.AgentID, in.AgentType, key, cmd, now)
@@ -321,6 +322,12 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 				st.dropStamp(in.AgentID, key, cmd)
 			}
 		}
+	}
+	if event == evPostToolFail {
+		return nil // only the stamp of a failed ask to drop
+	}
+	if event == evSubagentStop {
+		st.dropAgentStamps(in.AgentID)
 	}
 	if event == evSubagentStart || event == evSubagentStop {
 		h.subagent(in.AgentID, in.AgentType, event == evSubagentStop)
@@ -631,6 +638,7 @@ func (h *hookSession) collect(stop, actionable bool, proof func() string) (hookB
 	if actionable {
 		q.Set("actionable", "1")
 	}
+	h.agentQuery(q)
 	if err := hookCall(h.env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout); err != nil {
 		return hookBatch{}, err
 	}

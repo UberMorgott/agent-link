@@ -258,7 +258,7 @@ func (r *sessionRegistry) agentLive(session, agent string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := r.sessions[session]
-	return s != nil && slices.Contains(s.Agents, agent)
+	return s != nil && slices.Contains(s.liveAgents(time.Now()), agent)
 }
 
 // recentlyActive is the subset of live whose sessions had a hook event within

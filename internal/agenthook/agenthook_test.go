@@ -81,7 +81,7 @@ func TestInstall(t *testing.T) {
 		t.Fatalf("moved: %v %v", changed, err)
 	}
 	data, _ = os.ReadFile(filepath.Clean(path))
-	if strings.Count(string(data), "agentlink.exe") != len(Events)+1 {
+	if strings.Count(string(data), "agentlink.exe") != len(ClaudeEvents)+1 {
 		t.Fatalf("duplicate entries:\n%s", data)
 	}
 
@@ -158,7 +158,7 @@ func TestInstallMigratesOldEntries(t *testing.T) {
 	}
 	data, _ := os.ReadFile(filepath.Clean(path))
 	got := string(data)
-	if strings.Contains(got, "C:/old") || strings.Count(got, "C:/new/agentlink.exe") != len(Events)+1 || strings.Count(got, `"--wait"`) != 1 ||
+	if strings.Contains(got, "C:/old") || strings.Count(got, "C:/new/agentlink.exe") != len(ClaudeEvents)+1 || strings.Count(got, `"--wait"`) != 1 ||
 		!strings.Contains(got, `"mine"`) || !strings.Contains(got, `"asyncRewake": true`) || !strings.Contains(got, SessionEnd) {
 		t.Fatalf("migrated:\n%s", got)
 	}

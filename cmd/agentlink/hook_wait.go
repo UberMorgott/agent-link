@@ -111,13 +111,13 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 		// saved its state yet, so "busy" here may be stale and must not undo
 		// the idle it just registered (the node would not wake the session).
 		if time.Since(lastBeat) >= o.heartbeat && !waiterBusy(st, env.clock(), o.busyFor) {
-			req := sessionRequest(client, in.SessionID, folder, true, liveAgentIDs(st))
-			req.Heartbeat = true // keeps the session live, not active (node.Session.LastActive)
+			req := sessionRequest(client, in.SessionID, folder, true, nil) // a keep-alive: the node keeps the subagents the hooks reported
+			req.Heartbeat = true                                           // keeps the session live, not active (node.Session.LastActive)
 			if hookCall(env.api, http.MethodPost, "/sessions", env.withProject(nil), req, nil, hookHTTPTimeout) == nil {
 				lastBeat = time.Now()
 			}
 		}
-		if !waiterBusy(st, env.clock(), o.busyFor) && pendingUnread(env, folder, in.SessionID) {
+		if !waiterBusy(st, env.clock(), o.busyFor) && pendingUnread(env, folder, in.SessionID, &st) {
 			if code, done := wakeWith(client, in.SessionID, folder, path, stderr, env, o.busyFor); done {
 				return code
 			}
@@ -139,9 +139,13 @@ func waiterBusy(st hookState, now time.Time, busyFor time.Duration) bool {
 // pendingUnread reports whether actionable unread messages for session wait in folder
 // (not those for another session of the folder). It asks as the waiter: a
 // node that wakes the session through its inbox answers none.
-func pendingUnread(env hookEnv, folder, session string) bool {
+func pendingUnread(env hookEnv, folder, session string, st *hookState) bool {
 	var page node.UnreadPage
 	q := url.Values{"folder": {folder}, "session": {session}, "limit": {"1"}, "actionable": {"1"}, "waiter": {"1"}}
+	if st != nil {
+		st.trackAgent("", "", "", env.clock()) // silent subagents lapse here too
+		(&hookSession{st: st}).agentQuery(q)
+	}
 	q = env.withProject(q)
 	return hookCall(env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout) == nil && page.Total > 0
 }
@@ -159,6 +163,7 @@ func wakeWith(client, sid, folder, path string, stderr io.Writer, env hookEnv, b
 	if st.Ended || waiterBusy(st, env.clock(), busyFor) {
 		return 0, st.Ended
 	}
+	st.trackAgent("", "", "", env.clock()) // an idle parent has no events: silent subagents lapse here
 	token := randomToken()
 	h := &hookSession{env: env, st: &st, sid: sid, folder: folder, client: client, wakeToken: token}
 	b, err := h.collect(false, true, nil)

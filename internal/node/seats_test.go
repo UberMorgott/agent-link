@@ -307,7 +307,7 @@ func TestSeatConversationLoopLimit(t *testing.T) {
 	if len(p.Messages) != 1 || !p.Messages[0].Paused || p.Messages[0].AsksYou {
 		t.Fatalf("past the limit: %+v", p.Messages)
 	}
-	if act, _ := a.unreadFor(dir, target.SessionID, "", 10, true, false); len(act.Messages) != 0 {
+	if act, _ := a.unreadFor(dir, target.SessionID, "", 10, true, false, AgentFilter{}); len(act.Messages) != 0 {
 		t.Fatalf("a paused message wakes: %+v", act.Messages)
 	}
 	if err := a.EndSession(target.SessionID); err != nil {

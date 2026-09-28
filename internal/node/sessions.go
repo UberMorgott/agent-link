@@ -107,12 +107,27 @@ type Session struct {
 	// Inbox: the node holds a usable inbox of the session (InboxSocket) and
 	// wakes it there when idle. Not persisted: the address lives in memory.
 	Inbox bool `json:"inbox,omitempty"`
-	// Agents: the live subagents of the last registration (SessionRequest.Agents).
-	Agents []string `json:"agents,omitempty"`
+	// Agents: the live subagents of the last registration that was a hook
+	// event (SessionRequest.Agents), at AgentsAt; they lapse agentLiveTTL
+	// after it (a missed SubagentStop does not hold their replies forever).
+	Agents   []string  `json:"agents,omitempty"`
+	AgentsAt time.Time `json:"agents_at,omitzero"`
 }
 
 // maxSessionAgents bounds SessionRequest.Agents.
 const maxSessionAgents = 64
+
+// agentLiveTTL: a session's reported subagents count as live this long after
+// the last hook event that reported them (the hooks' own liveAgentTTL).
+const agentLiveTTL = 30 * time.Minute
+
+// liveAgents are the session's subagents still live at now (Agents).
+func (s Session) liveAgents(now time.Time) []string {
+	if now.Sub(s.AgentsAt) >= agentLiveTTL {
+		return nil
+	}
+	return s.Agents
+}
 
 func (s Session) live(now time.Time) bool {
 	return now.Sub(s.LastSeen) < time.Duration(s.TTLSec)*time.Second
@@ -294,7 +309,12 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	if !s.Woken {
 		s.Wakes, s.WokeAt = 0, time.Time{}
 	}
-	s.Asked, s.Idle, s.CodexHome, s.Agents = asked, req.Idle, req.CodexHome, slices.Clone(req.Agents)
+	s.Asked, s.Idle, s.CodexHome = asked, req.Idle, req.CodexHome
+	if !req.Heartbeat {
+		// A keep-alive (the idle session's waiter) saw no subagent event: it
+		// neither changes nor refreshes them.
+		s.Agents, s.AgentsAt = slices.Clone(req.Agents), now
+	}
 	if req.InboxSocket != "" {
 		a := inboxAddr{socket: req.InboxSocket, token: req.InboxToken}
 		if old, ok := r.inbox[req.SessionID]; ok && old.socket == a.socket && old.token == a.token {

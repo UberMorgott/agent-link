@@ -33,11 +33,26 @@ const (
 	SessionEnd    = "SessionEnd"
 	SubagentStart = "SubagentStart"
 	SubagentStop  = "SubagentStop"
+	// PostToolFailure (Claude Code only) ends an ask call that failed: its
+	// stamp is dropped like at PostToolUse.
+	PostToolFailure = "PostToolUseFailure"
 )
 
 // Events are installed in this order. SubagentStart/SubagentStop show a
 // session's subagents under it (both clients send agent_id and agent_type).
 var Events = []string{SessionStart, Prompt, PreTool, PostTool, Stop, SessionEnd, SubagentStart, SubagentStop}
+
+// ClaudeEvents are the events installed for Claude Code: Events and
+// PostToolFailure, which Codex does not have.
+var ClaudeEvents = append(slices.Clone(Events), PostToolFailure)
+
+// EventsFor are the events installed for client.
+func EventsFor(client string) []string {
+	if client == Claude {
+		return ClaudeEvents
+	}
+	return Events
+}
 
 // Hook entry timeouts, in seconds.
 const (
@@ -138,12 +153,12 @@ func isAgentlink(group json.RawMessage, client string) bool {
 // agentlink group (fewer events, no waiter) is replaced in place. It reports
 // whether the file changed.
 func Install(path, client, exe string) (bool, error) {
-	return edit(path, func(ev string, groups []json.RawMessage) []json.RawMessage {
+	return edit(path, EventsFor(client), func(ev string, groups []json.RawMessage) []json.RawMessage {
 		group := struct {
 			Matcher string    `json:"matcher,omitempty"`
 			Hooks   []Handler `json:"hooks"`
 		}{Hooks: Handlers(client, exe, ev)}
-		if ev == PreTool || ev == PostTool {
+		if ev == PreTool || ev == PostTool || ev == PostToolFailure {
 			group.Matcher = "*"
 		}
 		want := json.RawMessage(bytes.TrimSpace(mustJSON(group)))
@@ -163,14 +178,14 @@ func Remove(path, client string) (bool, error) {
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
-	return edit(path, func(_ string, groups []json.RawMessage) []json.RawMessage {
+	return edit(path, EventsFor(client), func(_ string, groups []json.RawMessage) []json.RawMessage {
 		return slices.DeleteFunc(groups, func(g json.RawMessage) bool { return isAgentlink(g, client) })
 	})
 }
 
-// edit rewrites the matcher groups of every agentlink event with change. An
-// event left without groups is dropped, and so is an empty "hooks".
-func edit(path string, change func(ev string, groups []json.RawMessage) []json.RawMessage) (bool, error) {
+// edit rewrites the matcher groups of each of events with change. An event
+// left without groups is dropped, and so is an empty "hooks".
+func edit(path string, events []string, change func(ev string, groups []json.RawMessage) []json.RawMessage) (bool, error) {
 	old, err := os.ReadFile(filepath.Clean(path))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, err
@@ -191,7 +206,7 @@ func edit(path string, change func(ev string, groups []json.RawMessage) []json.R
 	if err != nil {
 		return false, fmt.Errorf("%s: hooks: %w", path, err)
 	}
-	for _, ev := range Events {
+	for _, ev := range events {
 		var groups []json.RawMessage
 		if raw, ok := hooks.get(ev); ok {
 			if err := json.Unmarshal(raw, &groups); err != nil {

@@ -569,7 +569,16 @@ func (n *Node) UnreadQuery(q url.Values) (UnreadPage, error) {
 	if waiter {
 		limit = max(limit, hookBatchIDs) // what it may not wake with is dropped below
 	}
-	page, err := n.unreadFor(q.Get("folder"), q.Get("session"), q.Get("after"), limit, q.Get("actionable") == "1", q.Get("exact") == "1")
+	// for_agent: a subagent's hooks (only its replies); skip_agents: its
+	// parent's while those subagents live (not theirs).
+	af := AgentFilter{Only: q.Get("for_agent")}
+	if s := q.Get("skip_agents"); s != "" {
+		af.Skip = strings.Split(s, ",")
+	}
+	if (af.Only != "" && !validSessionID(af.Only)) || len(af.Skip) > maxSessionAgents || slices.ContainsFunc(af.Skip, func(a string) bool { return !validSessionID(a) }) {
+		return UnreadPage{}, fmt.Errorf("%w: invalid for_agent or skip_agents", ErrBadRequest)
+	}
+	page, err := n.unreadFor(q.Get("folder"), q.Get("session"), q.Get("after"), limit, q.Get("actionable") == "1", q.Get("exact") == "1", af)
 	if err == nil && waiter {
 		n.waiterSpent(&page)
 	}

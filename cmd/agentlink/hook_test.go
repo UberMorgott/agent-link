@@ -84,7 +84,7 @@ func TestHookSeatRequestsSelectLocalProject(t *testing.T) {
 	if !heartbeat(env, &state, hookClaude, "session", t.TempDir(), true, false) {
 		t.Fatal("local seat heartbeat failed")
 	}
-	if !pendingUnread(env, t.TempDir(), "session") {
+	if !pendingUnread(env, t.TempDir(), "session", nil) {
 		t.Fatal("local seat unread failed")
 	}
 	h := hookSession{env: env, sid: "session", folder: t.TempDir()}
@@ -191,6 +191,9 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if q.Get("actionable") == "1" && m.Paused {
+				continue
+			}
+			if only := q.Get("for_agent"); (only != "" && m.ForAgent != only) || (m.ForAgent != "" && slices.Contains(strings.Split(q.Get("skip_agents"), ","), m.ForAgent)) {
 				continue
 			}
 			if f.woken[m.ID] && q.Get("session") != "" {
@@ -1087,7 +1090,7 @@ func TestHookGuardedMessageDoesNotRewake(t *testing.T) {
 	if out := c.run(hookClaude, evStop); out != "" || len(c.f.ackedIDs()) != 0 {
 		t.Fatalf("guarded message continued Claude Stop: %q %v", out, c.f.ackedIDs())
 	}
-	if pendingUnread(c.env, c.folder, c.sid) {
+	if pendingUnread(c.env, c.folder, c.sid, nil) {
 		t.Fatal("guarded message looked actionable to the waiter")
 	}
 	var stderr bytes.Buffer
@@ -1109,13 +1112,13 @@ func TestHookWaiterDefersToInboxWake(t *testing.T) {
 	c.f.mu.Lock()
 	c.f.inboxWakes = true
 	c.f.mu.Unlock()
-	if pendingUnread(c.env, c.folder, c.sid) {
+	if pendingUnread(c.env, c.folder, c.sid, nil) {
 		t.Fatal("the waiter woke a session the node wakes")
 	}
 	c.f.mu.Lock()
 	c.f.inboxWakes = false
 	c.f.mu.Unlock()
-	if !pendingUnread(c.env, c.folder, c.sid) {
+	if !pendingUnread(c.env, c.folder, c.sid, nil) {
 		t.Fatal("the waiter did not take over")
 	}
 }
