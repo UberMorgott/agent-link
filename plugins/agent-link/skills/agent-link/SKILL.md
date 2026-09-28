@@ -44,7 +44,7 @@ to start it.
   `send {chat: <local chat id>, ask_seats: ["Codex"]}` asks one of them (label or id; `all`).
   Its answer comes back to
   you by itself; a chain of agents alone pauses for a person after a few hops.
-- `discuss {with, body, folder?, timeout?, async?}`: ask a local `claude` or `codex` seat in a
+- `discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?}`: ask a local `claude` or `codex` seat in a
   local project for the current working folder. Reuses or creates that local project and chat,
   even when the folder also has a network project, and adds the target seat when missing. By
   default wait up
@@ -52,6 +52,11 @@ to start it.
   or `timed_out` after the wait; `async: true` returns IDs immediately. A global, project or seat
   pause returns `queued: true` with IDs; the agent receives the request after resume. Use this
   for local Claude Code ↔ Codex discussion; the discussion persists until cleared.
+  Other local chats (at most one of): `temporary: true` starts a new temporary chat; `chat: <id>`
+  continues a chat an earlier discuss returned (pass it on every later call); `topic: <name>` a
+  named persistent chat. Outside any project folder (no bound folder, no git repo) the default is
+  a temporary chat of this session, reused on its later calls. Temporary chats are removed a day
+  after their sessions end and nothing is pending (`expires_at`); `scope` names the chat's kind.
 
 Results keep the node API's JSON field names. An MCP error is the API's error: fix the input from
 it (table below), do not retry with guessed ids. There is no `wait` tool: hooks deliver replies.
@@ -84,6 +89,7 @@ agentlink send --chat <id> --reply-to <msgid> --body "<answer>"  # answer a mess
 agentlink seats                                  # local agents of this machine in the selected project
 agentlink discuss --with codex --body "<question>" # discuss here with local Codex in a separate local chat; wait up to 10m
 agentlink discuss --with claude --prompt-file question.md --async # post, return IDs without waiting
+agentlink discuss --with codex --temporary --body "<question>" # new temporary chat; later: --chat <id>; named: --topic <name>
 agentlink send --chat <local-chat-id> --ask-seat Codex --body "<question>" # ask a local agent in its local chat
 agentlink send --project <network-project-id> --to nikita --body "<question>" # network project chat (chat id on stderr)
 agentlink send --chat <id> --attach shot.png --body "<text>"   # with a file (--attach repeatable)

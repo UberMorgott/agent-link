@@ -118,7 +118,24 @@ and, by default, waits up to 10 minutes for that seat's direct `reply`. `--timeo
 duration up to 15 minutes. Timeout returns the IDs with `timed_out: true` and CLI exit code 2;
 `--async` returns IDs immediately. During a global, project or seat pause it returns
 `queued: true` promptly; the request stays in the local chat for delivery after resume. The MCP
-`discuss {with, body, folder?, timeout?, async?}` tool has the same behavior. A project's manual
+`discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?}` tool has the same
+behavior.
+
+Local chats of `discuss` (one of `--chat`, `--topic`, `--temporary`; none = the default):
+
+| Scope (`scope` in the result) | When | Lifetime |
+| --- | --- | --- |
+| `project` | default in a project folder (a bound folder or a git work tree): the folder's one local chat, reused by every call; `--topic <name>` a named chat of the project | until a person removes it |
+| `project_temporary` | `--temporary` in a project folder: a new chat each time | temporary |
+| `folderless_temporary` | default outside any project folder: one chat per calling session, reused from any folder; no folder or project is bound | temporary |
+| `folderless` | `--topic <name>` outside project folders: a named chat of no project | until a person removes it |
+
+`--chat <id>` continues any local chat by the `chat` id an earlier call returned (the way to
+continue a temporary chat from another session). A temporary chat is removed (its data moves to
+`.left`) once none of its sessions is live, nothing in it is pending (a queued request, a running
+turn, an unread reply) and it was idle for 24 hours; `expires_at` is the earliest such time. The
+project list (`GET /projects`) shows such chats as local projects with `local_chat {scope, topic,
+project, folder, expires_at}`. A project's manual
 agent pause applies to that chat alone and is independent of the global tray pause. People can
 keep exchanging messages while either pause holds agent delivery. This does not
 provide the old `cx.ps1` wrapper's image or review flags.
@@ -259,7 +276,7 @@ error whose text is the API's message.
 | `history` | `chat`, `limit?` (50), `before_seq?`, `after_seq?` | `chat history` |
 | `unread` | `folder?`, `project?`, `limit?` (50), `after?` | `chat unread`, as one `{messages, total, next}` object; never marks read |
 | `send` | exactly one of `chat` / `to` / `new_chat_with[]`, `body`, `ask?[]`, `ask_seats?[]`, `reply_to?` | `send` (`new_chat_with`: `chat new` first); `ask` addresses network members, `ask_seats` local agents; answers `{id, chat}` |
-| `discuss` | `with` (`claude` or `codex`), `body`, `folder?`, `timeout?`, `async?` | uses or creates this folder's local project chat and seat; returns IDs and the direct reply, `queued`, or `timed_out` |
+| `discuss` | `with` (`claude` or `codex`), `body`, `folder?`, `timeout?`, `async?`, one of `chat?` / `topic?` / `temporary?` | uses or creates this folder's local project chat (or the named, temporary or session chat) and seat; returns IDs, `scope`, `expires_at?` and the direct reply, `queued`, or `timed_out` |
 | `ack` | `ids[]`, `chat?`, `project?`, `session?` (default: this session) | `chat ack` |
 
 There is no wait tool: the hooks tell a live session about new messages.
