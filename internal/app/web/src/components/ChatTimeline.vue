@@ -83,7 +83,8 @@ const bubbles = computed<Bubble[]>(() => {
       author: authorTitle(m, projects.displayOf(inbox.project, m.from)),
       // A person's own message the local agent has not seen yet: it gets it as
       // information, not as a request.
-      fyi: m.own_human && m.unread ? t("inbox.author.fyi") : '',
+      // An unread reply whose session ended waits for a person (needs_human).
+      fyi: m.needs_human ? t("inbox.needs_human") : m.own_human && m.unread ? t("inbox.author.fyi") : '',
       quote: parent ? fmt("inbox.reply_to", { name: genitiveName(parent.from, self), text: preview(parent.body, 70) }) : '',
       note: names.length ? fmt("inbox.asks", { names: names.join(', ') }) : '',
       tick,

@@ -124,6 +124,10 @@ export interface ChatMessage {
   author_kind?: string
   own_human?: boolean
   unread?: boolean
+  // needs_human: unread, and the session it waited for (orphaned_session)
+  // ended: a person reads it or reassigns it to a live session.
+  needs_human?: boolean
+  orphaned_session?: string
   chat_id?: string
   participants?: string[] // on a chat_members message: the chat's new participants
   attachments?: Attachment[]
@@ -183,6 +187,8 @@ export interface ChatInfo {
   last_at?: string
   last_message?: ChatMessage
   members?: ChatMember[]
+  // needs_human: unread replies whose session ended wait for a person.
+  needs_human?: number
 }
 
 // Session is a SessionView of GET sessions: an agent session with its context.

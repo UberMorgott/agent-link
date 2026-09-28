@@ -55,6 +55,14 @@ const row = computed(() => {
         variant="soft"
         size="sm"
       />
+      <UBadge
+        v-if="chat.needs_human"
+        class="chat-badge needs-human"
+        :label="t('inbox.badge.needs_human')"
+        color="warning"
+        variant="soft"
+        size="sm"
+      />
       <span
         v-if="!compact"
         class="row-time"
