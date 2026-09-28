@@ -1331,3 +1331,27 @@ func TestHookInsideJobIsSilent(t *testing.T) {
 		t.Fatalf("outside a job: %q %q", out.String(), errw.String())
 	}
 }
+
+// SessionStart names the agentlink executable: an agent's shell has no
+// agentlink on PATH (the plugin adds it only to its MCP and hook commands).
+func TestHookSessionStartNamesCLIPath(t *testing.T) {
+	c := newHookCase(t)
+	c.env.exe = `C:\Apps\agentlink.exe`
+	ctx := parseOut(t, c.run(hookClaude, evSessionStart)).HookSpecificOutput.AdditionalContext
+	if ctx != cliHint(c.env.exe) || !strings.Contains(ctx, `& "C:\Apps\agentlink.exe"`) {
+		t.Fatalf("context %q", ctx)
+	}
+	if out := c.run(hookClaude, evPostTool, `,"tool_name":"Read"`); out != "" {
+		t.Fatalf("hint repeated after SessionStart: %q", out)
+	}
+	dir := t.TempDir()
+	if err := writeExeMarker(dir, `D:\agentlink\agentlink.exe`); err != nil {
+		t.Fatal(err)
+	}
+	if got := cliPath(dir); got != `D:\agentlink\agentlink.exe` {
+		t.Fatalf("marker path %q", got)
+	}
+	if self, _ := os.Executable(); cliPath(t.TempDir()) != self {
+		t.Fatal("no marker: want this executable")
+	}
+}

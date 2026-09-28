@@ -145,6 +145,7 @@ type hookEnv struct {
 	api     string // host:port of the node's local API
 	dir     string // state directory
 	project string // project of an AgentLink-launched local seat, if any
+	exe     string // agentlink executable for the SessionStart CLI hint (cliPath)
 	now     func() time.Time
 }
 
@@ -256,7 +257,8 @@ func defaultHookEnv() (hookEnv, error) {
 	if err != nil {
 		return hookEnv{}, err
 	}
-	return hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks"), project: strings.TrimSpace(os.Getenv("AGENTLINK_PROJECT_ID"))}, nil
+	return hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks"), project: strings.TrimSpace(os.Getenv("AGENTLINK_PROJECT_ID")),
+		exe: cliPath(filepath.Dir(p))}, nil
 }
 
 // hookRun handles one hook event: it reads the input, keeps the session
@@ -364,6 +366,10 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		h.reportMain("thinking", "думает", "")
 	}
 	text := withNotes(notes, b.text)
+	if event == evSessionStart && env.exe != "" {
+		// The plugin puts agentlink on PATH only for its MCP and hook commands.
+		text = strings.TrimSpace(text + "\n\n" + cliHint(env.exe))
+	}
 	notice := joinNotice(takeNotice(&st), b.notice)
 	if text == "" && notice == "" {
 		h.accept(b) // only what the prompt that woke the session carried
@@ -377,6 +383,23 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	writeHookJSON(stdout, notice, extra)
 	h.accept(b)
 	return nil
+}
+
+// cliPath is the agentlink executable an agent runs as its CLI: the desktop
+// app's marker in dir (exeMarkerName), else this executable.
+func cliPath(dir string) string {
+	if b, err := os.ReadFile(filepath.Join(dir, exeMarkerName)); err == nil { //nolint:gosec // the marker in agentlink's own settings folder
+		if p := strings.TrimSpace(string(b)); p != "" {
+			return p
+		}
+	}
+	exe, _ := os.Executable()
+	return exe
+}
+
+// cliHint is the one SessionStart line naming the CLI's absolute path.
+func cliHint(exe string) string {
+	return `agent-link CLI (если agentlink нет в PATH): "` + exe + `", в PowerShell: & "` + exe + `" <команда>`
 }
 
 // hookFolder is the session's folder: its cwd, absolute and clean.
