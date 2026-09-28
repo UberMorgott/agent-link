@@ -1,6 +1,7 @@
 package node
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -1128,20 +1129,34 @@ func (st *seatStore) setHandling(seat string, msgs []UnreadMessage) {
 	st.handling[seat] = list
 }
 
-// seatTurnBase is the chain base of a message without a reply by seat during
-// the node's turn of it: the deepest message the turn handles (inheritChain),
-// nil outside a turn or for a turn of its introduction alone. The deepest:
-// the turn answers them together, and the hop limit must not be escaped
-// through the shallowest of them.
-func (n *Node) seatTurnBase(seat string) *Message {
+// seatTurnBase is the active chain base (inheritChain) of seat's message in
+// chat during the node's turn of it, nil outside a turn or for a turn of its
+// introduction alone. Of the messages the turn handles in chat (all of them
+// when none is in chat, so switching chats escapes nothing), a person's is
+// the base (the newest): the turn answers a new prompt, which resets its own
+// answer; else the deepest, so the hop limit is not escaped through the
+// shallowest of several agent requests. A person's prompt in the turn is the
+// only reset: every escape from the limit takes a person writing.
+func (n *Node) seatTurnBase(seat, chat string) *Message {
 	st := n.seats
 	st.mu.Lock()
-	defer st.mu.Unlock()
-	var base *Message
-	for _, m := range st.handling[seat] {
+	handled := slices.Clone(st.handling[seat])
+	st.mu.Unlock()
+	inChat := slices.DeleteFunc(slices.Clone(handled), func(m Message) bool { return m.ChatID != chat })
+	if len(inChat) > 0 {
+		handled = inChat
+	}
+	var human, base *Message
+	for _, m := range handled {
+		if m.AuthorKind == AuthorHuman {
+			if human == nil || m.CreatedAt.After(human.CreatedAt) {
+				human = &m
+			}
+			continue
+		}
 		base = deeper(base, m)
 	}
-	return base
+	return cmp.Or(human, base)
 }
 
 // endTurnClaims drops the turn's claims of msgs of seat (a turn that did not

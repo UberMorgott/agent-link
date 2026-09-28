@@ -147,4 +147,44 @@ func TestChainBaseInformAndDeepest(t *testing.T) {
 	if got.RootID != deep.RootID || got.AutoDepth != 7 {
 		t.Fatalf("interleaved threads under-counted: depth %d root %s (deep %s)", got.AutoDepth, got.RootID, deep.RootID)
 	}
+
+	// An inform of a requesting thread counts even when another thread's
+	// request is deeper than that thread's request.
+	x := send(b, Message{Body: "a, thread x", Responders: []string{"a"}, RootID: newID(), AutoDepth: 1})
+	send(c, Message{Body: "fyi: thread x moved on", RootID: x.RootID, AutoDepth: 8})
+	send(c, Message{Body: "a, thread y", Responders: []string{"a"}, RootID: newID(), AutoDepth: 2})
+	got, err = a.SendChat(ChatSend{ChatID: info.ID, Body: "both", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RootID != x.RootID || got.AutoDepth != 9 {
+		t.Fatalf("thread x's inform dropped: depth %d root %s (x %s)", got.AutoDepth, got.RootID, x.RootID)
+	}
+}
+
+// Agents replying again and again to the same old message of a person still
+// reach the hop limit: only the first answer to the prompt starts over.
+func TestChainStaleReplyLoopHeld(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	h, err := a.SendRequest(SendRequest{To: "b", Body: "decide", AuthorKind: AuthorHuman})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the prompt", func() bool { return slices.Contains(chatIDs(b, h.ChatID), h.ID) })
+	from, to := b, a
+	var last Message
+	for i := 0; !last.Held(); i++ {
+		if i > 2*MaxAutoDepth+4 {
+			t.Fatalf("stale reply_to loop not bounded: depth %d", last.AutoDepth)
+		}
+		next, err := from.SendChat(ChatSend{ChatID: h.ChatID, Body: "again", ReplyTo: h.ID, Ask: []string{to.cfg.Node}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next.RootID != h.ID || (i > 1 && next.AutoDepth != last.AutoDepth+1) {
+			t.Fatalf("hop %d: depth %d (last %d) root %s", i, next.AutoDepth, last.AutoDepth, next.RootID)
+		}
+		eventually(t, to.cfg.Node+" has the hop", func() bool { return slices.Contains(chatIDs(to, h.ChatID), next.ID) })
+		last, from, to = next, to, from
+	}
 }

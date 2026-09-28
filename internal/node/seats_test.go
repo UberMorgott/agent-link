@@ -876,7 +876,67 @@ func TestSeatTurnChainBase(t *testing.T) {
 			reply.AutoDepth, reply.RootID, first.ID, queued.RootID)
 	}
 	eventually(t, "turn over", func() bool { return seatByLabel(t, a, codex.Label).Status != SeatRunning })
-	if b := a.seatTurnBase(codex.ID); b != nil {
+	if b := a.seatTurnBase(codex.ID, chat.ID); b != nil {
 		t.Fatalf("turn state left behind: %+v", b)
+	}
+}
+
+// A turn handling both an agent request at the hop limit and a new prompt of
+// a person: the answer without a reply starts over from the prompt, the
+// reply to the request continues its chain past the limit (held).
+func TestSeatMixedTurnChainBase(t *testing.T) {
+	l := &seatLauncher{}
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	claude, codex := addSeats(t, a)
+	chat, _ := a.NewProjectChat(nil)
+	deep, err := a.SendMessage(Message{ChatID: chat.ID, Body: "codex, last round", AskSeats: []string{codex.ID},
+		Agent: &AgentRef{Seat: claude.ID, Label: claude.Label, Provider: claude.Provider}, RootID: newID(), AutoDepth: MaxAutoDepth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.deliverToSeats(deep, claude.ID); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "new prompt", AuthorKind: AuthorHuman, AskSeats: []string{codex.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		once          sync.Once
+		mu            sync.Mutex
+		answer, reply Message
+		sendErr       error
+	)
+	l.set(nil, func(spec LaunchSpec) {
+		if spec.Seat != codex.ID || !strings.Contains(spec.Prompt, "new prompt") || !strings.Contains(spec.Prompt, "last round") {
+			return
+		}
+		once.Do(func() {
+			ans, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "on the prompt", Seat: codex.ID})
+			var rep Message
+			if err == nil {
+				rep, err = a.SendRequest(SendRequest{ChatID: chat.ID, Body: "to claude", ReplyTo: deep.ID, Seat: codex.ID})
+			}
+			mu.Lock()
+			answer, reply, sendErr = ans, rep, err
+			mu.Unlock()
+		})
+	})
+	a.seatsDue(context.Background(), time.Now())
+	eventually(t, "the turn", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return reply.ID != "" || sendErr != nil
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if sendErr != nil {
+		t.Fatal(sendErr)
+	}
+	if answer.RootID != prompt.ID || answer.AutoDepth != 1 {
+		t.Fatalf("answer to the prompt: depth %d root %s (prompt %s)", answer.AutoDepth, answer.RootID, prompt.ID)
+	}
+	if reply.RootID != deep.RootID || reply.AutoDepth != MaxAutoDepth+1 {
+		t.Fatalf("reply to the request: depth %d root %s (deep %s)", reply.AutoDepth, reply.RootID, deep.RootID)
 	}
 }

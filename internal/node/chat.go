@@ -948,19 +948,18 @@ func (n *Node) continueLegacy(peer string, s ChatSend) (Message, error) {
 
 // inheritChain sets m's automatic chain (RootID, AutoDepth) when it has none
 // yet. A person's message starts a new chain at itself. Any other message
-// continues the chain of its base, one hop further: the message it replies to;
-// else, for a seat's message sent during the node's turn of that seat, the
-// deepest message the turn handles (seatStore.handling): what it answers, not
-// whatever came last for the seat; else the base scanChainBase finds in chat
-// c. So the depth counts the agent hops since a person last wrote, whichever
-// nodes, sessions and seats the agents run in, and MaxAutoDepth bounds a
-// conversation of agents alone.
+// continues the chain of its base, one hop further, so the depth counts the
+// agent hops since a person last wrote, whichever nodes, sessions and seats
+// the agents run in, and MaxAutoDepth bounds every conversation of agents
+// alone. The base is the deeper of:
+//   - the message m replies to, and
+//   - the author's active base (activeChainBase): what reached it since it
+//     last wrote, or what its seat's turn handles.
 //
-// Another node's message that asks only other members (or that node's own
-// seats) belongs to another thread of the chat: taking its depth made an
-// unrelated agent message of a busy shared chat hit the hop limit. An agent
-// message without a reply still continues what asked or told it, never
-// depth 0: two agents asking each other without replies stay bounded.
+// A reply to a person's message the author has not answered yet takes that
+// message alone: a new prompt resets its own answer. A reply to anything
+// older also counts the active base, so agents replying again and again to
+// the same old message (a person's one included) still reach the hop limit.
 func (n *Node) inheritChain(c Chat, m *Message) {
 	if m.RootID != "" {
 		return
@@ -969,21 +968,24 @@ func (n *Node) inheritChain(c Chat, m *Message) {
 	if m.AuthorKind == AuthorHuman {
 		return
 	}
+	seat := ""
+	if m.Agent != nil {
+		seat = m.Agent.Seat
+	}
 	var base *Message
 	if m.ReplyTo != "" {
 		if r, ok := n.chats.message(m.ReplyTo); ok && r.Message.Kind == "" {
 			base = &r.Message
 		}
 	}
-	seat := ""
-	if m.Agent != nil {
-		seat = m.Agent.Seat
-	}
-	if base == nil && seat != "" {
-		base = n.seatTurnBase(seat)
-	}
-	if base == nil {
-		base = n.scanChainBase(c, m.ID, seat)
+	switch {
+	case base == nil:
+		base = n.activeChainBase(c, m.ID, seat, true)
+	case base.AuthorKind == AuthorHuman && !n.answeredSince(c, seat, base.ID):
+	default:
+		if active := n.activeChainBase(c, m.ID, seat, false); active != nil && active.AutoDepth > base.AutoDepth {
+			base = active
+		}
 	}
 	if base != nil {
 		m.RootID, m.AutoDepth = cmp.Or(base.RootID, base.ID), base.AutoDepth
@@ -993,6 +995,50 @@ func (n *Node) inheritChain(c Chat, m *Message) {
 	}
 }
 
+// activeChainBase is the base of the next message in chat c by this node's
+// agents (seat: by that seat) apart from its reply: for a seat during the
+// node's turn of it, seatTurnBase; else scanChainBase (fallback: whether it
+// may look before the author's last message, for a message without a reply).
+func (n *Node) activeChainBase(c Chat, id, seat string, fallback bool) *Message {
+	if seat != "" {
+		if b := n.seatTurnBase(seat, c.ID); b != nil {
+			return b
+		}
+	}
+	return n.scanChainBase(c, id, seat, fallback)
+}
+
+// ownChain reports whether r was written by the author of a message of this
+// node's agents (seat: that seat; else this node outside seats), not by a
+// person.
+func (n *Node) ownChain(r Message, seat string) bool {
+	if r.From != n.cfg.Node || r.AuthorKind == AuthorHuman {
+		return false
+	}
+	if seat != "" {
+		return r.Agent != nil && r.Agent.Seat == seat
+	}
+	return r.Agent == nil || r.Agent.Seat == ""
+}
+
+// answeredSince reports whether the author (ownChain) wrote in chat c after
+// message id (or id is not there).
+func (n *Node) answeredSince(c Chat, seat, id string) bool {
+	s, ok := n.chats.snapshot(c.ID)
+	if !ok {
+		return true
+	}
+	for _, rec := range slices.Backward(s.msgs) {
+		switch r := rec.Message; {
+		case r.ID == id:
+			return false
+		case r.Kind == "" && n.ownChain(r, seat):
+			return true
+		}
+	}
+	return true
+}
+
 // Kinds of chain base (chainBaseFor).
 const (
 	baseNone     = iota
@@ -1000,79 +1046,84 @@ const (
 	baseDirected // a person's, or asks or answers the author
 )
 
-// scanChainBase is the base in chat c of message id without a reply, written
-// by this node's agents (seat: by that seat of this node). It looks at the
-// window of messages since the author last wrote (its own messages: of the
-// seat, else of this node outside seats) or a person last wrote, whichever is
-// newer, and takes the deepest message there meant for the author, else the
-// deepest one informing everyone; with neither, the newest one meant for the
-// author or informing everyone before the window.
+// scanChainBase is the active base in chat c of message id by this node's
+// agents (seat: by that seat of this node). It looks at the window of
+// messages since the author last wrote (ownChain) or a person last wrote,
+// whichever is newer, and takes the deepest message there meant for the
+// author or informing everyone of a thread one of those is in; with none meant
+// for the author, the deepest one informing everyone. With the window empty
+// and fallback, it is the newest one meant for the author or informing
+// everyone before the window.
 //
 // Why: the author's message answers what reached it since it last wrote.
 //   - An inform of an unrelated thread arriving after an ask must not lend
 //     the ask's answer its depth, nor let the answer of a held ask escape the
-//     hop limit through a shallower one: with an ask in the window, informs
-//     are no base, except those of the ask's own thread (same RootID).
+//     hop limit through a shallower one: with an ask in the window, only
+//     informs of the asks' own threads (same RootID) count.
 //   - An inform still is the base when nothing else reached the author, so
 //     agents answering each other's informs (full autonomy follows them) stay
 //     bounded: each hop's window holds the other's newest inform.
 //   - The deepest, not the newest: sessions of one node are not told apart in
 //     a message, so two threads handled on it at once would otherwise let one
 //     take the other's shallower depth (under-counting). Over-counting only
-//     pauses early; a reply (reply_to) is always exact.
-func (n *Node) scanChainBase(c Chat, id, seat string) *Message {
+//     pauses early.
+func (n *Node) scanChainBase(c Chat, id, seat string, fallback bool) *Message {
 	s, ok := n.chats.snapshot(c.ID)
 	if !ok {
 		return nil
 	}
-	own := func(r Message) bool {
-		if r.From != n.cfg.Node || r.AuthorKind == AuthorHuman {
-			return false
-		}
-		if seat != "" {
-			return r.Agent != nil && r.Agent.Seat == seat
-		}
-		return r.Agent == nil || r.Agent.Seat == ""
-	}
-	var directed, inform *Message
-	var informs []Message
-	windowed := true
+	var directed, informs []Message
 	for _, rec := range slices.Backward(s.msgs) {
 		r := rec.Message
 		if r.Kind != "" || r.ID == id {
 			continue
 		}
 		kind := n.chainBaseFor(r, seat)
-		if !windowed {
-			if kind != baseNone {
-				return &r
-			}
-			continue
-		}
 		switch kind {
 		case baseDirected:
-			directed = deeper(directed, r)
+			directed = append(directed, r)
 		case baseInform:
-			inform = deeper(inform, r)
 			informs = append(informs, r)
 		}
-		if r.AuthorKind == AuthorHuman || own(r) {
-			if directed != nil || inform != nil {
-				break
+		if r.AuthorKind == AuthorHuman || n.ownChain(r, seat) {
+			break
+		}
+	}
+	var base *Message
+	if len(directed) == 0 {
+		for _, r := range informs {
+			base = deeper(base, r)
+		}
+	} else {
+		roots := map[string]bool{}
+		for _, r := range directed {
+			base = deeper(base, r)
+			roots[cmp.Or(r.RootID, r.ID)] = true
+		}
+		for _, r := range informs {
+			if roots[cmp.Or(r.RootID, r.ID)] {
+				base = deeper(base, r)
 			}
-			windowed = false
 		}
 	}
-	if directed == nil {
-		return inform
+	if base != nil || !fallback {
+		return base
 	}
-	// An inform of the directed base's own thread still counts.
-	for _, r := range informs {
-		if cmp.Or(r.RootID, r.ID) == cmp.Or(directed.RootID, directed.ID) {
-			directed = deeper(directed, r)
+	windowed := true
+	for _, rec := range slices.Backward(s.msgs) {
+		r := rec.Message
+		if r.Kind != "" || r.ID == id {
+			continue
+		}
+		if windowed {
+			windowed = r.AuthorKind != AuthorHuman && !n.ownChain(r, seat)
+			continue
+		}
+		if n.chainBaseFor(r, seat) != baseNone {
+			return &r
 		}
 	}
-	return directed
+	return nil
 }
 
 // deeper is r when it is deeper in its chain than cur (or cur is nil), else
