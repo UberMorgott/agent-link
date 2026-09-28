@@ -201,7 +201,7 @@ func (a *App) newProjectContext(b settings.ProjectBinding) (*appContext, error) 
 	}
 	n.SetFolders(dir, nil)
 	n.SetStopped(a.s.StopAll || b.StopAgents)
-	n.SetAutonomy(autonomyOf(b))
+	n.SetAutonomy(autonomyOf(a.effectiveBindingLocked(b)))
 	if dir == "" {
 		n.SetInboundHook(n.HoldWithoutFolder)
 		return c, nil
@@ -357,6 +357,7 @@ func (a *App) leaveProjectLocked(pid string) error {
 		a.log.Warn("move left project data", "project", pid, "err", err)
 	}
 	a.syncHooksLocked()
+	a.reapplyAutonomyLocked() // a local project may follow the changed bindings
 	a.log.Info("project left", "project", pid)
 	return nil
 }
@@ -430,6 +431,7 @@ func (a *App) setProjectDirLocked(pid, dir string) error {
 	}
 	a.s = s
 	a.syncHooksLocked()
+	a.reapplyAutonomyLocked() // a local project may follow the changed bindings
 	stateDir := a.dataRoot()
 	if pid != LegacyProjectID {
 		stateDir = a.projectDir(pid)

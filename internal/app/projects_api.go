@@ -150,7 +150,7 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 		c = a.projects[pid]
 		v = ProjectView{ID: pid, Scope: b.ScopeOf(), Alias: b.Alias, Dir: b.Dir, CanRename: true,
 			HasInvite: b.ScopeOf() == settings.ProjectScopeNetwork, LaunchMode: b.LaunchModeOf(),
-			Autonomy: autonomyViewOf(b, c)}
+			Autonomy: autonomyViewOf(a.effectiveBindingLocked(b), c)}
 		if b.Chat != nil {
 			view := localChatViewOf(b.Chat)
 			v.Chat = &view
@@ -336,6 +336,7 @@ func (a *App) addProjectLocked(ctx context.Context, b settings.ProjectBinding, n
 	}
 	a.s, a.configured = s, true
 	a.syncHooksLocked()
+	a.reapplyAutonomyLocked()           // a local project may follow the changed bindings
 	return a.startContextLocked(c, nil) //nolint:contextcheck // the context outlives the request: it runs under the Hub's own
 }
 
@@ -505,6 +506,7 @@ func (a *App) startLegacyLocked(ctx context.Context, code, addr, dir string) err
 	}
 	a.s, a.configured = s, true
 	a.syncHooksLocked()
+	a.reapplyAutonomyLocked() // a local project may follow the changed bindings
 	if err := a.ensureHubLocked(ctx); err != nil {
 		return err
 	}

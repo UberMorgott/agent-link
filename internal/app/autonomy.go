@@ -45,6 +45,61 @@ func autonomyOf(b settings.ProjectBinding) node.Autonomy {
 		MaxRun: time.Duration(b.MaxRunMinutesOf()) * time.Minute}
 }
 
+// ownAutonomy reports whether b sets any autonomy field of its own.
+func ownAutonomy(b settings.ProjectBinding) bool {
+	return b.Autonomy != "" || b.MaxAutoDepth != nil || b.TurnsPerHour != 0 || b.MaxRunMinutes != 0
+}
+
+// withAutonomy is b with the autonomy fields of src.
+func withAutonomy(b, src settings.ProjectBinding) settings.ProjectBinding {
+	b.Autonomy, b.MaxAutoDepth, b.TurnsPerHour, b.MaxRunMinutes = src.Autonomy, src.MaxAutoDepth, src.TurnsPerHour, src.MaxRunMinutes
+	return b
+}
+
+// autonomyBaseLocked is the network binding whose autonomy a local project
+// without its own follows: parent when it names a network binding, else the
+// network binding bound to dir (the deepest folder containing it).
+func (a *App) autonomyBaseLocked(parent, dir string) (settings.ProjectBinding, bool) {
+	var base settings.ProjectBinding
+	found := false
+	for _, nb := range a.s.Bindings {
+		if nb.ScopeOf() != settings.ProjectScopeNetwork {
+			continue
+		}
+		if parent != "" && nb.ID == parent {
+			return nb, true
+		}
+		if dir != "" && nb.Dir != "" && within(nb.Dir, dir) && (!found || len(nb.Dir) > len(base.Dir)) {
+			base, found = nb, true
+		}
+	}
+	return base, found
+}
+
+// effectiveBindingLocked is b with the autonomy in effect: a local project
+// without its own reads it through from the network project bound to the same
+// folder (autonomyBaseLocked), so the owner's later changes there apply too;
+// with none bound, b's own defaults.
+func (a *App) effectiveBindingLocked(b settings.ProjectBinding) settings.ProjectBinding {
+	if b.ScopeOf() != settings.ProjectScopeLocal || ownAutonomy(b) {
+		return b
+	}
+	if base, ok := a.autonomyBaseLocked("", b.Dir); ok {
+		return withAutonomy(b, base)
+	}
+	return b
+}
+
+// reapplyAutonomyLocked applies the autonomy in effect to every running
+// project node (after a change a local project may inherit).
+func (a *App) reapplyAutonomyLocked() {
+	for _, b := range a.s.Bindings {
+		if c := a.projects[b.ID]; c != nil {
+			c.n.SetAutonomy(autonomyOf(a.effectiveBindingLocked(b)))
+		}
+	}
+}
+
 // autonomyViewOf is the view of b's autonomy, with the budget state of its
 // running node c (nil: none).
 func autonomyViewOf(b settings.ProjectBinding, c *appContext) *AutonomyView {
@@ -119,7 +174,9 @@ func (a *App) setAutonomyLocked(pid string, req autonomyRequest) error {
 	if i < 0 {
 		return &settings.Problem{Key: "bad_request"}
 	}
-	b := a.s.Bindings[i]
+	// A local project that follows its network project starts from what it
+	// follows: the owner's edit overrides from there.
+	b := a.effectiveBindingLocked(a.s.Bindings[i])
 	if req.Autonomy != nil {
 		b.Autonomy = *req.Autonomy
 		if b.Autonomy == "" {
@@ -145,9 +202,7 @@ func (a *App) setAutonomyLocked(pid string, req autonomyRequest) error {
 		return err
 	}
 	a.s = s
-	if c := a.projects[pid]; c != nil {
-		c.n.SetAutonomy(autonomyOf(b))
-	}
+	a.reapplyAutonomyLocked() // this project, and the local ones that follow it
 	a.log.Info("project autonomy", "project", pid, "mode", b.AutonomyOf(), "max_auto_depth", b.MaxAutoDepthOf(),
 		"turns_per_hour", b.TurnsPerHourOf(), "max_run_minutes", b.MaxRunMinutesOf())
 	return nil
