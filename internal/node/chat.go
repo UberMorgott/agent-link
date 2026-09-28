@@ -949,11 +949,18 @@ func (n *Node) continueLegacy(peer string, s ChatSend) (Message, error) {
 // inheritChain sets m's automatic chain (RootID, AutoDepth) when it has none
 // yet. A person's message starts a new chain at itself. Any other message
 // continues the chain of its base, one hop further: the message it replies to,
-// else the newest message of chat c from another node or by a person here or,
-// for a seat's message, for that seat (it asked or answered it: the message
-// its turn is about, seats.go). So the depth counts the agent hops since a
-// person last wrote, whichever nodes, sessions and seats the agents run in,
-// and MaxAutoDepth bounds a conversation of agents alone.
+// else the newest message of chat c meant for its author (chainBaseFor): a
+// person's, another node's that asks this node, informs everyone or answers
+// this node, or, for a seat's message, one for that seat (it asked or answered
+// it: the message its turn is about, seats.go). So the depth counts the agent
+// hops since a person last wrote, whichever nodes, sessions and seats the
+// agents run in, and MaxAutoDepth bounds a conversation of agents alone.
+//
+// Another node's message that asks only other members (or that node's own
+// seats) belongs to another thread of the chat: taking its depth made an
+// unrelated agent message of a busy shared chat hit the hop limit. An agent
+// message without a reply still continues what asked or told it, never
+// depth 0: two agents asking each other without replies stay bounded.
 func (n *Node) inheritChain(c Chat, m *Message) {
 	if m.RootID != "" {
 		return
@@ -978,7 +985,7 @@ func (n *Node) inheritChain(c Chat, m *Message) {
 	if base == nil {
 		if s, ok := n.chats.snapshot(c.ID); ok {
 			for _, rec := range slices.Backward(s.msgs) {
-				if r := rec.Message; r.Kind == "" && r.ID != m.ID && (r.From != n.cfg.Node || r.AuthorKind == AuthorHuman || forSeat(r)) {
+				if r := rec.Message; r.Kind == "" && r.ID != m.ID && (r.AuthorKind == AuthorHuman || forSeat(r) || n.chainBaseFor(r)) {
 					base = &r
 					break
 				}
@@ -991,6 +998,24 @@ func (n *Node) inheritChain(c Chat, m *Message) {
 			m.AutoDepth++
 		}
 	}
+}
+
+// chainBaseFor reports whether r, a message of another node, is meant for
+// this node's agents and so may be the base of their next message without a
+// reply (inheritChain): it asks this node, informs everyone (asks nobody, no
+// seat either) or replies to a message of this node.
+func (n *Node) chainBaseFor(r Message) bool {
+	if r.From == n.cfg.Node {
+		return false
+	}
+	if slices.Contains(r.Responders, n.cfg.Node) || (len(r.Responders) == 0 && len(r.AskSeats) == 0) {
+		return true
+	}
+	if r.ReplyTo == "" {
+		return false
+	}
+	p, ok := n.chats.message(r.ReplyTo)
+	return ok && p.Message.From == n.cfg.Node
 }
 
 // sendChat is SendMessage for a chat message or status update.
