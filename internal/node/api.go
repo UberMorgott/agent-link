@@ -115,6 +115,12 @@ func (n *Node) SendRequest(req SendRequest) (Message, error) {
 	if err == nil {
 		err = qerr
 	}
+	if err == nil && len(m.AskSeats) > 0 && n.overDepth(m) {
+		// Past the hop limit no seat asked answers automatically: the sender
+		// learns it now instead of waiting (the returned copy only; nothing
+		// stored). Members asked apply their own limit and report JobHeld.
+		m.HoldReason = HoldAutoLimit
+	}
 	return m, err
 }
 

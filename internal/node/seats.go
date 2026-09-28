@@ -56,6 +56,7 @@ const (
 	SeatStopped    = "stopped"     // stopped by the person
 	SeatBusy       = "busy"        // open in the agent's app: its messages wait for its hooks
 	SeatNeedsHuman = "needs_human" // its turns kept failing: a new message or Start runs it again
+	SeatPaused     = "paused"      // every message for it is past the hop limit: it waits for a person
 )
 
 // seatRetry are the waits before the automatic tries of a seat's failed turn.
@@ -134,6 +135,8 @@ type seatStore struct {
 	marks map[string]seatMark
 	// dirty: the last save failed; seatsDue saves again.
 	dirty bool
+	// pauseLogged: seats whose hop-limit pause seatsDue logged (once per pause).
+	pauseLogged map[string]bool
 }
 
 type seatMark struct {
@@ -147,7 +150,7 @@ func seatKey(seat, id string) string { return seat + "/" + id }
 
 func openSeats(dir string) (*seatStore, error) {
 	st := &seatStore{path: filepath.Join(dir, "seats.json"), run: map[string]context.CancelFunc{}, errs: map[string]string{},
-		busy: map[string]bool{}, quiet: map[string]bool{}, deferred: map[string]bool{}, marks: map[string]seatMark{}}
+		busy: map[string]bool{}, quiet: map[string]bool{}, deferred: map[string]bool{}, marks: map[string]seatMark{}, pauseLogged: map[string]bool{}}
 	if err := readJSON(st.path, &st.seats); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -201,7 +204,6 @@ func (n *Node) Seats() []SeatView {
 	n.sess.mu.Unlock()
 	st := n.seats
 	st.mu.Lock()
-	defer st.mu.Unlock()
 	out := make([]SeatView, 0, len(st.seats))
 	for _, s := range st.seats {
 		c := *s
@@ -226,7 +228,28 @@ func (n *Node) Seats() []SeatView {
 		}
 		out = append(out, v)
 	}
+	st.mu.Unlock()
+	for i := range out {
+		if out[i].Status == SeatOffline && n.seatAllPaused(out[i].Pending) {
+			out[i].Status = SeatPaused
+		}
+	}
 	return out
+}
+
+// seatAllPaused reports whether pend has messages and every one waits for a
+// person (seatPaused): no turn runs for them.
+func (n *Node) seatAllPaused(pend []SeatPending) bool {
+	if len(pend) == 0 {
+		return false
+	}
+	for _, p := range pend {
+		rec, ok := n.chats.message(p.ID)
+		if !ok || !n.seatPaused(p, rec.Message) {
+			return false
+		}
+	}
+	return true
 }
 
 // seatLabel is label cleaned, or the provider's name (numbered when taken).
@@ -812,15 +835,23 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 	}
 	for _, s := range due {
 		ready := s.SessionID == "" && len(s.Pending) == 0
+		paused := 0
 		for _, p := range s.Pending {
 			if l, _ := n.leases.get(leaseKey(s.ID, p.ID)); l.Failed {
 				continue // a person decides
 			}
-			if rec, ok := n.chats.message(p.ID); ok && !n.seatPaused(p, rec.Message) {
-				ready = true
-				break
+			rec, ok := n.chats.message(p.ID)
+			if !ok {
+				continue
 			}
+			if n.seatPaused(p, rec.Message) {
+				paused++
+				continue
+			}
+			ready = true
+			break
 		}
+		n.notePaused(s.ID, !ready && paused > 0, paused)
 		if !ready {
 			continue
 		}
@@ -844,6 +875,25 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 		}
 		id, intro := s.ID, s.SessionID == ""
 		n.wg.Go(func() { n.seatTurn(ctx, dl, id, intro, false) })
+	}
+}
+
+// notePaused logs once, when seat's messages start waiting for a person past
+// the hop limit (paused of them), and forgets it when they stop waiting.
+func (n *Node) notePaused(seat string, on bool, paused int) {
+	st := n.seats
+	st.mu.Lock()
+	was := st.pauseLogged[seat]
+	if on {
+		st.pauseLogged[seat] = true
+	} else {
+		delete(st.pauseLogged, seat)
+	}
+	st.mu.Unlock()
+	if on && !was {
+		n.log.Info("seat paused: its messages are past the hop limit and wait for a person", "seat", seat,
+			"paused", paused, "max_auto_depth", n.maxDepth())
+		n.changed("seats")
 	}
 }
 

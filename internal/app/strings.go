@@ -527,6 +527,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"project.agents.status.stopped":     "остановлен",
 	"project.agents.status.busy":        "открыт в приложении агента — сообщения получит там",
 	"project.agents.status.needs_human": "ходы не удались — нажмите «Запустить»",
+	"project.agents.status.paused":      "пауза — цепочка агентов дошла до лимита, нужен человек",
 	"project.agents.pending":            "сообщений ждут: {n}",
 	"inbox.seats.label":                 "Спросить агента",
 	"inbox.seats.mine":                  "Мой {name}",

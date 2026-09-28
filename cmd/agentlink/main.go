@@ -382,6 +382,11 @@ type discussResult struct {
 	Scope     string    `json:"scope,omitempty"`
 	Topic     string    `json:"topic,omitempty"`
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// Held: past the hop limit no seat answers it until a person writes;
+	// HoldReason says why (node.Hold*), Note in words.
+	Held       bool   `json:"held,omitempty"`
+	HoldReason string `json:"hold_reason,omitempty"`
+	Note       string `json:"note,omitempty"`
 }
 
 // discussPick names the local chat of a discuss: an earlier chat's id, a
@@ -424,7 +429,10 @@ func discussMessage(cfg config.Config, provider, body, folder string, async bool
 		"source": source, "seat": os.Getenv(envSeat),
 		"chat": pick.chat, "topic": pick.topic, "temporary": pick.temporary,
 	}, &result)
-	if err != nil || async || result.Queued {
+	if err == nil && result.HoldReason != "" {
+		result.Held, result.Note = true, node.HoldText(result.HoldReason)
+	}
+	if err != nil || async || result.Queued || result.Held {
 		return result, err
 	}
 	q := url.Values{"project": {result.Project}, "chat": {result.Chat}, "id": {result.ID},
@@ -506,6 +514,10 @@ func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 	if m.ChatID != "" && a.chat == "" {
 		// send --to continued the chat with that member; stdout stays the id alone.
 		fmt.Fprintln(os.Stderr, "chat "+m.ChatID)
+	}
+	if m.HoldReason != "" {
+		// stdout stays the id alone; nobody answers it automatically.
+		fmt.Fprintln(os.Stderr, "held: "+node.HoldText(m.HoldReason))
 	}
 	_, err = fmt.Fprintln(stdout, m.ID)
 	return err

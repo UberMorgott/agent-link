@@ -132,7 +132,10 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		Scope     string    `json:"scope"`
 		Topic     string    `json:"topic,omitempty"`
 		ExpiresAt time.Time `json:"expires_at,omitzero"`
-	}{pid, chat.ID, message.ID, seat, discussQueued(c.n, seat), view.Scope, view.Topic, view.ExpiresAt})
+		// HoldReason: no seat answers it automatically (node.HoldAutoLimit):
+		// the caller returns at once instead of waiting for a reply.
+		HoldReason string `json:"hold_reason,omitempty"`
+	}{pid, chat.ID, message.ID, seat, discussQueued(c.n, seat), view.Scope, view.Topic, view.ExpiresAt, message.HoldReason})
 }
 
 func authorKind(session, seat string) string {
@@ -203,7 +206,7 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, reply.Message) // unread until the caller acknowledges it (discussMessage)
 			return
 		}
-		if discussQueued(c.n, seat) {
+		if discussQueued(c.n, seat) || c.n.AutoHeld(ask.Message) { // held: no turn runs for it
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}

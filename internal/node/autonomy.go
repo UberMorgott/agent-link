@@ -343,9 +343,10 @@ func (n *Node) overDepth(m Message) bool {
 	return limit > 0 && int(m.AutoDepth) > limit
 }
 
-// held reports whether m asks for answers past the hop limit (Message.Held
-// with this project's limit): it is kept, and no handler runs for it.
-func (n *Node) held(m Message) bool { return len(m.Responders) > 0 && n.overDepth(m) }
+// held reports whether m asks for answers (members or seats) past the hop
+// limit (Message.Held with this project's limit): it is kept, and no handler
+// runs for it.
+func (n *Node) held(m Message) bool { return m.asksAnyone() && n.overDepth(m) }
 
 // AutoHeld reports whether no automatic handler may run for m: the node is
 // stopped or m is past the hop limit (the worker leaves it unread).

@@ -764,3 +764,60 @@ func TestSeatFailedLeaseNotRun(t *testing.T) {
 		t.Fatalf("runs %d -> %d, pending %+v", before, runs, seatByLabel(t, a, "Codex").Pending)
 	}
 }
+
+// A seat asked past the hop limit is held visibly: no turn runs, the seat
+// shows SeatPaused, the message counts as Held and its sender learns it.
+func TestSeatAskPastHopLimitIsVisiblyHeld(t *testing.T) {
+	l := &seatLauncher{}
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	claude, codex := addSeats(t, a)
+	chat, _ := a.NewProjectChat(nil)
+	prev, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "talk", AuthorKind: AuthorHuman, AskSeats: []string{claude.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	from, to := codex, claude
+	for prev.AutoDepth < MaxAutoDepth+1 {
+		if prev.Held() || prev.HoldReason != "" {
+			t.Fatalf("held within the limit: depth %d %q", prev.AutoDepth, prev.HoldReason)
+		}
+		from, to = to, from
+		if prev, err = a.SendRequest(SendRequest{ChatID: chat.ID, Body: "hop", Seat: from.ID, AskSeats: []string{to.ID}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !prev.Held() || prev.HoldReason != HoldAutoLimit || !a.AutoHeld(prev) {
+		t.Fatalf("depth %d: Held %v reason %q", prev.AutoDepth, prev.Held(), prev.HoldReason)
+	}
+	// Only the held ask stays pending: the earlier hops were answered.
+	for _, s := range a.Seats() {
+		ids := slices.DeleteFunc(pendingIDs(s), func(id string) bool { return id == prev.ID })
+		a.seatAck("", s.ID, ids)
+	}
+	turns := func() int {
+		c := 0
+		for _, r := range l.all() {
+			if r.Seat == to.ID {
+				c++
+			}
+		}
+		return c
+	}
+	before := turns()
+	a.seatsDue(context.Background(), time.Now())
+	a.seatsDue(context.Background(), time.Now())
+	time.Sleep(100 * time.Millisecond)
+	if n := turns(); n != before {
+		t.Fatalf("a turn ran for the held ask: %d -> %d", before, n)
+	}
+	s := seatByLabel(t, a, to.Label)
+	if s.Status != SeatPaused || !slices.Contains(pendingIDs(s), prev.ID) {
+		t.Fatalf("seat %+v", s)
+	}
+	a.seats.mu.Lock()
+	noted := a.seats.pauseLogged[to.ID]
+	a.seats.mu.Unlock()
+	if !noted {
+		t.Fatal("the pause was not noted")
+	}
+}

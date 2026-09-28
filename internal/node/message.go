@@ -273,9 +273,13 @@ func (m Message) Asks(name string) bool {
 	return m.ChatID != "" && m.Kind == "" && slices.Contains(m.Responders, name)
 }
 
-// Held reports whether m asks for answers but is too many automatic hops
-// from its external request: it is kept, and no handler runs for it.
-func (m Message) Held() bool { return len(m.Responders) > 0 && m.AutoDepth > MaxAutoDepth }
+// Held reports whether m asks for answers (members or this node's seats) but
+// is too many automatic hops from its external request: it is kept, and no
+// handler runs for it.
+func (m Message) Held() bool { return m.asksAnyone() && m.AutoDepth > MaxAutoDepth }
+
+// asksAnyone reports whether m asks members (Responders) or seats (AskSeats).
+func (m Message) asksAnyone() bool { return len(m.Responders) > 0 || len(m.AskSeats) > 0 }
 
 // MaxAutoDepth is how many agent hops (an agent or the worker writing after
 // another node's message, see inheritChain) a chain may take from the last
