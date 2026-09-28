@@ -160,6 +160,10 @@ func (a *App) bindingDirLocked(pid string) string {
 func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	pid, chat, id, seat := q.Get("project"), q.Get("chat"), q.Get("id"), q.Get("seat")
+	// client_ack=1: the caller acknowledges the reply itself once it decoded
+	// it (discussMessage). Without it (callers before v0.6.30, whose MCP
+	// servers outlive an update) the reply is read here as they expect.
+	clientAck := q.Get("client_ack") == "1"
 	timeout, err := time.ParseDuration(q.Get("timeout"))
 	if pid == "" || chat == "" || id == "" || seat == "" || err != nil || timeout <= 0 || timeout > 15*time.Minute {
 		http.Error(w, "invalid discuss reply request", http.StatusBadRequest)
@@ -203,7 +207,7 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if found {
-			writeJSON(w, reply.Message) // unread until the caller acknowledges it (discussMessage)
+			a.discussReplied(w, c.n, chat, reply, clientAck)
 			return
 		}
 		if discussQueued(c.n, seat) || c.n.AutoHeld(ask.Message) { // held: no turn runs for it
@@ -215,7 +219,7 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-timer.C:
 			if reply, found, err := discussAnswer(c.n, chat, id, seat, &cursor); err == nil && found {
-				writeJSON(w, reply.Message) // unread until the caller acknowledges it (discussMessage)
+				a.discussReplied(w, c.n, chat, reply, clientAck)
 				return
 			} else if err != nil {
 				a.failed(w, "discuss reply", err)
@@ -227,6 +231,19 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 			sub.snapshot()
 		}
 	}
+}
+
+// discussReplied answers the waiting discuss call with reply. A caller that
+// acknowledges replies itself gets it unread, so a reply it never decoded
+// stays for the session's hooks; a legacy caller has it read here, or its
+// hooks would deliver it a second time.
+func (a *App) discussReplied(w http.ResponseWriter, n *node.Node, chat string, reply node.ChatMessage, clientAck bool) {
+	if !clientAck && reply.Unread {
+		if _, err := n.Ack(chat, node.AckRequest{IDs: []string{reply.ID}}); err != nil {
+			a.log.Warn("read discuss reply", "id", reply.ID, "err", err)
+		}
+	}
+	writeJSON(w, reply.Message)
 }
 
 func discussQueued(n *node.Node, seat string) bool {

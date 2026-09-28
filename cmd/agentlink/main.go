@@ -436,7 +436,7 @@ func discussMessage(cfg config.Config, provider, body, folder string, async bool
 		return result, err
 	}
 	q := url.Values{"project": {result.Project}, "chat": {result.Chat}, "id": {result.ID},
-		"seat": {result.Seat}, "timeout": {d.String()}}
+		"seat": {result.Seat}, "timeout": {d.String()}, "client_ack": {"1"}}
 	resp, err := apiDo(http.MethodGet, apiURL(cfg, "/discuss/reply", q), nil)
 	if err != nil {
 		return result, err

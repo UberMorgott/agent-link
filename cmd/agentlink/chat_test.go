@@ -40,6 +40,11 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 			_ = json.NewDecoder(r.Body).Decode(&f.discuss)
 			_ = json.NewEncoder(w).Encode(discussResult{Project: "p1", Chat: "c1", ID: "m1", Seat: "seat-codex"})
 		case r.URL.Path == "/discuss/reply":
+			// The caller acknowledges the reply itself: without the flag the
+			// server reads it (legacy callers) and a lost reply is gone.
+			if r.URL.Query().Get("client_ack") != "1" {
+				t.Errorf("discuss reply wait without client_ack=1: %s", r.URL.RequestURI())
+			}
 			switch r.URL.Query().Get("timeout") {
 			case "20ms":
 				w.WriteHeader(http.StatusNoContent)

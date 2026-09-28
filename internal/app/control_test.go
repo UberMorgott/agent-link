@@ -259,6 +259,43 @@ func TestOriginRoutingAcrossNetworkAndLocalProject(t *testing.T) {
 // the caller that decoded it acknowledges it (discussMessage), so a reply a
 // timed-out or failed caller never got stays unread for the session's hooks.
 func TestDiscussReplyWaitKeepsReplyUnread(t *testing.T) {
+	h, n, ask, reply := discussReplyFixture(t)
+	path := "/discuss/reply?" + url.Values{"project": {ask.Project}, "chat": {ask.Chat}, "id": {ask.ID}, "seat": {ask.Seat},
+		"timeout": {"2s"}, "client_ack": {"1"}}.Encode()
+	if code, body := h.do(t, http.MethodGet, path, "", nil); code != http.StatusOK || !strings.Contains(body, reply.ID) {
+		t.Fatalf("reply wait: %d %s", code, body)
+	}
+	if p, _ := n.UnreadFor("", "claude-ext", "", 10); p.Total != 1 {
+		t.Fatalf("reply read before the caller got it: %+v", p)
+	}
+	// The caller's ack (its project, as discussMessage sends it) reads it.
+	if code, body := h.do(t, http.MethodPost, "/ack?project="+ask.Project,
+		jsonOf(t, node.AckRequest{IDs: []string{reply.ID}, SessionID: "claude-ext"}), nil); code != http.StatusOK || !strings.Contains(body, `"was_unread":true`) {
+		t.Fatalf("caller ack: %d %s", code, body)
+	}
+	if p, _ := n.UnreadFor("", "claude-ext", "", 10); p.Total != 0 {
+		t.Fatalf("reply unread after the caller's ack: %+v", p)
+	}
+}
+
+// A caller without client_ack (a client before v0.6.30, whose MCP server
+// outlives an update) never acknowledges the reply itself: the wait reads it,
+// so the session's hooks do not deliver it a second time.
+func TestDiscussReplyWaitReadsReplyForLegacyCaller(t *testing.T) {
+	h, n, ask, reply := discussReplyFixture(t)
+	path := "/discuss/reply?" + url.Values{"project": {ask.Project}, "chat": {ask.Chat}, "id": {ask.ID}, "seat": {ask.Seat}, "timeout": {"2s"}}.Encode()
+	if code, body := h.do(t, http.MethodGet, path, "", nil); code != http.StatusOK || !strings.Contains(body, reply.ID) {
+		t.Fatalf("reply wait: %d %s", code, body)
+	}
+	if p, _ := n.UnreadFor("", "claude-ext", "", 10); p.Total != 0 {
+		t.Fatalf("legacy caller's reply delivered again: %+v", p)
+	}
+}
+
+// discussReplyFixture asks the codex seat from an external claude session and
+// posts the seat's reply, unread for that session.
+func discussReplyFixture(t *testing.T) (*harness, *node.Node, discussResultAPI, node.Message) {
+	t.Helper()
 	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
 	dir := t.TempDir()
 	code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
@@ -276,21 +313,7 @@ func TestDiscussReplyWaitKeepsReplyUnread(t *testing.T) {
 	if p, _ := n.UnreadFor("", "claude-ext", "", 10); p.Total != 1 || p.Messages[0].ID != reply.ID {
 		t.Fatalf("reply not unread for the asking session: %+v", p)
 	}
-	path := "/discuss/reply?" + url.Values{"project": {ask.Project}, "chat": {ask.Chat}, "id": {ask.ID}, "seat": {ask.Seat}, "timeout": {"2s"}}.Encode()
-	if code, body := h.do(t, http.MethodGet, path, "", nil); code != http.StatusOK || !strings.Contains(body, reply.ID) {
-		t.Fatalf("reply wait: %d %s", code, body)
-	}
-	if p, _ := n.UnreadFor("", "claude-ext", "", 10); p.Total != 1 {
-		t.Fatalf("reply read before the caller got it: %+v", p)
-	}
-	// The caller's ack (its project, as discussMessage sends it) reads it.
-	if code, body := h.do(t, http.MethodPost, "/ack?project="+ask.Project,
-		jsonOf(t, node.AckRequest{IDs: []string{reply.ID}, SessionID: "claude-ext"}), nil); code != http.StatusOK || !strings.Contains(body, `"was_unread":true`) {
-		t.Fatalf("caller ack: %d %s", code, body)
-	}
-	if p, _ := n.UnreadFor("", "claude-ext", "", 10); p.Total != 0 {
-		t.Fatalf("reply unread after the caller's ack: %+v", p)
-	}
+	return h, n, ask, reply
 }
 
 // call sends one control API request to srv.
