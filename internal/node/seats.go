@@ -133,6 +133,9 @@ type seatStore struct {
 	// marks: per seat and message (seatKey), a hook's claim, the node's wake
 	// of the seat's session with it (claimLocked) or the node's turn of it.
 	marks map[string]seatMark
+	// handling: per seat, the messages the node's running turn of it handles:
+	// the base of the chain of its messages without a reply (seatTurnBase).
+	handling map[string][]Message
 	// dirty: the last save failed; seatsDue saves again.
 	dirty bool
 	// pauseLogged: seats whose hop-limit pause seatsDue logged (once per pause).
@@ -150,7 +153,8 @@ func seatKey(seat, id string) string { return seat + "/" + id }
 
 func openSeats(dir string) (*seatStore, error) {
 	st := &seatStore{path: filepath.Join(dir, "seats.json"), run: map[string]context.CancelFunc{}, errs: map[string]string{},
-		busy: map[string]bool{}, quiet: map[string]bool{}, deferred: map[string]bool{}, marks: map[string]seatMark{}, pauseLogged: map[string]bool{}}
+		busy: map[string]bool{}, quiet: map[string]bool{}, deferred: map[string]bool{}, marks: map[string]seatMark{}, pauseLogged: map[string]bool{},
+		handling: map[string][]Message{}}
 	if err := readJSON(st.path, &st.seats); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -934,6 +938,7 @@ func (n *Node) seatTurn(ctx context.Context, dl DirectLauncher, id string, intro
 	st.mu.Lock()
 	delete(st.run, id)
 	delete(st.quiet, id)
+	delete(st.handling, id)
 	st.mu.Unlock()
 	n.changed("seats")
 }
@@ -1039,6 +1044,7 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 		}
 	}
 	msgs = leased
+	n.seats.setHandling(seat.ID, msgs)
 	if len(refused) > 0 {
 		st := n.seats
 		st.mu.Lock()
@@ -1102,6 +1108,40 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 		n.revokeLeases(owner, ids(msgs), "seat_turn_failed", false)
 	}
 	n.endTurn(seat.ID, msgs, err, stopped)
+}
+
+// setHandling records msgs as the messages the node's running turn of seat
+// handles (seatTurn forgets them when it ends).
+func (st *seatStore) setHandling(seat string, msgs []UnreadMessage) {
+	list := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Kind == "" {
+			list = append(list, m.Message)
+		}
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if len(list) == 0 {
+		delete(st.handling, seat)
+		return
+	}
+	st.handling[seat] = list
+}
+
+// seatTurnBase is the chain base of a message without a reply by seat during
+// the node's turn of it: the deepest message the turn handles (inheritChain),
+// nil outside a turn or for a turn of its introduction alone. The deepest:
+// the turn answers them together, and the hop limit must not be escaped
+// through the shallowest of them.
+func (n *Node) seatTurnBase(seat string) *Message {
+	st := n.seats
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	var base *Message
+	for _, m := range st.handling[seat] {
+		base = deeper(base, m)
+	}
+	return base
 }
 
 // endTurnClaims drops the turn's claims of msgs of seat (a turn that did not

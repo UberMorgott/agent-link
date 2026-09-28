@@ -59,8 +59,23 @@ func TestChainDepthPerThread(t *testing.T) {
 		t.Fatalf("request past the limit not held: %+v", prev)
 	}
 
-	// Information to everyone still continues its chain.
+	// An unrelated inform arriving after b's held request does not let a's
+	// answer escape the hop limit: the request stays its base.
 	fyi, err := c.SendMessage(Message{ChatID: info.ID, Body: "fyi: deployed", RootID: newID(), AutoDepth: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the fyi", func() bool { return slices.Contains(chatIDs(a, info.ID), fyi.ID) })
+	held, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "still on it", Ask: []string{"c"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held.RootID != q.ID || held.AutoDepth != prev.AutoDepth+1 || !held.Held() {
+		t.Fatalf("answer to a held request after an fyi: depth %d root %s", held.AutoDepth, held.RootID)
+	}
+
+	// Information to everyone, alone since a last wrote, continues its chain.
+	fyi, err = c.SendMessage(Message{ChatID: info.ID, Body: "fyi: deployed again", RootID: newID(), AutoDepth: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,5 +102,49 @@ func TestChainDepthPerThread(t *testing.T) {
 	}
 	if own.RootID == handoff.RootID || own.AutoDepth != 6 || own.Held() {
 		t.Fatalf("a took the handoff's depth: depth %d root %s", own.AutoDepth, own.RootID)
+	}
+}
+
+// Since a node's agents last wrote, a request for them outranks information
+// of an unrelated thread (it lends no depth), and of several requests the
+// deepest is the base: sessions of one node are not told apart, so a
+// shallower thread must not lower another's count.
+func TestChainBaseInformAndDeepest(t *testing.T) {
+	a, b, c := trio(t)
+	info, err := a.CreateChat([]string{"b,c"}, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []*testNode{b, c} {
+		eventually(t, n.cfg.Node+" knows the chat", func() bool { _, ok := n.ChatOf(info.ID); return ok })
+	}
+	send := func(from *testNode, m Message) Message {
+		t.Helper()
+		m.ChatID = info.ID
+		out, err := from.SendMessage(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "a has "+m.Body, func() bool { return slices.Contains(chatIDs(a, info.ID), out.ID) })
+		return out
+	}
+	ask := send(b, Message{Body: "a, check this", Responders: []string{"a"}, RootID: newID(), AutoDepth: 1})
+	fyi := send(c, Message{Body: "fyi: unrelated deploy", RootID: newID(), AutoDepth: 5})
+	got, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "checked", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RootID != ask.RootID || got.AutoDepth != 2 {
+		t.Fatalf("answer took the fyi's chain: depth %d root %s (ask %s, fyi %s)", got.AutoDepth, got.RootID, ask.RootID, fyi.RootID)
+	}
+
+	deep := send(b, Message{Body: "a, round six", Responders: []string{"a"}, RootID: newID(), AutoDepth: 6})
+	send(c, Message{Body: "a, new question", Responders: []string{"a"}, RootID: newID(), AutoDepth: 1})
+	got, err = a.SendChat(ChatSend{ChatID: info.ID, Body: "on it", Ask: []string{"b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RootID != deep.RootID || got.AutoDepth != 7 {
+		t.Fatalf("interleaved threads under-counted: depth %d root %s (deep %s)", got.AutoDepth, got.RootID, deep.RootID)
 	}
 }

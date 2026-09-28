@@ -821,3 +821,62 @@ func TestSeatAskPastHopLimitIsVisiblyHeld(t *testing.T) {
 		t.Fatal("the pause was not noted")
 	}
 }
+
+// A seat's message without a reply during the node's turn of it continues
+// the message the turn handles, not a deeper ask of another thread queued for
+// the seat meanwhile; after the turn nothing of it is left behind.
+func TestSeatTurnChainBase(t *testing.T) {
+	l := &seatLauncher{}
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	claude, codex := addSeats(t, a)
+	chat, _ := a.NewProjectChat(nil)
+	first, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "first", AuthorKind: AuthorHuman, AskSeats: []string{codex.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		once          sync.Once
+		mu            sync.Mutex
+		queued, reply Message
+		sendErr       error
+	)
+	l.set(nil, func(spec LaunchSpec) {
+		if spec.Seat != codex.ID || !strings.Contains(spec.Prompt, "first") {
+			return
+		}
+		once.Do(func() {
+			// Another thread asks the seat, deep in its chain, during the turn.
+			q, err := a.SendMessage(Message{ChatID: chat.ID, Body: "codex, round six", AskSeats: []string{codex.ID},
+				Agent: &AgentRef{Seat: claude.ID, Label: claude.Label, Provider: claude.Provider}, RootID: newID(), AutoDepth: 6})
+			if err == nil {
+				err = a.deliverToSeats(q, claude.ID)
+			}
+			var r Message
+			if err == nil {
+				r, err = a.SendRequest(SendRequest{ChatID: chat.ID, Body: "done with first", Seat: codex.ID})
+			}
+			mu.Lock()
+			queued, reply, sendErr = q, r, err
+			mu.Unlock()
+		})
+	})
+	a.seatsDue(context.Background(), time.Now())
+	eventually(t, "the turn", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return reply.ID != "" || sendErr != nil
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if sendErr != nil {
+		t.Fatal(sendErr)
+	}
+	if reply.RootID != first.ID || reply.AutoDepth != 1 {
+		t.Fatalf("turn's message took the queued ask's chain: depth %d root %s (first %s, queued %s)",
+			reply.AutoDepth, reply.RootID, first.ID, queued.RootID)
+	}
+	eventually(t, "turn over", func() bool { return seatByLabel(t, a, codex.Label).Status != SeatRunning })
+	if b := a.seatTurnBase(codex.ID); b != nil {
+		t.Fatalf("turn state left behind: %+v", b)
+	}
+}
