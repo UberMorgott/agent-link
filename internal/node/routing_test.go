@@ -186,6 +186,19 @@ func TestReplyForSubagentSkipsWakeWhileItLives(t *testing.T) {
 	if g, _ := a.Claim(ClaimRequest{IDs: []string{r.ID}, SessionID: "s-main", WakeToken: "wake-token-2"}); !slices.Equal(g, []string{r.ID}) {
 		t.Fatalf("wake after the subagent ended: %v", g)
 	}
+	// The parent holds that wake when the subagent shows up live again: its
+	// hooks (skip_agents) no longer list it as woken, so they cannot
+	// acknowledge it; the subagent's own (for_agent) do.
+	reg("agent-1")
+	has := func(ms []UnreadMessage) bool {
+		return slices.ContainsFunc(ms, func(m UnreadMessage) bool { return m.ID == r.ID })
+	}
+	if p, _ := a.unreadFor(dir, "s-main", "", 10, false, false, AgentFilter{Skip: []string{"agent-1"}}); has(p.Woken) || has(p.Messages) {
+		t.Fatalf("parent's page still has the live subagent's reply: %+v", p)
+	}
+	if p, _ := a.unreadFor(dir, "s-main", "", 10, false, false, AgentFilter{Only: "agent-1"}); !has(p.Woken) {
+		t.Fatalf("the subagent's page lost its woken reply: %+v", p)
+	}
 }
 
 // The subagent filter applies before the page is cut: one subagent's reply

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/UberMorgott/agent-link/internal/node"
 )
 
 // A subagent's ask is stamped by its PreToolUse and taken by the tool by its
@@ -191,5 +193,30 @@ func TestHookWaiterLapsesSilentSubagent(t *testing.T) {
 	c.f.add(m)
 	if !pendingUnread(c.env, c.folder, c.sid, &st) || len(st.Live) != 0 {
 		t.Fatalf("a silent subagent held its reply: %+v", st.Live)
+	}
+}
+
+// A reply the parent was woken with before its subagent showed up is not
+// acknowledged by the parent's hooks while that subagent lives, nor by
+// another subagent's (an older node sends it unfiltered in Woken).
+func TestHookForMeFiltersWoken(t *testing.T) {
+	w := node.UnreadMessage{WakeToken: "tok"}
+	w.ID, w.ForAgent = "r1", "a1"
+	page := node.UnreadPage{Woken: []node.UnreadMessage{w}}
+	st := &hookState{Live: map[string]liveAgent{"a1": {}}}
+	if got := (&hookSession{st: st}).forMe(page).Woken; len(got) != 0 {
+		t.Fatalf("parent kept a live subagent's woken reply: %+v", got)
+	}
+	if got := (&hookSession{st: st, agent: "a2"}).forMe(page).Woken; len(got) != 0 {
+		t.Fatalf("another subagent kept it: %+v", got)
+	}
+	if got := (&hookSession{st: st, agent: "a1"}).forMe(page).Woken; len(got) != 1 {
+		t.Fatalf("its subagent lost it: %+v", got)
+	}
+	if got := (&hookSession{st: &hookState{}}).forMe(page).Woken; len(got) != 1 {
+		t.Fatalf("parent lost an ended subagent's woken reply: %+v", got)
+	}
+	if len(page.Woken) != 1 {
+		t.Fatal("forMe changed its input")
 	}
 }

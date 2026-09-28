@@ -259,6 +259,9 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable, e
 		woken = append(woken, w...)
 	}
 	all = slices.DeleteFunc(all, func(m UnreadMessage) bool { return !af.keeps(m) })
+	// Woken too: a hook acknowledges what it proves woken, never a reply for
+	// another (live) subagent.
+	woken = slices.DeleteFunc(woken, func(m UnreadMessage) bool { return !af.keeps(m) })
 	for i := range all {
 		all[i].Cursor = fmt.Sprintf("%020d-%s", all[i].ReceivedAt.UnixNano(), all[i].ID)
 	}

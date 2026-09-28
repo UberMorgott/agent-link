@@ -318,6 +318,14 @@ func (h *hookSession) forMe(page node.UnreadPage) node.UnreadPage {
 	}
 	page.Messages = kept
 	page.Total -= n - len(kept)
+	// A woken message is acknowledged once proven (provenWoken): never one
+	// for another subagent, or a live one, even from an older node.
+	page.Woken = slices.DeleteFunc(slices.Clone(page.Woken), func(m node.UnreadMessage) bool {
+		if h.agent != "" {
+			return m.ForAgent != h.agent
+		}
+		return m.ForAgent != "" && h.st != nil && h.isLive(m.ForAgent)
+	})
 	return page
 }
 
