@@ -141,7 +141,32 @@ func (a *App) newNodeOf(pid string, cfg config.Config, key []byte) (*node.Node, 
 	n.SetChatColor(a.s.ChatColor)
 	n.SetDisplay(a.s.Nickname, a.s.NicknameAliases)
 	n.SetAutonomyPauseHook(func(reason string) { go a.autonomyPaused(pid, reason) })
+	n.SetSessionHook(func(sid string, live bool) { go a.sessionChanged(sid, live) })
 	return n, nil
+}
+
+// sessionChanged reconciles the replies of session sid across the contexts:
+// a session registered in one (a network project) gets replies in others too
+// (a local seat's reply in the folder's local chat, sessionContexts) without
+// being registered there. Gone (ended or expired) and live in no context,
+// its replies in every context need a person (OrphanReplies); live again, it
+// takes them back everywhere (ReclaimReplies).
+func (a *App) sessionChanged(sid string, live bool) {
+	ctxs := a.routeContexts()
+	if live {
+		for _, c := range ctxs {
+			c.n.ReclaimReplies(sid)
+		}
+		return
+	}
+	for _, c := range ctxs {
+		if _, ok := c.n.SessionLive(sid); ok {
+			return
+		}
+	}
+	for _, c := range ctxs {
+		c.n.OrphanReplies(sid)
+	}
 }
 
 // newLegacyContext opens the legacy network's node and worker (not running yet).

@@ -296,6 +296,8 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 		}
 		s = &Session{SessionID: req.SessionID, RegisteredAt: now}
 		r.sessions[req.SessionID] = s
+		// Back before the sweep: not gone any more.
+		r.gone = slices.DeleteFunc(r.gone, func(id string) bool { return id == req.SessionID })
 	}
 	seen := s.LastSeen // before this registration
 	s.Provider, s.Folder, s.Area, s.Wake, s.TTLSec, s.LastSeen = req.Provider, filepath.Clean(req.Folder), area, req.Wake, ttl, now
@@ -344,12 +346,7 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 		return Session{}, err
 	}
 	if back {
-		// A session that returns (resumed) takes back its orphaned replies.
-		if ids, err := n.chats.clearOrphaned(req.SessionID); err != nil {
-			n.log.Warn("clear orphaned replies", "session", req.SessionID, "err", err)
-		} else if len(ids) > 0 {
-			n.changed("messages")
-		}
+		n.sessionChanged(req.SessionID, true)
 	}
 	if fresh {
 		n.presenceChanged()
@@ -374,15 +371,56 @@ func (n *Node) EndSession(id string) error {
 	if !ok {
 		return fmt.Errorf("%w %s", ErrUnknownSession, id)
 	}
-	n.reportOrphaned(id)
+	n.sessionChanged(id, false)
 	n.presenceChanged()
 	n.changed("sessions")
 	return err
 }
 
+// sessionChanged hands a session that ended or expired (live false), or
+// registered anew (live true), to the session hook, else handles its
+// orphaned replies here (OrphanReplies, ReclaimReplies).
+func (n *Node) sessionChanged(sid string, live bool) {
+	switch {
+	case n.onSession != nil:
+		n.onSession(sid, live)
+	case live:
+		n.ReclaimReplies(sid)
+	default:
+		n.OrphanReplies(sid)
+	}
+}
+
+// SessionLive returns live session sid registered here.
+func (n *Node) SessionLive(sid string) (Session, bool) {
+	r := n.sess
+	now := time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s := r.sessions[sid]; s != nil && s.live(now) {
+		return *s, true
+	}
+	return Session{}, false
+}
+
+// ReclaimReplies gives session sid, live again (resumed), back its orphaned
+// replies: they are its own, no longer waiting for a person.
+func (n *Node) ReclaimReplies(sid string) {
+	r := n.sess
+	r.claimMu.Lock()
+	ids, err := n.chats.clearOrphaned(sid)
+	r.claimMu.Unlock()
+	if err != nil {
+		n.log.Warn("clear orphaned replies", "session", sid, "err", err)
+	}
+	if len(ids) > 0 {
+		n.changed("messages")
+	}
+}
+
 // expireSessions handles the sessions that went without SessionEnd: their TTL
 // passed with no heartbeat (saveLocked drops them, also after a restart).
-// Their orphaned replies are reported like at SessionEnd (reportOrphaned);
+// Their orphaned replies are reported like at SessionEnd (OrphanReplies);
 // their leases end in leaseSweep.
 func (n *Node) expireSessions(now time.Time) {
 	r := n.sess
@@ -395,12 +433,13 @@ func (n *Node) expireSessions(now time.Time) {
 			break
 		}
 	}
-	gone := r.gone
+	// One registered again since it was dropped is not gone.
+	gone := slices.DeleteFunc(r.gone, func(id string) bool { s := r.sessions[id]; return s != nil && s.live(now) })
 	r.gone = nil
 	r.mu.Unlock()
 	for _, id := range gone {
 		n.log.Info("session expired without SessionEnd", "session", id)
-		n.reportOrphaned(id)
+		n.sessionChanged(id, false)
 	}
 	if len(gone) > 0 {
 		n.presenceChanged()
@@ -408,69 +447,109 @@ func (n *Node) expireSessions(now time.Time) {
 	}
 }
 
-// reportOrphaned marks the unread replies that wait for session id, which
+// OrphanReplies marks the unread replies that wait for session sid, which
 // ended or expired, as needing a person (chatRecord.Orphaned: the app, the
 // unread API and the chat list show it) and tells their authors
 // (AttemptNeedsHuman; a peer's, this node's seats have none to tell). No
 // other session takes them by itself (routeOf): the owner reads them or hands
-// them to a live session (Reassign).
-func (n *Node) reportOrphaned(id string) {
+// them to a live session (Reassign). Nothing happens while sid is live here.
+// It runs under claimMu, like Reassign: a reply handed over meanwhile is not
+// marked, and only the replies it marks are reported.
+func (n *Node) OrphanReplies(sid string) {
+	r := n.sess
+	r.claimMu.Lock()
+	if r.liveIDs(time.Now())[sid] {
+		r.claimMu.Unlock()
+		return
+	}
 	var ids []string
 	for _, u := range n.chats.unread() {
-		if u.rec.Message.Kind != "" {
-			continue
-		}
-		to := assignedSession(u.rec)
-		if to == "" {
-			to = n.originSession(u.rec.Message)
-		}
-		if to == id {
+		if u.rec.Message.Kind == "" && n.replyTarget(u.rec) == sid {
 			ids = append(ids, u.rec.Message.ID)
 		}
 	}
-	if len(ids) == 0 {
+	marked, err := n.chats.markOrphaned(ids, sid)
+	r.claimMu.Unlock()
+	if err != nil {
+		n.log.Warn("mark orphaned replies", "session", sid, "err", err)
+	}
+	if len(marked) == 0 {
 		return
 	}
-	marked, err := n.chats.markOrphaned(ids, id)
-	if err != nil {
-		n.log.Warn("mark orphaned replies", "session", id, "err", err)
-	}
-	n.log.Warn("replies wait for a session that is gone; a person decides", "session", id, "messages", len(ids))
-	n.report(ids, AttemptNeedsHuman)
-	if len(marked) > 0 {
-		n.changed("messages")
-	}
+	n.log.Warn("replies wait for a session that is gone; a person decides", "session", sid, "messages", len(marked))
+	n.report(marked, AttemptNeedsHuman)
+	n.changed("messages")
 }
 
+// replyTarget is the session unread message rec waits for, live or not: the
+// one it was reassigned to, else the one assigned to answer it, else the one
+// that wrote the message it replies to; "" for none in particular.
+func (n *Node) replyTarget(rec chatRecord) string {
+	if rec.ReassignedTo != "" {
+		return rec.ReassignedTo
+	}
+	if s := assignedSession(rec); s != "" {
+		return s
+	}
+	return n.originSession(rec.Message)
+}
+
+// ErrNotOrphaned: Reassign without Force of a message that does not need a
+// person (its session lives): it would take a live session's reply away.
+var ErrNotOrphaned = errors.New("message does not need a person (its session is live); pass force to move it anyway")
+
 // ReassignRequest is the body of POST /reassign: hand unread message ID to
-// live session SessionID.
+// live session SessionID. Without Force only a message that needs a person
+// (ChatMessage.NeedsHuman) moves.
 type ReassignRequest struct {
 	ID        string `json:"id"`
 	SessionID string `json:"session_id"`
+	Force     bool   `json:"force,omitempty"`
 }
 
-// Reassign hands unread chat message req.ID (typically a reply orphaned by
-// its session's end, ChatMessage.NeedsHuman) to live session req.SessionID:
-// it is assigned to it (routeOf), no other session's claim holds it, its
-// lease starts over, and the session's hooks or a wake deliver it; its Claim
-// and Ack go by (project, id, session) as for any message. Only the owner or
-// an agent asking explicitly moves a reply: nothing reroutes one by itself.
+// Reassign is ReassignTo for req.SessionID, a live session of this node.
 func (n *Node) Reassign(req ReassignRequest) (ChatMessage, error) {
-	switch {
-	case !validID(req.ID):
-		return ChatMessage{}, fmt.Errorf("%w: invalid id", ErrBadRequest)
-	case !validSessionID(req.SessionID):
+	if !validSessionID(req.SessionID) {
 		return ChatMessage{}, fmt.Errorf("%w: invalid session_id", ErrBadRequest)
+	}
+	s, ok := n.SessionLive(req.SessionID)
+	if !ok {
+		return ChatMessage{}, fmt.Errorf("%w %s", ErrUnknownSession, req.SessionID)
+	}
+	return n.ReassignTo(req.ID, s, req.Force)
+}
+
+// ReassignTo hands unread chat message id (a reply orphaned by its session's
+// end, ChatMessage.NeedsHuman; any unread one with force) to live session
+// target, which the caller found live here or in another context of this
+// process. Its folder must read the message's area (unreadFor), else the
+// message would never reach it (ErrBadRequest). The message then waits for
+// that session alone (routeOf, like a reply for its asker), no other claim
+// holds it, its lease starts over, and the session's hooks or a wake deliver
+// it; its Claim and Ack go by (project, id, session) as for any message.
+// Only the owner or an agent asking explicitly moves a reply: nothing
+// reroutes one by itself.
+func (n *Node) ReassignTo(id string, target Session, force bool) (ChatMessage, error) {
+	switch {
+	case !validID(id):
+		return ChatMessage{}, fmt.Errorf("%w: invalid id", ErrBadRequest)
+	case !validSessionID(target.SessionID):
+		return ChatMessage{}, fmt.Errorf("%w: invalid session_id", ErrBadRequest)
+	}
+	rec, ok := n.chats.message(id)
+	if !ok {
+		return ChatMessage{}, fmt.Errorf("%w %s", ErrUnknownMessage, id)
+	}
+	c, _ := n.chats.get(rec.Message.ChatID)
+	if area, ok := n.FolderArea(target.Folder); !ok || area != n.localArea(c.Area) {
+		return ChatMessage{}, fmt.Errorf("%w: session %s works in %s, which does not read the chat of message %s",
+			ErrBadRequest, target.SessionID, target.Folder, id)
 	}
 	r := n.sess
 	r.claimMu.Lock()
-	if !r.liveIDs(time.Now())[req.SessionID] {
-		r.claimMu.Unlock()
-		return ChatMessage{}, fmt.Errorf("%w %s", ErrUnknownSession, req.SessionID)
-	}
-	rec, err := n.chats.reassign(req.ID, "session:"+req.SessionID)
+	rec, err := n.chats.reassign(id, target.SessionID, force)
 	if err == nil {
-		delete(r.claims, req.ID) // the old route's claim or wake no longer holds it
+		delete(r.claims, id) // the old route's claim or wake no longer holds it
 	}
 	r.claimMu.Unlock()
 	if err != nil {
@@ -478,11 +557,10 @@ func (n *Node) Reassign(req ReassignRequest) (ChatMessage, error) {
 	}
 	// The owner decided: the message's lease (failed, or passed over for the
 	// gone session) starts over for its new session.
-	if err := n.leases.forget(req.ID); err != nil {
+	if err := n.leases.forget(id); err != nil {
 		n.log.Warn("save leases", "err", err)
 	}
-	c, _ := n.chats.get(rec.Message.ChatID)
-	n.log.Info("message reassigned", "id", req.ID, "session", req.SessionID)
+	n.log.Info("message reassigned", "id", id, "session", target.SessionID, "force", force)
 	n.changed("messages")
 	n.changed("leases")
 	return n.chatMessage(c, rec), nil

@@ -17,12 +17,13 @@ import (
 
 // fakeAPI records the requests of one CLI command and answers them.
 type fakeAPI struct {
-	t       *testing.T
-	cfg     string
-	api     string // host:port of the fake API
-	reqs    []string
-	send    node.SendRequest
-	discuss map[string]string
+	t        *testing.T
+	cfg      string
+	api      string // host:port of the fake API
+	reqs     []string
+	send     node.SendRequest
+	reassign node.ReassignRequest
+	discuss  map[string]string
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -62,6 +63,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		case r.URL.Path == "/reassign":
 			var req node.ReassignRequest
 			_ = json.NewDecoder(r.Body).Decode(&req)
+			f.reassign = req
 			_ = json.NewEncoder(w).Encode(node.ChatMessage{Assigned: "session:" + req.SessionID, ID: req.ID})
 		case strings.HasSuffix(r.URL.Path, "/ack"):
 			_ = json.NewEncoder(w).Encode([]node.AckResult{{ID: "m1", Found: true}, {ID: "m2", Found: true}})
@@ -174,11 +176,11 @@ func TestChatCommands(t *testing.T) {
 // chat reassign hands one unread message to a live session in its project.
 func TestChatReassign(t *testing.T) {
 	f := newFakeAPI(t)
-	out := f.run("chat", "reassign", "--id", "m9", "--session", "s2", "--project", "P1")
+	out := f.run("chat", "reassign", "--id", "m9", "--session", "s2", "--force", "--project", "P1")
 	if !strings.Contains(out, `"assigned":"session:s2"`) || !strings.Contains(out, `"id":"m9"`) {
 		t.Fatalf("chat reassign printed %q", out)
 	}
-	if len(f.reqs) != 1 || f.reqs[0] != "POST /reassign?project=P1" {
+	if len(f.reqs) != 1 || f.reqs[0] != "POST /reassign?project=P1" || !f.reassign.Force {
 		t.Fatalf("requests %q", f.reqs)
 	}
 	var stdout, stderr bytes.Buffer

@@ -58,6 +58,15 @@ func TestOrphanedSeatReplyNeedsHumanAndReassign(t *testing.T) {
 	if m := chatMsg(t, a, chat.ID, r.ID); !m.Unread || m.NeedsHuman {
 		t.Fatalf("seat reply before the end: %+v", m)
 	}
+	// A live session's reply moves only by force; the orphan sweep of a live
+	// session marks nothing.
+	if _, err := a.Reassign(ReassignRequest{ID: r.ID, SessionID: "s-other"}); !errors.Is(err, ErrNotOrphaned) {
+		t.Fatalf("reassign of a live session's reply without force: %v", err)
+	}
+	a.OrphanReplies("s-owner")
+	if m := chatMsg(t, a, chat.ID, r.ID); m.NeedsHuman {
+		t.Fatalf("orphaned while its session lives: %+v", m)
+	}
 	if err := a.EndSession("s-owner"); err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +94,10 @@ func TestOrphanedSeatReplyNeedsHumanAndReassign(t *testing.T) {
 	if _, err := a.Reassign(ReassignRequest{ID: newID(), SessionID: "s-other"}); !errors.Is(err, ErrUnknownMessage) {
 		t.Fatalf("reassign of an unknown message: %v", err)
 	}
+	// A session whose folder does not read the chat would never get it.
+	if _, err := a.ReassignTo(r.ID, Session{SessionID: "s-far", Folder: t.TempDir()}, false); !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("reassign to a session of another folder: %v", err)
+	}
 	m, err := a.Reassign(ReassignRequest{ID: r.ID, SessionID: "s-other"})
 	if err != nil || m.NeedsHuman || m.Assigned != "session:s-other" {
 		t.Fatalf("reassign: %+v, %v", m, err)
@@ -94,6 +107,11 @@ func TestOrphanedSeatReplyNeedsHumanAndReassign(t *testing.T) {
 	}
 	if p, _ := a.UnreadFor(dir, "s-other", "", 10); !slices.ContainsFunc(p.Messages, func(m UnreadMessage) bool { return m.ID == r.ID }) {
 		t.Fatalf("reassigned reply not for its new session: %+v", p.Messages)
+	}
+	// A late sweep for the old session does not take it back from the new one.
+	a.OrphanReplies("s-owner")
+	if m := chatMsg(t, a, chat.ID, r.ID); m.NeedsHuman {
+		t.Fatalf("reassigned reply orphaned again: %+v", m)
 	}
 	if g, _ := a.Claim(ClaimRequest{IDs: []string{r.ID}, SessionID: "s-other"}); !slices.Equal(g, []string{r.ID}) {
 		t.Fatalf("new session's claim: %v", g)
@@ -155,5 +173,56 @@ func TestExpiredSessionOrphansReplies(t *testing.T) {
 	}
 	if m := chatMsg(t, a, q.ChatID, r.ID); m.NeedsHuman || !m.Unread {
 		t.Fatalf("after the session came back: %+v", m)
+	}
+	// Its live reply moves to another session only by force.
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-two", Provider: ProviderClaude, Folder: dir}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Reassign(ReassignRequest{ID: r.ID, SessionID: "s-two"}); !errors.Is(err, ErrNotOrphaned) {
+		t.Fatalf("reassign without force: %v", err)
+	}
+	if m, err := a.Reassign(ReassignRequest{ID: r.ID, SessionID: "s-two", Force: true}); err != nil || m.Assigned != "session:s-two" {
+		t.Fatalf("reassign with force: %+v, %v", m, err)
+	}
+	if p, _ := a.UnreadFor(dir, "s-ttl", "", 10); slices.ContainsFunc(p.Messages, func(m UnreadMessage) bool { return m.ID == r.ID }) {
+		t.Fatalf("forced reply still for its old session: %+v", p.Messages)
+	}
+}
+
+// An expired session another session's heartbeat dropped (gone) that
+// registers again before the sweep keeps its replies: the sweep skips it.
+func TestExpiredSessionBackBeforeSweep(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	dir := t.TempDir()
+	for _, id := range []string{"s-a", "s-b"} {
+		if _, err := a.RegisterSession(SessionRequest{SessionID: id, Provider: ProviderClaude, Folder: dir}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q, err := a.SendRequest(SendRequest{To: "b", Body: "question", AuthorKind: AuthorAgent, SessionID: "s-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the request", func() bool { p, _ := b.Unread("", "", 10); return p.Total == 1 })
+	r, err := b.SendRequest(SendRequest{ChatID: q.ChatID, ReplyTo: q.ID, Body: "answer", AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the reply", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 1 })
+	a.sess.mu.Lock()
+	a.sess.sessions["s-a"].LastSeen = time.Now().Add(-SessionTTL - time.Minute)
+	a.sess.mu.Unlock()
+	// s-b's heartbeat drops the expired s-a; s-a registers again at once.
+	for _, id := range []string{"s-b", "s-a"} {
+		if _, err := a.RegisterSession(SessionRequest{SessionID: id, Provider: ProviderClaude, Folder: dir}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.expireSessions(time.Now())
+	if m := chatMsg(t, a, q.ChatID, r.ID); m.NeedsHuman {
+		t.Fatalf("a returned session's reply orphaned: %+v", m)
+	}
+	if slices.Contains(attemptsOf(b, r), AttemptNeedsHuman) {
+		t.Fatal("author told needs_human for a returned session")
 	}
 }

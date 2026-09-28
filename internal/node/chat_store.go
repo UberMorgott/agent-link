@@ -76,10 +76,14 @@ type chatRecord struct {
 	Agent     string `json:"agent,omitempty"`
 	AgentType string `json:"agent_type,omitempty"`
 	// Orphaned is the session this unread message waited for when it ended or
-	// expired (reportOrphaned): it needs a person, who reads it or hands it to
+	// expired (OrphanReplies): it needs a person, who reads it or hands it to
 	// a live session (Reassign). Local only, never sent.
 	Orphaned   string    `json:"orphaned,omitempty"`
 	OrphanedAt time.Time `json:"orphaned_at,omitzero"`
+	// ReassignedTo is the session a person or agent handed this unread
+	// message to (Reassign): it waits for that session alone, live or not,
+	// like a reply for its asker (routeOf). Local only, never sent.
+	ReassignedTo string `json:"reassigned_to,omitempty"`
 	// Receipts: on this node's own messages, the latest receipt per recipient.
 	Receipts map[string]Receipt `json:"receipts,omitempty"`
 	// Attempts: on this node's own messages, the latest delivery attempt
@@ -451,10 +455,11 @@ func (cs *chatStore) clearOrphaned(sid string) ([]string, error) {
 	return ids, nil
 }
 
-// reassign assigns unread message id to owner ("session:<id>") in place of
-// whoever it was for, and drops its Orphaned mark. It fails for a message
-// that is not unread (ErrBadRequest) or not known (ErrUnknownMessage).
-func (cs *chatStore) reassign(id, owner string) (chatRecord, error) {
+// reassign hands unread message id to session sid in place of whoever it was
+// for (ReassignedTo, Assigned "session:<sid>") and drops its Orphaned mark.
+// Without force only an orphaned message moves (ErrNotOrphaned). It fails for
+// a message that is not unread (ErrBadRequest) or not known (ErrUnknownMessage).
+func (cs *chatStore) reassign(id, sid string, force bool) (chatRecord, error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	if cs.chats[cs.byMsg[id]] == nil {
@@ -462,14 +467,15 @@ func (cs *chatStore) reassign(id, owner string) (chatRecord, error) {
 	}
 	var bad error
 	r, _, err := cs.updateLocked(id, func(r *chatRecord) bool {
-		if r.Message.Kind != "" || !r.Unread || !r.ReadAt.IsZero() {
+		switch {
+		case r.Message.Kind != "" || !r.Unread || !r.ReadAt.IsZero():
 			bad = fmt.Errorf("%w: message %s is not unread", ErrBadRequest, id)
 			return false
-		}
-		if r.Assigned == owner && r.Orphaned == "" {
+		case r.Orphaned == "" && !force:
+			bad = fmt.Errorf("%w: %s", ErrNotOrphaned, id)
 			return false
 		}
-		r.Assigned, r.Orphaned, r.OrphanedAt = owner, "", time.Time{}
+		r.Assigned, r.ReassignedTo, r.Orphaned, r.OrphanedAt = "session:"+sid, sid, "", time.Time{}
 		return true
 	})
 	if bad != nil {

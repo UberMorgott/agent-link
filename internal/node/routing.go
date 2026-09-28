@@ -20,7 +20,7 @@ import (
 //   - else, for a reply, the session that wrote the message it answers
 //     (originSession), live or not: while that session is gone the reply
 //     waits unread for it (the owner sees it; at its SessionEnd the author
-//     hears AttemptNeedsHuman, reportOrphaned) instead of reaching another;
+//     hears AttemptNeedsHuman, OrphanReplies) instead of reaching another;
 //   - else the chat's session (chat affinity): the one behind the chat's
 //     newest message a session of this node wrote (chatRecord.Session,
 //     recorded by agentlink send inside the session) or was assigned. A
@@ -200,6 +200,9 @@ func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string 
 	}
 	if rec == nil {
 		return ""
+	}
+	if rec.ReassignedTo != "" {
+		return rec.ReassignedTo // handed to it (Reassign): it waits for it, like a reply for its asker
 	}
 	if s := assignedSession(*rec); live[s] {
 		return s

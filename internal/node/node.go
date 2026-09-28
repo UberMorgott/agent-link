@@ -166,6 +166,10 @@ type Node struct {
 	onInbound    func(Message) error
 	onChange     func(topic string)
 	onLocalReply func(requestID string)
+	// onSession (SetSessionHook) hears a session end or expire (live false)
+	// and one register anew (live true) in place of this node's own orphan
+	// handling: the app reconciles it across its contexts.
+	onSession func(sid string, live bool)
 }
 
 // New opens the node's data directory. log may be nil.
@@ -318,6 +322,12 @@ func (n *Node) SetInboundHook(fn func(Message) error) { n.onInbound = fn }
 // id of the request it answers; a job's own reply to its request is not
 // reported. It must be set before Serve or Run, and fn must not block for long.
 func (n *Node) SetLocalReplyHook(fn func(requestID string)) { n.onLocalReply = fn }
+
+// SetSessionHook makes fn handle a session of this node that ended or expired
+// (live false) or registered anew (live true) instead of the node's own
+// OrphanReplies and ReclaimReplies: a session registered in one context of a
+// process gets replies in the others too. Set it before the node runs.
+func (n *Node) SetSessionHook(fn func(sid string, live bool)) { n.onSession = fn }
 
 // SetChangeHook registers a nonblocking observer for local state changes. The
 // hook is invoked after persistence and outside Node locks.

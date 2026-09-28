@@ -262,17 +262,7 @@ func (a *App) controlAPI() http.Handler {
 		}
 	})
 	mux.HandleFunc("POST /ack", a.controlAck)
-	// POST /reassign hands an unread message to a live session: the context
-	// of the message (or --project) decides, like a reply's send.
-	mux.HandleFunc("POST /reassign", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Project string `json:"project"`
-			ID      string `json:"id"`
-		}
-		if peekJSON(w, r, &body) {
-			a.forward(w, r, selector{project: pick(r, body.Project), ids: []string{body.ID}}, false)
-		}
-	})
+	mux.HandleFunc("POST /reassign", a.controlReassign)
 	byChat := func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		ctxs := a.routeContexts()
@@ -309,6 +299,53 @@ func (a *App) controlAPI() http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// controlReassign serves POST /reassign: it hands an unread message (in the
+// context of the message, or --project) to a session live in any context,
+// like a network session that takes its local seat's replies there
+// (sessionContexts). Without force only a message that needs a person moves.
+func (a *App) controlReassign(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Project string `json:"project"`
+		node.ReassignRequest
+	}
+	if !peekJSON(w, r, &body) {
+		return
+	}
+	ctxs := a.routeContexts()
+	c, rerr := route(ctxs, selector{project: pick(r, body.Project), ids: []string{body.ID}})
+	if rerr != nil {
+		rerr.write(w)
+		return
+	}
+	if !c.n.OwnsMessage(body.ID) {
+		http.Error(w, node.ErrUnknownMessage.Error()+" "+body.ID, http.StatusNotFound)
+		return
+	}
+	var target node.Session
+	found := false
+	for _, x := range ctxs {
+		if s, ok := x.n.SessionLive(body.SessionID); ok {
+			target, found = s, true
+			break
+		}
+	}
+	if !found {
+		http.Error(w, node.ErrUnknownSession.Error()+" "+body.SessionID, http.StatusNotFound)
+		return
+	}
+	m, err := c.n.ReassignTo(body.ID, target, body.Force)
+	switch {
+	case err == nil:
+		writeJSON(w, m)
+	case errors.Is(err, node.ErrUnknownMessage):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, node.ErrNotOrphaned):
+		http.Error(w, err.Error(), http.StatusConflict)
+	default:
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
 }
 
 // pick is the selector of the query, else of the JSON body.

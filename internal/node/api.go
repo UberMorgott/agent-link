@@ -477,7 +477,7 @@ func errorCode(err error) int {
 	switch {
 	case errors.Is(err, ErrUnknownChat), errors.Is(err, ErrUnknownSession), errors.Is(err, ErrUnknownMessage):
 		return http.StatusNotFound
-	case errors.Is(err, ErrChatClosed), errors.Is(err, ErrLegacyChat):
+	case errors.Is(err, ErrChatClosed), errors.Is(err, ErrLegacyChat), errors.Is(err, ErrNotOrphaned):
 		return http.StatusConflict
 	}
 	return http.StatusBadRequest

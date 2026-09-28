@@ -52,7 +52,7 @@ const usage = `usage:
   agentlink chat history --config <path> --chat <id> [--limit 50] [--before <seq>] [--after <seq>] [--project <id>]   (one JSON line per message, oldest first)
   agentlink chat unread  --config <path> [--folder <path>] [--limit 50] [--after <cursor>] [--project <id>]   (unread messages for this node, oldest first, one JSON line each; a last line {"next":...} when more follow)
   agentlink chat ack     --config <path> [--chat <id>] --ids <id,...> [--session <id>] [--project <id>]   (mark read: the authors get read receipts)
-  agentlink chat reassign --config <path> --id <id> --session <id> [--project <id>]   (hand an unread reply, e.g. one whose session ended (needs_human), to a live session)
+  agentlink chat reassign --config <path> --id <id> --session <id> [--force] [--project <id>]   (hand a reply whose session ended (needs_human) to a live session; --force also moves one a live session waits for)
   agentlink close   (no longer here: only people close chats, in the app)
   agentlink inbox --config <path> [--limit 50] [--project <id>]
   agentlink members --config <path> [--project <id>]   (one JSON line per member, this node first)
@@ -208,7 +208,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "chat reassign":
 		id := fs.String("id", "", "id of the unread message to hand over")
 		session := fs.String("session", "", "id of the live session that takes it")
-		cmd = func(c config.Config) (int, error) { return 0, chatReassign(c, *id, *session, proj(), stdout) }
+		force := fs.Bool("force", false, "also move a message that does not need a person (a live session waits for it)")
+		cmd = func(c config.Config) (int, error) { return 0, chatReassign(c, *id, *session, *force, proj(), stdout) }
 	case "chat new":
 		with := fs.String("with", "", "the other participants, comma-separated")
 		area := fs.String("area", "", "area (project) the participants' agents work in")
@@ -762,13 +763,13 @@ func ack(cfg config.Config, chat string, ids []string, session, project string) 
 
 // chatReassign hands unread message id to live session session (POST
 // /reassign) and prints the message as it is now, one JSON line.
-func chatReassign(cfg config.Config, id, session, project string, stdout io.Writer) error {
+func chatReassign(cfg config.Config, id, session string, force bool, project string, stdout io.Writer) error {
 	id, session = strings.TrimSpace(id), strings.TrimSpace(session)
 	if id == "" || session == "" {
 		return errors.New("--id and --session are required")
 	}
 	var m node.ChatMessage
-	if err := apiJSON(http.MethodPost, apiURL(cfg, "/reassign", withProject(nil, project)), node.ReassignRequest{ID: id, SessionID: session}, &m); err != nil {
+	if err := apiJSON(http.MethodPost, apiURL(cfg, "/reassign", withProject(nil, project)), node.ReassignRequest{ID: id, SessionID: session, Force: force}, &m); err != nil {
 		return err
 	}
 	return encodeLines(stdout, []node.ChatMessage{m})

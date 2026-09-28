@@ -99,7 +99,7 @@ agentlink send         --reply-to <id> --body "<answer>"       # into the conver
 agentlink send         --chat <id> --attach shot.png [--attach log.txt] [--body "<text>"]   # with files (see Attachments below)
 agentlink chat unread  [--folder <path>]                       # what this node has not read yet, oldest first
 agentlink chat ack     --ids <id,...> [--session <id>]         # mark read: the authors see «прочитано»
-agentlink chat reassign --id <id> --session <id>               # hand an unread reply (needs_human) to a live session
+agentlink chat reassign --id <id> --session <id> [--force]     # hand a reply that needs a person to a live session
 agentlink chat history --chat <id> [--limit 50] [--before <seq>] [--after <seq>]
 agentlink chat list    [--archive] [--legacy]
 agentlink chat new     --with nikita[,olga] [--area dev]       # prints the chat id (the open one; created when missing)
@@ -426,11 +426,15 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   local seat's reply) are never rerouted by themselves: they are marked `needs_human` for the
   owner (the message's `needs_human` and `orphaned_session`, the chat's `needs_human` count in
   the chat list, the unread API, a «нужен человек» badge in the app) and a peer author sees
-  «needs a person». The same session registering again takes them back. The owner reads them,
-  or hands one to a live session: `agentlink chat reassign --id <msg> --session <sid>
-  [--project <id>]` (control API `POST /reassign {"id", "session_id", "project"?}`); that
-  session's claim and ack then take it like any message of its own. A temporary chat is not
-  removed while such a reply is unread.
+  «needs a person». This holds in every project of the app: a session registered in the
+  network project that asked the folder's local seat gets its seat reply marked too. The same
+  session registering again takes them back. The owner reads them, or hands one to a session
+  live in any project of the app whose folder reads that chat: `agentlink chat reassign --id
+  <msg> --session <sid> [--project <id>]` (control API `POST /reassign {"id", "session_id",
+  "project"?, "force"?}`); that session's claim and ack then take it like any message of its
+  own. Without `--force` only a message that needs a person moves (409 otherwise): a reply a
+  live session waits for is taken from it only on purpose. A temporary chat is not removed
+  while such a reply is unread.
 - **Opening a session (project autonomy, off by default).** When a message asks this member and
   no session at all (in a turn or idle) is live in the project's folder, the node opens a new
   one there, only while the project's autonomy (project menu «Автономия агентов…», API
