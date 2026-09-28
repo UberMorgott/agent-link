@@ -13,8 +13,8 @@
 # checks and installs 0.0.2 through the web UI; the old app quits the normal
 # way and the new one starts from the same path, reports 0.0.2 and reattaches
 # to the agent, which was never restarted: the job completes once. The one
-# executable is replaced, a host-owned MCP helper retires, the parked old file
-# is swept, the CLI then reports
+# executable is replaced, a host-owned MCP helper keeps answering until its
+# session ends, the parked old file is swept, the CLI then reports
 # up to date, a release whose file does not match its digest is refused, and
 # with the API rate-limited a check still works while an install is refused.
 [CmdletBinding()]
@@ -174,7 +174,16 @@ try {
     Write-Host "old node-b exited with code $($b.proc.ExitCode)"
     Connect-Node $b
     $st = Wait-Until { $s = Invoke-Ui $b GET update; if ($s.current -eq '0.0.2') { $s } } 'node-b answering as 0.0.2'
-    Wait-Until { $mcp.HasExited } 'old MCP helper retiring after the update' | Out-Null
+    # The old MCP helper keeps serving (its client cannot restart it); when its
+    # session ends, the parked executable it ran from is free to sweep.
+    $mcp.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"projects","arguments":{}}}')
+    $mcp.StandardInput.Flush()
+    $callTask = $mcp.StandardOutput.ReadLineAsync()
+    if (-not $callTask.Wait(5000)) { throw 'old MCP helper did not answer after the update' }
+    $call = $callTask.Result | ConvertFrom-Json
+    if ($call.id -ne 2 -or -not $call.result -or $call.result.PSObject.Properties['isError']?.Value) { throw "old MCP helper after the update: $($callTask.Result)" }
+    $mcp.StandardInput.Close()
+    Wait-Until { $mcp.HasExited } 'old MCP helper ending with its session' | Out-Null
     $trays = Get-Trays
     if ($trays.Count -ne 1) { throw "expected one node-b process after the update, found $($trays.Count)" }
     $b.proc = Get-Process -Id $trays[0].ProcessId

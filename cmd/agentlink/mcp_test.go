@@ -1,19 +1,19 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,26 +40,7 @@ func mcpClient(t *testing.T, api string) *mcp.ClientSession {
 	return cs
 }
 
-func TestMCPRetiresAfterExecutableReplacement(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	var replaced atomic.Bool
-	updated := make(chan struct{}, 1)
-	go watchMCPReplacement(ctx, replaced.Load, 10*time.Millisecond, updated)
-	select {
-	case <-updated:
-		t.Fatal("MCP retired before executable replacement")
-	case <-time.After(30 * time.Millisecond):
-	}
-	replaced.Store(true)
-	select {
-	case <-updated:
-	case <-time.After(time.Second):
-		t.Fatal("MCP did not retire after executable replacement")
-	}
-}
-
-// An open stdin pipe must not keep a retired MCP server in Server.Run. On
+// An open stdin pipe must not keep a closed MCP server in Server.Run. On
 // Windows, closing os.Stdin itself can block behind the SDK's pending read.
 func TestMCPTransportClosesWithOpenStdin(t *testing.T) {
 	in, keepOpen, err := os.Pipe()
@@ -76,7 +57,7 @@ func TestMCPTransportClosesWithOpenStdin(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v0"}, nil)
-	ss, err := server.Connect(ctx, mcpStdioTransport(in, output, nil), nil)
+	ss, err := server.Connect(ctx, mcpStdioTransport(in, output), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,148 +80,56 @@ func TestMCPTransportClosesWithOpenStdin(t *testing.T) {
 	}
 }
 
-func TestMCPInitializeResponseClearsPendingID(t *testing.T) {
-	activity := newMCPLifecycle()
-	in, send := io.Pipe()
-	receive, out := io.Pipe()
-	t.Cleanup(func() { _ = in.Close(); _ = send.Close(); _ = out.Close(); _ = receive.Close() })
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	ss, err := newMCPServer(config.Config{}).Connect(ctx, mcpStdioTransport(in, out, activity), nil)
-	if err != nil {
-		t.Fatal(err)
+// mcpHelperEnv makes this test binary act as `agentlink mcp` for
+// TestMCPServesAfterExecutableReplacement.
+const mcpHelperEnv = "AGENTLINK_TEST_MCP_HELPER"
+
+func TestMCPHelper(t *testing.T) {
+	if os.Getenv(mcpHelperEnv) != "1" {
+		t.Skip("run by TestMCPServesAfterExecutableReplacement")
 	}
-	t.Cleanup(func() { _ = ss.Close() })
-	go func() {
-		_, _ = io.WriteString(send, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}`+"\n")
-		_, _ = io.WriteString(send, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
-	}()
-	hello, err := bufio.NewReader(receive).ReadBytes('\n')
-	if err != nil || !bytes.Contains(hello, []byte(`"id":1`)) {
-		t.Fatalf("initialize response: %s, %v", hello, err)
-	}
-	waitFor(t, "initialize response write", func() bool {
-		activity.mu.Lock()
-		defer activity.mu.Unlock()
-		return len(activity.requests) == 0
-	})
+	os.Exit(run([]string{"mcp"}, os.Stdout, os.Stderr))
 }
 
-func TestMCPReplacementWaitsForActiveToolResult(t *testing.T) {
-	activity := newMCPLifecycle()
-	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v0"}, nil)
-	started, release := make(chan struct{}), make(chan struct{})
-	addTool(server, activity, "slow", "Wait until released.", func(mcpNone) (any, error) {
-		close(started)
-		<-release
-		return "finished", nil
-	})
-	var quickCalled atomic.Bool
-	addTool(server, activity, "quick", "Must reject after replacement.", func(mcpNone) (any, error) {
-		quickCalled.Store(true)
-		return "unexpected", nil
-	})
-	writeGate := make(chan struct{})
-	var openWriteGate sync.Once
-	t.Cleanup(func() { openWriteGate.Do(func() { close(writeGate) }) })
-	writing := make(chan struct{})
-	toServerReader, toServerWriter := io.Pipe()
-	toClientReader, toClientWriter := io.Pipe()
-	t.Cleanup(func() {
-		_ = toServerReader.Close()
-		_ = toServerWriter.Close()
-		_ = toClientReader.Close()
-		_ = toClientWriter.Close()
-	})
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	ss, err := server.Connect(ctx, mcpStdioTransport(toServerReader, &gatedMCPToolWriter{Writer: toClientWriter, gate: writeGate, writing: writing}, activity), nil)
+// An update replaces the executable under a running MCP server. The server
+// must keep answering: its client (a Claude session, or a subagent that
+// cannot restart servers at all) would otherwise lose every agentlink tool.
+func TestMCPServesAfterExecutableReplacement(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "[]")
+	}))
+	t.Cleanup(api.Close)
+	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = ss.Close() })
-	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "v0"}, nil).Connect(t.Context(), &mcp.IOTransport{Reader: toClientReader, Writer: toServerWriter}, nil)
+	dir := t.TempDir()
+	exe := filepath.Join(dir, filepath.Base(self))
+	data, err := os.ReadFile(filepath.Clean(self))
+	if err != nil || os.WriteFile(exe, data, 0o700) != nil {
+		t.Fatalf("copy the test binary: %v", err)
+	}
+	cmd := exec.CommandContext(t.Context(), exe, "-test.run=^TestMCPHelper$") //nolint:gosec // G204: the test binary itself
+	cmd.Env = append(os.Environ(), mcpHelperEnv+"=1", envAPI+"="+strings.TrimPrefix(api.URL, "http://"))
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "v0"}, nil).Connect(t.Context(), &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cs.Close() })
-	type result struct {
-		value *mcp.CallToolResult
-		err   error
+	if text, isErr := callTool(t, cs, "projects", nil); isErr {
+		t.Fatalf("before the update: %s", text)
 	}
-	answer := make(chan result, 1)
-	go func() {
-		v, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "slow"})
-		answer <- result{v, err}
-	}()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("tool did not start")
+	// What the self-updater does: park the running file, put a new one in place.
+	if err := os.Rename(exe, exe+".old"); err != nil {
+		t.Fatal(err)
 	}
-	serverDone := make(chan error, 1)
-	go func() { serverDone <- activity.waitForRetirement(ctx) }()
-	waitFor(t, "MCP retirement state", func() bool {
-		activity.mu.Lock()
-		defer activity.mu.Unlock()
-		return activity.retiring
-	})
-	rejected, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "quick"})
-	if err != nil || !rejected.IsError || quickCalled.Load() {
-		t.Fatalf("new tool after replacement: result=%+v err=%v ran=%v", rejected, err, quickCalled.Load())
+	if err := os.WriteFile(exe, []byte("newer build"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	select {
-	case <-serverDone:
-		t.Fatal("MCP retired while a tool call was active")
-	case <-time.After(40 * time.Millisecond):
+	time.Sleep(3 * time.Second) // longer than any replacement check interval
+	if text, isErr := callTool(t, cs, "projects", nil); isErr {
+		t.Fatalf("after the update: %s", text)
 	}
-	close(release)
-	select {
-	case <-writing:
-	case <-time.After(time.Second):
-		t.Fatal("tool response was not written")
-	}
-	select {
-	case <-serverDone:
-		t.Fatal("MCP retired before tool response reached stdout")
-	case <-time.After(40 * time.Millisecond):
-	}
-	openWriteGate.Do(func() { close(writeGate) })
-	select {
-	case got := <-answer:
-		if got.err != nil || got.value == nil || len(got.value.Content) != 1 {
-			t.Fatalf("tool result: value=%+v err=%v", got.value, got.err)
-		}
-		content, ok := got.value.Content[0].(*mcp.TextContent)
-		if !ok || content.Text != `"finished"` {
-			t.Fatalf("tool result: value=%+v err=%v", got.value, got.err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("active tool result was lost")
-	}
-	select {
-	case err := <-serverDone:
-		if err != nil {
-			t.Fatalf("server stopped with %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("MCP remained alive after its active tool finished")
-	}
-}
-
-type gatedMCPToolWriter struct {
-	io.Writer
-	gate    <-chan struct{}
-	writing chan struct{}
-	once    sync.Once
-}
-
-func (w *gatedMCPToolWriter) Write(p []byte) (int, error) {
-	if bytes.Contains(p, []byte("finished")) {
-		w.once.Do(func() { close(w.writing) })
-		<-w.gate
-	}
-	return w.Writer.Write(p)
 }
 
 // callTool calls a tool and returns its text and error flag.
