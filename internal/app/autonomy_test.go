@@ -60,6 +60,57 @@ func TestStopAll(t *testing.T) {
 	}
 }
 
+// A folder bound to a network and a local project runs two contexts: the
+// global stop halts both, and the status and project views report each
+// scope's state.
+func TestStopAllBothScopes(t *testing.T) {
+	h := projectsHarness(t, "alice", "")
+	dir := t.TempDir()
+	var network ProjectView
+	if code, raw := h.api(t, http.MethodPost, "projects", map[string]any{"name": "Shared", "dir": dir}, &network); code != http.StatusOK {
+		t.Fatalf("create: %d %s", code, raw)
+	}
+	local := localProjectForTest(t, h, "Local", dir)
+	scopes := func(st Status) map[string]ContextAutonomy {
+		out := map[string]ContextAutonomy{}
+		for _, c := range st.Autonomy {
+			out[c.Scope] = c
+		}
+		return out
+	}
+	if got := scopes(h.app.Status()); len(got) != 2 || got[settings.ProjectScopeNetwork].Project != network.ID ||
+		got[settings.ProjectScopeLocal].Project != local.ID || got[settings.ProjectScopeLocal].Halted || got[settings.ProjectScopeNetwork].Halted {
+		t.Fatalf("status before the stop: %+v", h.app.Status().Autonomy)
+	}
+	var st Status
+	if code, raw := h.api(t, http.MethodPost, "autonomy/stop", map[string]any{"on": true}, &st); code != http.StatusOK || !st.StopAll {
+		t.Fatalf("stop: %d %s", code, raw)
+	}
+	if got := scopes(st); !got[settings.ProjectScopeLocal].Halted || !got[settings.ProjectScopeNetwork].Halted {
+		t.Fatalf("stop did not halt both scopes: %+v", st.Autonomy)
+	}
+	var list []ProjectView
+	if code, raw := h.api(t, http.MethodGet, "projects", nil, &list); code != http.StatusOK || len(list) != 2 {
+		t.Fatalf("projects: %d %s", code, raw)
+	}
+	for _, v := range list {
+		n := h.app.projects[v.ID].n
+		if !n.Stopped() || !n.AutoHeld(node.Message{}) {
+			t.Fatalf("project %s still works by itself", v.ID)
+		}
+		if v.Autonomy == nil || !v.Autonomy.Halted || v.Autonomy.Stopped {
+			t.Fatalf("view of %s: %+v", v.ID, v.Autonomy)
+		}
+	}
+	st = Status{}
+	if code, raw := h.api(t, http.MethodPost, "autonomy/stop", map[string]any{"on": false}, &st); code != http.StatusOK {
+		t.Fatalf("start: %d %s", code, raw)
+	}
+	if got := scopes(st); got[settings.ProjectScopeLocal].Halted || got[settings.ProjectScopeNetwork].Halted {
+		t.Fatalf("still halted: %+v", st.Autonomy)
+	}
+}
+
 // A project's manual pause persists and combines with the global pause.
 // Human messages remain in the shared chat and wait for the asked seat.
 func TestProjectAgentPausePersistsAndQueues(t *testing.T) {

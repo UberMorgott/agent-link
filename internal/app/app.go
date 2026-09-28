@@ -142,6 +142,9 @@ type Status struct {
 	Warning string `json:"warning,omitempty"`
 	// StopAll: the emergency stop of every project's agents is on (SetStopAll).
 	StopAll bool `json:"stop_all,omitempty"`
+	// Autonomy is the autonomy state of every running context, local and
+	// network scopes alike.
+	Autonomy []ContextAutonomy `json:"autonomy,omitempty"`
 	// ChatColor and Nickname: how this member shows itself (SetProfile); ""
 	// for the color derived from its name and for no nickname.
 	ChatColor string `json:"chat_color,omitempty"`
@@ -232,6 +235,7 @@ func (a *App) Status() Status {
 		Configured: a.configured, Running: a.n != nil || len(a.projects) > 0,
 		Node: a.s.Node, Handler: a.s.Handler,
 		Listen: a.listen, ZeroTier: a.zeroTier, StopAll: a.s.StopAll, ChatColor: a.s.ChatColor, Nickname: a.s.Nickname,
+		Autonomy: a.contextAutonomyLocked(),
 	}
 	for _, p := range a.s.Peers {
 		if st.Peer == "" {
