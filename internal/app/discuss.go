@@ -85,7 +85,7 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	}
 	// Serialize the check and addition across concurrent discuss requests.
 	a.mu.Lock()
-	seat := ""
+	seat, added := "", false
 	for _, s := range c.n.Seats() {
 		if s.Provider == req.Provider {
 			seat = s.ID
@@ -93,13 +93,15 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if seat == "" {
-		added, addErr := c.n.AddSeat(node.SeatRequest{Provider: req.Provider}) //nolint:contextcheck // the seat turn outlives the request and runs under the node's own context
+		// The new seat starts only after the message is queued for it, so its
+		// first turn (with the introduction) carries the message.
+		view, addErr := c.n.AddSeat(node.SeatRequest{Provider: req.Provider, Defer: true}) //nolint:contextcheck // the seat turn outlives the request and runs under the node's own context
 		if addErr != nil {
 			a.mu.Unlock()
 			a.failed(w, "discuss agent", addErr)
 			return
 		}
-		seat = added.ID
+		seat, added = view.ID, true
 	}
 	a.mu.Unlock()
 	// An external interactive session keeps its folder hook in the network
@@ -107,6 +109,11 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	// AgentLink-launched seats use their explicit project selector in hooks.
 	message, err := c.n.SendRequest(node.SendRequest{ChatID: chat.ID, Body: req.Body, Folder: dir,
 		SessionID: req.SessionID, Seat: req.Seat, AskSeats: []string{seat}, AuthorKind: authorKind(req.SessionID, req.Seat)})
+	if added {
+		if _, startErr := c.n.StartSeat(seat, false); startErr != nil { //nolint:contextcheck // the seat turn outlives the request and runs under the node's own context
+			a.log.Warn("start discuss seat", "seat", seat, "err", startErr)
+		}
+	}
 	if err != nil {
 		a.failed(w, "discuss message", err)
 		return

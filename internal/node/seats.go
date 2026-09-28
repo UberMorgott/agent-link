@@ -110,6 +110,9 @@ type SeatRequest struct {
 	Label    string `json:"label,omitempty"`
 	// Open shows the session in the agent's desktop app.
 	Open bool `json:"open,omitempty"`
+	// Defer adds the seat without starting its first turn: the caller queues
+	// a message for it first and then calls StartSeat, so the first turn has it.
+	Defer bool `json:"-"`
 }
 
 type seatStore struct {
@@ -259,7 +262,8 @@ func ProviderName(p string) string {
 	return p
 }
 
-// AddSeat adds a seat of req.Provider and starts its session (StartSeat).
+// AddSeat adds a seat of req.Provider and starts its session (StartSeat)
+// unless req.Defer.
 func (n *Node) AddSeat(req SeatRequest) (SeatView, error) {
 	switch {
 	case n.cfg.Project == "":
@@ -291,6 +295,9 @@ func (n *Node) AddSeat(req SeatRequest) (SeatView, error) {
 	}
 	n.log.Info("seat added", "seat", s.ID, "provider", s.Provider, "label", s.Label)
 	n.changed("seats")
+	if req.Defer {
+		return n.seatView(s.ID)
+	}
 	return n.StartSeat(s.ID, req.Open)
 }
 
@@ -661,6 +668,11 @@ func (n *Node) seatClaim(session, id string, wake bool, token string) (handled, 
 	s := st.bySessionLocked(session)
 	if s == nil || s.Stopped || !slices.ContainsFunc(s.Pending, func(p SeatPending) bool { return p.ID == id }) {
 		return false, false
+	}
+	if st.quiet[s.ID] {
+		// Its setup turn posts nothing (senderAgent): the message waits for
+		// the seat's next turn instead of a hook delivering it now.
+		return true, false
 	}
 	k := seatKey(s.ID, id)
 	if m, ok := st.marks[k]; ok {
@@ -1110,7 +1122,7 @@ func (n *Node) seatIntro(seat Seat, chat string, setup bool) string {
 		"которое просит ответа от вас, или вопрос, без которого эту работу не сделать. Ответ на ваш вопрос придёт сам.",
 		seat.Label, ProviderName(seat.Provider), name, n.cfg.Node, chat, with, chat, chat)
 	if setup {
-		intro += " Сейчас сообщений нет: ничего не отправляйте и ничего не делайте, просто завершите ход."
+		intro += " Сейчас ничего не отправляйте и ничего не делайте, просто завершите ход: сообщения agent-link для вас придут в следующем ходе."
 	}
 	return intro
 }

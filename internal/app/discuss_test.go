@@ -51,6 +51,36 @@ func TestDiscussReusesFolderProjectAndChat(t *testing.T) {
 	}
 }
 
+// A discuss that adds a seat queues its message before the seat's first turn:
+// the introduction turn carries the message and does not tell the agent to
+// end the turn without answering.
+func TestDiscussNewSeatFirstTurnCarriesMessage(t *testing.T) {
+	runner := &seatRunner{}
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = runner })
+	code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
+		"folder": t.TempDir(), "provider": node.ProviderCodex, "body": "Review this project",
+	}), nil)
+	if code != http.StatusOK {
+		t.Fatalf("discuss: %d %s", code, raw)
+	}
+	var first node.LaunchSpec
+	waitFor(t, "the seat's first turn", func() bool {
+		runner.mu.Lock()
+		defer runner.mu.Unlock()
+		if len(runner.specs) == 0 {
+			return false
+		}
+		first = runner.specs[0]
+		return true
+	})
+	if !strings.Contains(first.Prompt, "Review this project") || !strings.Contains(first.Prompt, "agent-link: вы — агент") {
+		t.Fatalf("first turn lacks the introduction or the message: %q", first.Prompt)
+	}
+	if strings.Contains(first.Prompt, "придут в следующем ходе") {
+		t.Fatalf("first turn with a message got the no-message setup text: %q", first.Prompt)
+	}
+}
+
 func TestDiscussUsesPrivateChatBesideNetworkProject(t *testing.T) {
 	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
 	dir := t.TempDir()

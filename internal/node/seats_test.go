@@ -129,7 +129,9 @@ func TestSeatAddPersistRemove(t *testing.T) {
 	}
 	runs := l.all()
 	if len(runs) != 2 || runs[0].Seat == "" || !runs[0].NoOpen || runs[0].ResumeID != "" || runs[0].Folder != dir ||
-		!strings.Contains(runs[0].Prompt, "agent-link: вы — агент «") || !slices.Contains(runs[0].Env, "AGENTLINK_SEAT="+runs[0].Seat) {
+		!strings.Contains(runs[0].Prompt, "agent-link: вы — агент «") || !slices.Contains(runs[0].Env, "AGENTLINK_SEAT="+runs[0].Seat) ||
+		// An introduction without messages says they come in the next turn.
+		!strings.Contains(runs[0].Prompt, "сообщения agent-link для вас придут в следующем ходе") {
 		t.Fatalf("intro turns %+v", runs)
 	}
 	// Labels stay unique: the next Claude is "Claude 2"; a taken label is refused.
@@ -685,6 +687,7 @@ func TestSeatSetupTurnPostsNothing(t *testing.T) {
 	a := seatNode(t, t.TempDir(), t.TempDir(), l)
 	var setupErr, askErr error
 	var setupPrompt string
+	var hookGranted []string
 	chatOf := func(spec LaunchSpec) string {
 		for _, e := range spec.Env {
 			if v, ok := strings.CutPrefix(e, "AGENTLINK_CHAT_ID="); ok {
@@ -700,6 +703,21 @@ func TestSeatSetupTurnPostsNothing(t *testing.T) {
 		}
 		setupPrompt = spec.Prompt
 		_, setupErr = a.SendRequest(SendRequest{ChatID: chatOf(spec), Body: "hi Codex", Seat: spec.Seat})
+		// A message asked of the seat meanwhile is not its hook's to deliver:
+		// the setup turn could not answer it.
+		asked, err := a.SendRequest(SendRequest{ChatID: chatOf(spec), Body: "a question", AuthorKind: AuthorHuman, AskSeats: []string{spec.Seat}})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		sid := seatByLabel(t, a, "Claude").SessionID
+		if _, err := a.RegisterSession(SessionRequest{SessionID: sid, Provider: ProviderClaude, Folder: spec.Folder}); err != nil {
+			t.Error(err)
+		}
+		hookGranted, _ = a.Claim(ClaimRequest{IDs: []string{asked.ID}, SessionID: sid})
+		if err := a.EndSession(sid); err != nil {
+			t.Error(err)
+		}
 	})
 	if _, err := a.AddSeat(SeatRequest{Provider: ProviderClaude}); err != nil {
 		t.Fatal(err)
@@ -708,10 +726,8 @@ func TestSeatSetupTurnPostsNothing(t *testing.T) {
 	if !errors.Is(setupErr, ErrSeatSetup) || !strings.Contains(setupPrompt, "ничего не отправляйте") {
 		t.Fatalf("setup turn sent: %v; prompt %q", setupErr, setupPrompt)
 	}
-	claude := seatByLabel(t, a, "Claude")
-	chat, _ := a.NewProjectChat(nil)
-	if _, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "a question", AuthorKind: AuthorHuman, AskSeats: []string{claude.ID}}); err != nil {
-		t.Fatal(err)
+	if len(hookGranted) != 0 {
+		t.Fatalf("the seat's hook took a message during its setup turn: %v", hookGranted)
 	}
 	a.seatsDue(context.Background(), time.Now())
 	eventually(t, "answered", func() bool { return len(seatByLabel(t, a, "Claude").Pending) == 0 })

@@ -196,7 +196,7 @@ func TestBothConfiguredAgentsGetFolderHooks(t *testing.T) {
 	exe := filepath.Join(t.TempDir(), "agentlink.exe")
 	agent := fakeAgentFile(t)
 	h := newHarness(t, func(a *App) { a.HookExe, a.Agents = exe, settings.Finder{} })
-	s := settings.Settings{Node: "alice", Handler: "none", ClaudePath: agent, CodexPath: agent,
+	s := settings.Settings{Node: "alice", Listen: "127.0.0.1:0", Handler: "none", ClaudePath: agent, CodexPath: agent,
 		WorkDir: work, Projects: map[string]settings.Project{"dev": {Dir: project}}}
 	if _, err := h.app.Apply(t.Context(), s); err != nil {
 		t.Fatal(err)
