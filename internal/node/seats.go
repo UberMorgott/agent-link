@@ -122,11 +122,13 @@ type seatStore struct {
 	seats []*Seat
 	// run: the node's running turn per seat; errs: its last failure; busy:
 	// its session is open in the agent's app (seatOccupied); quiet: its turn
-	// is its setup alone, which posts nothing.
-	run   map[string]context.CancelFunc
-	errs  map[string]string
-	busy  map[string]bool
-	quiet map[string]bool
+	// is its setup alone, which posts nothing; deferred: added with Defer and not
+	// started yet, so seatsDue leaves it to StartSeat.
+	run      map[string]context.CancelFunc
+	errs     map[string]string
+	busy     map[string]bool
+	quiet    map[string]bool
+	deferred map[string]bool
 	// marks: per seat and message (seatKey), a hook's claim, the node's wake
 	// of the seat's session with it (claimLocked) or the node's turn of it.
 	marks map[string]seatMark
@@ -145,7 +147,7 @@ func seatKey(seat, id string) string { return seat + "/" + id }
 
 func openSeats(dir string) (*seatStore, error) {
 	st := &seatStore{path: filepath.Join(dir, "seats.json"), run: map[string]context.CancelFunc{}, errs: map[string]string{},
-		busy: map[string]bool{}, quiet: map[string]bool{}, marks: map[string]seatMark{}}
+		busy: map[string]bool{}, quiet: map[string]bool{}, deferred: map[string]bool{}, marks: map[string]seatMark{}}
 	if err := readJSON(st.path, &st.seats); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -288,6 +290,9 @@ func (n *Node) AddSeat(req SeatRequest) (SeatView, error) {
 	}
 	s := &Seat{ID: "seat-" + randomHex(4), Provider: req.Provider, Label: label, CreatedAt: time.Now().UTC()}
 	st.seats = append(st.seats, s)
+	if req.Defer {
+		st.deferred[s.ID] = true
+	}
 	err = st.saveLocked()
 	st.mu.Unlock()
 	if err != nil {
@@ -314,6 +319,7 @@ func (n *Node) StartSeat(id string, open bool) (SeatView, error) {
 	}
 	s.Stopped, s.Fails, s.RetryAt = false, 0, time.Time{}
 	delete(st.errs, id)
+	delete(st.deferred, id)
 	err := st.saveLocked()
 	seat, running := *s, st.run[id] != nil
 	st.mu.Unlock()
@@ -378,6 +384,7 @@ func (n *Node) RemoveSeat(id string) error {
 	st.seats = slices.Delete(st.seats, i, i+1)
 	delete(st.errs, id)
 	delete(st.busy, id)
+	delete(st.deferred, id)
 	for k := range st.marks {
 		if strings.HasPrefix(k, id+"/") {
 			delete(st.marks, k)
@@ -791,7 +798,7 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 	}
 	var due []Seat
 	for _, s := range st.seats {
-		if s.Stopped || st.run[s.ID] != nil || (len(s.Pending) == 0 && s.SessionID != "") || (s.SessionID != "" && live[s.SessionID]) ||
+		if s.Stopped || st.deferred[s.ID] || st.run[s.ID] != nil || (len(s.Pending) == 0 && s.SessionID != "") || (s.SessionID != "" && live[s.SessionID]) ||
 			s.needsHuman() || (s.Fails > 0 && now.Before(s.RetryAt)) {
 			continue
 		}
