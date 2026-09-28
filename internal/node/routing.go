@@ -236,6 +236,31 @@ func (n *Node) originSession(m Message) string {
 	return ""
 }
 
+// originAgent is the subagent (id and type) of the origin session that wrote
+// the message m replies to (chatRecord.Agent); "" for its main agent or none.
+func (n *Node) originAgent(m Message) (id, typ string) {
+	if m.ReplyTo == "" {
+		return "", ""
+	}
+	if r, ok := n.chats.message(m.ReplyTo); ok && r.Message.From == n.cfg.Node && r.Session != "" {
+		return r.Agent, r.AgentType
+	}
+	return "", ""
+}
+
+// agentLive reports whether session reported subagent agent live
+// (SessionRequest.Agents): its hooks, not a wake of the session, take the
+// replies for it.
+func (r *sessionRegistry) agentLive(session, agent string) bool {
+	if agent == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := r.sessions[session]
+	return s != nil && slices.Contains(s.Agents, agent)
+}
+
 // recentlyActive is the subset of live whose sessions had a hook event within
 // AffinityLapse.
 func (r *sessionRegistry) recentlyActive(live map[string]bool, now time.Time) map[string]bool {
@@ -443,6 +468,9 @@ func (n *Node) claimLocked(session string, want []string, via, token string, liv
 				continue
 			}
 			to = n.routeOf(id, &rec, live)
+			if a, _ := n.originAgent(rec.Message); wake && to == session && r.agentLive(session, a) {
+				continue // for a live subagent: its own hooks take it, no wake of the session
+			}
 		} else if plain[id] {
 			to = n.routeOf(id, nil, live)
 		} else {

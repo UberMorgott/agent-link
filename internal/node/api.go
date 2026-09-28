@@ -38,6 +38,11 @@ type SendRequest struct {
 	// SessionID is the live session of this node that sends (agentlink send
 	// inside it): replies to the message are delivered to it (routeOf).
 	SessionID string `json:"session_id,omitempty"`
+	// AgentID and AgentType name the subagent of SessionID that sends (Claude
+	// Code's agent_id and agent_type): replies go to that subagent while it
+	// lives (UnreadMessage.ForAgent). Local only, never sent.
+	AgentID   string `json:"agent_id,omitempty"`
+	AgentType string `json:"agent_type,omitempty"`
 	// Attachments are files uploaded before (POST /attachments): id and name.
 	Attachments []Attachment `json:"attachments,omitempty"`
 	// Files are local files to attach (agentlink send --attach): absolute, or
@@ -105,7 +110,14 @@ func (n *Node) SendRequest(req SendRequest) (Message, error) {
 		}
 	}
 	if err == nil && m.ChatID != "" && validSessionID(req.SessionID) {
-		if serr := n.chats.setSession(m.ID, req.SessionID); serr != nil {
+		agent, typ := req.AgentID, req.AgentType
+		if !validSessionID(agent) {
+			agent, typ = "", ""
+		}
+		if len(typ) > 128 {
+			typ = ""
+		}
+		if serr := n.chats.setSession(m.ID, req.SessionID, agent, typ); serr != nil {
 			n.log.Warn("record sending session", "id", m.ID, "err", serr)
 		}
 	}

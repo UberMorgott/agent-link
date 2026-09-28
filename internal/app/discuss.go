@@ -21,6 +21,10 @@ type discussRequest struct {
 	SessionID string `json:"session_id"`
 	Source    string `json:"source"`
 	Seat      string `json:"seat"`
+	// AgentID and AgentType: the subagent of the session that asks
+	// (node.SendRequest.AgentID); its hooks take the reply while it lives.
+	AgentID   string `json:"agent_id"`
+	AgentType string `json:"agent_type"`
 	// Chat continues a local chat by id; Topic names a persistent chat;
 	// Temporary starts a new temporary chat. At most one of them.
 	Chat      string `json:"chat"`
@@ -109,7 +113,7 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	// also after the direct wait ends (controlUnread). AgentLink-launched
 	// seats use their explicit project selector in hooks.
 	message, err := c.n.SendRequest(node.SendRequest{ChatID: chat.ID, Body: req.Body, Folder: dir,
-		SessionID: req.SessionID, Seat: req.Seat, AskSeats: []string{seat}, AuthorKind: authorKind(req.SessionID, req.Seat)})
+		SessionID: req.SessionID, AgentID: req.AgentID, AgentType: req.AgentType, Seat: req.Seat, AskSeats: []string{seat}, AuthorKind: authorKind(req.SessionID, req.Seat)})
 	if added {
 		if _, startErr := c.n.StartSeat(seat, false); startErr != nil { //nolint:contextcheck // the seat turn outlives the request and runs under the node's own context
 			a.log.Warn("start discuss seat", "seat", seat, "err", startErr)

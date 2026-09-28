@@ -71,6 +71,11 @@ type SessionRequest struct {
 	// the session: it keeps the session live (LastSeen), not active
 	// (LastActive).
 	Heartbeat bool `json:"heartbeat,omitempty"`
+	// Agents are the session's live subagents (Claude Code agent_id) as its
+	// hooks saw them: a reply for one of them is its hooks' to deliver, no
+	// wake of the session takes it (claimLocked). Each registration replaces
+	// them.
+	Agents []string `json:"agents,omitempty"`
 }
 
 // Session is one registered live session.
@@ -102,7 +107,12 @@ type Session struct {
 	// Inbox: the node holds a usable inbox of the session (InboxSocket) and
 	// wakes it there when idle. Not persisted: the address lives in memory.
 	Inbox bool `json:"inbox,omitempty"`
+	// Agents: the live subagents of the last registration (SessionRequest.Agents).
+	Agents []string `json:"agents,omitempty"`
 }
+
+// maxSessionAgents bounds SessionRequest.Agents.
+const maxSessionAgents = 64
 
 func (s Session) live(now time.Time) bool {
 	return now.Sub(s.LastSeen) < time.Duration(s.TTLSec)*time.Second
@@ -220,6 +230,8 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 		return Session{}, fmt.Errorf("%w: ttl_sec out of range", ErrBadRequest)
 	case len(req.CodexHome) > 1024 || (req.CodexHome != "" && !filepath.IsAbs(req.CodexHome)):
 		return Session{}, fmt.Errorf("%w: codex_home must be an absolute path", ErrBadRequest)
+	case len(req.Agents) > maxSessionAgents || slices.ContainsFunc(req.Agents, func(a string) bool { return !validSessionID(a) }):
+		return Session{}, fmt.Errorf("%w: invalid agents", ErrBadRequest)
 	}
 	// An inbox the node cannot use is ignored, not refused: the session still
 	// registers and its waiter wakes it.
@@ -282,7 +294,7 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	if !s.Woken {
 		s.Wakes, s.WokeAt = 0, time.Time{}
 	}
-	s.Asked, s.Idle, s.CodexHome = asked, req.Idle, req.CodexHome
+	s.Asked, s.Idle, s.CodexHome, s.Agents = asked, req.Idle, req.CodexHome, slices.Clone(req.Agents)
 	if req.InboxSocket != "" {
 		a := inboxAddr{socket: req.InboxSocket, token: req.InboxToken}
 		if old, ok := r.inbox[req.SessionID]; ok && old.socket == a.socket && old.token == a.token {

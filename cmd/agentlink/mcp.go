@@ -138,15 +138,17 @@ func newMCPServer(cfg config.Config) *mcp.Server {
 		session, _ := agentSession()
 		return unreadForSession(cfg, in.Folder, in.After, limit(in.Limit), proj(in.Project), session, true)
 	})
-	addTool(s, "send", "Send a message: into a chat (chat), the open chat with a member (to), or a new chat (new_chat_with), optionally with file attachments. Returns {id, chat}, plus hold_reason when the message is held (no agent answers it automatically).", func(in mcpSend) (any, error) {
-		return mcpSendMessage(cfg, in, proj(""))
+	addToolArgs(s, "send", "Send a message: into a chat (chat), the open chat with a member (to), or a new chat (new_chat_with), optionally with file attachments. Returns {id, chat}, plus hold_reason when the message is held (no agent answers it automatically).", func(in mcpSend, args json.RawMessage) (any, error) {
+		key, _ := mcpAskKey("send", args)
+		return mcpSendMessage(cfg, in, proj(""), key)
 	})
-	addTool(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's private agent chat. Creates or reuses a local project separate from any network project for the same folder (outside project folders a temporary chat of this session; chat, topic or temporary pick another local chat), waits for the exact agent's reply (default 10m), and returns the reply with project/chat IDs. Use async to post without waiting; timed_out returns IDs for later history lookup.", func(in mcpDiscuss) (any, error) {
+	addToolArgs(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's private agent chat. Creates or reuses a local project separate from any network project for the same folder (outside project folders a temporary chat of this session; chat, topic or temporary pick another local chat), waits for the exact agent's reply (default 10m), and returns the reply with project/chat IDs. Use async to post without waiting; timed_out returns IDs for later history lookup.", func(in mcpDiscuss, args json.RawMessage) (any, error) {
+		key, _ := mcpAskKey("discuss", args)
 		timeout := in.Timeout
 		if timeout == "" {
 			timeout = "10m"
 		}
-		return discussMessage(cfg, in.With, in.Body, in.Folder, in.Async, timeout, discussPick{chat: in.Chat, topic: in.Topic, temporary: in.Temporary})
+		return discussMessage(cfg, in.With, in.Body, in.Folder, in.Async, timeout, discussPick{chat: in.Chat, topic: in.Topic, temporary: in.Temporary, askKey: key})
 	})
 	addTool(s, "ack", "Mark messages read: their authors get read receipts.", func(in mcpAck) (any, error) {
 		if len(in.IDs) == 0 {
@@ -162,7 +164,7 @@ func newMCPServer(cfg config.Config) *mcp.Server {
 }
 
 // mcpSendMessage validates the routing mode and sends.
-func mcpSendMessage(cfg config.Config, in mcpSend, project string) (any, error) {
+func mcpSendMessage(cfg config.Config, in mcpSend, project, askKey string) (any, error) {
 	modes := 0
 	for _, set := range []bool{in.Chat != "", in.To != "", len(in.NewChatWith) > 0} {
 		if set {
@@ -175,7 +177,7 @@ func mcpSendMessage(cfg config.Config, in mcpSend, project string) (any, error) 
 	if in.Body == "" && len(in.Attachments) == 0 {
 		return nil, errors.New("body is required (or attachments)")
 	}
-	a := sendArgs{to: in.To, body: in.Body, replyTo: in.ReplyTo, chat: in.Chat, project: project, files: in.Attachments, askSeats: in.AskSeats}
+	a := sendArgs{to: in.To, body: in.Body, replyTo: in.ReplyTo, chat: in.Chat, project: project, files: in.Attachments, askSeats: in.AskSeats, askKey: askKey}
 	if len(in.NewChatWith) > 0 {
 		info, err := createChat(cfg, in.NewChatWith, "", project)
 		if err != nil {
@@ -196,8 +198,17 @@ func mcpSendMessage(cfg config.Config, in mcpSend, project string) (any, error) 
 
 // addTool registers a tool whose answer is the JSON of f's value as text.
 func addTool[In any](s *mcp.Server, name, desc string, f func(In) (any, error)) {
-	mcp.AddTool(s, &mcp.Tool{Name: name, Description: desc}, func(_ context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
-		v, err := f(in)
+	addToolArgs(s, name, desc, func(in In, _ json.RawMessage) (any, error) { return f(in) })
+}
+
+// addToolArgs is addTool whose f also gets the call's raw arguments.
+func addToolArgs[In any](s *mcp.Server, name, desc string, f func(In, json.RawMessage) (any, error)) {
+	mcp.AddTool(s, &mcp.Tool{Name: name, Description: desc}, func(_ context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+		var args json.RawMessage
+		if req != nil && req.Params != nil {
+			args = req.Params.Arguments
+		}
+		v, err := f(in, args)
 		if err != nil {
 			if ae, ok := errors.AsType[*apiError](err); ok && ae.msg != "" {
 				err = errors.New(ae.msg) // the API's message, verbatim

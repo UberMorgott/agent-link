@@ -108,6 +108,11 @@ type UnreadMessage struct {
 	// Project is the context the message is in, set by the control API that
 	// lists several contexts' messages together: claim and ack it there.
 	Project string `json:"project,omitempty"`
+	// ForAgent and ForAgentType: the subagent of the origin session that asked
+	// (chatRecord.Agent). Its hooks take the reply while it lives; the main
+	// agent's only after it ended.
+	ForAgent     string `json:"for_agent,omitempty"`
+	ForAgentType string `json:"for_agent_type,omitempty"`
 }
 
 // UnreadPage is one page of Unread.
@@ -205,6 +210,7 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable, e
 		um := UnreadMessage{ChatMessage: n.chatMessage(u.chat, u.rec), ReceivedAt: u.rec.ReceivedAt}
 		um.AsksYou = !um.OwnHuman && um.Asks(n.cfg.Node)
 		um.Paused = um.AsksYou && n.held(um.Message)
+		um.ForAgent, um.ForAgentType = n.originAgent(u.rec.Message)
 		if actionable && um.Paused {
 			continue
 		}

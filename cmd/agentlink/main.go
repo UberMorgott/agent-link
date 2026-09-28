@@ -170,7 +170,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 				}
 				prompt = string(data)
 			}
-			result, err := discussMessage(c, *with, prompt, *folder, *async, *timeout, discussPick{chat: *chat, topic: *topic, temporary: *temporary})
+			result, err := discussMessage(c, *with, prompt, *folder, *async, *timeout, discussPick{chat: *chat, topic: *topic, temporary: *temporary, askKey: cliAskKey})
 			if result.ID != "" {
 				if encodeErr := json.NewEncoder(stdout).Encode(result); encodeErr != nil {
 					return 1, encodeErr
@@ -367,6 +367,9 @@ type sendArgs struct {
 	to, body, replyTo, chat, ask, area, project, session string
 	files                                                []string // local files to attach
 	askSeats                                             []string // local agents (seats) asked
+	// askKey finds the Claude Code subagent that sends (askOrigin): the stamp
+	// key of this call, cliAskKey for the CLI.
+	askKey string
 }
 
 type discussResult struct {
@@ -395,6 +398,7 @@ type discussResult struct {
 type discussPick struct {
 	chat, topic string
 	temporary   bool
+	askKey      string // as sendArgs.askKey
 }
 
 func discussMessage(cfg config.Config, provider, body, folder string, async bool, timeout string, pick discussPick) (discussResult, error) {
@@ -423,10 +427,11 @@ func discussMessage(cfg config.Config, provider, body, folder string, async bool
 		}
 	}
 	session, source := agentSession()
+	agent, agentType := askOrigin(pick.askKey, body)
 	var result discussResult
 	err = apiJSON(http.MethodPost, apiURL(cfg, "/discuss", nil), map[string]any{
 		"folder": dir, "provider": provider, "body": body, "session_id": session,
-		"source": source, "seat": os.Getenv(envSeat),
+		"source": source, "seat": os.Getenv(envSeat), "agent_id": agent, "agent_type": agentType,
 		"chat": pick.chat, "topic": pick.topic, "temporary": pick.temporary,
 	}, &result)
 	if err == nil && result.HoldReason != "" {
@@ -503,6 +508,7 @@ func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 	if a.chat == "" && a.to == "" {
 		a.chat = os.Getenv(envChatID)
 	}
+	a.askKey = cliAskKey
 	var ask []string
 	if a.ask != "" {
 		ask = []string{a.ask}
@@ -526,10 +532,12 @@ func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 // sendMessage posts one message (to a.chat, else a.to) for send and the MCP
 // send tool; the session defaults to the agent's own and learns the chat.
 func sendMessage(cfg config.Config, a sendArgs, ask []string) (node.Message, error) {
+	var agent, agentType string
 	if a.session == "" {
 		a.session, _ = agentSession()
+		agent, agentType = askOrigin(a.askKey, a.body) // the session's own subagent, if one sends
 	}
-	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat, Area: a.area, SessionID: a.session, Ask: ask,
+	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat, Area: a.area, SessionID: a.session, AgentID: agent, AgentType: agentType, Ask: ask,
 		AskSeats: a.askSeats, Seat: os.Getenv(envSeat)}
 	if wd, err := os.Getwd(); err == nil {
 		r.Folder = wd // the node picks the project of this folder

@@ -131,6 +131,48 @@ func TestReplyGoesToAskingSessionNotNewest(t *testing.T) {
 	}
 }
 
+// A subagent's ask records the subagent: its reply names it (ForAgent), and
+// no wake of the session takes it while the session reports it live; its
+// hooks do. Once it ended the session may be woken with it.
+func TestReplyForSubagentSkipsWakeWhileItLives(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	dir := t.TempDir()
+	reg := func(agents ...string) {
+		t.Helper()
+		if _, err := a.RegisterSession(SessionRequest{SessionID: "s-main", Provider: "claude", Folder: dir, Wake: WakeRewake, Agents: agents}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reg("agent-1")
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-x", Provider: "claude", Folder: dir, Agents: []string{"bad id"}}); err == nil {
+		t.Fatal("an invalid agent id registered")
+	}
+	q, err := a.SendRequest(SendRequest{To: "b", Body: "subagent question", AuthorKind: AuthorAgent, SessionID: "s-main", AgentID: "agent-1", AgentType: "Explore"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ := a.chats.message(q.ID); rec.Session != "s-main" || rec.Agent != "agent-1" || rec.AgentType != "Explore" {
+		t.Fatalf("origin not recorded: %+v", rec)
+	}
+	eventually(t, "b has the request", func() bool { p, _ := b.Unread("", "", 10); return p.Total == 1 })
+	r, err := b.SendRequest(SendRequest{ChatID: q.ChatID, ReplyTo: q.ID, Body: "answer", AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the reply", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 1 })
+	p, _ := a.UnreadFor(dir, "s-main", "", 10)
+	if len(p.Messages) != 1 || p.Messages[0].ForAgent != "agent-1" || p.Messages[0].ForAgentType != "Explore" {
+		t.Fatalf("reply not marked for the subagent: %+v", p)
+	}
+	if g, _ := a.Claim(ClaimRequest{IDs: []string{r.ID}, SessionID: "s-main", WakeToken: "wake-token-1"}); len(g) != 0 {
+		t.Fatalf("a wake took the live subagent's reply: %v", g)
+	}
+	reg() // the subagent ended
+	if g, _ := a.Claim(ClaimRequest{IDs: []string{r.ID}, SessionID: "s-main", WakeToken: "wake-token-2"}); !slices.Equal(g, []string{r.ID}) {
+		t.Fatalf("wake after the subagent ended: %v", g)
+	}
+}
+
 // The reported case: the owner session wrote in a project chat earlier; the
 // peer starts a new root there (no reply_to) and then an FYI; another session
 // of the folder polls and claims first. Neither may go to it, nor become read

@@ -138,6 +138,10 @@ type hookState struct {
 	// Notes for the model at its next event (a request the worker took after
 	// the session was told about it).
 	Notes []string `json:"notes,omitempty"`
+	// Live: the session's live subagents (Claude Code), whose replies only
+	// their own hooks deliver; Stamps: ask calls about to run (hook_agents.go).
+	Live   map[string]liveAgent `json:"live,omitempty"`
+	Stamps []askStamp           `json:"stamps,omitempty"`
 }
 
 // hookEnv is where the hook finds the node and keeps its state.
@@ -300,12 +304,24 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	now := env.clock()
 	st.LastEvent, st.LastEventAt = event, now
 	defer func() { _ = saveHookState(path, st) }()
+	// Claude Code names the subagent an event fires in; the node hears the
+	// live ones at once (a reply for one is not the session's to wake with).
+	agents := client == hookClaude && st.trackAgent(event, in.AgentID, in.AgentType, now)
 	// SubagentStop preserves the parent's idle state if its turn already ended.
-	if !heartbeat(env, &st, client, in.SessionID, folder, event == evSessionStart, (event == evStop || event == evSubagentStop) && st.Idle) {
+	if !heartbeat(env, &st, client, in.SessionID, folder, event == evSessionStart || agents, (event == evStop || event == evSubagentStop) && st.Idle) {
 		quiet()
 		return nil
 	}
 	h := &hookSession{env: env, st: &st, sid: in.SessionID, folder: folder, client: client}
+	if client == hookClaude && (event == evPreTool || event == evPostTool) {
+		if key, cmd, ok := askKey(in.ToolName, in.ToolInput); ok {
+			if event == evPreTool {
+				st.stamp(in.AgentID, in.AgentType, key, cmd, now)
+			} else {
+				st.dropStamp(in.AgentID, key, cmd)
+			}
+		}
+	}
 	if event == evSubagentStart || event == evSubagentStop {
 		h.subagent(in.AgentID, in.AgentType, event == evSubagentStop)
 		h.reportCodexAgentState()
@@ -313,13 +329,23 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		return nil
 	}
 	if in.AgentID != "" && (event == evPreTool || event == evPostTool) {
-		// A subagent's tool call: its own line under the session. Its messages
-		// stay for the main agent (none are delivered to the subagent).
+		// A subagent's tool call: its own line under the session. The chat's
+		// messages stay for the main agent; only the replies to what this
+		// subagent asked reach it, after its tool calls (Claude Code).
 		if event == evPreTool {
 			typ, text := toolActivity(folder, in.ToolName, in.ToolInput)
 			h.reportAgent(in.AgentID, in.AgentType, typ, text)
 		}
-		writeHookJSON(stdout, takeNotice(&st), nil)
+		notice := takeNotice(&st)
+		if event == evPostTool && client == hookClaude {
+			h.agent = in.AgentID
+			if b, err := h.collect(false, false, nil); err == nil && b.text != "" {
+				writeHookJSON(stdout, joinNotice(notice, b.notice), map[string]any{"hookSpecificOutput": map[string]string{"hookEventName": event, "additionalContext": b.text}})
+				h.accept(b)
+				return nil
+			}
+		}
+		writeHookJSON(stdout, notice, nil)
 		return nil
 	}
 	if event == evPreTool {
@@ -425,7 +451,7 @@ func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force, id
 	if !force && st.Folder == folder && st.Idle == idle && now.Sub(st.Registered) < hookHeartbeat {
 		return !st.Unbound
 	}
-	err := hookCall(env.api, http.MethodPost, "/sessions", env.withProject(nil), sessionRequest(client, sid, folder, idle), nil, hookHTTPTimeout)
+	err := hookCall(env.api, http.MethodPost, "/sessions", env.withProject(nil), sessionRequest(client, sid, folder, idle, liveAgentIDs(*st)), nil, hookHTTPTimeout)
 	var se *statusError
 	switch {
 	case err == nil:
@@ -449,9 +475,10 @@ const (
 // sessionRequest is the registration of a session of client: Codex asks for
 // node.WakeQueue; Claude Code for node.WakeRewake and hands the node its
 // inbox (the node wakes it there while idle, else its waiter does). Both
-// report whether the session is idle (its turn ended).
-func sessionRequest(client, sid, folder string, idle bool) node.SessionRequest {
-	req := node.SessionRequest{SessionID: sid, Provider: client, Folder: folder, Wake: node.WakeRewake, TTLSec: hookTTLClaude, Idle: idle}
+// report whether the session is idle (its turn ended); Claude Code also its
+// live subagents (agents).
+func sessionRequest(client, sid, folder string, idle bool, agents []string) node.SessionRequest {
+	req := node.SessionRequest{SessionID: sid, Provider: client, Folder: folder, Wake: node.WakeRewake, TTLSec: hookTTLClaude, Idle: idle, Agents: agents}
 	if client == hookCodex {
 		req.Wake, req.TTLSec, req.CodexHome = node.WakeQueue, hookTTLCodex, codexHome()
 		return req
@@ -534,6 +561,9 @@ type hookSession struct {
 	client string
 	// wakeToken (the waiter's only) makes its claim a wake (node.ClaimRequest).
 	wakeToken string
+	// agent: a subagent's run (its PostToolUse), which takes only the replies
+	// for that subagent (forMe).
+	agent string
 }
 
 // hookBatch is the unread messages one event delivers.
@@ -604,6 +634,7 @@ func (h *hookSession) collect(stop, actionable bool, proof func() string) (hookB
 	if err := hookCall(h.env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout); err != nil {
 		return hookBatch{}, err
 	}
+	page = h.forMe(page)
 	var got []node.UnreadMessage
 	if len(page.Woken) > 0 && proof != nil {
 		got = provenWoken(page.Woken, proof())
@@ -745,8 +776,8 @@ func (h *hookSession) accept(b hookBatch) {
 			}
 		}
 	}
-	if len(b.chats) == 0 {
-		return
+	if len(b.chats) == 0 || h.agent != "" {
+		return // a subagent's reply: no activity of the main agent
 	}
 	if h.st.Active == nil {
 		h.st.Active = map[string]string{}

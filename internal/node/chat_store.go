@@ -70,6 +70,11 @@ type chatRecord struct {
 	// message (agentlink send inside it): replies to the message go to it.
 	// Local only, never sent.
 	Session string `json:"session,omitempty"`
+	// Agent and AgentType: the subagent of Session that wrote it (Claude
+	// Code's agent_id, agent_type), whose hooks take the replies while it
+	// lives (UnreadMessage.ForAgent). Local only, never sent.
+	Agent     string `json:"agent,omitempty"`
+	AgentType string `json:"agent_type,omitempty"`
 	// Receipts: on this node's own messages, the latest receipt per recipient.
 	Receipts map[string]Receipt `json:"receipts,omitempty"`
 	// Attempts: on this node's own messages, the latest delivery attempt
@@ -377,15 +382,16 @@ func (cs *chatStore) markRead(id, owner, self string) (chatRecord, bool, error) 
 	return r, wasUnread, err
 }
 
-// setSession records the live session that wrote this node's message id.
-func (cs *chatStore) setSession(id, session string) error {
+// setSession records the live session that wrote this node's message id, and
+// its subagent (agent, of type typ; "" for the main agent).
+func (cs *chatStore) setSession(id, session, agent, typ string) error {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	_, _, err := cs.updateLocked(id, func(r *chatRecord) bool {
-		if r.Session == session {
+		if r.Session == session && r.Agent == agent && r.AgentType == typ {
 			return false
 		}
-		r.Session = session
+		r.Session, r.Agent, r.AgentType = session, agent, typ
 		return true
 	})
 	return err

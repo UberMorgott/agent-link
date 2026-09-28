@@ -160,7 +160,7 @@ func TestAffinityFollowsPrev(t *testing.T) {
 	if _, _, _, err := cs.add(m); err != nil {
 		t.Fatal(err)
 	}
-	if err := cs.setSession(m.ID, "s1"); err != nil {
+	if err := cs.setSession(m.ID, "s1", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	live := map[string]bool{"s1": true}
