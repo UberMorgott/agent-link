@@ -212,6 +212,10 @@ func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string 
 		// one; while that session is gone it waits (unread, for the owner).
 		return s
 	}
+	area := n.localArea(rec.Message.Area)
+	if p, ok := n.sess.pinned(area); ok && live[p.SessionID] && !n.leases.passedOver(id, p.SessionID) {
+		return p.SessionID
+	}
 	recent := n.sess.recentlyActive(live, time.Now())
 	aff := n.chats.affinity(rec.Message.ChatID, n.cfg.Node, recent)
 	if n.leases.passedOver(id, aff) {

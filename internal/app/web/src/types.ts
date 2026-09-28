@@ -202,6 +202,7 @@ export interface Session {
   registered_at?: string
   last_seen?: string
   primary?: boolean
+  pinned?: boolean
   project?: string // project id or "legacy"
 }
 

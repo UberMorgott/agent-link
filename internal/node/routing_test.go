@@ -132,6 +132,68 @@ func TestReplyGoesToAskingSessionNotNewest(t *testing.T) {
 	}
 }
 
+func TestPinnedSessionOwnsProjectMessages(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	dir := t.TempDir()
+	for _, id := range []string{"s-chef", "s-other"} {
+		if _, err := a.RegisterSession(SessionRequest{SessionID: id, Provider: ProviderCodex, Folder: dir, Wake: WakeQueue, Idle: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.PinSession(PinSessionRequest{SessionID: "s-chef"}); err != nil {
+		t.Fatal(err)
+	}
+	q, err := a.SendRequest(SendRequest{To: "b", Body: "question", AuthorKind: AuthorAgent, SessionID: "s-other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the question", func() bool { _, ok := b.chats.message(q.ID); return ok })
+	r, err := b.SendRequest(SendRequest{ChatID: q.ChatID, ReplyTo: q.ID, Body: "answer", AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the answer", func() bool { _, ok := a.chats.message(r.ID); return ok })
+	if got := a.routedTo([]string{r.ID})[r.ID]; got != "s-other" {
+		t.Fatalf("reply routed to %q, want its asking session s-other", got)
+	}
+	root, err := b.SendRequest(SendRequest{ChatID: q.ChatID, Body: "new root", AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the new root", func() bool { _, ok := a.chats.message(root.ID); return ok })
+	if got := a.routedTo([]string{root.ID})[root.ID]; got != "s-chef" {
+		t.Fatalf("new root routed to %q, want pinned s-chef", got)
+	}
+	a.leases.mu.Lock()
+	a.leases.m[root.ID] = &Lease{ID: root.ID, Fails: map[string]int{"s-chef": maxOwnerFails}}
+	a.leases.mu.Unlock()
+	if got := a.routedTo([]string{root.ID})[root.ID]; got != "s-other" {
+		t.Fatalf("passed-over pin routed to %q, want normal affinity s-other", got)
+	}
+	loaded, err := openSessions(a.cfg.DataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := loaded.pinned(""); !ok || p.SessionID != "s-chef" {
+		t.Fatalf("persisted pin: %+v, %v", p, ok)
+	}
+	if _, err := a.UnpinSession(PinSessionRequest{SessionID: "s-chef"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.PinnedSession(""); ok {
+		t.Fatal("pin remained after unpin")
+	}
+	if _, err := a.PinSession(PinSessionRequest{SessionID: "s-chef"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.EndSession("s-chef"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.PinnedSession(""); ok {
+		t.Fatal("pin remained after session ended")
+	}
+}
+
 // A subagent's ask records the subagent: its reply names it (ForAgent), and
 // no wake of the session takes it while the session reports it live; its
 // hooks do. Once it ended the session may be woken with it.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -166,6 +167,8 @@ type sessionRegistry struct {
 	inbox      map[string]inboxAddr
 	recent     map[string]LastSession
 	recentPath string
+	pins       map[string]PinnedSession // area -> preferred live Codex session
+	pinsPath   string
 
 	// gone are the sessions saveLocked dropped as expired (TTL, no
 	// SessionEnd) whose orphaned replies expireSessions has not reported yet.
@@ -181,10 +184,26 @@ type LastSession struct {
 	At        time.Time `json:"at"`
 }
 
+// PinnedSession is the live Codex thread preferred for untargeted messages in
+// its local project area.
+type PinnedSession struct {
+	SessionID string `json:"session_id"`
+	Provider  string `json:"provider"`
+	Folder    string `json:"folder"`
+	Area      string `json:"area"`
+	CodexHome string `json:"codex_home,omitempty"`
+}
+
+// PinSessionRequest is the body of POST /session-pin.
+type PinSessionRequest struct {
+	SessionID string `json:"session_id"`
+}
+
 func openSessions(dir string) (*sessionRegistry, error) {
 	r := &sessionRegistry{path: filepath.Join(dir, "sessions.json"), sessions: map[string]*Session{}, last: map[string]ActivityState{},
 		on: map[string]map[string]string{}, claims: map[string]sessionClaim{}, inbox: map[string]inboxAddr{},
-		recent: map[string]LastSession{}, recentPath: filepath.Join(dir, "last_sessions.json")}
+		recent: map[string]LastSession{}, recentPath: filepath.Join(dir, "last_sessions.json"),
+		pins: map[string]PinnedSession{}, pinsPath: filepath.Join(dir, "pinned_sessions.json")}
 	var list []Session
 	if err := readJSON(r.path, &list); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -199,7 +218,75 @@ func openSessions(dir string) (*sessionRegistry, error) {
 	if r.recent == nil {
 		r.recent = map[string]LastSession{}
 	}
+	if err := readJSON(r.pinsPath, &r.pins); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if r.pins == nil {
+		r.pins = map[string]PinnedSession{}
+	}
 	return r, nil
+}
+
+// PinSession prefers one live Codex thread for its local project area.
+func (n *Node) PinSession(req PinSessionRequest) (PinnedSession, error) {
+	s, ok := n.SessionLive(req.SessionID)
+	if !ok {
+		return PinnedSession{}, fmt.Errorf("%w %s", ErrUnknownSession, req.SessionID)
+	}
+	if s.Provider != ProviderCodex {
+		return PinnedSession{}, fmt.Errorf("%w: only a Codex session can be pinned", ErrBadRequest)
+	}
+	p := PinnedSession{SessionID: s.SessionID, Provider: s.Provider, Folder: s.Folder, Area: s.Area, CodexHome: s.CodexHome}
+	r := n.sess
+	r.mu.Lock()
+	old, hadOld := r.pins[s.Area]
+	r.pins[s.Area] = p
+	err := writeJSON(r.pinsPath, r.pins)
+	if err != nil {
+		if hadOld {
+			r.pins[s.Area] = old
+		} else {
+			delete(r.pins, s.Area)
+		}
+	}
+	r.mu.Unlock()
+	if err != nil {
+		return PinnedSession{}, err
+	}
+	n.changed("sessions")
+	return p, nil
+}
+
+// UnpinSession removes req.SessionID as a preferred recipient.
+func (n *Node) UnpinSession(req PinSessionRequest) (PinnedSession, error) {
+	r := n.sess
+	r.mu.Lock()
+	for area, p := range r.pins {
+		if p.SessionID != req.SessionID {
+			continue
+		}
+		delete(r.pins, area)
+		if err := writeJSON(r.pinsPath, r.pins); err != nil {
+			r.pins[area] = p
+			r.mu.Unlock()
+			return PinnedSession{}, err
+		}
+		r.mu.Unlock()
+		n.changed("sessions")
+		return p, nil
+	}
+	r.mu.Unlock()
+	return PinnedSession{}, fmt.Errorf("%w %s", ErrUnknownSession, req.SessionID)
+}
+
+// PinnedSession returns area's preferred recipient.
+func (n *Node) PinnedSession(area string) (PinnedSession, bool) { return n.sess.pinned(area) }
+
+func (r *sessionRegistry) pinned(area string) (PinnedSession, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.pins[area]
+	return p, ok
 }
 
 // saveLocked writes the live sessions. The caller holds r.mu.
@@ -366,6 +453,7 @@ func (n *Node) EndSession(id string) error {
 	delete(r.inbox, id)
 	err := r.saveLocked(time.Now())
 	r.mu.Unlock()
+	n.clearPinnedSession(id)
 	// Its leases go back at once: another session or a launch takes them.
 	n.revokeLeases(id, nil, "session_end", true)
 	if !ok {
@@ -375,6 +463,29 @@ func (n *Node) EndSession(id string) error {
 	n.presenceChanged()
 	n.changed("sessions")
 	return err
+}
+
+func (n *Node) clearPinnedSession(id string) {
+	r := n.sess
+	r.mu.Lock()
+	removed := map[string]PinnedSession{}
+	for area, p := range r.pins {
+		if p.SessionID == id {
+			removed[area] = p
+			delete(r.pins, area)
+		}
+	}
+	if len(removed) > 0 {
+		if err := writeJSON(r.pinsPath, r.pins); err != nil {
+			maps.Copy(r.pins, removed)
+			n.log.Warn("clear pinned session", "session", id, "error", err)
+			removed = nil
+		}
+	}
+	r.mu.Unlock()
+	if len(removed) > 0 {
+		n.changed("sessions")
+	}
 }
 
 // sessionChanged hands a session that ended or expired (live false), or

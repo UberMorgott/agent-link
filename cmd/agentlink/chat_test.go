@@ -23,6 +23,7 @@ type fakeAPI struct {
 	reqs     []string
 	send     node.SendRequest
 	reassign node.ReassignRequest
+	pin      node.PinSessionRequest
 	discuss  map[string]string
 }
 
@@ -65,6 +66,9 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			f.reassign = req
 			_ = json.NewEncoder(w).Encode(node.ChatMessage{Assigned: "session:" + req.SessionID, ID: req.ID})
+		case r.URL.Path == "/session-pin":
+			_ = json.NewDecoder(r.Body).Decode(&f.pin)
+			_ = json.NewEncoder(w).Encode(node.PinnedSession{SessionID: f.pin.SessionID, Provider: node.ProviderCodex})
 		case strings.HasSuffix(r.URL.Path, "/ack"):
 			_ = json.NewEncoder(w).Encode([]node.AckResult{{ID: "m1", Found: true}, {ID: "m2", Found: true}})
 		case r.URL.Path == "/wait" && r.URL.Query().Get("timeout") == "2s":
@@ -186,6 +190,22 @@ func TestChatReassign(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"chat", "reassign", "--id", "m9", "--config", f.cfg}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "--session") {
 		t.Fatalf("reassign without a session: code %d, stderr %q", code, stderr.String())
+	}
+}
+
+func TestSessionPin(t *testing.T) {
+	f := newFakeAPI(t)
+	out := f.run("session", "pin", "--session", "thread-chef", "--project", "P1")
+	if !strings.Contains(out, `"session_id":"thread-chef"`) || f.pin.SessionID != "thread-chef" {
+		t.Fatalf("session pin: %q, %+v", out, f.pin)
+	}
+	if len(f.reqs) != 1 || f.reqs[0] != "POST /session-pin?project=P1" {
+		t.Fatalf("requests %q", f.reqs)
+	}
+	f.reqs = nil
+	f.run("session", "unpin", "--session", "thread-chef", "--project", "P1")
+	if len(f.reqs) != 1 || f.reqs[0] != "DELETE /session-pin?project=P1" {
+		t.Fatalf("unpin requests %q", f.reqs)
 	}
 }
 

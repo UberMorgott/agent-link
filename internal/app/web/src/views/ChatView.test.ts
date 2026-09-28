@@ -127,6 +127,7 @@ beforeEach(() => {
     'inbox.member.queued': 'в очереди {n}',
     'inbox.project_pause.pause': 'Пауза агентов', 'inbox.project_pause.resume': 'Продолжить работу агентов',
     'inbox.project_pause.remove': 'Снять паузу проекта', 'inbox.project_pause.global': 'Общая пауза',
+    'inbox.session_pin': 'AgentLink → Codex-чат {id}',
   }
 })
 
@@ -179,6 +180,14 @@ describe('the open chat', () => {
     expect(pause.getAttribute('aria-pressed')).toBe('false')
     expect(app.status.stop_all).toBe(true)
     expect(text($('#chat_global_pause'))).toContain('Общая пауза')
+  })
+
+  it('shows the pinned Codex thread', async () => {
+    const { app, inbox } = await openInbox()
+    app.sessions = [{ session_id: 'chef', provider: 'codex', folder: 'W:/work', area: '', wake: 'queue', project: P, pinned: true }]
+    await inbox.selectChat(P, 'c3', '')
+    await settle()
+    expect(text($('#chat_pinned_session'))).toContain('AgentLink → Codex-чат chef')
   })
 
   it('sends a project message without a recipient selector', async () => {

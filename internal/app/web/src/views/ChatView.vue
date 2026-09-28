@@ -76,8 +76,10 @@ onBeforeUnmount(() => clearInterval(ticker))
 // lastKnown: each connected member's last running line, kept (plain, not
 // reactive) so its row stays as idle after the job is gone.
 const lastKnown = new Map<string, ActivityLine>()
+const chatSessions = computed(() => chatSessionList(info.value, app.sessions, app.settings))
+const pinnedSession = computed(() => app.sessions?.find((session) => session.project === pid.value && session.pinned))
 const activity = computed(() => keepLastKnown(activityLines(info.value, inbox.messages, self.value,
-  chatSessionList(info.value, app.sessions, app.settings), app.settings, now.value), info.value, lastKnown))
+  chatSessions.value, app.settings, now.value), info.value, lastKnown))
 const workingCount = computed(() => activity.value.reduce((count, row) =>
   count + (row.cls === 'running' ? 1 : 0) + (row.children?.filter((child) => child.cls === 'running').length || 0), 0))
 const activityOpen = ref(false)
@@ -361,6 +363,12 @@ function back() {
             v-if="inProject"
             class="chat-pause-controls ml-auto flex items-center gap-2"
           >
+            <span
+              v-if="pinnedSession"
+              id="chat_pinned_session"
+              class="chat-global-pause"
+              role="status"
+            >{{ fmt('inbox.session_pin', { id: pinnedSession.session_id || '' }) }}</span>
             <span
               v-if="globallyStopped"
               id="chat_global_pause"
