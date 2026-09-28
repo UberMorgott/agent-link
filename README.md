@@ -418,6 +418,7 @@ agentlink wait  --config node.json --timeout 0             # blocks; JSON line p
 agentlink inbox --config node.json --limit 20              # recent in/out, non-destructive
 agentlink chat unread --config node.json                   # unread messages of this node, oldest first
 agentlink chat ack --config node.json --ids <id,...>       # mark read: the authors get read receipts
+agentlink session pin --session <thread-id> --project <id> # route every project message to one Codex chat, persistently
 agentlink members --config node.json                       # member table, one JSON line each, this node first
 agentlink discuss --with codex --body "Review this design" # ask a local Codex seat in this folder's project; wait for its reply
 agentlink discuss --with claude --prompt-file question.md --async # post and return IDs immediately

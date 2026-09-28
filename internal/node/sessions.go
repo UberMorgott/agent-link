@@ -166,6 +166,8 @@ type sessionRegistry struct {
 	inbox      map[string]inboxAddr
 	recent     map[string]LastSession
 	recentPath string
+	pin        *PinnedSession
+	pinPath    string
 
 	// gone are the sessions saveLocked dropped as expired (TTL, no
 	// SessionEnd) whose orphaned replies expireSessions has not reported yet.
@@ -181,10 +183,24 @@ type LastSession struct {
 	At        time.Time `json:"at"`
 }
 
+// PinnedSession is the Codex thread that receives every message in this
+// project, even after another session sends in its chats. It is local only.
+type PinnedSession struct {
+	SessionID string `json:"session_id"`
+	Provider  string `json:"provider"`
+	Folder    string `json:"folder"`
+	CodexHome string `json:"codex_home,omitempty"`
+}
+
+// PinSessionRequest is the body of POST /session-pin.
+type PinSessionRequest struct {
+	SessionID string `json:"session_id"`
+}
+
 func openSessions(dir string) (*sessionRegistry, error) {
 	r := &sessionRegistry{path: filepath.Join(dir, "sessions.json"), sessions: map[string]*Session{}, last: map[string]ActivityState{},
 		on: map[string]map[string]string{}, claims: map[string]sessionClaim{}, inbox: map[string]inboxAddr{},
-		recent: map[string]LastSession{}, recentPath: filepath.Join(dir, "last_sessions.json")}
+		recent: map[string]LastSession{}, recentPath: filepath.Join(dir, "last_sessions.json"), pinPath: filepath.Join(dir, "pinned_session.json")}
 	var list []Session
 	if err := readJSON(r.path, &list); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -199,7 +215,43 @@ func openSessions(dir string) (*sessionRegistry, error) {
 	if r.recent == nil {
 		r.recent = map[string]LastSession{}
 	}
+	if err := readJSON(r.pinPath, &r.pin); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 	return r, nil
+}
+
+// PinSession makes one live Codex thread this project's permanent recipient.
+func (n *Node) PinSession(req PinSessionRequest) (PinnedSession, error) {
+	s, ok := n.SessionLive(req.SessionID)
+	if !ok {
+		return PinnedSession{}, fmt.Errorf("%w %s", ErrUnknownSession, req.SessionID)
+	}
+	if s.Provider != ProviderCodex {
+		return PinnedSession{}, fmt.Errorf("%w: only a Codex session can be pinned", ErrBadRequest)
+	}
+	p := PinnedSession{SessionID: s.SessionID, Provider: s.Provider, Folder: s.Folder, CodexHome: s.CodexHome}
+	r := n.sess
+	r.mu.Lock()
+	err := writeJSON(r.pinPath, p)
+	if err == nil {
+		r.pin = &p
+	}
+	r.mu.Unlock()
+	if err != nil {
+		return PinnedSession{}, err
+	}
+	n.changed("sessions")
+	return p, nil
+}
+
+func (r *sessionRegistry) pinned() (PinnedSession, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pin == nil {
+		return PinnedSession{}, false
+	}
+	return *r.pin, true
 }
 
 // saveLocked writes the live sessions. The caller holds r.mu.

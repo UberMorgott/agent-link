@@ -100,6 +100,7 @@ agentlink send         --chat <id> --attach shot.png [--attach log.txt] [--body 
 agentlink chat unread  [--folder <path>]                       # what this node has not read yet, oldest first
 agentlink chat ack     --ids <id,...> [--session <id>]         # mark read: the authors see «прочитано»
 agentlink chat reassign --id <id> --session <id> [--force]     # hand a reply that needs a person to a live session
+agentlink session pin   --session <codex-thread-id> [--project <id>] # permanently route this project's messages to that Codex chat
 agentlink chat history --chat <id> [--limit 50] [--before <seq>] [--after <seq>]
 agentlink chat list    [--archive] [--legacy]
 agentlink chat new     --with nikita[,olga] [--area dev]       # prints the chat id (the open one; created when missing)

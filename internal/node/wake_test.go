@@ -213,6 +213,49 @@ func TestWakeIdleQueueSession(t *testing.T) {
 	}
 }
 
+func TestPinnedCodexThreadWakesAfterSessionExpires(t *testing.T) {
+	w := &fakeWaker{ready: true}
+	a, b := wakePair(t, w)
+	dir, home := t.TempDir(), t.TempDir()
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-chef", Provider: ProviderCodex, Folder: dir, Wake: WakeQueue, Idle: true, CodexHome: home}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.PinSession(PinSessionRequest{SessionID: "s-chef"}); err != nil {
+		t.Fatal(err)
+	}
+	q, err := a.SendRequest(SendRequest{To: "b", Body: "question", AuthorKind: AuthorAgent, SessionID: "s-chef"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the question", func() bool { _, ok := b.chats.message(q.ID); return ok })
+	if err := a.EndSession("s-chef"); err != nil {
+		t.Fatal(err)
+	}
+	m, err := b.SendRequest(SendRequest{ChatID: q.ChatID, ReplyTo: q.ID, Body: "direct to Chef", Ask: []string{"a"}, AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the message", func() bool { _, ok := a.chats.message(m.ID); return ok })
+	if p, ok := a.sess.pinned(); !ok || p.Provider != ProviderCodex {
+		t.Fatalf("pin before wake: %+v, %v", p, ok)
+	}
+	if area, ok := a.FolderArea(dir); !ok {
+		t.Fatalf("pinned folder is unbound: %q, area %q", dir, area)
+	}
+	page, pageErr := a.unreadFor(dir, "s-chef", "", hookBatchIDs, true, false, AgentFilter{})
+	if pageErr != nil || len(page.Messages) != 1 {
+		t.Fatalf("pinned unread before wake: %+v, %v; route %q", page, pageErr, a.routedTo([]string{m.ID})[m.ID])
+	}
+	a.syncQueueWake()
+	a.wakeIdle(context.Background())
+	w.mu.Lock()
+	calls := slices.Clone(w.calls)
+	w.mu.Unlock()
+	if len(calls) != 1 || !strings.HasPrefix(calls[0], home+"|s-chef|") {
+		t.Fatalf("pinned wake calls: %q", calls)
+	}
+}
+
 func TestWakeIgnoresGuardedMessage(t *testing.T) {
 	w := &fakeWaker{ready: true}
 	a, b := wakePair(t, w)
