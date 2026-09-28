@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -498,34 +499,7 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 		}
 	})
 	mux.HandleFunc("GET /unread", func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		limit := 50
-		if s := q.Get("limit"); s != "" {
-			v, err := strconv.Atoi(s)
-			if err != nil || v < 1 || v > 1000 {
-				http.Error(w, "invalid limit", http.StatusBadRequest)
-				return
-			}
-			limit = v
-		}
-		if q.Get("agent") == "1" && n.Stopped() {
-			writeJSONResponse(w, UnreadPage{Messages: []UnreadMessage{}})
-			return
-		}
-		// A Claude session's background waiter asks with waiter=1: while the
-		// node wakes that session through its inbox, the waiter has nothing to do.
-		if q.Get("waiter") == "1" && n.InboxWakes(q.Get("session")) {
-			writeJSONResponse(w, UnreadPage{Messages: []UnreadMessage{}})
-			return
-		}
-		waiter := q.Get("waiter") == "1"
-		if waiter {
-			limit = max(limit, hookBatchIDs) // what it may not wake with is dropped below
-		}
-		page, err := n.unreadFor(q.Get("folder"), q.Get("session"), q.Get("after"), limit, q.Get("actionable") == "1")
-		if err == nil && waiter {
-			n.waiterSpent(&page)
-		}
+		page, err := n.UnreadQuery(r.URL.Query())
 		reply(w, page, err)
 	})
 	mux.HandleFunc("POST /claim", func(w http.ResponseWriter, r *http.Request) {
@@ -551,6 +525,37 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+}
+
+// UnreadQuery answers GET /unread for its query (folder, session, after,
+// limit, actionable, exact, agent, waiter); the control API merges the answers of
+// several contexts with it.
+func (n *Node) UnreadQuery(q url.Values) (UnreadPage, error) {
+	limit := 50
+	if s := q.Get("limit"); s != "" {
+		v, err := strconv.Atoi(s)
+		if err != nil || v < 1 || v > 1000 {
+			return UnreadPage{}, fmt.Errorf("%w: invalid limit", ErrBadRequest)
+		}
+		limit = v
+	}
+	if q.Get("agent") == "1" && n.Stopped() {
+		return UnreadPage{Messages: []UnreadMessage{}}, nil
+	}
+	// A Claude session's background waiter asks with waiter=1: while the
+	// node wakes that session through its inbox, the waiter has nothing to do.
+	waiter := q.Get("waiter") == "1"
+	if waiter && n.InboxWakes(q.Get("session")) {
+		return UnreadPage{Messages: []UnreadMessage{}}, nil
+	}
+	if waiter {
+		limit = max(limit, hookBatchIDs) // what it may not wake with is dropped below
+	}
+	page, err := n.unreadFor(q.Get("folder"), q.Get("session"), q.Get("after"), limit, q.Get("actionable") == "1", q.Get("exact") == "1")
+	if err == nil && waiter {
+		n.waiterSpent(&page)
+	}
+	return page, err
 }
 
 func writeJSONResponse(w http.ResponseWriter, v any) {

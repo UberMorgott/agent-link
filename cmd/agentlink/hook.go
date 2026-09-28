@@ -518,9 +518,45 @@ type hookBatch struct {
 	text   string   // for the model
 	notice string   // for the person
 	ids    []string // to acknowledge
+	// projects: id -> the project it is acknowledged in (UnreadMessage.Project;
+	// none: the context the folder routes to).
+	projects map[string]string
 	// chats: chat id -> the message of it this session works on (the newest
 	// delivered), which its activity is reported for.
 	chats map[string]string
+}
+
+// add takes m into the batch to acknowledge.
+func (b *hookBatch) add(m node.UnreadMessage) {
+	b.ids = append(b.ids, m.ID)
+	if m.Project != "" {
+		if b.projects == nil {
+			b.projects = map[string]string{}
+		}
+		b.projects[m.ID] = m.Project
+	}
+}
+
+// byProject groups ids by the project each is in ("" for none), in order.
+func byProject[T any](items []T, project func(T) string) ([]string, map[string][]T) {
+	var order []string
+	groups := map[string][]T{}
+	for _, it := range items {
+		p := project(it)
+		if _, ok := groups[p]; !ok {
+			order = append(order, p)
+		}
+		groups[p] = append(groups[p], it)
+	}
+	return order, groups
+}
+
+// projectQuery is the query naming project, else the hook's own selector.
+func (e hookEnv) projectQuery(project string) url.Values {
+	if project != "" {
+		return url.Values{"project": {project}}
+	}
+	return e.withProject(nil)
 }
 
 func (b hookBatch) empty() bool { return len(b.ids) == 0 }
@@ -550,7 +586,7 @@ func (h *hookSession) collect(stop, actionable bool, proof func() string) (hookB
 		got = provenWoken(page.Woken, proof())
 		n := len(page.Messages)
 		page.Messages = slices.DeleteFunc(page.Messages, func(m node.UnreadMessage) bool {
-			return slices.ContainsFunc(got, func(g node.UnreadMessage) bool { return g.ID == m.ID })
+			return slices.ContainsFunc(got, func(g node.UnreadMessage) bool { return g.ID == m.ID && g.Project == m.Project })
 		})
 		page.Total -= n - len(page.Messages)
 	}
@@ -604,7 +640,7 @@ func transcriptTail(path string) string {
 // is proven to have got (provenWoken).
 func (b *hookBatch) takeWoken(got []node.UnreadMessage) {
 	for _, m := range got {
-		b.ids = append(b.ids, m.ID)
+		b.add(m)
 		if m.ChatID != "" && !m.OwnHuman && !m.Paused && m.Assigned != "worker" {
 			b.chats[m.ChatID] = m.ID
 		}
@@ -620,23 +656,30 @@ func (h *hookSession) claim(page node.UnreadPage) (node.UnreadPage, error) {
 	if len(page.Messages) == 0 {
 		return page, nil
 	}
-	req := node.ClaimRequest{SessionID: h.sid, Folder: h.folder, WakeToken: h.wakeToken}
-	for _, m := range page.Messages {
-		req.IDs = append(req.IDs, m.ID)
-	}
-	var granted []string
-	err := hookCall(h.env.api, http.MethodPost, "/claim", h.env.withProject(nil), req, &granted, hookHTTPTimeout)
-	var se *statusError
-	switch {
-	case errors.As(err, &se) && (se.code == http.StatusNotFound || se.code == http.StatusMethodNotAllowed):
-		return page, nil
-	case err != nil:
-		return node.UnreadPage{}, err
+	// Each message is claimed in its own project: the same (project, id,
+	// session) goes through claim, wake and ack.
+	order, groups := byProject(page.Messages, func(m node.UnreadMessage) string { return m.Project })
+	granted := map[string][]string{}
+	for _, p := range order {
+		req := node.ClaimRequest{SessionID: h.sid, Folder: h.folder, WakeToken: h.wakeToken}
+		for _, m := range groups[p] {
+			req.IDs = append(req.IDs, m.ID)
+		}
+		var got []string
+		err := hookCall(h.env.api, http.MethodPost, "/claim", h.env.projectQuery(p), req, &got, hookHTTPTimeout)
+		var se *statusError
+		switch {
+		case errors.As(err, &se) && (se.code == http.StatusNotFound || se.code == http.StatusMethodNotAllowed):
+			got = req.IDs
+		case err != nil:
+			return node.UnreadPage{}, err
+		}
+		granted[p] = got
 	}
 	out := page
 	out.Messages = nil
 	for _, m := range page.Messages {
-		if slices.Contains(granted, m.ID) {
+		if slices.Contains(granted[m.Project], m.ID) {
 			out.Messages = append(out.Messages, m)
 		}
 	}
@@ -652,9 +695,21 @@ func (h *hookSession) accept(b hookBatch) {
 		return
 	}
 	var res []node.AckResult
-	req := node.AckRequest{IDs: b.ids, SessionID: h.sid}
-	if err := hookCall(h.env.api, http.MethodPost, "/ack", nil, req, &res, hookHTTPTimeout); err != nil {
-		return // still unread: delivered again at the next event
+	order, groups := byProject(b.ids, func(id string) string { return b.projects[id] })
+	for _, p := range order {
+		var part []node.AckResult
+		var q url.Values
+		if p != "" {
+			q = url.Values{"project": {p}}
+		}
+		req := node.AckRequest{IDs: groups[p], SessionID: h.sid}
+		if err := hookCall(h.env.api, http.MethodPost, "/ack", q, req, &part, hookHTTPTimeout); err != nil {
+			continue // still unread: delivered again at the next event
+		}
+		res = append(res, part...)
+	}
+	if len(res) == 0 {
+		return
 	}
 	for _, r := range res {
 		if r.Assigned != "worker" {
@@ -698,7 +753,7 @@ func formatBatch(page node.UnreadPage, folder, sid string, stop bool) hookBatch 
 		shown = append(shown, m)
 		body.WriteString("\n")
 		body.WriteString(entry)
-		b.ids = append(b.ids, m.ID)
+		b.add(m)
 		// Every chat the session reads from shows what it does next (its
 		// person's own messages and what it must not answer excepted).
 		if m.ChatID != "" && !m.OwnHuman && !m.Paused && m.Assigned != "worker" {

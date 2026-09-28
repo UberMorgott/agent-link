@@ -102,6 +102,175 @@ func TestNetworkHookUnreadSurvivesLocalDiscussionInSameFolder(t *testing.T) {
 	}
 }
 
+// One folder bound to a network project and to its private local chat, two
+// interactive sessions registered in the network project, both asking the
+// same local seat: each gets its own seat reply (never the other's), both
+// hear the network message but only one takes it, and every message is
+// claimed and acknowledged once, in its own project.
+func TestOriginRoutingAcrossNetworkAndLocalProject(t *testing.T) {
+	p := newBinding(t, t.TempDir())
+	alice, bob := pairApps(t, p)
+	alice.Launcher = &seatRunner{}
+	srv := httptest.NewServer(alice.Handler())
+	defer srv.Close()
+	sids := []string{"claude-one", "claude-two"}
+	var asks []discussResultAPI
+	for _, sid := range sids {
+		session := node.SessionRequest{SessionID: sid, Provider: node.ProviderClaude, Folder: p.Dir}
+		if code, body := call(t, srv, http.MethodPost, "/sessions", jsonOf(t, session)); code != http.StatusOK {
+			t.Fatalf("register %s: %d %s", sid, code, body)
+		}
+		code, body := call(t, srv, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
+			"folder": p.Dir, "provider": node.ProviderCodex, "source": node.ProviderClaude, "session_id": sid, "body": "question of " + sid,
+		}))
+		var ask discussResultAPI
+		if code != http.StatusOK || json.Unmarshal([]byte(body), &ask) != nil {
+			t.Fatalf("discuss %s: %d %s", sid, code, body)
+		}
+		asks = append(asks, ask)
+	}
+	local := alice.projects[asks[0].Project].n
+	if asks[0].Project == p.ID || asks[1].Chat != asks[0].Chat || asks[1].Seat != asks[0].Seat {
+		t.Fatalf("both asks not in one local chat and seat: %+v", asks)
+	}
+	eventuallyApp(t, "seat setup", func() bool {
+		for _, s := range local.Seats() {
+			if s.SessionID == "" || s.LastTurn.IsZero() || s.Status == node.SeatRunning {
+				return false
+			}
+		}
+		return true
+	})
+	var replies []node.Message
+	for _, ask := range asks {
+		m, err := local.SendRequest(node.SendRequest{ChatID: ask.Chat, ReplyTo: ask.ID, Body: "answer to " + ask.ID,
+			Seat: ask.Seat, AuthorKind: node.AuthorAgent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		replies = append(replies, m)
+	}
+	chat, err := bob.projects[p.ID].n.NewProjectChat([]string{"alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	network, err := bob.projects[p.ID].n.SendRequest(node.SendRequest{ChatID: chat.ID, Body: "Network question",
+		Ask: []string{"alice"}, AuthorKind: node.AuthorHuman})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unread := func(sid string) map[string]string {
+		t.Helper()
+		code, body := call(t, srv, http.MethodGet, "/unread?"+url.Values{"folder": {p.Dir}, "session": {sid}}.Encode(), "")
+		var page node.UnreadPage
+		if code != http.StatusOK || json.Unmarshal([]byte(body), &page) != nil {
+			t.Fatalf("unread %s: %d %s", sid, code, body)
+		}
+		out := map[string]string{}
+		for _, m := range page.Messages {
+			out[m.ID] = m.Project
+		}
+		return out
+	}
+	eventuallyLong(t, "network question at alice", func() bool { _, ok := unread(sids[0])[network.ID]; return ok })
+	for i, sid := range sids {
+		got := unread(sid)
+		if got[replies[i].ID] != asks[i].Project || got[network.ID] != p.ID {
+			t.Fatalf("%s unread: %v", sid, got)
+		}
+		if _, ok := got[replies[1-i].ID]; ok {
+			t.Fatalf("%s sees the other session's reply: %v", sid, got)
+		}
+	}
+	claim := func(project, sid string, ids ...string) []string {
+		t.Helper()
+		path := "/claim"
+		if project != "" {
+			path += "?project=" + project
+		}
+		code, body := call(t, srv, http.MethodPost, path, jsonOf(t, node.ClaimRequest{IDs: ids, SessionID: sid, Folder: p.Dir}))
+		var granted []string
+		if code != http.StatusOK || json.Unmarshal([]byte(body), &granted) != nil {
+			t.Fatalf("claim %v by %s: %d %s", ids, sid, code, body)
+		}
+		return granted
+	}
+	if g := claim(asks[0].Project, sids[1], replies[0].ID); len(g) != 0 {
+		t.Fatalf("the other session claimed a reply: %v", g)
+	}
+	if g := claim(asks[0].Project, sids[0], replies[0].ID); !slices.Equal(g, []string{replies[0].ID}) {
+		t.Fatalf("own reply claim: %v", g)
+	}
+	// An older hook claims without a project: each id in its own context.
+	if g := claim("", sids[1], replies[1].ID, network.ID); !slices.Equal(slices.Sorted(slices.Values(g)), slices.Sorted(slices.Values([]string{replies[1].ID, network.ID}))) {
+		t.Fatalf("claim across contexts: %v", g)
+	}
+	if g := claim(p.ID, sids[0], network.ID); len(g) != 0 {
+		t.Fatalf("network message granted twice: %v", g)
+	}
+	ack := func(project, sid string, ids ...string) []node.AckResult {
+		t.Helper()
+		path := "/ack"
+		if project != "" {
+			path += "?project=" + project
+		}
+		code, body := call(t, srv, http.MethodPost, path, jsonOf(t, node.AckRequest{IDs: ids, SessionID: sid}))
+		var res []node.AckResult
+		if code != http.StatusOK || json.Unmarshal([]byte(body), &res) != nil {
+			t.Fatalf("ack %v: %d %s", ids, code, body)
+		}
+		return res
+	}
+	if res := ack(asks[0].Project, sids[0], replies[0].ID); len(res) != 1 || !res[0].Found || !res[0].WasUnread {
+		t.Fatalf("ack in the local project: %+v", res)
+	}
+	if res := ack("", sids[1], replies[1].ID, network.ID); len(res) != 2 || !res[0].WasUnread || !res[1].WasUnread {
+		t.Fatalf("id-only ack across contexts: %+v", res)
+	}
+	if res := ack(asks[0].Project, sids[0], replies[0].ID); len(res) != 1 || res[0].WasUnread {
+		t.Fatalf("acknowledged twice: %+v", res)
+	}
+	for _, sid := range sids {
+		if got := unread(sid); len(got) != 0 {
+			t.Fatalf("%s still has unread: %v", sid, got)
+		}
+	}
+	for _, b := range alice.Settings().Bindings {
+		if b.ScopeOf() == settings.ProjectScopeLocal && len(alice.projects[b.ID].n.Sessions()) != 0 {
+			t.Fatal("external network hook session was registered in the local project")
+		}
+	}
+}
+
+// A direct discuss wait that returns the seat's reply reads it: the asking
+// session's hooks do not deliver it a second time.
+func TestDiscussReplyReadsTheReply(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
+	dir := t.TempDir()
+	code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
+		"folder": dir, "provider": node.ProviderCodex, "source": node.ProviderClaude, "session_id": "claude-ext", "body": "question",
+	}), nil)
+	var ask discussResultAPI
+	if code != http.StatusOK || json.Unmarshal([]byte(raw), &ask) != nil {
+		t.Fatalf("discuss: %d %s", code, raw)
+	}
+	n := h.app.projects[ask.Project].n
+	reply, err := n.SendRequest(node.SendRequest{ChatID: ask.Chat, ReplyTo: ask.ID, Body: "42", Seat: ask.Seat, AuthorKind: node.AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := n.UnreadFor("", "claude-ext", "", 10); p.Total != 1 || p.Messages[0].ID != reply.ID {
+		t.Fatalf("reply not unread for the asking session: %+v", p)
+	}
+	path := "/discuss/reply?" + url.Values{"project": {ask.Project}, "chat": {ask.Chat}, "id": {ask.ID}, "seat": {ask.Seat}, "timeout": {"2s"}}.Encode()
+	if code, body := h.do(t, http.MethodGet, path, "", nil); code != http.StatusOK || !strings.Contains(body, reply.ID) {
+		t.Fatalf("reply wait: %d %s", code, body)
+	}
+	if p, _ := n.UnreadFor("", "claude-ext", "", 10); p.Total != 0 {
+		t.Fatalf("reply delivered again: %+v", p)
+	}
+}
+
 // call sends one control API request to srv.
 func call(t *testing.T, srv *httptest.Server, method, path, body string) (int, string) {
 	t.Helper()

@@ -1036,13 +1036,18 @@ func (n *Node) sendChat(m Message) (Message, error) {
 // postChat stores m in chat c, then queues a copy for every other participant.
 // A status update is only kept as its job's latest status.
 // A person's message is also unread here: this node's own sessions learn what
-// their person told the others (ChatMessage.OwnHuman).
+// their person told the others (ChatMessage.OwnHuman). So is a seat's reply to
+// a message a session of this node wrote: routeOf takes it to that session.
 func (n *Node) postChat(c Chat, m Message) error {
 	m.From, m.To = n.cfg.Node, ""
 	c.stamp(&m)
+	unread := m.AuthorKind == AuthorHuman && len(m.AskSeats) == 0
+	if m.Kind == "" && m.Agent != nil && m.Agent.Seat != "" && n.repliedSeat(m.ReplyTo) == "" && n.originSession(m) != "" {
+		unread = true
+	}
 	if m.Kind == KindStatus {
 		n.chats.noteStatus(m)
-	} else if _, isNew, _, err := n.chats.put(m, m.AuthorKind == AuthorHuman && len(m.AskSeats) == 0); err != nil {
+	} else if _, isNew, _, err := n.chats.put(m, unread); err != nil {
 		return err
 	} else if isNew && m.Kind == "" && m.ReplyTo != "" {
 		// Replying reads what it answers: the reply tells its author.

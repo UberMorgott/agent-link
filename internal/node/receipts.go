@@ -105,6 +105,9 @@ type UnreadMessage struct {
 	// ForSeat: the seat (seats.go) the message is for; it goes to that seat's
 	// session only.
 	ForSeat string `json:"for_seat,omitempty"`
+	// Project is the context the message is in, set by the control API that
+	// lists several contexts' messages together: claim and ack it there.
+	Project string `json:"project,omitempty"`
 }
 
 // UnreadPage is one page of Unread.
@@ -130,11 +133,14 @@ func (n *Node) Unread(folder, after string, limit int) (UnreadPage, error) {
 // the messages it may take (routeOf: the ones for it and the ones for no
 // session in particular), never those another live session is to get.
 func (n *Node) UnreadFor(folder, session, after string, limit int) (UnreadPage, error) {
-	return n.unreadFor(folder, session, after, limit, false)
+	return n.unreadFor(folder, session, after, limit, false, false)
 }
 
-// unreadFor optionally excludes guarded messages from automatic wake and Stop.
-func (n *Node) unreadFor(folder, session, after string, limit int, actionable bool) (UnreadPage, error) {
+// unreadFor optionally excludes guarded messages from automatic wake and Stop;
+// exact keeps only the messages for session in particular (routeOf), not
+// those for no session: a session registered in another context of this
+// process takes here only the replies to its own messages.
+func (n *Node) unreadFor(folder, session, after string, limit int, actionable, exact bool) (UnreadPage, error) {
 	if session != "" {
 		n.auto.stopMu.RLock()
 		defer n.auto.stopMu.RUnlock()
@@ -169,7 +175,7 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable bo
 			return true
 		}
 		to := n.routeOf(id, rec, live)
-		return to == "" || to == session
+		return to == session || (to == "" && !exact)
 	}
 	var all, woken []UnreadMessage
 	// add lists um: a message the session was woken with is Woken (with the

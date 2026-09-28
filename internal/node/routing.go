@@ -17,6 +17,9 @@ import (
 //     claimTTL, or the session assigned to answer it (Ack); or the session
 //     the node woke with it (wakeClaim) for inboxWakeGrace, whose hooks
 //     acknowledge it instead of delivering it (UnreadPage.Woken);
+//   - else, for a reply, the session that wrote the message it answers
+//     (originSession), live or not: while that session is gone the reply
+//     waits unread for it (the owner sees it) instead of reaching another;
 //   - else the chat's session (chat affinity): the one behind the chat's
 //     newest message a session of this node wrote (chatRecord.Session,
 //     recorded by agentlink send inside the session) or was assigned. A
@@ -29,7 +32,8 @@ import (
 //     chats: an abandoned one its waiter keeps live does not hold them;
 //   - else no session in particular: the first session to Claim it takes it.
 //
-// Only live sessions count: a message for a session that is gone is anyone's.
+// Otherwise only live sessions count: a message for a session that is gone is
+// anyone's.
 
 // claimTTL is how long a claim holds without an ack: the hook acks right
 // after it delivers, so a claim older than that was never delivered and the
@@ -199,6 +203,11 @@ func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string 
 	if s := assignedSession(*rec); live[s] {
 		return s
 	}
+	if s := n.originSession(rec.Message); s != "" {
+		// A reply goes to the session that asked, never to the chat's newest
+		// one; while that session is gone it waits (unread, for the owner).
+		return s
+	}
 	recent := n.sess.recentlyActive(live, time.Now())
 	aff := n.chats.affinity(rec.Message.ChatID, n.cfg.Node, recent)
 	if n.leases.passedOver(id, aff) {
@@ -212,6 +221,18 @@ func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string 
 		return n.chats.affinity(rec.Message.ChatID, n.cfg.Node, busy)
 	}
 	return aff
+}
+
+// originSession is the session of this node that wrote the message m replies
+// to (chatRecord.Session), "" when m replies to none of them.
+func (n *Node) originSession(m Message) string {
+	if m.ReplyTo == "" {
+		return ""
+	}
+	if r, ok := n.chats.message(m.ReplyTo); ok && r.Message.From == n.cfg.Node {
+		return r.Session
+	}
+	return ""
 }
 
 // recentlyActive is the subset of live whose sessions had a hook event within
@@ -284,16 +305,25 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 	now := time.Now()
 	r.claimMu.Lock()
 	live := r.liveIDs(now)
+	ids := req.IDs
 	if !live[req.SessionID] {
+		// Only a registered session takes messages: a hook of a run that never
+		// registered (a headless claude -p) must not steal them. A session of
+		// another context of this process takes the replies to its own
+		// messages here (routeOf names it), nothing else.
+		ids = slices.DeleteFunc(slices.Clone(ids), func(id string) bool {
+			rec, ok := n.chats.message(id)
+			return !ok || n.routeOf(id, &rec, live) != req.SessionID
+		})
+	}
+	if len(ids) == 0 {
 		r.claimMu.Unlock()
 		n.auto.stopMu.RUnlock()
-		// Only a registered session takes messages: a hook of a run that never
-		// registered (a headless claude -p) must not steal them.
 		return []string{}, nil
 	}
-	want, spent, via := req.IDs, []string(nil), ViaHook
+	want, spent, via := ids, []string(nil), ViaHook
 	if req.WakeToken != "" {
-		want, spent = n.waiterWakesLeft(req.SessionID, req.IDs, now)
+		want, spent = n.waiterWakesLeft(req.SessionID, ids, now)
 		via = ViaWaiter
 	}
 	granted := n.claimLocked(req.SessionID, want, via, req.WakeToken, live)

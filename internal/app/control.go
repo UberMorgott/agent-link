@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/UberMorgott/agent-link/internal/node"
+	"github.com/UberMorgott/agent-link/internal/settings"
 )
 
 // The loopback control API (agents, the CLI and the folder hooks) serves
@@ -25,7 +28,9 @@ import (
 // selector never falls back: an unknown one is 404, and the context must hold
 // every chat and message the request names (409). A request no context takes
 // is 400 naming the known projects. Lists without a selector (chats,
-// sessions) cover every context and name each item's project.
+// sessions) cover every context and name each item's project. A session's
+// unread and claim by folder also cover the folder's local project, for the
+// replies to that session's own messages there (sessionContexts).
 
 // routeCtx is one running context as the router sees it.
 type routeCtx struct {
@@ -222,10 +227,7 @@ func (a *App) controlAPI() http.Handler {
 		q := r.URL.Query()
 		a.forward(w, r, selector{project: q.Get("project"), chat: q.Get("chat"), folder: q.Get("folder")}, true)
 	})
-	mux.HandleFunc("GET /unread", func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		a.forward(w, r, selector{project: q.Get("project"), folder: q.Get("folder"), cwd: q.Get("cwd")}, true)
-	})
+	mux.HandleFunc("GET /unread", a.controlUnread)
 	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Project string `json:"project"`
@@ -235,15 +237,7 @@ func (a *App) controlAPI() http.Handler {
 			a.forward(w, r, selector{project: pick(r, body.Project), folder: body.Folder}, true)
 		}
 	})
-	mux.HandleFunc("POST /claim", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Project string `json:"project"`
-			Folder  string `json:"folder"`
-		}
-		if peekJSON(w, r, &body) {
-			a.forward(w, r, selector{project: pick(r, body.Project), folder: body.Folder}, true)
-		}
-	})
+	mux.HandleFunc("POST /claim", a.controlClaim)
 	mux.HandleFunc("GET /sessions", a.controlSessions)
 	mux.HandleFunc("DELETE /sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -336,6 +330,139 @@ func (a *App) forward(w http.ResponseWriter, r *http.Request, sel selector, scop
 		return
 	}
 	c.n.APIHandler().ServeHTTP(w, r)
+}
+
+// sessionContexts is the contexts of an agent session's unread and claim: the
+// one route picks (folderScoped), then, for a folder and no selector, the
+// deepest local project holding the folder when that is another context. A
+// session registered in the folder's network project stays there; from the
+// local project (its private chat, discuss) it takes only the replies to its
+// own messages there (UnreadQuery exact), each claimed and acknowledged in
+// its own context (UnreadMessage.Project).
+func (a *App) sessionContexts(sel selector) ([]routeCtx, *routeError) {
+	ctxs := a.routeContexts()
+	c, err := route(ctxs, sel)
+	if err == nil {
+		err = folderScoped(c, sel.folder)
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := []routeCtx{c}
+	if sel.project != "" || sel.folder == "" {
+		return out, nil
+	}
+	best := -1
+	for i, x := range ctxs {
+		if x.scope == settings.ProjectScopeLocal && x.dir != "" && within(x.dir, sel.folder) &&
+			(best < 0 || len(filepath.Clean(x.dir)) > len(filepath.Clean(ctxs[best].dir))) {
+			best = i
+		}
+	}
+	if best >= 0 && ctxs[best].id != c.id && folderScoped(ctxs[best], sel.folder) == nil {
+		out = append(out, ctxs[best])
+	}
+	return out, nil
+}
+
+// controlUnread serves GET /unread: for a session, the unread messages of every
+// context of its folder (sessionContexts), merged in cursor order, each naming
+// its project when there are several.
+func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	ctxs, rerr := a.sessionContexts(selector{project: q.Get("project"), folder: q.Get("folder"), cwd: q.Get("cwd")})
+	if rerr != nil {
+		rerr.write(w)
+		return
+	}
+	if len(ctxs) == 1 || q.Get("session") == "" {
+		ctxs[0].n.APIHandler().ServeHTTP(w, r)
+		return
+	}
+	exact := maps.Clone(q)
+	exact.Set("exact", "1")
+	out := node.UnreadPage{Messages: []node.UnreadMessage{}}
+	more := false
+	for i, c := range ctxs {
+		query := q
+		if i > 0 {
+			query = exact
+		}
+		page, err := c.n.UnreadQuery(query)
+		if err != nil {
+			if i == 0 {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			continue // the extra context only adds; its failure hides nothing of the first
+		}
+		for _, m := range page.Messages {
+			m.Project = c.id
+			out.Messages = append(out.Messages, m)
+		}
+		for _, m := range page.Woken {
+			m.Project = c.id
+			out.Woken = append(out.Woken, m)
+		}
+		out.Total += page.Total
+		more = more || page.Next != ""
+	}
+	slices.SortFunc(out.Messages, func(x, y node.UnreadMessage) int { return strings.Compare(x.Cursor, y.Cursor) })
+	if q.Get("waiter") != "1" { // a waiter reads only Total
+		limit, err := strconv.Atoi(q.Get("limit"))
+		if err != nil || limit < 1 {
+			limit = 50
+		}
+		if len(out.Messages) > limit {
+			out.Messages, more = out.Messages[:limit], true
+		}
+		if more && len(out.Messages) > 0 {
+			out.Next = out.Messages[len(out.Messages)-1].Cursor
+		}
+	}
+	writeJSON(w, out)
+}
+
+// controlClaim serves POST /claim: with a selector, or when the folder has one
+// context, that context grants; else each id is claimed in the context of the
+// folder that holds it (the first when none does).
+func (a *App) controlClaim(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		node.ClaimRequest
+		Project string `json:"project"`
+	}
+	if !peekJSON(w, r, &req) {
+		return
+	}
+	ctxs, rerr := a.sessionContexts(selector{project: pick(r, req.Project), folder: req.Folder})
+	if rerr != nil {
+		rerr.write(w)
+		return
+	}
+	if len(ctxs) == 1 {
+		ctxs[0].n.APIHandler().ServeHTTP(w, r)
+		return
+	}
+	groups := make([][]string, len(ctxs))
+	for _, id := range req.IDs {
+		i := max(0, slices.IndexFunc(ctxs, func(c routeCtx) bool { return c.n.OwnsMessage(id) }))
+		groups[i] = append(groups[i], id)
+	}
+	granted := []string{}
+	for i, c := range ctxs {
+		if len(groups[i]) == 0 {
+			continue
+		}
+		part := req.ClaimRequest
+		part.IDs = groups[i]
+		got, err := c.n.Claim(part)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		granted = append(granted, got...)
+	}
+	writeJSON(w, granted)
 }
 
 // controlChats serves GET /chats: one context's with a selector, else every

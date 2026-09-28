@@ -164,7 +164,7 @@ func (n *Node) wakeIdle(ctx context.Context) {
 	r.mu.Unlock()
 	for _, d := range list {
 		s := d.s
-		page, err := n.unreadFor(s.Folder, s.SessionID, "", hookBatchIDs, true)
+		page, err := n.unreadFor(s.Folder, s.SessionID, "", hookBatchIDs, true, false)
 		if err != nil || len(page.Messages) == 0 {
 			continue
 		}

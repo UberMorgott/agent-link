@@ -68,17 +68,19 @@ func TestUnreadRoutesRepliesToTheSendingSession(t *testing.T) {
 		t.Fatalf("the chat's session: %+v", p)
 	}
 
-	// The sender ends: its chat is anyone's again. An ack ends the claim.
+	// The sender ends: its chat is anyone's again, but the reply to it waits
+	// for it (never another session's). An ack ends the claim.
 	if err := a.EndSession("s-test"); err != nil {
 		t.Fatal(err)
 	}
-	if p, _ := a.UnreadFor(dir, "s-other", "", 10); !slices.Equal(ids(p), []string{r.ID, u.ID}) {
+	if p, _ := a.UnreadFor(dir, "s-other", "", 10); !slices.Equal(ids(p), []string{u.ID}) {
 		t.Fatalf("after the sender ended: %+v", p)
 	}
 	// A session that is not registered (a headless run, an ended one) takes
-	// nothing, not even a message for nobody in particular.
-	for _, s := range []string{"s-headless", "s-test"} {
-		if g, err := a.Claim(ClaimRequest{IDs: []string{r.ID, u.ID}, SessionID: s}); err != nil || len(g) != 0 {
+	// nothing, not even a message for nobody in particular; only the reply to
+	// its own message is its own still.
+	for s, want := range map[string][]string{"s-headless": nil, "s-test": {r.ID}} {
+		if g, err := a.Claim(ClaimRequest{IDs: []string{r.ID, u.ID}, SessionID: s}); err != nil || !slices.Equal(g, want) && len(g)+len(want) > 0 {
 			t.Fatalf("unregistered %s claimed: %v, %v", s, g, err)
 		}
 	}
@@ -90,6 +92,40 @@ func TestUnreadRoutesRepliesToTheSendingSession(t *testing.T) {
 	}
 	if g, _ := a.Claim(ClaimRequest{IDs: []string{u.ID}, SessionID: "s-other"}); len(g) != 0 {
 		t.Fatalf("a read message claimed: %v", g)
+	}
+}
+
+// Two sessions ask in one chat: each reply goes to the session that asked,
+// not to the chat's newest one (affinity is for messages that answer none).
+func TestReplyGoesToAskingSessionNotNewest(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	dir := t.TempDir()
+	for _, id := range []string{"s-first", "s-second"} {
+		if _, err := a.RegisterSession(SessionRequest{SessionID: id, Provider: "claude", Folder: dir, Wake: WakeRewake}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q1, err := a.SendRequest(SendRequest{To: "b", Body: "first question", AuthorKind: AuthorAgent, SessionID: "s-first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.SendRequest(SendRequest{ChatID: q1.ChatID, Body: "second question", AuthorKind: AuthorAgent, SessionID: "s-second"}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has both", func() bool { p, _ := b.Unread("", "", 10); return p.Total == 2 })
+	r, err := b.SendRequest(SendRequest{ChatID: q1.ChatID, ReplyTo: q1.ID, Body: "answer to the first", AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the reply", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 1 })
+	if p, _ := a.UnreadFor(dir, "s-second", "", 10); p.Total != 0 {
+		t.Fatalf("the newest session got another's reply: %+v", p)
+	}
+	if g, _ := a.Claim(ClaimRequest{IDs: []string{r.ID}, SessionID: "s-second"}); len(g) != 0 {
+		t.Fatalf("the newest session claimed another's reply: %v", g)
+	}
+	if g, _ := a.Claim(ClaimRequest{IDs: []string{r.ID}, SessionID: "s-first"}); !slices.Equal(g, []string{r.ID}) {
+		t.Fatalf("the asking session's claim: %v", g)
 	}
 }
 

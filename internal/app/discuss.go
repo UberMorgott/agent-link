@@ -105,8 +105,10 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Unlock()
 	// An external interactive session keeps its folder hook in the network
-	// project when one exists. The direct discuss reply serves this call;
-	// AgentLink-launched seats use their explicit project selector in hooks.
+	// project when one exists. The message records the session (its origin):
+	// the seat's reply is unread for it alone, and its hooks take it from here
+	// also after the direct wait ends (controlUnread). AgentLink-launched
+	// seats use their explicit project selector in hooks.
 	message, err := c.n.SendRequest(node.SendRequest{ChatID: chat.ID, Body: req.Body, Folder: dir,
 		SessionID: req.SessionID, Seat: req.Seat, AskSeats: []string{seat}, AuthorKind: authorKind(req.SessionID, req.Seat)})
 	if added {
@@ -193,7 +195,7 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if found {
-			writeJSON(w, reply)
+			a.discussReplied(w, c.n, chat, reply)
 			return
 		}
 		if discussQueued(c.n, seat) {
@@ -205,7 +207,7 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-timer.C:
 			if reply, found, err := discussAnswer(c.n, chat, id, seat, &cursor); err == nil && found {
-				writeJSON(w, reply)
+				a.discussReplied(w, c.n, chat, reply)
 				return
 			} else if err != nil {
 				a.failed(w, "discuss reply", err)
@@ -217,6 +219,17 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 			sub.snapshot()
 		}
 	}
+}
+
+// discussReplied answers the waiting discuss call with reply and reads it:
+// the caller has it, so the session's hooks do not deliver it again.
+func (a *App) discussReplied(w http.ResponseWriter, n *node.Node, chat string, reply node.ChatMessage) {
+	if reply.Unread {
+		if _, err := n.Ack(chat, node.AckRequest{IDs: []string{reply.ID}}); err != nil {
+			a.log.Warn("read discuss reply", "id", reply.ID, "err", err)
+		}
+	}
+	writeJSON(w, reply.Message)
 }
 
 func discussQueued(n *node.Node, seat string) bool {
@@ -250,20 +263,20 @@ func discussAsk(n *node.Node, chat, id string) (node.ChatMessage, bool, error) {
 	}
 }
 
-func discussAnswer(n *node.Node, chat, id, seat string, cursor *uint64) (node.Message, bool, error) {
+func discussAnswer(n *node.Node, chat, id, seat string, cursor *uint64) (node.ChatMessage, bool, error) {
 	for {
 		page, err := n.ChatMessages(chat, 0, *cursor, 1000)
 		if err != nil {
-			return node.Message{}, false, err
+			return node.ChatMessage{}, false, err
 		}
 		for _, m := range page {
 			*cursor = m.Seq
 			if m.Kind == "" && m.ReplyTo == id && m.Agent != nil && m.Agent.Seat == seat {
-				return m.Message, true, nil
+				return m, true, nil
 			}
 		}
 		if len(page) < 1000 {
-			return node.Message{}, false, nil
+			return node.ChatMessage{}, false, nil
 		}
 	}
 }

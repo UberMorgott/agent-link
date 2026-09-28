@@ -103,6 +103,56 @@ func TestHookSeatRequestsSelectLocalProject(t *testing.T) {
 	}
 }
 
+// A batch from two contexts of one folder is claimed and acknowledged in
+// each message's own project; an untagged message keeps the hook's selector.
+func TestHookClaimsAndAcksEachMessageInItsProject(t *testing.T) {
+	var mu sync.Mutex
+	calls := map[string][]string{} // "path?project" -> ids
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			IDs []string `json:"ids"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		key := r.URL.Path + "?" + r.URL.Query().Get("project")
+		calls[key] = append(calls[key], body.IDs...)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/claim":
+			_ = json.NewEncoder(w).Encode(body.IDs)
+		case "/ack":
+			res := []node.AckResult{}
+			for _, id := range body.IDs {
+				res = append(res, node.AckResult{ID: id, Found: true, WasUnread: true})
+			}
+			_ = json.NewEncoder(w).Encode(res)
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	env := hookEnv{api: strings.TrimPrefix(srv.URL, "http://"), dir: t.TempDir()}
+	h := hookSession{env: env, st: &hookState{}, sid: "session", folder: t.TempDir()}
+	page := node.UnreadPage{Total: 3, Messages: []node.UnreadMessage{
+		{ID: "net-1", Project: "NET"}, {ID: "loc-1", Project: "LOC"}, {ID: "plain"},
+	}}
+	got, err := h.claim(page)
+	if err != nil || len(got.Messages) != 3 {
+		t.Fatalf("claim: %+v, %v", got, err)
+	}
+	h.accept(formatBatch(got, h.folder, h.sid, false))
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string][]string{"/claim?NET": {"net-1"}, "/claim?LOC": {"loc-1"}, "/claim?": {"plain"},
+		"/ack?NET": {"net-1"}, "/ack?LOC": {"loc-1"}, "/ack?": {"plain"}}
+	for k, ids := range want {
+		if !slices.Equal(calls[k], ids) {
+			t.Fatalf("%s: %v; all %v", k, calls[k], calls)
+		}
+	}
+}
+
 func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
