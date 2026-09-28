@@ -38,6 +38,7 @@ type routeCtx struct {
 	n     *node.Node
 	dir   string // bound folder of a project; "" for the legacy network or none
 	scope string // settings.ProjectScopeNetwork or settings.ProjectScopeLocal
+	chat  *settings.LocalChat
 }
 
 // routeError is a request the router refuses, as a plain-text control API error.
@@ -65,7 +66,7 @@ func (a *App) routeContexts() []routeCtx {
 	}
 	for _, b := range a.s.Bindings {
 		if c := a.projects[b.ID]; c != nil {
-			out = append(out, routeCtx{id: b.ID, n: c.n, dir: b.Dir, scope: b.ScopeOf()})
+			out = append(out, routeCtx{id: b.ID, n: c.n, dir: b.Dir, scope: b.ScopeOf(), chat: b.Chat})
 		}
 	}
 	return out
@@ -338,23 +339,37 @@ func (a *App) forward(w http.ResponseWriter, r *http.Request, sel selector, scop
 // session registered in the folder's network project stays there; from the
 // local project (its private chat, discuss) it takes only the replies to its
 // own messages there (UnreadQuery exact), each claimed and acknowledged in
-// its own context (UnreadMessage.Project).
-func (a *App) sessionContexts(sel selector) ([]routeCtx, *routeError) {
+// its own context (UnreadMessage.Project). Without a selector the local chats
+// session used (settings.LocalChat.Sessions) are added the same way; outside
+// any project they are all its contexts. exact is the index from which only
+// the session's own replies are taken.
+func (a *App) sessionContexts(sel selector, session string) (out []routeCtx, exact int, rerr *routeError) {
 	ctxs := a.routeContexts()
+	var chats []routeCtx
+	if session != "" && sel.project == "" {
+		for _, x := range ctxs {
+			if x.chat != nil && slices.Contains(x.chat.Sessions, session) {
+				chats = append(chats, x)
+			}
+		}
+	}
 	c, err := route(ctxs, sel)
 	if err == nil {
 		err = folderScoped(c, sel.folder)
 	}
 	if err != nil {
-		return nil, err
+		if len(chats) > 0 && sel.project == "" {
+			return chats, 0, nil
+		}
+		return nil, 0, err
 	}
-	out := []routeCtx{c}
-	if sel.project != "" || sel.folder == "" {
-		return out, nil
+	out = []routeCtx{c}
+	if sel.project != "" {
+		return out, 1, nil
 	}
 	best := -1
 	for i, x := range ctxs {
-		if x.scope == settings.ProjectScopeLocal && x.dir != "" && within(x.dir, sel.folder) &&
+		if sel.folder != "" && x.scope == settings.ProjectScopeLocal && x.dir != "" && within(x.dir, sel.folder) &&
 			(best < 0 || len(filepath.Clean(x.dir)) > len(filepath.Clean(ctxs[best].dir))) {
 			best = i
 		}
@@ -362,7 +377,12 @@ func (a *App) sessionContexts(sel selector) ([]routeCtx, *routeError) {
 	if best >= 0 && ctxs[best].id != c.id && folderScoped(ctxs[best], sel.folder) == nil {
 		out = append(out, ctxs[best])
 	}
-	return out, nil
+	for _, x := range chats {
+		if x.id != c.id {
+			out = append(out, x)
+		}
+	}
+	return out, 1, nil
 }
 
 // controlUnread serves GET /unread: for a session, the unread messages of every
@@ -370,12 +390,12 @@ func (a *App) sessionContexts(sel selector) ([]routeCtx, *routeError) {
 // its project when there are several.
 func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	ctxs, rerr := a.sessionContexts(selector{project: q.Get("project"), folder: q.Get("folder"), cwd: q.Get("cwd")})
+	ctxs, from, rerr := a.sessionContexts(selector{project: q.Get("project"), folder: q.Get("folder"), cwd: q.Get("cwd")}, q.Get("session"))
 	if rerr != nil {
 		rerr.write(w)
 		return
 	}
-	if len(ctxs) == 1 || q.Get("session") == "" {
+	if (len(ctxs) == 1 && from == 1) || q.Get("session") == "" {
 		ctxs[0].n.APIHandler().ServeHTTP(w, r)
 		return
 	}
@@ -385,12 +405,12 @@ func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 	more := false
 	for i, c := range ctxs {
 		query := q
-		if i > 0 {
+		if i >= from {
 			query = exact
 		}
 		page, err := c.n.UnreadQuery(query)
 		if err != nil {
-			if i == 0 {
+			if i < from {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -434,7 +454,7 @@ func (a *App) controlClaim(w http.ResponseWriter, r *http.Request) {
 	if !peekJSON(w, r, &req) {
 		return
 	}
-	ctxs, rerr := a.sessionContexts(selector{project: pick(r, req.Project), folder: req.Folder})
+	ctxs, _, rerr := a.sessionContexts(selector{project: pick(r, req.Project), folder: req.Folder}, req.SessionID)
 	if rerr != nil {
 		rerr.write(w)
 		return

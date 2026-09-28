@@ -52,6 +52,9 @@ type ProjectView struct {
 	// LaunchMode: where an opened session opens, "desktop" or "terminal"
 	// (settings.ProjectBinding.LaunchMode).
 	LaunchMode string `json:"launch_mode,omitempty"`
+	// Chat marks a local chat of discuss that is not a folder's project chat
+	// (localchats.go), with its scope and, when temporary, its expiry.
+	Chat *LocalChatView `json:"local_chat,omitempty"`
 }
 
 // InviteView is the answer of the invite reveal endpoint, the only way a

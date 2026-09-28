@@ -17,7 +17,7 @@ import (
 
 func TestDiscussReusesFolderProjectAndChat(t *testing.T) {
 	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
-	dir := t.TempDir()
+	dir := repoDir(t)
 	call := func(folder, provider, body string) discussResultAPI {
 		t.Helper()
 		code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
@@ -196,7 +196,7 @@ type discussResultAPI struct {
 
 func TestDiscussReturnsQueuedWhenPaused(t *testing.T) {
 	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
-	dir := t.TempDir()
+	dir := repoDir(t)
 	call := func() discussResultAPI {
 		t.Helper()
 		code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
@@ -228,7 +228,7 @@ func TestDiscussReturnsQueuedWhenPaused(t *testing.T) {
 
 func TestDiscussFromSeatSessionToOtherAgent(t *testing.T) {
 	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
-	dir := t.TempDir()
+	dir := repoDir(t)
 	post := func(provider string) discussResultAPI {
 		t.Helper()
 		code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
@@ -283,7 +283,7 @@ func TestDiscussFromSeatSessionToOtherAgent(t *testing.T) {
 
 func TestDiscussReplyWaitsForAskedSeat(t *testing.T) {
 	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
-	dir := t.TempDir()
+	dir := repoDir(t)
 	post := func(provider string) discussResultAPI {
 		t.Helper()
 		code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
@@ -369,7 +369,7 @@ func TestDiscussReplyWaitsForAskedSeat(t *testing.T) {
 
 func TestConcurrentDiscussReusesSeat(t *testing.T) {
 	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
-	dir := t.TempDir()
+	dir := repoDir(t)
 	body := jsonOf(t, map[string]string{"folder": dir, "provider": node.ProviderCodex, "body": "review"})
 	type response struct {
 		status int

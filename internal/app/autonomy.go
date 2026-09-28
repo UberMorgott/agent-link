@@ -70,6 +70,8 @@ type ContextAutonomy struct {
 	Halted      bool   `json:"halted,omitempty"`
 	Paused      bool   `json:"paused,omitempty"`
 	PauseReason string `json:"pause_reason,omitempty"`
+	// Chat is set for a local chat that is not a folder's project chat.
+	Chat *LocalChatView `json:"local_chat,omitempty"`
 }
 
 // contextAutonomyLocked lists the autonomy of every running context: the
@@ -87,6 +89,10 @@ func (a *App) contextAutonomyLocked() []ContextAutonomy {
 	for _, b := range a.s.Bindings {
 		if c := a.projects[b.ID]; c != nil {
 			add(b.ID, b.ScopeOf(), b.Dir, c.n)
+			if b.Chat != nil {
+				view := localChatViewOf(b.Chat)
+				out[len(out)-1].Chat = &view
+			}
 		}
 	}
 	return out

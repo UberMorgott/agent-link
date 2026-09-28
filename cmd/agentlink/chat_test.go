@@ -94,9 +94,9 @@ func TestDiscussCLIWaitsAndReadsPromptFile(t *testing.T) {
 		t.Fatalf("discuss requests: %q, body %+v", f.reqs, f.discuss)
 	}
 	f.reqs = nil
-	f.run("discuss", "--with", "codex", "--body", "later", "--async")
-	if len(f.reqs) != 1 || f.reqs[0] != "POST /discuss" {
-		t.Fatalf("async requests: %q", f.reqs)
+	f.run("discuss", "--with", "codex", "--body", "later", "--async", "--topic", "design")
+	if len(f.reqs) != 1 || f.reqs[0] != "POST /discuss" || f.discuss["topic"] != "design" {
+		t.Fatalf("async requests: %q, body %+v", f.reqs, f.discuss)
 	}
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"discuss", "--with", "codex", "--body", "timeout", "--timeout", "20ms", "--config", f.cfg}, &stdout, &stderr); code != exitTimeout {

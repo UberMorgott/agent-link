@@ -151,6 +151,10 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 		v = ProjectView{ID: pid, Scope: b.ScopeOf(), Alias: b.Alias, Dir: b.Dir, CanRename: true,
 			HasInvite: b.ScopeOf() == settings.ProjectScopeNetwork, LaunchMode: b.LaunchModeOf(),
 			Autonomy: autonomyViewOf(b, c)}
+		if b.Chat != nil {
+			view := localChatViewOf(b.Chat)
+			v.Chat = &view
+		}
 		if c != nil {
 			v.Name = c.n.ProjectMeta().Name
 		}
@@ -169,7 +173,7 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 		v.State = ProjectError
 	case v.Name == "":
 		v.State = ProjectConnecting
-	case v.Dir == "":
+	case v.Dir == "" && v.Chat == nil:
 		v.State = ProjectNeedsFolder
 	default:
 		v.State = ProjectReady
@@ -366,7 +370,7 @@ func (a *App) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	err = a.checkDirLocked("", dir, settings.ProjectScopeNetwork)
-	if err == nil && len(a.s.Bindings) >= settings.MaxProjects {
+	if err == nil && settings.ProjectCount(a.s.Bindings) >= settings.MaxProjects {
 		err = &settings.Problem{Key: "too_many_projects"}
 	}
 	if err == nil {
@@ -440,7 +444,7 @@ func (a *App) joinByInvite(w http.ResponseWriter, r *http.Request, inv config.In
 		writeCodedError(w, http.StatusConflict, "conflict_secret")
 		return
 	case i >= 0:
-	case len(a.s.Bindings) >= settings.MaxProjects:
+	case settings.ProjectCount(a.s.Bindings) >= settings.MaxProjects:
 		err = &settings.Problem{Key: "too_many_projects"}
 	default:
 		b := settings.ProjectBinding{ID: inv.ProjectID, Epoch: inv.Epoch, Secret: inv.Secret}

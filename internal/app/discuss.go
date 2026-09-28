@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -8,30 +9,46 @@ import (
 	"strings"
 	"time"
 
-	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
 
-// discuss posts to this machine's private agent chat for the caller's folder.
-// A network project bound to the same folder has a separate chat.
+// discussRequest is the body of POST /discuss.
+type discussRequest struct {
+	Folder    string `json:"folder"`
+	Provider  string `json:"provider"`
+	Body      string `json:"body"`
+	SessionID string `json:"session_id"`
+	Source    string `json:"source"`
+	Seat      string `json:"seat"`
+	// Chat continues a local chat by id; Topic names a persistent chat;
+	// Temporary starts a new temporary chat. At most one of them.
+	Chat      string `json:"chat"`
+	Topic     string `json:"topic"`
+	Temporary bool   `json:"temporary"`
+}
+
+// discuss posts to this machine's private agent chat for the caller: by
+// default the folder's project chat (a network project bound to the same
+// folder has a separate one), outside any project folder the caller session's
+// temporary chat, else the chat the request names (localchats.go).
 func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Folder    string `json:"folder"`
-		Provider  string `json:"provider"`
-		Body      string `json:"body"`
-		SessionID string `json:"session_id"`
-		Source    string `json:"source"`
-		Seat      string `json:"seat"`
-	}
+	var req discussRequest
 	if !decode(w, r, &req) {
 		return
 	}
+	req.Topic = strings.TrimSpace(req.Topic)
 	dir, err := filepath.Abs(strings.TrimSpace(req.Folder))
+	picks := 0
+	for _, set := range []bool{req.Chat != "", req.Topic != "", req.Temporary} {
+		if set {
+			picks++
+		}
+	}
 	if err != nil || !filepath.IsAbs(req.Folder) || strings.TrimSpace(req.Body) == "" ||
 		(req.Provider != node.ProviderClaude && req.Provider != node.ProviderCodex) ||
 		(req.Source != "" && req.Source != node.ProviderClaude && req.Source != node.ProviderCodex) ||
-		(req.SessionID == "") != (req.Source == "") {
+		(req.SessionID == "") != (req.Source == "") || picks > 1 || !settings.ValidAlias(req.Topic) {
 		writeCodedError(w, http.StatusBadRequest, "bad_request")
 		return
 	}
@@ -41,35 +58,17 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	var pid string
-	for _, b := range a.s.Bindings {
-		if b.ScopeOf() == settings.ProjectScopeLocal && b.Dir != "" && within(b.Dir, dir) &&
-			(pid == "" || len(b.Dir) > len(a.bindingDirLocked(pid))) {
-			pid = b.ID
-		}
-	}
-	if pid == "" {
-		if len(a.s.Bindings) >= settings.MaxProjects {
-			a.mu.Unlock()
-			writeCodedError(w, http.StatusBadRequest, "too_many_projects")
-			return
-		}
-		pid, err = config.NewProjectID()
-		if err == nil {
-			var secret string
-			secret, err = config.NewProjectSecret()
-			if err == nil {
-				name, nameErr := node.NormalizeProjectName(filepath.Base(dir))
-				if nameErr != nil {
-					name = "Project " + pid[:8]
-				}
-				err = a.addProjectLocked(r.Context(), settings.ProjectBinding{ID: pid, Epoch: config.ProjectEpoch, Secret: secret,
-					Dir: dir, Scope: settings.ProjectScopeLocal}, name)
-			}
-		}
-	}
+	pid, err := a.discussContextLocked(r.Context(), req, dir)
 	c := a.projects[pid]
+	var lc *settings.LocalChat
+	if i := a.bindingIndex(pid); i >= 0 {
+		lc = a.s.Bindings[i].Chat
+	}
 	a.mu.Unlock()
+	if errors.Is(err, errUnknownLocalChat) {
+		writeCodedError(w, http.StatusNotFound, "not_found")
+		return
+	}
 	if err != nil {
 		a.failed(w, "discuss project", err)
 		return
@@ -121,13 +120,19 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.changed(pid)
+	view := localChatViewOf(lc)
 	writeJSON(w, struct {
 		Project string `json:"project"`
 		Chat    string `json:"chat"`
 		ID      string `json:"id"`
 		Seat    string `json:"seat"`
 		Queued  bool   `json:"queued,omitempty"`
-	}{pid, chat.ID, message.ID, seat, discussQueued(c.n, seat)})
+		// Scope is the chat's kind (LocalChatView.Scope); Topic and ExpiresAt
+		// as in LocalChatView.
+		Scope     string    `json:"scope"`
+		Topic     string    `json:"topic,omitempty"`
+		ExpiresAt time.Time `json:"expires_at,omitzero"`
+	}{pid, chat.ID, message.ID, seat, discussQueued(c.n, seat), view.Scope, view.Topic, view.ExpiresAt})
 }
 
 func authorKind(session, seat string) string {

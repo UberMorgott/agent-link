@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -144,6 +145,48 @@ type ProjectBinding struct {
 	// "desktop" (the default, "") the agent's desktop app when installed,
 	// "terminal" Windows Terminal.
 	LaunchMode string `json:"launch_mode,omitempty"`
+	// Chat makes a local binding one agent chat of discuss beside the folder's
+	// project chat: a named topic or a temporary chat, with no bound folder of
+	// its own (Dir ""), so folder routing never picks it.
+	Chat *LocalChat `json:"local_chat,omitempty"`
+}
+
+// LocalChat is a local agent chat that is not a folder's project chat
+// (ProjectBinding.Chat).
+type LocalChat struct {
+	// Temporary chats are removed once idle (app.gcLocalChats); a chat with a
+	// Topic stays until a person removes it. Exactly one of them is set.
+	Temporary bool   `json:"temporary,omitempty"`
+	Topic     string `json:"topic,omitempty"`
+	// Project is the local project of the folder it belongs to; "" for a chat
+	// of sessions outside any project folder.
+	Project string `json:"project,omitempty"`
+	// Folder is where its agents work (absolute); not a binding of the folder.
+	Folder string `json:"folder"`
+	// Sessions are the agent sessions that used it, the creator first.
+	Sessions []string `json:"sessions,omitempty"`
+	// LastUsed is its last discuss call.
+	LastUsed time.Time `json:"last_used,omitzero"`
+}
+
+// WorkDir is where b's agents work: its folder, or a local chat's folder.
+func (b ProjectBinding) WorkDir() string {
+	if b.Chat != nil {
+		return b.Chat.Folder
+	}
+	return b.Dir
+}
+
+// ProjectCount counts the bindings that are projects, not local chats
+// (MaxProjects).
+func ProjectCount(bs []ProjectBinding) int {
+	n := 0
+	for _, b := range bs {
+		if b.Chat == nil {
+			n++
+		}
+	}
+	return n
 }
 
 const (
@@ -239,8 +282,12 @@ func (b ProjectBinding) LaunchModeOf() string {
 // Bindings; a file without a version is version 1.
 const Version = 2
 
-// MaxProjects caps the bindings.
-const MaxProjects = 32
+// MaxProjects caps the bindings that are projects, MaxLocalChats those that
+// are local chats.
+const (
+	MaxProjects   = 32
+	MaxLocalChats = 64
+)
 
 // maxAlias caps a binding's Alias, in runes.
 const maxAlias = 64
@@ -711,12 +758,15 @@ func (s Settings) Validate() error {
 // validateBindings checks every binding and permits one local and one network
 // chat per folder (one folder may still hold another).
 func validateBindings(bs []ProjectBinding) error {
-	if len(bs) > MaxProjects {
+	if n := ProjectCount(bs); n > MaxProjects || len(bs)-n > MaxLocalChats {
 		return problem("too_many_projects")
 	}
 	ids, dirs := map[string]bool{}, map[string]bool{}
 	for _, b := range bs {
 		switch {
+		case b.Chat != nil && (b.ScopeOf() != ProjectScopeLocal || b.Dir != "" || !filepath.IsAbs(b.Chat.Folder) ||
+			b.Chat.Temporary == (b.Chat.Topic != "") || !ValidAlias(b.Chat.Topic)):
+			return problem("project_binding")
 		case !config.ValidProjectID(b.ID) || b.Epoch != config.ProjectEpoch || !config.ValidProjectSecret(b.Secret) || ids[b.ID]:
 			return problem("project_binding")
 		case b.Scope != "" && b.Scope != ProjectScopeLocal && b.Scope != ProjectScopeNetwork:

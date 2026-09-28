@@ -44,7 +44,7 @@ const usage = `usage:
   agentlink serve --config <path>
   agentlink send  --config <path> [--to <node|area:NAME>] [--area <name>] --body <text> [--reply-to <id>] [--ask <node,...>] [--project <id>]   (into the one open chat with them; no --to: the only peer; the area defaults to this folder's project)
   agentlink send  --config <path> --chat <id> --body <text> [--ask <node,...>] [--ask-seat <label>] [--reply-to <id>] [--project <id>]   (to every chat participant; --ask: who must answer; --ask-seat: a local agent of this node, repeatable)
-  agentlink discuss --with <claude|codex> (--body <text> | --prompt-file <path>) [--folder <path>] [--timeout 10m] [--async]   (ask in the folder's local agent chat, separate from network chats; --async returns IDs immediately; exit 2 on timeout)
+  agentlink discuss --with <claude|codex> (--body <text> | --prompt-file <path>) [--folder <path>] [--chat <id> | --topic <name> | --temporary] [--timeout 10m] [--async]   (ask in the folder's local agent chat, separate from network chats; outside project folders a temporary chat of the session; --async returns IDs immediately; exit 2 on timeout)
   agentlink wait  --config <path> [--timeout 0] [--chat <id>] [--project <id>]   (seconds or duration; 0 = forever; exit 2 on timeout; --chat: only that chat)
   agentlink chat new     --config <path> --with <node,...> [--area <name>] [--project <id>]   (prints the chat id; you are added; in a project: its one active chat)
   agentlink chat archive --config <path> [--chat <id>] [--project <id>]   (the project's chat history goes to the archive; a fresh chat with the same members opens; prints its id)
@@ -155,6 +155,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		folder := fs.String("folder", "", "project working folder (default: current folder)")
 		async := fs.Bool("async", false, "return after posting instead of waiting for the answer")
 		timeout := fs.String("timeout", "10m", "maximum time to wait for the answer (up to 15m)")
+		chat := fs.String("chat", "", "continue this local chat (id from an earlier discuss)")
+		topic := fs.String("topic", "", "named persistent chat: of the folder's project, or of no project outside project folders")
+		temporary := fs.Bool("temporary", false, "start a new temporary chat (removed a day after its sessions end)")
 		cmd = func(c config.Config) (int, error) {
 			prompt := *body
 			if *promptFile != "" {
@@ -167,7 +170,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 				}
 				prompt = string(data)
 			}
-			result, err := discussMessage(c, *with, prompt, *folder, *async, *timeout)
+			result, err := discussMessage(c, *with, prompt, *folder, *async, *timeout, discussPick{chat: *chat, topic: *topic, temporary: *temporary})
 			if result.ID != "" {
 				if encodeErr := json.NewEncoder(stdout).Encode(result); encodeErr != nil {
 					return 1, encodeErr
@@ -374,9 +377,22 @@ type discussResult struct {
 	Reply    *node.Message `json:"reply,omitempty"`
 	Queued   bool          `json:"queued,omitempty"`
 	TimedOut bool          `json:"timed_out,omitempty"`
+	// Scope is the chat's kind: project, project_temporary, folderless or
+	// folderless_temporary; ExpiresAt the earliest removal of a temporary one.
+	Scope     string    `json:"scope,omitempty"`
+	Topic     string    `json:"topic,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
-func discussMessage(cfg config.Config, provider, body, folder string, async bool, timeout string) (discussResult, error) {
+// discussPick names the local chat of a discuss: an earlier chat's id, a
+// topic, or a new temporary chat; none is the default (the folder's project
+// chat, outside project folders the session's temporary chat).
+type discussPick struct {
+	chat, topic string
+	temporary   bool
+}
+
+func discussMessage(cfg config.Config, provider, body, folder string, async bool, timeout string, pick discussPick) (discussResult, error) {
 	if provider != node.ProviderClaude && provider != node.ProviderCodex {
 		return discussResult{}, errors.New("--with must be claude or codex")
 	}
@@ -403,9 +419,10 @@ func discussMessage(cfg config.Config, provider, body, folder string, async bool
 	}
 	session, source := agentSession()
 	var result discussResult
-	err = apiJSON(http.MethodPost, apiURL(cfg, "/discuss", nil), map[string]string{
+	err = apiJSON(http.MethodPost, apiURL(cfg, "/discuss", nil), map[string]any{
 		"folder": dir, "provider": provider, "body": body, "session_id": session,
 		"source": source, "seat": os.Getenv(envSeat),
+		"chat": pick.chat, "topic": pick.topic, "temporary": pick.temporary,
 	}, &result)
 	if err != nil || async || result.Queued {
 		return result, err

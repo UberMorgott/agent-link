@@ -94,6 +94,7 @@ type App struct {
 
 	picking atomic.Bool    // a Windows dialog is open
 	saves   sync.WaitGroup // background saves of a rediscovered agent path
+	gcOnce  sync.Once      // starts gcLoop of temporary local chats
 
 	mu         sync.Mutex
 	s          settings.Settings
@@ -214,6 +215,7 @@ func (a *App) Start(ctx context.Context) error {
 	err := a.startLocked(ctx)
 	a.syncHooksLocked()
 	a.mu.Unlock()
+	a.gcOnce.Do(func() { go a.gcLoop(ctx) })
 	a.events.publish("status", "dashboard", "participants")
 	return err
 }

@@ -195,16 +195,20 @@ func (a *App) newProjectContext(b settings.ProjectBinding) (*appContext, error) 
 		return nil, err
 	}
 	c := &appContext{pid: b.ID, n: n}
-	n.SetFolders(b.Dir, nil)
+	dir := b.WorkDir()
+	if st, err := os.Stat(dir); b.Chat != nil && (err != nil || !st.IsDir()) {
+		dir = "" // a local chat's folder is gone: it holds, like a project without one
+	}
+	n.SetFolders(dir, nil)
 	n.SetStopped(a.s.StopAll || b.StopAgents)
 	n.SetAutonomy(autonomyOf(b))
-	if b.Dir == "" {
+	if dir == "" {
 		n.SetInboundHook(n.HoldWithoutFolder)
 		return c, nil
 	}
 	n.SetLaunchMode(b.LaunchModeOf())
 	opt, hasHandler := a.workerOptions(b.ID, n)
-	if c.w, err = worker.New(nil, n.SendMessage, cfg.DataDir, b.Dir, opt, a.log); err != nil {
+	if c.w, err = worker.New(nil, n.SendMessage, cfg.DataDir, dir, opt, a.log); err != nil {
 		return nil, err
 	}
 	wireWorker(n, c.w, hasHandler)
@@ -318,6 +322,10 @@ func (a *App) LeaveProject(pid string) error {
 func (a *App) leaveProject(pid string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.leaveProjectLocked(pid)
+}
+
+func (a *App) leaveProjectLocked(pid string) error {
 	if pid == LegacyProjectID {
 		return a.leaveLegacyLocked()
 	}
