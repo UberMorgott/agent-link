@@ -239,26 +239,25 @@ func hasUnread(n *node.Node) bool {
 // local chat of binding b (live: liveAgentsLocked). Live: not retired, and
 // its owner (session, and subagent) is live, another session of it is live,
 // a discuss caller waits for a reply (App.discussWaiters), a seat's turn runs
-// or is queued, or a job runs; a shared persistent chat always is. An unread
-// reply alone does not keep it live: it is for a person (the dashboard's
-// needs_human), and a retired chat stays hidden only for it.
+// or is queued, or a job runs. A shared chat (a folder's project chat, b.Chat
+// nil, or a persistent topic) is live only while something runs in it or one
+// of its sessions is live: an idle one is not in use, however long it is kept.
+// An unread reply alone does not keep it live: it is for a person (the
+// dashboard's needs_human), and a retired chat stays hidden only for it.
 func (a *App) localChatLiveLocked(b settings.ProjectBinding, live map[string]map[string]bool) (isLive, waiting bool, last time.Time) {
 	lc := b.Chat
-	if lc == nil {
-		return true, false, time.Time{}
-	}
 	c := a.projects[b.ID]
 	last, waiting, running := localChatState(c, lc)
 	waiting = waiting || a.discussWaiters[b.ID] > 0
+	if lc == nil {
+		return waiting || running, waiting, last
+	}
 	if !lc.Retired.IsZero() {
 		return false, waiting, last
 	}
 	o := lc.OwnerOf()
-	switch {
-	case o != nil && a.ownerLiveLocked(b.ID, *o, live):
+	if o != nil && a.ownerLiveLocked(b.ID, *o, live) {
 		return true, waiting, last
-	case o == nil && !lc.Temporary:
-		return true, waiting, last // a shared persistent chat
 	}
 	for _, s := range lc.Sessions {
 		if _, ok := live[s]; ok && (o == nil || s != o.Session) {

@@ -55,6 +55,10 @@ type ProjectView struct {
 	// Chat marks a local chat of discuss that is not a folder's project chat
 	// (localchats.go), with its scope and, when temporary, its expiry.
 	Chat *LocalChatView `json:"local_chat,omitempty"`
+	// Activity is, for a folder's local project chat (a local project without
+	// Chat), whether it is in use now and when it was last used: the local
+	// chats list shows it only while it is (localChats.ts).
+	Activity *LocalActivityView `json:"activity,omitempty"`
 }
 
 // InviteView is the answer of the invite reveal endpoint, the only way a

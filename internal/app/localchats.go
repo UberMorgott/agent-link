@@ -56,8 +56,7 @@ type LocalChatView struct {
 	// The state below is set in the project list (localChatViewLocked), not in
 	// a discuss answer.
 
-	// Live: the chat is in use (localChatLiveLocked); a shared persistent chat
-	// always is, a retired one never.
+	// Live: the chat is in use (localChatLiveLocked); a retired one never is.
 	Live bool `json:"live"`
 	// Retired: its owner ended and only an unread reply holds it (retire.go);
 	// hidden from the sidebar, the dashboard's needs_human shows the reply.
@@ -66,6 +65,15 @@ type LocalChatView struct {
 	// runs or is queued (SeatView.TurnQueued).
 	Waiting bool `json:"waiting,omitempty"`
 	// LastActive is the chat's last message or use.
+	LastActive time.Time `json:"last_active,omitzero"`
+}
+
+// LocalActivityView is whether a folder's local project chat is in use
+// (localChatLiveLocked: a caller waits, a turn or job runs) and its last
+// message or use (ProjectView.Activity).
+type LocalActivityView struct {
+	Live       bool      `json:"live"`
+	Waiting    bool      `json:"waiting,omitempty"`
 	LastActive time.Time `json:"last_active,omitzero"`
 }
 
@@ -392,9 +400,12 @@ func localChatActivity(c *appContext, lc *settings.LocalChat) (last time.Time, b
 // localChatState is the last activity of local chat lc run by c (nil: not
 // running), whether an asked seat's turn runs or is queued (waiting) and
 // whether other work runs in it (an active chat, a job). An unreadable chat
-// list counts as running: never collect or hide what cannot be read.
+// list counts as running: never collect or hide what cannot be read. lc is
+// nil for a folder's project chat.
 func localChatState(c *appContext, lc *settings.LocalChat) (last time.Time, waiting, running bool) {
-	last = lc.LastUsed
+	if lc != nil {
+		last = lc.LastUsed
+	}
 	if c == nil {
 		return last, false, false
 	}

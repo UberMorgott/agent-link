@@ -203,6 +203,55 @@ func TestLocalChatLiveFollowsOwnerWaitersAndTurns(t *testing.T) {
 	}
 }
 
+// A folder's project chat and a shared topic are live only while they are in
+// use (a caller waits, a turn runs), not merely because they are kept: an idle
+// one leaves the local chats list (owner feedback: dead chats stayed shown).
+func TestSharedLocalChatsLiveOnlyWhileInUse(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
+	dir := repoDir(t)
+	project := discussIn(t, h, map[string]any{"folder": dir})
+	topic := discussIn(t, h, map[string]any{"folder": dir, "topic": "Design"})
+	for _, pid := range []string{project.Project, topic.Project} {
+		n := h.app.projects[pid].n
+		eventuallyApp(t, "seat's first turn", func() bool {
+			seats := n.Seats()
+			return len(seats) == 1 && seats[0].Status != node.SeatRunning && len(seats[0].Pending) == 0
+		})
+	}
+	activity := func() LocalActivityView {
+		t.Helper()
+		for _, p := range h.app.Projects() {
+			if p.ID == project.Project {
+				if p.Chat != nil || p.Activity == nil {
+					t.Fatalf("project chat view: chat %+v activity %+v", p.Chat, p.Activity)
+				}
+				return *p.Activity
+			}
+		}
+		t.Fatalf("project %s not listed", project.Project)
+		return LocalActivityView{}
+	}
+	if a := activity(); a.Live || a.Waiting || a.LastActive.IsZero() {
+		t.Fatalf("idle project chat: %+v", a)
+	}
+	if v := chatViewOf(t, h, topic.Project); v.Live || v.Waiting {
+		t.Fatalf("idle shared topic: %+v", v)
+	}
+	h.app.discussWaiting(project.Project, 1)
+	if a := activity(); !a.Live || !a.Waiting {
+		t.Fatalf("caller waits in the project chat: %+v", a)
+	}
+	h.app.discussWaiting(project.Project, -1)
+	if a := activity(); a.Live {
+		t.Fatalf("wait ended, project chat still live: %+v", a)
+	}
+	for _, p := range h.app.Projects() {
+		if p.Scope == settings.ProjectScopeNetwork && p.Activity != nil {
+			t.Fatalf("network project with local activity: %+v", p)
+		}
+	}
+}
+
 func TestGCRemovesOnlyEndedIdleTemporaryChats(t *testing.T) {
 	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
 	dir := repoDir(t)

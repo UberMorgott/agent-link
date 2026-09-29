@@ -37,5 +37,9 @@
     "turns_last_hour": 4,
     "run_minutes": 25
   },
-  "launch_mode": "desktop"
+  "launch_mode": "desktop",
+  "activity": {
+    "live": false,
+    "last_active": "2026-09-01T12:00:00Z"
+  }
 }
