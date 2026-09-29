@@ -216,6 +216,7 @@
   .chat-tool-dot.none { background: transparent; box-shadow: inset 0 0 0 1.5px var(--app-muted), 0 0 0 2px var(--app-bg); }
   .chat-tool-dot.working { background: var(--app-on); animation: act-pulse 1.4s ease-in-out infinite; }
   .chat-tool-dot.paused { background: var(--app-off); }
+  .chat-tool-dot.waiting { background: var(--ui-info, var(--app-accent)); }
   .chat-tool-count { font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
   /* A thin line under the header while the agents are paused. */
   .chat-pause-banner {
@@ -223,17 +224,18 @@
     color: var(--app-off); font-size: 0.75rem;
   }
   /* The agents popover: one aligned row per agent. */
-  .agents-pop { width: min(24rem, calc(100vw - 2rem)); max-height: min(24rem, 60vh); overflow: auto; padding: 0.6rem 0.4rem; }
+  .agents-pop { width: min(29rem, calc(100vw - 2rem)); max-height: min(24rem, 60vh); overflow: auto; padding: 0.6rem 0.4rem; }
   .agents-pop-title { padding: 0 0.5rem 0.4rem; font-size: 0.75rem; font-weight: 650; color: var(--app-muted); }
   .agents-list { display: flex; flex-direction: column; }
   .agent-row {
-    display: grid; grid-template-columns: 0.5rem minmax(0, 8.5rem) minmax(0, 1fr) auto; align-items: center; gap: 0.6rem;
+    display: grid; grid-template-columns: 0.5rem minmax(0, 9.5rem) minmax(0, 1fr) auto; align-items: center; gap: 0.6rem;
     padding: 0.3rem 0.5rem; border-radius: 0.4rem; font-size: 0.8rem;
   }
   .agent-row:hover { background: var(--app-soft); }
   .agent-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-muted); }
   .agent-row.running .agent-dot { background: var(--app-on); animation: act-pulse 1.4s ease-in-out infinite; }
   .agent-row.paused .agent-dot, .agent-row.stale .agent-dot { background: var(--app-off); }
+  .agent-row.waiting .agent-dot { background: var(--ui-info, var(--app-accent)); }
   .agent-row.off .agent-dot, .agent-row.idle .agent-dot { opacity: 0.55; }
   .agent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--who, var(--app-text)); }
   .agent-row.sub .agent-name { padding-left: 0.75rem; font-weight: 500; }

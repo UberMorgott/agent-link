@@ -80,6 +80,17 @@ export interface Presence {
   agent_counts?: AgentCounts
 }
 
+// AgentStatus is one agent of a member and what it does now (node.AgentStatus):
+// state thinking | edit | command | read | waiting | queued | idle | paused |
+// stopped | off | needs_human; seat is the seat's label (none: a session).
+export interface AgentStatus {
+  provider: string
+  seat?: string
+  state: string
+  subagents?: number
+  since?: string
+}
+
 export interface AgentCounts {
   claude?: number
   codex?: number
@@ -225,6 +236,8 @@ export interface MemberInfo {
   agent?: boolean
   // Present for this member and for peers that support agent-counts-v1.
   agent_counts?: AgentCounts
+  // agents: one entry per agent, for this member and peers with agent-status-v1.
+  agents?: AgentStatus[]
   color?: string
   display?: string // the member's nickname, shown instead of its name
 }

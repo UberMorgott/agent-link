@@ -14,6 +14,7 @@ import {
   activityLines, keepLastKnown, authorLabel, authorName, chatName, chatSessionList, clock, elapsed, legacyPeerOld, others, preview,
   when, whoColor, type ActivityLine,
 } from '@/lib/chat'
+import { agentDot, agentName, agentStateText, agentTime, countsText, mostActive } from '@/lib/agents'
 import { openProject } from '@/lib/nav'
 import { fmt, t } from '@/lib/runtime'
 import { pastedFiles } from '@/lib/attachments'
@@ -21,7 +22,6 @@ import { useAppStore } from '@/stores/app'
 import { useAttachmentsStore } from '@/stores/attachments'
 import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore } from '@/stores/projects'
-import type { AgentCounts } from '@/types'
 
 const app = useAppStore()
 const inbox = useInboxStore()
@@ -82,10 +82,6 @@ const chatSessions = computed(() => chatSessionList(info.value, app.sessions, ap
 const pinnedSession = computed(() => app.sessions?.find((session) => session.project === pid.value && session.pinned))
 const activity = computed(() => keepLastKnown(activityLines(info.value, inbox.messages, self.value,
   chatSessions.value, app.settings, now.value), info.value, lastKnown))
-// Working: the running job lines, or at least this computer's running seats.
-const workingCount = computed(() => Math.max(activity.value.reduce((count, row) =>
-  count + (row.cls === 'running' ? 1 : 0) + (row.children?.filter((child) => child.cls === 'running').length || 0), 0),
-projectStopped.value || globallyStopped.value ? 0 : seatList.value.filter((seat) => seat.status === 'running' || seat.status === 'active').length))
 const agentsOpen = ref(false)
 // A running line's time is how long ago its agent was last heard of («0:12
 // назад»); the tooltip adds when it took the request. A waiting or queued
@@ -115,43 +111,63 @@ watch(() => [pid.value, inProject.value] as const, ([p, on]) => {
 }, { immediate: true })
 const seatList = computed(() => (inProject.value ? projects.seats[pid.value] || [] : []))
 const agentMembers = computed(() => (projects.byID(pid.value)?.members || [])
-  .filter((member) => (member.self || member.online) &&
-    (member.agent || Object.values(member.agent_counts || {}).some((count) => count > 0)))
-  .map((member) => ({ name: member.display || member.name, counts: member.agent_counts, self: !!member.self })))
+  .filter((member) => (member.self || member.online) && (member.agent || !!member.agents?.length ||
+    Object.values(member.agent_counts || {}).some((count) => count > 0)))
+  .map((member) => ({ name: member.display || member.name, key: member.name, counts: member.agent_counts, agents: member.agents, self: !!member.self })))
 const paused = computed(() => projectStopped.value || globallyStopped.value)
 
-// The agents popover: one row per agent — this computer's seats, the live
-// lines of the chat's jobs, then the other members' agents by provider.
+// The agents popover: one row per agent — whose it is, what it does now and
+// since when (members' agent lists, this computer's first). A member without
+// one (an older peer) shows its chat's live job lines, else its counts; this
+// computer without one, its seats.
 interface AgentRow { key: string; dot: string; name: string; state: string; time?: string; title?: string; sub?: boolean; kind: string; who?: string }
-const SEAT_STATE: Record<string, [string, string]> = {
-  running: ['running', 'working'], active: ['running', 'working'], idle: ['idle', 'idle'], closed: ['off', 'closed'],
-  stopped: ['paused', 'stopped'], busy: ['idle', 'busy'], needs_human: ['stale', 'needs_human'], paused: ['paused', 'paused'],
+const SEAT_STATE: Record<string, string> = {
+  running: 'thinking', active: 'thinking', idle: 'idle', closed: 'off', stopped: 'stopped', busy: 'idle', needs_human: 'needs_human', paused: 'paused',
 }
 const agentRows = computed<AgentRow[]>(() => {
-  const rows: AgentRow[] = seatList.value.map((seat) => {
-    const [dot, state] = paused.value ? ['paused', 'paused'] : SEAT_STATE[seat.status] || ['idle', 'idle']
-    return { key: 'seat\n' + seat.id, kind: 'seat', dot, name: seat.label, state: t('inbox.agents.state.' + state) }
-  })
+  const rows: AgentRow[] = []
+  const covered = new Set<string>()
+  const who = (name: string) => whoColor(name, projects.colorOf(pid.value, name))
+  for (const member of [...agentMembers.value].sort((a, b) => Number(b.self) - Number(a.self))) {
+    if (!member.agents) continue
+    covered.add(member.name)
+    member.agents.forEach((agent, i) => {
+      const a = paused.value && member.self ? { ...agent, state: 'paused' } : agent
+      const { time, title } = agentTime(a, now.value)
+      rows.push({
+        key: 'agent\n' + member.key + '\n' + i, kind: 'agent', dot: agentDot(a.state), name: agentName(a, member.name, member.self),
+        state: agentStateText(a), time, title, who: member.self ? undefined : who(member.name),
+      })
+    })
+  }
+  const self = agentMembers.value.find((member) => member.self)
+  if (!self?.agents) {
+    for (const seat of seatList.value) {
+      const state = paused.value ? 'paused' : SEAT_STATE[seat.status] || 'idle'
+      rows.push({ key: 'seat\n' + seat.id, kind: 'seat', dot: agentDot(state), name: seat.label, state: t('inbox.agents.doing.' + state) })
+    }
+  }
   for (const row of activity.value) {
+    if (covered.has(row.name)) continue
     for (const line of [row, ...(row.children || [])]) {
       rows.push({
         key: line.key, kind: 'activity', dot: line.cls, name: line.who, state: line.text, time: since(line), title: sinceTitle(line),
-        sub: line !== row, who: whoColor(line.name, projects.colorOf(pid.value, line.name)),
+        sub: line !== row, who: who(line.name),
       })
     }
   }
   // A member already on a live line, or this computer by its seats, is not listed again.
   const listed = new Set(activity.value.map((row) => row.name))
   for (const member of agentMembers.value) {
-    if ((member.self && seatList.value.length) || listed.has(member.name)) continue
-    rows.push({ key: 'member\n' + member.name, kind: 'member', dot: paused.value && member.self ? 'paused' : 'idle', name: member.name, state: memberCountText(member.counts) })
+    if (covered.has(member.name) || (member.self && seatList.value.length) || listed.has(member.name)) continue
+    rows.push({ key: 'member\n' + member.name, kind: 'member', dot: paused.value && member.self ? 'paused' : 'idle', name: member.name, state: countsText(member.counts) })
   }
   return rows
 })
-// The button's count is the popover's rows: one per agent (subagents aside).
-const agentTotal = computed(() => agentRows.value.filter((row) => !row.sub).length)
-// The toolbar dot: paused, working, idle (agents known) or none.
-const agentsState = computed(() => paused.value ? 'paused' : workingCount.value ? 'working' : agentRows.value.length ? 'idle' : 'none')
+// The button counts the agents at work; its dot shows the most active state.
+const agentTotal = computed(() => agentRows.value.filter((row) => !row.sub && (row.dot === 'running' || row.dot === 'waiting')).length)
+const agentCount = computed(() => agentRows.value.filter((row) => !row.sub).length)
+const agentsState = computed(() => paused.value ? 'paused' : mostActive(agentRows.value.map((row) => row.dot)))
 // A network project where no computer (this one included) has Claude Code or
 // Codex open: messages to agents wait, so say so with the next step. A pause
 // already explains itself.
@@ -160,14 +176,6 @@ const noAgents = computed(() => {
   return inProject.value && !localChat.value && project?.state === 'ready' && !!project.members?.length &&
     !agentMembers.value.length && !projectStopped.value && !globallyStopped.value
 })
-function memberCountText(counts: AgentCounts | undefined): string {
-  if (!counts) return t('inbox.activity.unknown_count')
-  return [
-    counts.claude ? `Claude Code ${counts.claude}` : '',
-    counts.codex ? `Codex ${counts.codex}` : '',
-    counts.other ? `${t('inbox.activity.other')} ${counts.other}` : '',
-  ].filter(Boolean).join(' · ')
-}
 
 const note = computed(() => {
   const i = info.value
@@ -383,7 +391,7 @@ function back() {
                       :class="{ active: agentsOpen }"
                       :data-state="agentsState"
                       :title="t('inbox.agents.title')"
-                      :aria-label="fmt('inbox.agents.button', { n: agentTotal, w: workingCount })"
+                      :aria-label="fmt('inbox.agents.button', { n: agentCount, w: agentTotal })"
                     >
                       <UIcon
                         :name="icon('agent')"

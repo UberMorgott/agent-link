@@ -128,7 +128,11 @@ beforeEach(() => {
     'inbox.project_pause.pause': 'Приостановить агентов', 'inbox.project_pause.resume': 'Возобновить',
     'inbox.project_pause.remove': 'Снять паузу проекта', 'inbox.project_pause.global': 'Общая пауза: все агенты приостановлены',
     'inbox.project_pause.banner': 'Агенты проекта на паузе.',
-    'inbox.agents.state.working': 'работает', 'inbox.agents.state.idle': 'ждёт вопроса', 'inbox.agents.state.paused': 'на паузе',
+    'inbox.agents.doing.thinking': 'думает', 'inbox.agents.doing.idle': 'ждёт вопроса', 'inbox.agents.doing.paused': 'на паузе',
+    'inbox.agents.doing.edit': 'пишет код', 'inbox.agents.doing.waiting': 'ждёт ответа', 'inbox.agents.doing.off': 'запустится по вопросу',
+    'inbox.agents.doing.command': 'выполняет команду', 'inbox.agents.mine': 'Мой {name}',
+    'inbox.agents.subagents.one': '{n} субагент', 'inbox.agents.subagents.few': '{n} субагента', 'inbox.agents.subagents.many': '{n} субагентов',
+    'inbox.agents.count.one': '{n} агент {p}', 'inbox.agents.count.few': '{n} агента {p}', 'inbox.agents.count.many': '{n} агентов {p}',
     'inbox.session_pin': 'AgentLink → Codex-чат {id}',
   }
 })
@@ -371,20 +375,20 @@ describe('the open chat', () => {
       ],
     } : project)
     await settle()
-    // The button counts the popover's rows: 3 seats here, bob and карл.
+    // The button counts the agents at work: the running seat alone.
     const toggle = $('#chat_agents_toggle')!
     expect(toggle.tagName).toBe('BUTTON')
-    expect(text(toggle.querySelector('.chat-tool-count'))).toBe('5')
+    expect(text(toggle.querySelector('.chat-tool-count'))).toBe('1')
     expect(toggle.getAttribute('aria-label')).toBe('inbox.agents.button')
     await openAgents()
     const seats = agentRows('seat')
     expect(seats.map((row) => text(row.querySelector('.agent-name')))).toEqual(['Claude work', 'Claude paused', 'Codex work'])
-    expect(seats.map((row) => text(row.querySelector('.agent-state')))).toEqual(['работает', 'inbox.agents.state.stopped', 'ждёт вопроса'])
+    expect(seats.map((row) => text(row.querySelector('.agent-state')))).toEqual(['думает', 'inbox.agents.doing.stopped', 'ждёт вопроса'])
     expect(seats[0]!.className).toContain('running')
-    // This computer is its seats; the others by provider, one row each.
+    // This computer (no agent list: an older app) is its seats; older peers by provider, one row each.
     const members = agentRows('member')
     expect(members.map((row) => text(row.querySelector('.agent-name')))).toEqual(['bob', 'карл & sons'])
-    expect(text(members[0]!.querySelector('.agent-state'))).toBe('Claude Code 1 · Codex 2')
+    expect(text(members[0]!.querySelector('.agent-state'))).toBe('1 агент Claude · 2 агента Codex')
     expect(text(members[1]!.querySelector('.agent-state'))).toBe('inbox.activity.unknown_count')
 
     // Paused: every seat of this computer says so.
@@ -392,6 +396,45 @@ describe('the open chat', () => {
       ? { ...project, autonomy: { ...project.autonomy!, stopped: true } } : project)
     await settle()
     expect(agentRows('seat').every((row) => text(row.querySelector('.agent-state')) === 'на паузе')).toBe(true)
+  })
+
+  it('lists each agent with whose it is, what it does and its subagents', async () => {
+    const { projects, inbox } = await openInbox()
+    await inbox.selectChat(P, 'c3', '')
+    const since = new Date(Date.now() - 65000).toISOString()
+    projects.list = (projects.list || []).map((project) => project.id === P ? {
+      ...project,
+      members: [
+        { name: 'local', self: true, online: true, agent: true, agents: [
+          { provider: 'codex', state: 'thinking', subagents: 2, since },
+          { provider: 'claude', seat: 'Claude', state: 'edit', subagents: 3, since },
+          { provider: 'claude', seat: 'Claude 2', state: 'off' },
+        ] },
+        { name: 'KPECTIK', online: true, agent: true, agents: [
+          { provider: 'codex', state: 'waiting', subagents: 5, since },
+          { provider: 'codex', seat: 'Codex 2', state: 'idle', since },
+        ] },
+        { name: 'old', online: true, agent: true, agent_counts: { codex: 2 } }, // an older peer: counts alone
+      ],
+    } : project)
+    await settle()
+    await openAgents()
+    const rows = agentRows()
+    expect(rows.map((row) => text(row.querySelector('.agent-name')) + ' ' + text(row.querySelector('.agent-state')))).toEqual([
+      'Мой Codex думает · 2 субагента',
+      'Мой Claude пишет код · 3 субагента',
+      'Мой Claude 2 запустится по вопросу',
+      'KPECTIK · Codex ждёт ответа · 5 субагентов',
+      'KPECTIK · Codex 2 ждёт вопроса',
+      'old 2 агента Codex',
+    ])
+    expect(rows.map((row) => row.className.replace('agent-row', '').trim())).toEqual(['running', 'running', 'off', 'waiting', 'idle', 'idle'])
+    expect(text(rows[0]!.querySelector('.agent-time'))).toMatch(/^1:0\d$/)
+    expect(text(rows[2]!.querySelector('.agent-time'))).toBe('')
+    // The button: 3 at work (waiting counts), its dot the most active state.
+    const toggle = $('#chat_agents_toggle')!
+    expect(text(toggle.querySelector('.chat-tool-count'))).toBe('3')
+    expect(toggle.dataset.state).toBe('working')
   })
 
   it('says in one line when no agent is known', async () => {
