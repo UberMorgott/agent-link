@@ -21,6 +21,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/UberMorgott/agent-link/internal/config"
+	"github.com/UberMorgott/agent-link/internal/fsutil"
 	"github.com/UberMorgott/agent-link/internal/worker"
 )
 
@@ -600,7 +601,7 @@ func writeFile(path string, s Settings) error {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Rename(tmp, path)
+		err = fsutil.ReplaceFile(tmp, path)
 	}
 	if err != nil {
 		_ = os.Remove(tmp)
