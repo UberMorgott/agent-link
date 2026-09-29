@@ -236,7 +236,7 @@ func (a *App) controlAPI() http.Handler {
 			SessionID string `json:"session_id"`
 		}
 		if peekJSON(w, r, &body) {
-			// Under the session's lock: a retirement of its chats (retireChat)
+			// Under the session's owner lock: a retirement of its chats (retireChat)
 			// sees it back, or removes the seats before it registers.
 			mu := a.ownerLock(body.SessionID)
 			mu.Lock()
@@ -332,7 +332,7 @@ func (a *App) controlReassign(w http.ResponseWriter, r *http.Request) {
 	// Under the target's reconciliation lock: its end or expiry cannot slip
 	// between the liveness check and the new route; its reconcileSession runs
 	// after and finds the reply waiting for it (needs a person).
-	mu := a.ownerLock(body.SessionID)
+	mu := a.sessionLock(body.SessionID)
 	mu.Lock()
 	target, found := a.liveSession(ctxs, body.SessionID)
 	if !found {
