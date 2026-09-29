@@ -161,6 +161,21 @@
   .user-chip:hover { background: color-mix(in srgb, var(--who) 24%, transparent); }
   .user-chip-dot { flex: none; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--who); }
   .user-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .user-chip:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 1px; }
+  /* The account menu: the name and the connection, the profile, the appearance. */
+  .account-pop { width: min(22rem, calc(100vw - 2rem)); max-height: min(36rem, 80vh); overflow: auto; padding: 0.4rem; }
+  .account-head { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.4rem 0.5rem 0.6rem; }
+  .account-head .user-chip-dot { margin-top: 0.45rem; }
+  .account-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; color: var(--who); }
+  .account-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; }
+  .account-status.off { color: var(--app-muted); }
+  .account-item {
+    display: flex; align-items: center; gap: 0.5rem; width: 100%; padding: 0.4rem 0.5rem; border: 0; border-radius: 0.4rem;
+    background: transparent; color: var(--app-text); font: inherit; font-size: 0.85rem; text-align: left; cursor: pointer;
+  }
+  .account-item:hover, .account-item:focus-visible { background: var(--app-soft); outline: none; }
+  .account-back { padding-left: 0.3rem; font-weight: 600; }
+  .account-section { margin-top: 0.4rem; padding: 0.6rem 0.5rem 0.2rem; border-top: 1px solid var(--app-line); }
   .panel-icon {
     flex: none; display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: 0.5rem;
     color: var(--app-muted);
@@ -265,7 +280,7 @@
   .act-spin { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-on); animation: act-pulse 1.4s ease-in-out infinite; align-self: center; }
   @keyframes act-pulse { 50% { opacity: 0.3; } }
 
-  /* The appearance panel (layout/AppConfigurator.vue): round colour swatches. */
+  /* The appearance choices (layout/ThemeSettings.vue): round colour swatches. */
   .config-swatch {
     width: 1.25rem; height: 1.25rem; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-text-highlighted) 12%, transparent);

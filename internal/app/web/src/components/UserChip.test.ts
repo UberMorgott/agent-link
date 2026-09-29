@@ -20,6 +20,8 @@ async function open() {
 async function openChip() {
   $<HTMLButtonElement>('#user_chip')!.click()
   await settle()
+  $<HTMLButtonElement>('#account_profile')!.click()
+  await settle()
 }
 
 function type(sel: string, value: string) {
@@ -29,6 +31,30 @@ function type(sel: string, value: string) {
 }
 
 describe('the member\'s own chip', () => {
+  it('opens one menu: the name and connection, the profile, the theme; arrows move through it', async () => {
+    await open()
+    expect($('#account_menu')).toBeNull()
+    $<HTMLButtonElement>('#user_chip')!.click()
+    await settle()
+    expect($('#user_chip')!.getAttribute('aria-expanded')).toBe('true')
+    expect($('#account_head')!.textContent).toContain('alice')
+    expect($('#account_status')!.textContent!.trim()).not.toBe('')
+    expect($('#account_profile')).not.toBeNull()
+    expect($$('#theme_mode button')).toHaveLength(3)
+    $<HTMLButtonElement>('#account_profile')!.focus()
+    $('#account_menu')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    expect(document.activeElement).toBe($('#theme_mode [data-mode="light"]'))
+    $('#account_menu')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+    expect(document.activeElement).toBe($('#account_profile'))
+    $<HTMLButtonElement>('#account_profile')!.click()
+    await settle()
+    expect($('#theme_panel')).toBeNull()
+    $<HTMLButtonElement>('#account_back')!.click()
+    await settle()
+    expect($('#profile_form')).toBeNull()
+    expect($('#theme_panel')).not.toBeNull()
+  })
+
   it('shows the nickname in the member\'s color and saves a new nickname and color at once', async () => {
     const { app, requests } = await open()
     const chip = $('#user_chip')!

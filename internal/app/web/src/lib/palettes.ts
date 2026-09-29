@@ -1,4 +1,4 @@
-// The colours the appearance panel offers (layout/AppConfigurator.vue): the
+// The colours the appearance panel offers (layout/ThemeSettings.vue): the
 // same accent and background scales as the PrimeVue Aura theme, i.e. the
 // Tailwind palettes. layout/composables/layout.ts writes the chosen scales over
 // Nuxt UI's --ui-color-primary-* and --ui-color-neutral-*, which every

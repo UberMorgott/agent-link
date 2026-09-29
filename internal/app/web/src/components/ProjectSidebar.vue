@@ -6,7 +6,6 @@ import LocalChatGroup, { type LocalChatRow } from '@/components/LocalChatGroup.v
 import ProjectMenu from '@/components/ProjectMenu.vue'
 import UserChip from '@/components/UserChip.vue'
 import VersionBadge from '@/components/VersionBadge.vue'
-import AppConfigurator from '@/layout/AppConfigurator.vue'
 import { isUnread, projectDot } from '@/lib/chat'
 import { icon } from '@/lib/icons'
 import { chatLabel, groupLocalChats, isTemporary } from '@/lib/localChats'
@@ -216,7 +215,6 @@ function openRow(pid: string, legacy: boolean) {
           class="size-[1.1rem]"
         />
       </RouterLink>
-      <AppConfigurator />
       <RouterLink
         to="/settings"
         data-route="settings"

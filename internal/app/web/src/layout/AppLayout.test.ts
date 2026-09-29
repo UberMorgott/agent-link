@@ -88,11 +88,14 @@ describe('the application shell', () => {
     expect(router.currentRoute.value.params.chat).toBe(CHAT)
   })
 
-  it('picks the theme, accent and background in the appearance panel', async () => {
+  it('picks the theme, accent and background in the account menu', async () => {
     await open('/dashboard')
     expect($('#theme_panel')).toBeNull()
-    $<HTMLButtonElement>('#theme_config')!.click()
+    expect($('#theme_config')).toBeNull()
+    $<HTMLButtonElement>('#user_chip')!.click()
     await settle()
+    expect($('#account_head')!.textContent).toContain('alice')
+    expect($('#account_status')!.classList.contains('on')).toBe(true)
     expect($$('#theme_mode button').map((b) => b.dataset.mode)).toEqual(['light', 'dark', 'system'])
     expect($$('#theme_primary button')).toHaveLength(11)
     expect($$('#theme_surface button')).toHaveLength(5)
