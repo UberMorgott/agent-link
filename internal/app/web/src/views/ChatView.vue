@@ -11,10 +11,10 @@ import ComposerAttachments from '@/components/ComposerAttachments.vue'
 import { isNarrow } from '@/layout/composables/layout'
 import { icon } from '@/lib/icons'
 import {
-  activityLines, keepLastKnown, authorLabel, authorName, chatName, chatSessionList, clock, elapsed, legacyPeerOld, others, preview,
+  activityLines, keepLastKnown, authorLabel, authorName, chatName, chatSessionList, clock, legacyPeerOld, others, preview,
   when, whoColor, type ActivityLine,
 } from '@/lib/chat'
-import { agentDot, agentName, agentStateText, agentTime, countsText, mostActive } from '@/lib/agents'
+import { agentDot, agentName, agentStateText, agentTime, countsText, duration, mostActive, olderPeerNote, olderPeerRow } from '@/lib/agents'
 import { openProject } from '@/lib/nav'
 import { fmt, t } from '@/lib/runtime'
 import { pastedFiles } from '@/lib/attachments'
@@ -83,13 +83,13 @@ const pinnedSession = computed(() => app.sessions?.find((session) => session.pro
 const activity = computed(() => keepLastKnown(activityLines(info.value, inbox.messages, self.value,
   chatSessions.value, app.settings, now.value), info.value, lastKnown))
 const agentsOpen = ref(false)
-// A running line's time is how long ago its agent was last heard of («0:12
+// A running line's time is how long ago its agent was last heard of («12 с
 // назад»); the tooltip adds when it took the request. A waiting or queued
 // line's time is how long it has waited.
 function since(row: ActivityLine) {
   const at = Date.parse(row.heard || row.since)
   if (Number.isNaN(at)) return ''
-  const span = elapsed(now.value - at)
+  const span = duration(now.value - at)
   return row.heard ? fmt("inbox.activity.ago", { t: span }) : span
 }
 function sinceTitle(row: ActivityLine) {
@@ -113,14 +113,20 @@ const seatList = computed(() => (inProject.value ? projects.seats[pid.value] || 
 const agentMembers = computed(() => (projects.byID(pid.value)?.members || [])
   .filter((member) => (member.self || member.online) && (member.agent || !!member.agents?.length ||
     Object.values(member.agent_counts || {}).some((count) => count > 0)))
-  .map((member) => ({ name: member.display || member.name, key: member.name, counts: member.agent_counts, agents: member.agents, self: !!member.self })))
+  .map((member) => ({
+    name: member.display || member.name, key: member.name, counts: member.agent_counts, agents: member.agents, self: !!member.self,
+    online: member.online, seen: member.seen, app: member.app,
+  })))
 const paused = computed(() => projectStopped.value || globallyStopped.value)
 
 // The agents popover: one row per agent — whose it is, what it does now and
 // since when (members' agent lists, this computer's first). A member without
 // one (an older peer) shows its chat's live job lines, else its counts; this
 // computer without one, its seats.
-interface AgentRow { key: string; dot: string; name: string; state: string; time?: string; title?: string; sub?: boolean; kind: string; who?: string }
+interface AgentRow {
+  key: string; dot: string; name: string; state: string; time?: string; title?: string; sub?: boolean; kind: string; who?: string
+  note?: string; noteTitle?: string // an older peer's: update it to see its agents one by one
+}
 const SEAT_STATE: Record<string, string> = {
   running: 'thinking', active: 'thinking', idle: 'idle', closed: 'off', stopped: 'stopped', busy: 'idle', needs_human: 'needs_human', paused: 'paused',
 }
@@ -147,20 +153,29 @@ const agentRows = computed<AgentRow[]>(() => {
       rows.push({ key: 'seat\n' + seat.id, kind: 'seat', dot: agentDot(state), name: seat.label, state: t('inbox.agents.doing.' + state) })
     }
   }
+  // A job line (its key starts with the member) is an agent at work; the
+  // waiting and delivery lines (keys starting with a newline) are about messages.
+  const jobs = activity.value.filter((row) => !row.key.startsWith('\n'))
   for (const row of activity.value) {
     if (covered.has(row.name)) continue
+    const job = jobs.includes(row)
     for (const line of [row, ...(row.children || [])]) {
       rows.push({
-        key: line.key, kind: 'activity', dot: line.cls, name: line.who, state: line.text, time: since(line), title: sinceTitle(line),
-        sub: line !== row, who: who(line.name),
+        key: line.key, kind: 'activity', dot: line.cls, name: line.cls === 'presence' ? line.name : line.who, state: line.text,
+        time: since(line) || '—', title: sinceTitle(line), sub: line !== row, who: who(line.name),
+        note: job && line === row && row.name !== self?.key ? olderPeerNote(row.name) : undefined,
       })
     }
   }
-  // A member already on a live line, or this computer by its seats, is not listed again.
-  const listed = new Set(activity.value.map((row) => row.name))
+  // A member already on a job line, or this computer by its seats, is not listed again.
+  const listed = new Set(jobs.map((row) => row.name))
   for (const member of agentMembers.value) {
     if (covered.has(member.name) || (member.self && seatList.value.length) || listed.has(member.name)) continue
-    rows.push({ key: 'member\n' + member.name, kind: 'member', dot: paused.value && member.self ? 'paused' : 'idle', name: member.name, state: countsText(member.counts) })
+    if (member.self) {
+      rows.push({ key: 'member\n' + member.name, kind: 'member', dot: paused.value ? 'paused' : 'idle', name: member.name, state: countsText(member.counts) })
+      continue
+    }
+    rows.push({ key: 'member\n' + member.name, kind: 'member', name: member.name, who: who(member.name), ...olderPeerRow(member, now.value) })
   }
   return rows
 })
@@ -458,6 +473,11 @@ function back() {
                               class="agent-time"
                               :title="row.title || undefined"
                             >{{ row.time || '' }}</span>
+                            <span
+                              v-if="row.note"
+                              class="agent-note"
+                              :title="row.noteTitle || undefined"
+                            >{{ row.note }}</span>
                           </li>
                         </ul>
                         <p

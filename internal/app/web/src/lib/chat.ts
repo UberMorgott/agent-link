@@ -92,13 +92,6 @@ export function clock(iso: string | undefined): string {
 }
 export function when(iso: string): string { return new Date(iso).toLocaleString('ru-RU') }
 
-// elapsed renders a duration like a CLI status line: 0:07, 3:41, 1:02:03.
-export function elapsed(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000))
-  const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60
-  const ss = String(s).padStart(2, '0')
-  return h ? h + ':' + String(m).padStart(2, '0') + ':' + ss : m + ':' + ss
-}
 
 export function preview(text: string | undefined, limit: number): string {
   const chars = Array.from(String(text || '').replace(/\s+/g, ' ').trim())

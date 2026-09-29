@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { SUBAGENTS, agentDot, agentName, agentStateText, agentTime, counted, countsText, mostActive } from '@/lib/agents'
+import { AGENT_STATUS_VERSION, SUBAGENTS, agentDot, agentName, agentStateText, agentTime, counted, countsText, duration, mostActive, olderPeerRow } from '@/lib/agents'
 import { runtime } from '@/lib/runtime'
 
 // The real strings (internal/app/strings.go).
@@ -25,6 +25,17 @@ const AGENT_STRINGS: Record<string, string> = {
   'inbox.agents.count.many': '{n} агентов {p}',
   'inbox.activity.unknown_count': 'Количество неизвестно',
   'inbox.activity.other': 'Другие',
+  'inbox.activity.ago': '{t} назад',
+  'inbox.agents.online': 'на связи',
+  'inbox.agents.unreachable': 'не на связи',
+  'inbox.agents.online_title': 'на связи с {at}',
+  'inbox.agents.seen_title': 'последний раз на связи в {at}',
+  'inbox.agents.old_peer': 'обновите agent-link у {name} до {v}+, чтобы видеть, что делают агенты',
+  'inbox.agents.old_peer_title': 'у {name} сейчас agent-link {app}',
+  'inbox.agents.dur.s': '{n} с',
+  'inbox.agents.dur.m': '{n} мин',
+  'inbox.agents.dur.h': '{n} ч',
+  'inbox.agents.dur.d': '{n} дн',
 }
 
 beforeEach(() => { runtime.strings = { ...AGENT_STRINGS } })
@@ -61,13 +72,32 @@ describe('agent rows', () => {
     expect(mostActive(['idle', 'waiting', 'running'])).toBe('working')
     expect(mostActive(['idle', 'waiting'])).toBe('waiting')
     expect(mostActive(['off', 'idle'])).toBe('idle')
+    expect(mostActive(['online', 'off'])).toBe('idle')
     expect(mostActive([])).toBe('none')
   })
 
   it('time a state since it began, not a pause or an old turn', () => {
     const now = Date.parse('2026-09-29T10:01:05Z')
-    expect(agentTime({ provider: 'codex', state: 'edit', since: '2026-09-29T10:00:00Z' }, now).time).toBe('1:05')
+    expect(agentTime({ provider: 'codex', state: 'edit', since: '2026-09-29T10:00:00Z' }, now).time).toBe('1 мин')
     expect(agentTime({ provider: 'codex', state: 'off', since: '2026-09-29T10:00:00Z' }, now).time).toBe('')
     expect(agentTime({ provider: 'codex', state: 'idle' }, now).time).toBe('')
+  })
+
+  it('say a span in one whole unit, never like a clock', () => {
+    expect([0, 12_000, 59_999, 60_000, 177_000, 3_599_000, 3_600_000, 10_800_000, 86_399_000, 86_400_000, 4 * 86_400_000].map(duration))
+      .toEqual(['0 с', '12 с', '59 с', '1 мин', '2 мин', '59 мин', '1 ч', '3 ч', '23 ч', '1 дн', '4 дн'])
+  })
+
+  it('show an older peer on the line with its counts and what to update', () => {
+    const now = Date.parse('2026-09-29T22:37:00Z')
+    const on = olderPeerRow({ name: 'KPECTIK', counts: { codex: 3 }, online: true, seen: '2026-09-29T22:34:30Z', app: '0.6.41' }, now)
+    expect(on).toMatchObject({ dot: 'online', state: '3 агента Codex · на связи', time: '2 мин', noteTitle: 'у KPECTIK сейчас agent-link 0.6.41' })
+    expect(on.title).toMatch(/^на связи с \d\d:\d\d/)
+    expect(on.note).toBe('обновите agent-link у KPECTIK до 0.6.42+, чтобы видеть, что делают агенты')
+    expect(AGENT_STATUS_VERSION).toBe('0.6.42')
+    const off = olderPeerRow({ name: 'bob', counts: { claude: 1 }, online: false, seen: '2026-09-29T19:37:00Z' }, now)
+    expect(off).toMatchObject({ dot: 'off', state: '1 агент Claude · не на связи', time: '3 ч назад', noteTitle: '' })
+    expect(off.title).toMatch(/^последний раз на связи в /)
+    expect(olderPeerRow({ name: 'x', online: true }, now)).toMatchObject({ state: 'Количество неизвестно · на связи', time: '—', title: '' })
   })
 })

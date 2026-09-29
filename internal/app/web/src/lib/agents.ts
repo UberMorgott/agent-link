@@ -1,11 +1,16 @@
 // The agents popover's rows: one per agent of a member (node.AgentStatus),
 // each as who it is («Мой Codex», «KPECTIK · Claude 2»), what it does now
 // («пишет код · 3 субагента») and since when. Older peers send per-provider
-// counts alone: one row per member then («2 агента Codex»).
+// counts alone: one row per member then («2 агента Codex · на связи») with a
+// note to update it.
 
-import { elapsed, clock } from '@/lib/chat'
+import { clock } from '@/lib/chat'
 import { fmt, t } from '@/lib/runtime'
 import type { AgentCounts, AgentStatus } from '@/types'
+
+// AGENT_STATUS_VERSION: the first app release whose node reports its agents one
+// by one (node.CapAgentStatus, agent-status-v1); an older peer sends counts alone.
+export const AGENT_STATUS_VERSION = '0.6.42'
 
 // States at work: they count on the agents button.
 export const BUSY_STATES = ['thinking', 'edit', 'command', 'read', 'waiting']
@@ -57,7 +62,7 @@ export function agentDot(state: string): string {
 export function agentTime(agent: AgentStatus, now: number): { time: string; title: string } {
   const at = Date.parse(agent.since || '')
   if (Number.isNaN(at) || TIMELESS.includes(agent.state)) return { time: '', title: '' }
-  return { time: elapsed(now - at), title: fmt('inbox.agents.since_title', { at: clock(agent.since) }) }
+  return { time: duration(now - at), title: fmt('inbox.agents.since_title', { at: clock(agent.since) }) }
 }
 
 // countsText: an older peer's agents by provider («2 агента Codex · 1 агент Claude»).
@@ -69,8 +74,42 @@ export function countsText(counts: AgentCounts | undefined): string {
     .join(' · ')
 }
 
-// The toolbar dot: the most active state of all rows.
+// duration is a span in one whole unit, never a clock: «12 с», «3 мин», «2 ч», «4 дн».
+export function duration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return fmt('inbox.agents.dur.s', { n: s })
+  if (s < 3600) return fmt('inbox.agents.dur.m', { n: Math.floor(s / 60) })
+  if (s < 86400) return fmt('inbox.agents.dur.h', { n: Math.floor(s / 3600) })
+  return fmt('inbox.agents.dur.d', { n: Math.floor(s / 86400) })
+}
+
+// A member with no per-agent status (an older peer): its counts, whether it is
+// on the line and since when, and what to update to see more.
+export interface PeerInfo { name: string; counts?: AgentCounts; online: boolean; seen?: string; app?: string }
+export function olderPeerRow(peer: PeerInfo, now: number): { dot: string; state: string; time: string; title: string; note: string; noteTitle: string } {
+  const presence = t(peer.online ? 'inbox.agents.online' : 'inbox.agents.unreachable')
+  const at = Date.parse(peer.seen || '')
+  const known = !Number.isNaN(at)
+  const span = known ? duration(now - at) : ''
+  return {
+    dot: peer.online ? 'online' : 'off',
+    state: countsText(peer.counts) + ' · ' + presence,
+    time: !known ? '—' : peer.online ? span : fmt('inbox.activity.ago', { t: span }),
+    title: known ? fmt(peer.online ? 'inbox.agents.online_title' : 'inbox.agents.seen_title', { at: clock(peer.seen) }) : '',
+    note: olderPeerNote(peer.name),
+    noteTitle: peer.app ? fmt('inbox.agents.old_peer_title', { name: peer.name, app: peer.app }) : '',
+  }
+}
+
+// olderPeerNote: what to do to see an older peer's agents one by one.
+export function olderPeerNote(name: string): string {
+  return fmt('inbox.agents.old_peer', { name, v: AGENT_STATUS_VERSION })
+}
+
+// The toolbar dot: the most active state of all rows (a peer on the line with
+// agents but no status reads as idle).
 export function mostActive(dots: string[]): string {
+  dots = dots.map((d) => d === 'online' ? 'idle' : d)
   for (const d of ['running', 'waiting', 'idle', 'off', 'paused']) if (dots.includes(d)) return d === 'running' ? 'working' : d
   return 'none'
 }

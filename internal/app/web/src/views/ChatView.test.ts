@@ -133,6 +133,9 @@ beforeEach(() => {
     'inbox.agents.doing.command': 'выполняет команду', 'inbox.agents.mine': 'Мой {name}',
     'inbox.agents.subagents.one': '{n} субагент', 'inbox.agents.subagents.few': '{n} субагента', 'inbox.agents.subagents.many': '{n} субагентов',
     'inbox.agents.count.one': '{n} агент {p}', 'inbox.agents.count.few': '{n} агента {p}', 'inbox.agents.count.many': '{n} агентов {p}',
+    'inbox.agents.online': 'на связи', 'inbox.agents.unreachable': 'не на связи', 'inbox.agents.online_title': 'на связи с {at}',
+    'inbox.agents.old_peer': 'обновите agent-link у {name} до {v}+, чтобы видеть, что делают агенты',
+    'inbox.agents.dur.s': '{n} с', 'inbox.agents.dur.m': '{n} мин', 'inbox.agents.dur.h': '{n} ч', 'inbox.agents.dur.d': '{n} дн',
     'inbox.session_pin': 'AgentLink → Codex-чат {id}',
   }
 })
@@ -193,9 +196,11 @@ describe('the open chat', () => {
     expect($('#chat_agents_popover')).not.toBeNull()
     expect($('#chat_agents_toggle')!.getAttribute('aria-expanded')).toBe('true')
     expect($('#chat_agents_popover')!.closest('[data-side]')?.getAttribute('data-side')).toBe('top')
-    // One row per agent: dot, name, short state, time — aligned columns.
+    // One row per agent: dot, name, short state, time — aligned columns; an
+    // older peer's row adds a note under them.
     for (const row of agentRows()) {
-      expect(Array.from(row.children).map((c) => c.className)).toEqual(['agent-dot', 'agent-name', 'agent-state', 'agent-time'])
+      expect(Array.from(row.children).map((c) => c.className).slice(0, 4)).toEqual(['agent-dot', 'agent-name', 'agent-state', 'agent-time'])
+      expect(row.children.length === 4 || row.children[4]!.className === 'agent-note').toBe(true)
     }
     document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await settle()
@@ -350,11 +355,11 @@ describe('the open chat', () => {
     vi.advanceTimersByTime(1000)
     await nextTick()
     // A running line's time is how long ago its agent was last heard of.
-    expect(text(agentRows('activity')[0]!.querySelector('.agent-time'))).toBe('0:05 назад')
+    expect(text(agentRows('activity')[0]!.querySelector('.agent-time'))).toBe('5 с назад')
     vi.spyOn(Date, 'now').mockReturnValue(base + 306000)
     vi.advanceTimersByTime(1000)
     await nextTick()
-    expect(text(agentRows('activity')[0]!.querySelector('.agent-time'))).toBe('1:05 назад')
+    expect(text(agentRows('activity')[0]!.querySelector('.agent-time'))).toBe('1 мин назад')
     expect(api.calls.length).toBe(before)
   })
 
@@ -388,8 +393,11 @@ describe('the open chat', () => {
     // This computer (no agent list: an older app) is its seats; older peers by provider, one row each.
     const members = agentRows('member')
     expect(members.map((row) => text(row.querySelector('.agent-name')))).toEqual(['bob', 'карл & sons'])
-    expect(text(members[0]!.querySelector('.agent-state'))).toBe('1 агент Claude · 2 агента Codex')
-    expect(text(members[1]!.querySelector('.agent-state'))).toBe('inbox.activity.unknown_count')
+    expect(text(members[0]!.querySelector('.agent-state'))).toBe('1 агент Claude · 2 агента Codex · на связи')
+    expect(text(members[1]!.querySelector('.agent-state'))).toBe('inbox.activity.unknown_count · на связи')
+    expect(members[0]!.className).toContain('online')
+    expect(text(members[0]!.querySelector('.agent-time'))).toBe('—')
+    expect(text(members[1]!.querySelector('.agent-note'))).toBe('обновите agent-link у карл & sons до 0.6.42+, чтобы видеть, что делают агенты')
 
     // Paused: every seat of this computer says so.
     projects.list = (projects.list || []).map((project) => project.id === P
@@ -414,7 +422,7 @@ describe('the open chat', () => {
           { provider: 'codex', state: 'waiting', subagents: 5, since },
           { provider: 'codex', seat: 'Codex 2', state: 'idle', since },
         ] },
-        { name: 'old', online: true, agent: true, agent_counts: { codex: 2 } }, // an older peer: counts alone
+        { name: 'old', online: true, agent: true, agent_counts: { codex: 2 }, seen: since, app: '0.6.41' }, // an older peer: counts alone
       ],
     } : project)
     await settle()
@@ -426,10 +434,14 @@ describe('the open chat', () => {
       'Мой Claude 2 запустится по вопросу',
       'KPECTIK · Codex ждёт ответа · 5 субагентов',
       'KPECTIK · Codex 2 ждёт вопроса',
-      'old 2 агента Codex',
+      'old 2 агента Codex · на связи',
     ])
-    expect(rows.map((row) => row.className.replace('agent-row', '').trim())).toEqual(['running', 'running', 'off', 'waiting', 'idle', 'idle'])
-    expect(text(rows[0]!.querySelector('.agent-time'))).toMatch(/^1:0\d$/)
+    expect(rows.map((row) => row.className.replace('agent-row', '').trim())).toEqual(['running', 'running', 'off', 'waiting', 'idle', 'online'])
+    expect(text(rows[0]!.querySelector('.agent-time'))).toBe('1 мин')
+    expect(text(rows[5]!.querySelector('.agent-time'))).toBe('1 мин')
+    expect(rows[5]!.querySelector('.agent-time')!.getAttribute('title')).toMatch(/^на связи с /)
+    expect(text(rows[5]!.querySelector('.agent-note'))).toBe('обновите agent-link у old до 0.6.42+, чтобы видеть, что делают агенты')
+    expect(rows.slice(0, 5).every((row) => !row.querySelector('.agent-note'))).toBe(true)
     expect(text(rows[2]!.querySelector('.agent-time'))).toBe('')
     // The button: 3 at work (waiting counts), its dot the most active state.
     const toggle = $('#chat_agents_toggle')!
@@ -655,7 +667,7 @@ describe('the chat list and the ways into a chat', () => {
       const lines = agentRows('activity')
       expect(lines, key).toHaveLength(1)
       expect(lines[0]!.className).toContain('presence')
-      expect(text(lines[0]!)).toContain('bob:')
+      expect(text(lines[0]!.querySelector('.agent-name'))).toBe('bob')
       expect(text(lines[0]!)).toContain(key)
     }
     for (const fixture of [bobPresence({ area: '', session: 'rewake' }, false, 'queued'), bobPresence({ area: '', session: 'rewake' }, true, 'read'), bobPresence(undefined)]) {
