@@ -135,7 +135,7 @@ beforeEach(() => {
 
 afterEach(() => { releaseSend?.() })
 
-// The agents popover opens from the header's agents button.
+// The agents popover opens from the composer's agents button.
 async function openAgents() {
   if (!$('#chat_agents_popover')) $<HTMLButtonElement>('#chat_agents_toggle')!.click()
   await settle()
@@ -155,11 +155,12 @@ async function openInbox() {
 }
 
 describe('the open chat', () => {
-  it('keeps agent status and pause as icon buttons in the header, nothing over the composer', async () => {
+  it('keeps agent status and pause as icon buttons inside the composer box, before send', async () => {
     const { inbox } = await openInbox()
     await inbox.selectChat(P, group, '')
     await settle()
-    const toolbar = $('#chat_header #chat_toolbar')!
+    const box = $('#body')!.closest('.composer-box') || $('.composer-box')!
+    const toolbar = box.querySelector<HTMLElement>('#chat_toolbar')!
     expect(toolbar).not.toBeNull()
     expect(toolbar.getAttribute('role')).toBe('toolbar')
     const agents = $<HTMLButtonElement>('#chat_agents_toggle')!
@@ -171,14 +172,15 @@ describe('the open chat', () => {
     expect(pause.title).toBe('Приостановить агентов')
     expect(agents.dataset.state).toBe('working')
     expect(agents.querySelector('.chat-tool-dot')!.className).toContain('working')
-    // Nothing of the agents sits between the timeline and the composer.
+    expect(pause.compareDocumentPosition($('#send_button')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // Not in the header, not floating between the timeline and the composer.
+    expect($('#chat_header')).toBeNull()
     expect($('#send')!.previousElementSibling).toBeNull()
-    expect($('#send')!.parentElement!.querySelector('#chat_agents_toggle, #chat_agent_pause')).toBeNull()
     expect($('.chat-activity-dock, #chat_activity_toggle')).toBeNull()
     expect($('#chat_pause_banner')).toBeNull()
   })
 
-  it('opens the agents popover under its button and closes it with Escape', async () => {
+  it('opens the agents popover above its button and closes it with Escape', async () => {
     const { inbox } = await openInbox()
     await inbox.selectChat(P, group, '')
     await settle()
@@ -186,6 +188,7 @@ describe('the open chat', () => {
     await openAgents()
     expect($('#chat_agents_popover')).not.toBeNull()
     expect($('#chat_agents_toggle')!.getAttribute('aria-expanded')).toBe('true')
+    expect($('#chat_agents_popover')!.closest('[data-side]')?.getAttribute('data-side')).toBe('top')
     // One row per agent: dot, name, short state, time — aligned columns.
     for (const row of agentRows()) {
       expect(Array.from(row.children).map((c) => c.className)).toEqual(['agent-dot', 'agent-name', 'agent-state', 'agent-time'])
@@ -320,11 +323,11 @@ describe('the open chat', () => {
     expect(tick('m199')!.className).toContain('read')
     expect(tick('m199')!.title).toBe('inbox.tick.agent_read')
 
-    // A project has one chat: it goes by the project's name; its thin header
-    // holds only the agents toolbar — the project's row and menu stand for it.
+    // A project has one chat: it goes by the project's name and has no header
+    // on a wide screen — the project's row and menu stand for it.
     expect(text($('#conversation_title'))).toBe('Сайт')
     expect($('#conversation_title')!.className).toContain('sr-only')
-    expect($('#conversation_panel header')!.id).toBe('chat_header')
+    expect($('#conversation_panel header')).toBeNull()
     expect($('#chat_archive')).toBeNull()
     expect($('#send')).not.toBeNull()
     expect($('#ask_row')).toBeNull()
@@ -498,12 +501,12 @@ describe('the open chat', () => {
     expect($<HTMLButtonElement>('#send_button')!.disabled).toBe(false)
   })
 
-  it('keeps the composer one row: paperclip left, text, the hint and send right', async () => {
+  it('keeps the composer one row: paperclip left, text, the hint, agents, pause and send right', async () => {
     const { inbox } = await openInbox()
     await inbox.selectChat(P, group, '')
     await settle()
     const box = $('#body')!.closest('.composer-box') || $('.composer-box')!
-    const order = ['#attach_button', 'textarea', '#composer_hint', '#send_button'].map((sel) => box.querySelector(sel)!)
+    const order = ['#attach_button', 'textarea', '#composer_hint', '#chat_agents_toggle', '#chat_agent_pause', '#send_button'].map((sel) => box.querySelector(sel)!)
     for (let i = 1; i < order.length; i++) {
       expect(order[i - 1]!.compareDocumentPosition(order[i]!) & Node.DOCUMENT_POSITION_FOLLOWING, i + '').toBeTruthy()
     }

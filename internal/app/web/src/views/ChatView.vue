@@ -234,10 +234,10 @@ function back() {
         >
           {{ title }}
         </h1>
-        <!-- The chat's header: back (narrow screens), the pinned thread, then
-             the agents toolbar on the right. Nothing floats over the composer. -->
+        <!-- The chat's thin header: back (narrow screens) and the pinned thread.
+             The agents status and pause live in the composer box. -->
         <header
-          v-if="isNarrow || inProject || agentRows.length"
+          v-if="isNarrow || pinnedSession"
           id="chat_header"
           class="chat-column chat-topbar flex flex-none items-center gap-2"
         >
@@ -257,107 +257,6 @@ function back() {
             class="chat-pinned"
             role="status"
           >{{ fmt('inbox.session_pin', { id: pinnedSession.session_id || '' }) }}</span>
-          <div
-            id="chat_toolbar"
-            class="chat-toolbar ml-auto"
-            role="toolbar"
-            :aria-label="t('inbox.agents.title')"
-          >
-            <UPopover
-              v-if="inProject || agentRows.length"
-              v-model:open="agentsOpen"
-              :content="{ side: 'bottom', align: 'end', sideOffset: 6 }"
-            >
-              <button
-                id="chat_agents_toggle"
-                type="button"
-                class="panel-icon chat-tool"
-                :class="{ active: agentsOpen }"
-                :data-state="agentsState"
-                :title="t('inbox.agents.title')"
-                :aria-label="fmt('inbox.agents.button', { n: agentTotal, w: workingCount })"
-              >
-                <UIcon
-                  :name="icon('agent')"
-                  class="size-[1.1rem]"
-                />
-                <span
-                  class="chat-tool-dot"
-                  :class="agentsState"
-                  aria-hidden="true"
-                />
-                <span
-                  v-if="agentTotal"
-                  class="chat-tool-count"
-                  aria-hidden="true"
-                >{{ agentTotal }}</span>
-              </button>
-              <template #content>
-                <div
-                  id="chat_agents_popover"
-                  class="agents-pop"
-                  role="region"
-                  :aria-label="t('inbox.agents.title')"
-                >
-                  <p class="agents-pop-title">
-                    {{ t('inbox.agents.title') }}
-                  </p>
-                  <ul
-                    v-if="agentRows.length"
-                    id="chat_agents"
-                    class="agents-list"
-                  >
-                    <li
-                      v-for="row in agentRows"
-                      :key="row.key"
-                      class="agent-row"
-                      :class="[row.dot, { sub: row.sub }]"
-                      :data-kind="row.kind"
-                      :style="row.who ? { '--who': row.who } : undefined"
-                    >
-                      <span
-                        class="agent-dot"
-                        aria-hidden="true"
-                      />
-                      <span class="agent-name">{{ row.name }}</span>
-                      <span
-                        class="agent-state"
-                        :title="row.state"
-                      >{{ row.state }}</span>
-                      <span
-                        class="agent-time"
-                        :title="row.title || undefined"
-                      >{{ row.time || '' }}</span>
-                    </li>
-                  </ul>
-                  <p
-                    v-else
-                    id="chat_agents_empty"
-                    class="agents-empty"
-                  >
-                    {{ t('inbox.agents.empty') }}
-                  </p>
-                </div>
-              </template>
-            </UPopover>
-            <button
-              v-if="inProject"
-              id="chat_agent_pause"
-              type="button"
-              class="panel-icon chat-tool"
-              :class="{ paused: projectStopped }"
-              :title="pauseLabel"
-              :aria-label="pauseLabel"
-              :aria-pressed="projectStopped ? 'true' : 'false'"
-              :disabled="pauseBusy"
-              @click="toggleProjectPause"
-            >
-              <UIcon
-                :name="icon(projectStopped ? 'play' : 'pause')"
-                class="size-[1.1rem]"
-              />
-            </button>
-          </div>
         </header>
         <p
           v-if="inProject && paused"
@@ -437,7 +336,7 @@ function back() {
               </button>
             </p>
             <!-- One row: the paperclip, the text (it grows up to ten lines),
-                 the keys hint and the send button. Enter sends, Shift+Enter
+                 the keys hint, the agents status and pause, and the send button. Enter sends, Shift+Enter
                  starts a new line; an IME composition and a blank message
                  never send (UChatPrompt guards both), and the button is off
                  while there is nothing to send. -->
@@ -465,6 +364,108 @@ function back() {
                   id="composer_hint"
                   class="composer-hint hidden text-xs sm:inline"
                 >{{ t("inbox.body.hint") }}</span>
+                <div
+                  v-if="inProject || agentRows.length"
+                  id="chat_toolbar"
+                  class="chat-toolbar"
+                  role="toolbar"
+                  :aria-label="t('inbox.agents.title')"
+                >
+                  <UPopover
+                    v-if="inProject || agentRows.length"
+                    v-model:open="agentsOpen"
+                    :content="{ side: 'top', align: 'end', sideOffset: 8, collisionPadding: 8 }"
+                  >
+                    <button
+                      id="chat_agents_toggle"
+                      type="button"
+                      class="panel-icon chat-tool"
+                      :class="{ active: agentsOpen }"
+                      :data-state="agentsState"
+                      :title="t('inbox.agents.title')"
+                      :aria-label="fmt('inbox.agents.button', { n: agentTotal, w: workingCount })"
+                    >
+                      <UIcon
+                        :name="icon('agent')"
+                        class="size-[1.1rem]"
+                      />
+                      <span
+                        class="chat-tool-dot"
+                        :class="agentsState"
+                        aria-hidden="true"
+                      />
+                      <span
+                        v-if="agentTotal"
+                        class="chat-tool-count"
+                        aria-hidden="true"
+                      >{{ agentTotal }}</span>
+                    </button>
+                    <template #content>
+                      <div
+                        id="chat_agents_popover"
+                        class="agents-pop"
+                        role="region"
+                        :aria-label="t('inbox.agents.title')"
+                      >
+                        <p class="agents-pop-title">
+                          {{ t('inbox.agents.title') }}
+                        </p>
+                        <ul
+                          v-if="agentRows.length"
+                          id="chat_agents"
+                          class="agents-list"
+                        >
+                          <li
+                            v-for="row in agentRows"
+                            :key="row.key"
+                            class="agent-row"
+                            :class="[row.dot, { sub: row.sub }]"
+                            :data-kind="row.kind"
+                            :style="row.who ? { '--who': row.who } : undefined"
+                          >
+                            <span
+                              class="agent-dot"
+                              aria-hidden="true"
+                            />
+                            <span class="agent-name">{{ row.name }}</span>
+                            <span
+                              class="agent-state"
+                              :title="row.state"
+                            >{{ row.state }}</span>
+                            <span
+                              class="agent-time"
+                              :title="row.title || undefined"
+                            >{{ row.time || '' }}</span>
+                          </li>
+                        </ul>
+                        <p
+                          v-else
+                          id="chat_agents_empty"
+                          class="agents-empty"
+                        >
+                          {{ t('inbox.agents.empty') }}
+                        </p>
+                      </div>
+                    </template>
+                  </UPopover>
+                  <button
+                    v-if="inProject"
+                    id="chat_agent_pause"
+                    type="button"
+                    class="panel-icon chat-tool"
+                    :class="{ paused: projectStopped }"
+                    :title="pauseLabel"
+                    :aria-label="pauseLabel"
+                    :aria-pressed="projectStopped ? 'true' : 'false'"
+                    :disabled="pauseBusy"
+                    @click="toggleProjectPause"
+                  >
+                    <UIcon
+                      :name="icon(projectStopped ? 'play' : 'pause')"
+                      class="size-[1.1rem]"
+                    />
+                  </button>
+                </div>
                 <UButton
                   id="send_button"
                   type="submit"
