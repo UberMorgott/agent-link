@@ -28,6 +28,7 @@ describe('local chats grouping', () => {
       chat('topic', 'SITE', { scope: 'project', topic: 'Дизайн', live: false, last_active: old }),
       chat('older_app', 'SITE', { live: undefined, last_active: old }),
       chat('loose', '', { scope: 'folderless_temporary', live: true }),
+      chat('retired', 'SITE', { live: false, retired: true, last_active: new Date(NOW - 5_000).toISOString() }),
     ]
     const lastLive = new Map([['just_ended', NOW - HIDE_GRACE_MS / 2]])
     const groups = groupLocalChats(list, NOW, lastLive)
@@ -35,6 +36,8 @@ describe('local chats grouping', () => {
     expect(groups[0]!.items.map((p) => p.id)).toEqual(expect.arrayContaining(['SITE', 'live', 'just_ended', 'recent', 'topic', 'older_app']))
     expect(groups[0]!.items[0]!.id).toBe('SITE')
     expect(groups[0]!.items.some((p) => p.id === 'ended')).toBe(false)
+    // A retired chat leaves at once, its recent reply notwithstanding.
+    expect(groups[0]!.items.some((p) => p.id === 'retired')).toBe(false)
     // After the grace the chat that just ended leaves too.
     expect(groupLocalChats(list, NOW + HIDE_GRACE_MS, lastLive)[0]!.items.some((p) => p.id === 'just_ended')).toBe(false)
   })

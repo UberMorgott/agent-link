@@ -230,7 +230,7 @@ Order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 (5 can run parallel to 2-4; 6 needs 5).
 - **Q5 Persistent topics from agents**: per-session (retired with owner) unless `shared:true`.
   Recommended: **yes**.
 
-## Implemented backend (PR2-PR4) - final names for PR5/PR6
+## Implemented (PR2-PR6) - final names
 
 Owner decisions taken: Q1 (a), Q2 (a), Q3 4 per machine (one `node.TurnGate` shared by every
 context of the app, since each local chat is its own node), Q5 yes.
@@ -244,12 +244,22 @@ context of the app, since each local chat is its own node), Q5 yes.
 - Routing key = (`project`, `owner.session`, `owner.agent`, lower(`topic`)); retired chats never
   match. Agent callers (session set, no seat) get owned chats unless `shared: true` (MCP `shared`,
   CLI `--shared`, request field `shared`); `shared` with `chat`/`temporary` = 400.
-- `LocalChatView` (JSON `local_chat` of `ProjectView`): adds `owner` (same object as above,
-  omitted for shared chats) and `live` (bool, always present; set by `GET /projects`):
-  retired -> false; owned -> owner session live (and subagent among its live agents, or never
-  seen there) or pending work (unread, running/pending seat, active job); unowned temporary ->
-  one of `sessions` live or pending; shared persistent -> true. `waiting` (open discuss waiter)
-  and the 60 s `hideGrace` are left to PR5/PR6.
+- `LocalChatView` (JSON `local_chat` of `ProjectView` and of the autonomy status; `localchats.go`):
+  `owner` (the stored `LocalChat.OwnerOf()`, omitted for shared chats; no first-session guess
+  beyond `OwnerOf`'s legacy fallback), `retired` (bool, omitempty) and, set by the project list
+  only (`App.localChatViewLocked`), `live` (bool, always present), `waiting` (omitempty) and
+  `last_active` (last message or use). One computation, `App.localChatLiveLocked` (`retire.go`):
+  retired -> false; else live when the owner is live (`ownerLiveLocked`: session live, and a
+  subagent among its live agents or never seen there), another session of `sessions` is live, a
+  shared persistent chat (no owner, not temporary), or `waiting`, or a job/active chat runs.
+  `waiting` = an open discuss waiter (one counter, `App.discussWaiters`, `discussWaiting` +-1 in
+  `discussReply`) or a seat's queue/turn (`pending`, status `running`, `turn_queued`). An unread
+  reply alone never makes a chat live (it is the dashboard's needs_human); it only keeps a
+  temporary or retired chat from GC (`localChatActivity`). Session start/end publishes `projects`.
+- Web (`web/src/lib/localChats.ts`, `LocalChatGroup.vue`): local bindings grouped by
+  `local_chat.project` ("Без проекта" last); a temporary chat shows while `live` and for
+  `HIDE_GRACE_MS = 60 s` after last live/`last_active`; `retired` chats never show; project chats
+  and topics always. Label = `agent_type` / provider / main, plus topic.
 - `SeatView.turn_queued`: the seat's turn (status `running`) waits for a TurnGate slot.
 - Retire: `App.retireOwnedChats` every 15 s (gcLoop); owner gone = session live in no context
   (after it was seen live in this app run) or subagent missing from `Session.LiveAgents` (after it

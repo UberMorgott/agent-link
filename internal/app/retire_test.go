@@ -147,7 +147,7 @@ func TestRetiredChatKeepsUnreadReplyHidden(t *testing.T) {
 	h.app.mu.Lock()
 	lc := h.app.s.Bindings[h.app.bindingIndex(ask.Project)].Chat
 	h.app.mu.Unlock()
-	if view == nil || view.Live || lc.Retired.IsZero() || len(n.Seats()) != 0 {
+	if view == nil || view.Live || !view.Retired || lc.Retired.IsZero() || len(n.Seats()) != 0 {
 		t.Fatalf("retired chat with an unread reply: view %+v, chat %+v, seats %+v", view, lc, n.Seats())
 	}
 	registerSession(t, h, "s1", dir)

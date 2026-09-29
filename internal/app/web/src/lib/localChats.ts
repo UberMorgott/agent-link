@@ -23,10 +23,12 @@ export function isTemporary(p: ProjectView): boolean {
 }
 
 // chatVisible: project chats and named topics always show; a temporary chat
-// while live, and for HIDE_GRACE_MS after it was last seen live or active.
+// while live, and for HIDE_GRACE_MS after it was last seen live or active;
+// a retired chat never (the dashboard's needs_human shows its reply).
 // An app without the live flag shows it as before.
 export function chatVisible(p: ProjectView, now: number, lastLive: ReadonlyMap<string, number>): boolean {
   const lc = p.local_chat
+  if (lc?.retired) return false
   if (!lc || !isTemporary(p) || lc.live === undefined || lc.live) return true
   const active = Date.parse(lc.last_active || '') || 0
   return now - Math.max(active, lastLive.get(p.id) || 0) < HIDE_GRACE_MS

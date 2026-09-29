@@ -262,12 +262,14 @@ export interface LocalChatOwner {
   session: string
   agent?: string
   agent_type?: string
-  provider?: string // claude | codex, known while the session is live
+  provider?: string // claude | codex
 }
 
 // LocalChatView (internal/app/localchats.go): a local Claude/Codex chat.
-// live: someone is in it now (its agent is open, a caller waits, a turn runs);
-// absent on older apps. project: the folder's local project ("" none).
+// live: someone is in it now (its owner or another session of it is open, a
+// caller waits, a turn runs or is queued); absent on older apps. retired: its
+// owner ended and only an unread reply holds it (never live, never listed in
+// the sidebar). project: the folder's local project ("" none).
 export interface LocalChatView {
   scope: LocalChatScope
   topic?: string
@@ -276,6 +278,7 @@ export interface LocalChatView {
   expires_at?: string
   owner?: LocalChatOwner
   live?: boolean
+  retired?: boolean
   waiting?: boolean
   last_active?: string
 }

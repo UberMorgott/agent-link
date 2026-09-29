@@ -59,6 +59,9 @@ type LocalChatView struct {
 	// Live: the chat is in use (localChatLiveLocked); a shared persistent chat
 	// always is, a retired one never.
 	Live bool `json:"live"`
+	// Retired: its owner ended and only an unread reply holds it (retire.go);
+	// hidden from the sidebar, the dashboard's needs_human shows the reply.
+	Retired bool `json:"retired,omitempty"`
 	// Waiting: a discuss caller waits for a reply, or an asked agent's turn
 	// runs or is queued (SeatView.TurnQueued).
 	Waiting bool `json:"waiting,omitempty"`
@@ -97,7 +100,7 @@ func localChatViewOf(lc *settings.LocalChat) LocalChatView {
 	if lc == nil {
 		return LocalChatView{Scope: ChatScopeProject}
 	}
-	v := LocalChatView{Topic: lc.Topic, Project: lc.Project, Folder: lc.Folder, Owner: lc.OwnerOf()}
+	v := LocalChatView{Topic: lc.Topic, Project: lc.Project, Folder: lc.Folder, Owner: lc.OwnerOf(), Retired: !lc.Retired.IsZero()}
 	switch {
 	case lc.Temporary && lc.Project != "":
 		v.Scope = ChatScopeProjectTemporary
