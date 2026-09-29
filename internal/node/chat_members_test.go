@@ -118,18 +118,24 @@ func TestProjectChatAddsJoinedMember(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedMember(a.Node, "b", newID(), 1)
-	eventually(t, "b taken into the chat", func() bool {
-		c, _ := a.ChatOf(solo.ID)
-		return slices.Equal(c.Participants, []string{"a", "b"})
-	})
+	if c, _ := a.ChatOf(solo.ID); !slices.Equal(c.Participants, []string{"a", "b"}) {
+		t.Fatalf("b not taken into the chat: %v", c.Participants)
+	}
 	if _, err := a.SetChatMembers(solo.ID, nil, []string{"b"}); err != nil {
 		t.Fatal(err)
 	}
 	seedMember(a.Node, "c", newID(), 1)
-	eventually(t, "c taken in, b left out", func() bool {
-		c, _ := a.ChatOf(solo.ID)
-		return slices.Equal(c.Participants, []string{"a", "c"})
-	})
+	if c, _ := a.ChatOf(solo.ID); !slices.Equal(c.Participants, []string{"a", "c"}) {
+		t.Fatalf("c not taken in, or b back: %v", c.Participants)
+	}
+	// c joins again as a new node: the chat that pins its old node gives way
+	// to one with everyone, pinned to the new one.
+	cNew := newID()
+	seedMember(a.Node, "c", cNew, 2)
+	info, err := a.NewProjectChat(nil)
+	if err != nil || info.ID == solo.ID || !slices.Equal(info.Participants, []string{"a", "c"}) || !slices.Contains(info.ParticipantIDs, cNew) {
+		t.Fatalf("after c re-joined: %+v, %v", info.Chat, err)
+	}
 }
 
 // A person's message that names nobody asks every other participant; one

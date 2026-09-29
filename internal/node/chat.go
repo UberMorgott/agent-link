@@ -769,11 +769,14 @@ func (n *Node) setChatMembersLocked(id string, add, remove []string) (ChatInfo, 
 	return n.Chat(id)
 }
 
-// addJoined takes members that just joined the project (new, or back after
-// leaving) into its active chat when this node owns it: whoever joins a
-// project talks in its one chat from then on. Only a join adds; the owner may
-// remove them again (SetChatMembers) and they stay out. A member that no owner
-// can add yet (no node id, no chat support) is logged and left out.
+// addJoined takes members that just joined the project (new, back after
+// leaving, or on a new node) into its active chat when this node owns it:
+// whoever joins a project talks in its one chat from then on. A new member is
+// added (SetChatMembers); one pinned to its old node takes the chat's rotation
+// to a new one with everyone (projectChatLocked). Only a join adds; the owner
+// may remove them again and they stay out. The caller runs it in order with
+// the member table, so no later removal is undone. A member that cannot be
+// added yet (no node id, no chat support) is logged and left out.
 func (n *Node) addJoined(names []string) {
 	if n.cfg.Project == "" || len(names) == 0 {
 		return
@@ -784,21 +787,14 @@ func (n *Node) addJoined(names []string) {
 	if len(active) == 0 || active[0].Mode != ChatModeProject || n.chatOwner(active[0]) != n.cfg.Node {
 		return
 	}
-	c := active[0]
-	var add []string
-	for _, p := range names {
-		if p != n.cfg.Node && !slices.Contains(c.Participants, p) {
-			add = append(add, p)
-		}
+	parts := slices.Concat([]string{n.cfg.Node}, names)
+	slices.Sort(parts)
+	parts = slices.Compact(parts)
+	if c, _, err := n.projectChatLocked(parts); err != nil {
+		n.log.Warn("add joined members to the project chat", "chat", active[0].ID, "members", names, "err", err)
+	} else if !slices.Equal(c.Participants, active[0].Participants) || c.ID != active[0].ID {
+		n.log.Info("joined members added to the project chat", "chat", c.ID, "members", names)
 	}
-	if len(add) == 0 {
-		return
-	}
-	if _, err := n.setChatMembersLocked(c.ID, add, nil); err != nil {
-		n.log.Warn("add joined members to the project chat", "chat", c.ID, "members", add, "err", err)
-		return
-	}
-	n.log.Info("joined members added to the project chat", "chat", c.ID, "members", add)
 }
 
 // openChatOf returns the open chat of c's conversation: c itself when it is

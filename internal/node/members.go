@@ -430,7 +430,7 @@ func (n *Node) aliveLocked() int {
 func (n *Node) mergeMembers(recs []Member) {
 	changed, seen := false, false
 	var drop []*peerConn
-	var joined []string         // members new here, or back after leaving
+	var joined []string         // members new here, back after leaving, or on a new node
 	gone := map[string]string{} // name -> node id whose queue is dropped
 	n.mu.Lock()
 	for _, r := range recs {
@@ -476,7 +476,7 @@ func (n *Node) mergeMembers(recs []Member) {
 		case r.Removed && r.Left && r.ID != "":
 			gone[r.Name] = r.ID // it left: its queue is never sent
 		}
-		if !r.Removed && (l == nil || l.Removed) {
+		if !r.Removed && (l == nil || l.Removed || (l.ID != "" && r.ID != "" && l.ID != r.ID)) {
 			joined = append(joined, r.Name)
 		}
 		n.members[r.Name] = &r
@@ -500,9 +500,9 @@ func (n *Node) mergeMembers(recs []Member) {
 	for _, pc := range drop {
 		n.wg.Go(func() { n.tellRemoved(pc) })
 	}
-	if len(joined) > 0 {
-		n.wg.Go(func() { n.addJoined(joined) })
-	}
+	// In order with the table, before this peer's next frame: a removal from
+	// the chat that comes after the join is never undone by it.
+	n.addJoined(joined)
 	switch {
 	case changed:
 		n.membersChanged()
@@ -570,8 +570,8 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 	if oldID != "" {
 		n.incarnationGone(pc.peer, oldID)
 	}
-	if joined {
-		n.wg.Go(func() { n.addJoined([]string{pc.peer}) })
+	if joined || oldID != "" {
+		n.addJoined([]string{pc.peer})
 	}
 	if changed {
 		n.membersChanged()
@@ -617,7 +617,7 @@ func (n *Node) revive(name, id string) {
 	if ok {
 		n.log.Info("member added back", "peer", name)
 		n.membersChanged()
-		n.wg.Go(func() { n.addJoined([]string{name}) })
+		n.addJoined([]string{name})
 	}
 }
 

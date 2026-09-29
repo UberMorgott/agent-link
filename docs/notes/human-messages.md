@@ -19,10 +19,14 @@ Nobody answered and the message had no ticks.
 ## Rules
 
 1. **A project member who joins is added to the project's active chat.**
-   This happens when the member first appears in the member table, or when
-   it comes back after leaving (`mergeMembers`, `noteSession`, `revive`).
-   Only the chat's owner node adds it (`addJoined`). Only a join adds a
-   member: one that the owner later removes stays out.
+   This happens when the member first appears in the member table, comes
+   back after leaving, or rejoins on a new node (`mergeMembers`,
+   `noteSession`, `revive`). Only the chat's owner node adds it
+   (`addJoined`, through `projectChatLocked`). A member still pinned to its
+   old node rotates the chat into a new one with everyone. The add runs in
+   order with the member table, never in a goroutine, so a later removal is
+   never undone. Only a join adds a member: one that the owner removes stays
+   out.
    `SetChatMembers` now runs under `ensureMu`, so two concurrent changes
    cannot both build on the same participants and `Rev`.
 2. **A person's message that names nobody asks every other participant.**
