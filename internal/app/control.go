@@ -267,6 +267,25 @@ func (a *App) controlAPI() http.Handler {
 			http.Error(w, node.ErrUnknownSession.Error()+" "+id, http.StatusNotFound)
 		}
 	})
+	// What a session does now (its hooks' tool kind): every context it is
+	// registered in keeps it, in memory only.
+	mux.HandleFunc("POST /sessions/{id}/doing", func(w http.ResponseWriter, r *http.Request) {
+		var body node.SessionDoingRequest
+		if !decode(w, r, &body) {
+			return
+		}
+		id, found := r.PathValue("id"), false
+		for _, c := range a.routeContexts() {
+			if c.n.SessionDoing(id, body) == nil {
+				found = true
+			}
+		}
+		if !found {
+			http.Error(w, node.ErrUnknownSession.Error()+" "+id, http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /ack", a.controlAck)
 	mux.HandleFunc("POST /reassign", a.controlReassign)
 	byChat := func(w http.ResponseWriter, r *http.Request) {

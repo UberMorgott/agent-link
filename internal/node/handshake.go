@@ -88,6 +88,9 @@ type frame struct {
 	Project string `json:"project,omitempty"`
 	// Presence: this node's sessions per shared area (presence frames, CapPresence).
 	Presence []AreaPresence `json:"presence,omitempty"`
+	// Agents: this node's agents, one entry each, with what they do (presence
+	// frames to peers with CapAgentStatus; nil for none).
+	Agents []AgentStatus `json:"agents,omitempty"`
 	// ProjectMeta: the project's shared name (project frames, CapProjects).
 	ProjectMeta *ProjectMeta `json:"project_meta,omitempty"`
 	// Att: one chunk of an attachment blob (att frames, CapAttachments).
@@ -130,7 +133,7 @@ const (
 )
 
 // Capabilities is the list sent in hello by a legacy node; a project node adds CapProjects.
-var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE, CapChat, CapReceipts, CapPresence, CapAgentCounts, CapChatMembers, CapAttachments}
+var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE, CapChat, CapReceipts, CapPresence, CapAgentCounts, CapAgentStatus, CapChatMembers, CapAttachments}
 
 // caps is the capability list this node announces.
 func (n *Node) caps() []string {

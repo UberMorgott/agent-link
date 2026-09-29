@@ -15,6 +15,8 @@ package main
 //     (agentlink send, noteSent), PreToolUse, UserPromptSubmit and Stop report
 //     what it does to those chats (POST /chats/{id}/activity), one line per
 //     session.
+//   - PreToolUse and PostToolUse tell the node what the main agent does now,
+//     a tool kind only (POST /sessions/{id}/doing, on a change: tellDoing).
 //   - Both clients tell the node when the session is idle (a Stop that lets
 //     it stop) and busy again. The node wakes an idle Claude Code session
 //     through its cross-session inbox (the hooks hand it
@@ -30,6 +32,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -143,6 +146,12 @@ type hookState struct {
 	// their own hooks deliver; Stamps: ask calls about to run (hook_agents.go).
 	Live   map[string]liveAgent `json:"live,omitempty"`
 	Stamps []askStamp           `json:"stamps,omitempty"`
+	// Doing and DoingSubs: what the node was last told the main agent does
+	// and how many subagents it runs (tellDoing); Kids: a Codex session's live
+	// subagents (its SubagentStart..SubagentStop), by id.
+	Doing     string               `json:"doing,omitempty"`
+	DoingSubs int                  `json:"doing_subs,omitempty"`
+	Kids      map[string]time.Time `json:"kids,omitempty"`
 }
 
 // hookEnv is where the hook finds the node and keeps its state.
@@ -332,6 +341,9 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	if event == evSubagentStart || event == evSubagentStop {
 		h.subagent(in.AgentID, in.AgentType, event == evSubagentStop)
 		h.reportCodexAgentState()
+		if client == hookCodex && st.trackKid(event, in.AgentID, now) && !st.Idle {
+			h.tellDoing(cmp.Or(st.Doing, node.AgentThinking))
+		}
 		quiet()
 		return nil
 	}
@@ -356,10 +368,14 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		return nil
 	}
 	if event == evPreTool {
+		h.tellDoing(doingOf(in.ToolName, in.ToolInput))
 		typ, text := toolActivity(folder, in.ToolName, in.ToolInput)
 		h.reportMain(typ, text, "")
 		writeHookJSON(stdout, takeNotice(&st), nil)
 		return nil
+	}
+	if event == evPostTool {
+		h.tellDoing(node.AgentThinking) // the tool is done: the model goes on
 	}
 	b, err := h.collect(event == evStop, event == evStop, func() string { return in.Prompt + "\n" + transcriptTail(in.TranscriptPath) })
 	if err != nil {
@@ -462,6 +478,9 @@ func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force, id
 	var se *statusError
 	switch {
 	case err == nil:
+		if st.Idle != idle || force {
+			st.Doing, st.DoingSubs = "", 0 // a turn began or ended: the node forgot what it did
+		}
 		st.Folder, st.Registered, st.Unbound, st.Ended, st.Idle = folder, now, false, false, idle
 		return true
 	case errors.As(err, &se) && se.code == http.StatusBadRequest:

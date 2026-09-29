@@ -106,6 +106,9 @@ type MemberInfo struct {
 	// AgentCounts is known only for this node and connected peers with
 	// CapAgentCounts. Nil for older or disconnected peers.
 	AgentCounts *AgentCounts `json:"agent_counts,omitempty"`
+	// Agents: the member's agents one by one with what they do, for this node
+	// and connected peers with CapAgentStatus; nil for older peers (AgentCounts).
+	Agents []AgentStatus `json:"agents,omitempty"`
 	// Color is the member's chat color (Member.Color), "" for the default.
 	Color string `json:"color,omitempty"`
 	// Display is the member's nickname (Member.Display), "" for none.
@@ -716,11 +719,12 @@ func (n *Node) incarnationGone(name, oldID string) {
 // online ones first.
 func (n *Node) Members() []MemberInfo {
 	counts := n.agentCountsForArea("") // before n.mu: registries have their own locks
+	agents := n.AgentStatuses("")
 	agent := counts.total() > 0
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	self := MemberInfo{Name: n.cfg.Node, Self: true, Online: true, Addrs: slices.Clone(n.selfAddrs), App: n.appVersion, Proto: ProtocolVersion,
-		Agent: agent, AgentCounts: &counts, Color: n.chatColor, Display: n.display}
+		Agent: agent, AgentCounts: &counts, Agents: agents, Color: n.chatColor, Display: n.display}
 	var out []MemberInfo
 	names := map[string]bool{}
 	for name, m := range n.members {
@@ -757,6 +761,9 @@ func (n *Node) Members() []MemberInfo {
 					info.AgentCounts = &counts
 					info.Agent = counts.total() > 0
 				}
+			}
+			if pc.has(CapAgentStatus) && pc.presence != nil {
+				info.Agents = slices.Clone(pc.agents)
 			}
 			if pc.app != "" {
 				info.App = pc.app

@@ -564,6 +564,16 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("POST /sessions/{id}/doing", func(w http.ResponseWriter, r *http.Request) {
+		var req SessionDoingRequest
+		if decode(w, r, &req) {
+			if err := n.SessionDoing(r.PathValue("id"), req); err != nil {
+				http.Error(w, err.Error(), errorCode(err))
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
 }
 
 // UnreadQuery answers GET /unread for its query (folder, session, after,

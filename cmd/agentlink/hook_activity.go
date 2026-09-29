@@ -80,6 +80,86 @@ func (h *hookSession) reportCodexAgentState() {
 	h.reportMain("thinking", "думает", "")
 }
 
+// hookDoingTimeout bounds a doing report: a local call that normally takes a
+// few milliseconds; a hook never holds its tool up longer than this for it.
+const hookDoingTimeout = 250 * time.Millisecond
+
+// tellDoing tells the node what the session's main agent does now, a
+// node.ToolKind state (the tool's kind, never its input), with its live
+// subagents (Codex: Kids; Claude's come with its registration). Only a change
+// is posted. Codex tool hooks name no agent: while children run, its main
+// agent shows as thinking.
+func (h *hookSession) tellDoing(kind string) {
+	subs := 0
+	if h.client == hookCodex {
+		subs = len(h.st.Kids)
+		if subs > 0 && kind != node.AgentWaiting {
+			kind = node.AgentThinking
+		}
+	}
+	if kind == h.st.Doing && subs == h.st.DoingSubs {
+		return
+	}
+	err := hookCall(h.env.api, http.MethodPost, "/sessions/"+url.PathEscape(h.sid)+"/doing", h.env.withProject(nil),
+		node.SessionDoingRequest{Doing: kind, Subagents: subs}, nil, hookDoingTimeout)
+	var se *statusError
+	if err == nil || errors.As(err, &se) { // refused (an older node): not asked again until it changes
+		h.st.Doing, h.st.DoingSubs = kind, subs
+	}
+}
+
+// doingOf is the state of a main-agent tool call: its kind by name, and
+// waiting for an answer when a shell runs agentlink discuss.
+func doingOf(tool string, input json.RawMessage) string {
+	kind := node.ToolKind(tool)
+	if kind != node.AgentCommand {
+		return kind
+	}
+	var in struct {
+		Command any `json:"command"`
+	}
+	_ = json.Unmarshal(input, &in)
+	command := ""
+	switch c := in.Command.(type) {
+	case string:
+		command = c
+	case []any:
+		for _, a := range c {
+			if s, ok := a.(string); ok {
+				command += s + " "
+			}
+		}
+	}
+	if m := agentlinkAsk.FindStringSubmatch(command); len(m) > 2 && strings.EqualFold(m[2], "discuss") {
+		return node.AgentWaiting
+	}
+	return kind
+}
+
+// trackKid keeps a Codex session's live subagents (Kids) at its
+// SubagentStart/SubagentStop; ones silent for liveAgentTTL are dropped. It
+// reports whether their number changed.
+func (st *hookState) trackKid(event, id string, now time.Time) bool {
+	before := len(st.Kids)
+	for k, at := range st.Kids {
+		if now.Sub(at) > liveAgentTTL {
+			delete(st.Kids, k)
+		}
+	}
+	if id != "" && len(id) <= 128 {
+		switch {
+		case event == evSubagentStop:
+			delete(st.Kids, id)
+		case len(st.Kids) < maxLiveAgents:
+			if st.Kids == nil {
+				st.Kids = map[string]time.Time{}
+			}
+			st.Kids[id] = now
+		}
+	}
+	return len(st.Kids) != before
+}
+
 // agentActivity is a subagent's last activity posted (hookState.AgentActivity).
 type agentActivity struct {
 	Text string    `json:"text"`

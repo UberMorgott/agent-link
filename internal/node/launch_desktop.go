@@ -159,7 +159,7 @@ func runClaude(ctx context.Context, bin string, spec LaunchSpec, started func(st
 	if err := cmd.Start(); err != nil {
 		return "", err
 	}
-	id, serr := ReadClaudeStream(out, started)
+	id, serr := readClaudeStream(out, started, spec.Doing)
 	_, _ = io.Copy(io.Discard, out)
 	werr := cmd.Wait()
 	if serr != nil {
@@ -184,16 +184,67 @@ func killTreeOnCancel(ctx context.Context, cmd *exec.Cmd) {
 // stream-json` until the result: started gets the session id at the first
 // event naming it. It returns the session id and the turn's error.
 func ReadClaudeStream(r io.Reader, started func(string)) (string, error) {
+	return readClaudeStream(r, started, nil)
+}
+
+// claudeDoing follows what a Claude stream's main agent does (its tool calls
+// by name) and its running subagents (Task/Agent calls not yet answered).
+type claudeDoing struct {
+	kind string
+	subs map[string]bool
+	tell func(kind string, subagents int)
+}
+
+func (d *claudeDoing) event(typ, parent string, message json.RawMessage) {
+	if d.tell == nil || parent != "" { // a subagent's own events
+		return
+	}
+	var msg struct {
+		Content []struct {
+			Type      string `json:"type"`
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			ToolUseID string `json:"tool_use_id"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(message, &msg) != nil {
+		return // a plain text prompt
+	}
+	kind, subs := d.kind, len(d.subs)
+	for _, c := range msg.Content {
+		switch {
+		case typ == "assistant" && c.Type == "tool_use":
+			kind = ToolKind(c.Name)
+			if (c.Name == "Task" || c.Name == "Agent") && c.ID != "" && len(d.subs) < maxAgentSubagents {
+				d.subs[c.ID] = true
+			}
+		case typ == "assistant":
+			kind = AgentThinking
+		case typ == "user" && c.Type == "tool_result":
+			kind = AgentThinking
+			delete(d.subs, c.ToolUseID)
+		}
+	}
+	if kind != d.kind || subs != len(d.subs) {
+		d.kind = kind
+		d.tell(kind, len(d.subs))
+	}
+}
+
+func readClaudeStream(r io.Reader, started func(string), doing func(string, int)) (string, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	id := ""
+	d := claudeDoing{subs: map[string]bool{}, tell: doing}
 	for sc.Scan() {
 		var ev struct {
-			Type      string `json:"type"`
-			Subtype   string `json:"subtype"`
-			SessionID string `json:"session_id"`
-			IsError   bool   `json:"is_error"`
-			Result    string `json:"result"`
+			Type      string          `json:"type"`
+			Subtype   string          `json:"subtype"`
+			SessionID string          `json:"session_id"`
+			IsError   bool            `json:"is_error"`
+			Result    string          `json:"result"`
+			Parent    string          `json:"parent_tool_use_id"`
+			Message   json.RawMessage `json:"message"`
 		}
 		if json.Unmarshal(sc.Bytes(), &ev) != nil {
 			continue
@@ -201,6 +252,9 @@ func ReadClaudeStream(r io.Reader, started func(string)) (string, error) {
 		if id == "" && validSessionID(ev.SessionID) {
 			id = ev.SessionID
 			started(id)
+		}
+		if ev.Type == "assistant" || ev.Type == "user" {
+			d.event(ev.Type, ev.Parent, ev.Message)
 		}
 		if ev.Type == "result" {
 			if ev.IsError {
@@ -485,6 +539,7 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 	// never repeats the same prompt in Terminal.
 	started(tid)
 	seenStarted := false
+	doing := ""
 	for {
 		m, err := notification()
 		if err != nil {
@@ -501,6 +556,10 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 				(tr.Turn.ID == "" || began.Turn.ID == tr.Turn.ID) && !seenStarted {
 				seenStarted = true
 			}
+			continue
+		}
+		if m.Method == "item/started" || m.Method == "item/completed" {
+			codexDoing(spec.Doing, m.Method, m.Params, &doing)
 			continue
 		}
 		if m.Method != "turn/completed" {
@@ -533,6 +592,36 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 			return tid, fmt.Errorf("codex turn: %w: %s", ErrTurnInterrupted, trimMsg(msg))
 		}
 		return tid, fmt.Errorf("codex turn %s: %s", done.Turn.Status, trimMsg(msg))
+	}
+}
+
+// codexDoing tells tell what a Codex turn does at an item/started or
+// item/completed notification: the item's type (a command, a file change…),
+// thinking once it completed. last is the kind told last.
+func codexDoing(tell func(string, int), method string, params json.RawMessage, last *string) {
+	if tell == nil {
+		return
+	}
+	var p struct {
+		Item struct {
+			Type   string `json:"type"`
+			Server string `json:"server"`
+			Tool   string `json:"tool"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(params, &p) != nil {
+		return
+	}
+	kind := AgentThinking
+	if method == "item/started" {
+		kind = ToolKind(p.Item.Type)
+		if p.Item.Type == "mcpToolCall" && p.Item.Tool == "discuss" && strings.Contains(p.Item.Server, "agentlink") {
+			kind = AgentWaiting
+		}
+	}
+	if kind != *last {
+		*last = kind
+		tell(kind, 0)
 	}
 }
 

@@ -32,8 +32,11 @@ type peerConn struct {
 	// presence is what the peer last said of its sessions, by area (guarded by
 	// Node.mu); nil until its first presence frame.
 	presence map[string]AreaPresence
-	c        net.Conn
-	w        *wire
+	// agents: the peer's agents its last presence frame listed (CapAgentStatus).
+	agents []AgentStatus
+
+	c net.Conn
+	w *wire
 
 	wmu     sync.Mutex
 	leaving atomic.Bool // closeAfterTelling ran: frames are no longer sent or handled
@@ -258,6 +261,7 @@ func (n *Node) readLoop(pc *peerConn) {
 			n.mergeMembers(f.Members)
 		case f.Type == framePresence:
 			n.receivePresence(pc, f.Presence)
+			n.receiveAgents(pc, f.Agents)
 		case f.Type == frameProject:
 			n.mergeProjectMeta(f.ProjectMeta)
 		case f.Type == frameAtt:
@@ -327,17 +331,23 @@ func (n *Node) writeLoop(pc *peerConn) {
 	sentAt := map[string]time.Time{}
 	pushed := map[string]bool{} // attachment blobs sent on this session
 	var told []AreaPresence     // the presence last sent
+	var toldAgents []AgentStatus
 	var toldAt time.Time
 	for {
 		// The presence is looked at on every pass (at least every resendTick),
 		// so a session that expires silently is noticed too.
 		if pc.has(CapPresence) && time.Since(toldAt) >= presenceGap {
-			if p := n.presenceForCaps(pc.areas, pc.has(CapAgentCounts)); told == nil || !slices.Equal(p, told) {
-				if pc.write(frame{Type: framePresence, Presence: p}) != nil {
+			p := n.presenceForCaps(pc.areas, pc.has(CapAgentCounts))
+			var agents []AgentStatus
+			if pc.has(CapAgentStatus) {
+				agents = n.AgentStatuses("")
+			}
+			if told == nil || !slices.Equal(p, told) || !slices.Equal(agents, toldAgents) {
+				if pc.write(frame{Type: framePresence, Presence: p, Agents: agents}) != nil {
 					pc.close()
 					return
 				}
-				told, toldAt = p, time.Now()
+				told, toldAgents, toldAt = p, agents, time.Now()
 			}
 		}
 		msgs, err := n.store.pending(pc.peer)

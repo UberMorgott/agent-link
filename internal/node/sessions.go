@@ -113,6 +113,12 @@ type Session struct {
 	// after it (a missed SubagentStop does not hold their replies forever).
 	Agents   []string  `json:"agents,omitempty"`
 	AgentsAt time.Time `json:"agents_at,omitzero"`
+	// Doing is what the main agent does in its turn (a busy AgentStatus
+	// state, its hooks' tool kind: SessionDoing) since DoingAt; Subs the
+	// subagents a Codex session reports. A turn's start or end resets them.
+	Doing   string    `json:"doing,omitempty"`
+	DoingAt time.Time `json:"doing_at,omitzero"`
+	Subs    int       `json:"subs,omitempty"`
 }
 
 // maxSessionAgents bounds SessionRequest.Agents.
@@ -439,6 +445,13 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	s.Woken = s.Woken && s.Idle && req.Idle
 	if !s.Woken {
 		s.Wakes, s.WokeAt = 0, time.Time{}
+	}
+	// A turn begins or ends (or the session is new): what it did is over.
+	if back || s.Idle != req.Idle {
+		s.Doing, s.DoingAt = "", now
+		if req.Idle {
+			s.Subs = 0
+		}
 	}
 	s.Asked, s.Idle, s.CodexHome = asked, req.Idle, req.CodexHome
 	if !req.Heartbeat {

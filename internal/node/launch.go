@@ -102,6 +102,9 @@ type LaunchSpec struct {
 	Seat   string
 	NoOpen bool
 	Env    []string
+	// Doing, when set, hears what a direct turn's agent does as its stream
+	// shows it: a ToolKind state and its running subagents (tool names only).
+	Doing func(kind string, subagents int)
 }
 
 // SessionLauncher opens a visible agent session.

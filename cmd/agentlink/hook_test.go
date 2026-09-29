@@ -33,7 +33,8 @@ type fakeNode struct {
 	worker   map[string]bool   // ids the worker takes (ack answers assigned:"worker")
 	activity []node.ActivityRequest
 	actChat  []string
-	gets     int // GET /unread calls
+	doing    []string // POST /sessions/{id}/doing: doing/subagents
+	gets     int      // GET /unread calls
 	api      string
 	// claims: with claimOn, POST /claim grants a message to the first session
 	// that claims it (id -> session); without, /claim is 404 like an older node.
@@ -167,6 +168,11 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		f.sessions[req.SessionID] = req
 		_ = json.NewEncoder(w).Encode(node.Session{SessionID: req.SessionID})
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/sessions/") && strings.HasSuffix(r.URL.Path, "/doing"):
+		var req node.SessionDoingRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		f.doing = append(f.doing, req.Doing+"/"+strconv.Itoa(req.Subagents))
+		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/sessions/"):
 		id := strings.TrimPrefix(r.URL.Path, "/sessions/")
 		delete(f.sessions, id)

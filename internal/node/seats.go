@@ -146,6 +146,8 @@ type seatStore struct {
 	// gated: seats whose running turn holds a TurnGate slot; lent: the ones
 	// that lent it while they wait for a discuss answer (LendTurn).
 	gated, lent map[string]bool
+	// doing: what each running node turn does (its agent's stream: setSeatDoing).
+	doing map[string]agentDoing
 	// dirty: the last save failed; seatsDue saves again.
 	dirty bool
 	// pauseLogged: seats whose hop-limit pause seatsDue logged (once per pause).
@@ -164,7 +166,7 @@ func seatKey(seat, id string) string { return seat + "/" + id }
 func openSeats(dir string) (*seatStore, error) {
 	st := &seatStore{path: filepath.Join(dir, "seats.json"), run: map[string]context.CancelFunc{}, queued: map[string]bool{}, errs: map[string]string{},
 		busy: map[string]bool{}, quiet: map[string]bool{}, deferred: map[string]bool{}, marks: map[string]seatMark{}, pauseLogged: map[string]bool{},
-		handling: map[string][]Message{}, gated: map[string]bool{}, lent: map[string]bool{}}
+		handling: map[string][]Message{}, gated: map[string]bool{}, lent: map[string]bool{}, doing: map[string]agentDoing{}}
 	if err := readJSON(st.path, &st.seats); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -1045,6 +1047,7 @@ func (n *Node) seatTurn(ctx context.Context, dl DirectLauncher, id string, intro
 		delete(st.queued, id)
 		delete(st.quiet, id)
 		delete(st.handling, id)
+		delete(st.doing, id)
 		st.mu.Unlock()
 		n.changed("seats")
 	}()
@@ -1328,7 +1331,8 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 		prompt.WriteString(WakePrompt(msgs, ready-len(msgs), folder, randomHex(8)))
 	}
 	spec := LaunchSpec{Provider: seat.Provider, Folder: folder, ResumeID: seat.SessionID, Prompt: prompt.String(),
-		Seat: seat.ID, NoOpen: !open, Env: n.seatEnv(seat, chat)}
+		Seat: seat.ID, NoOpen: !open, Env: n.seatEnv(seat, chat),
+		Doing: func(kind string, subs int) { n.setSeatDoing(seat.ID, kind, subs) }}
 	n.log.Info("running a seat's turn", "seat", seat.ID, "provider", seat.Provider, "resume", seat.SessionID, "messages", len(msgs))
 	err := dl.Run(ctx, spec, func(id string) {
 		n.bindSeat(seat.ID, id)

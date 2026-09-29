@@ -173,6 +173,25 @@ func (n *Node) receivePresence(pc *peerConn, list []AreaPresence) {
 	}
 }
 
+// receiveAgents keeps the agents a peer's presence frame lists (none from a
+// peer without CapAgentStatus; a malformed list is dropped whole).
+func (n *Node) receiveAgents(pc *peerConn, list []AgentStatus) {
+	if !pc.has(CapAgentStatus) || !validAgentStatus(list) {
+		list = nil
+	}
+	list = slices.Clone(list)
+	for i := range list {
+		list[i] = list[i].clean()
+	}
+	n.mu.Lock()
+	same := slices.Equal(pc.agents, list)
+	pc.agents = list
+	n.mu.Unlock()
+	if !same {
+		n.changed("chats")
+	}
+}
+
 // PeerPresence returns what peer last said of its session for area; ok is
 // false while it is disconnected or has said nothing (an older version).
 func (n *Node) PeerPresence(peer, area string) (AreaPresence, bool) {
