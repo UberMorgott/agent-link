@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -163,5 +164,65 @@ func TestRetiredChatKeepsUnreadReplyHidden(t *testing.T) {
 	h.app.gcLocalChats(time.Now())
 	if hasBinding(h, ask.Project) {
 		t.Fatal("retired chat kept after its reply was read")
+	}
+}
+
+// A temporary chat of no owner never becomes its first session's (Unowned);
+// a retired chat continued by id becomes the caller's.
+func TestUnownedAndAdoptedChats(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &threadRunner{} })
+	dir := repoDir(t)
+	human := discussIn(t, h, map[string]any{"folder": dir, "temporary": true})
+	discussIn(t, h, map[string]any{"folder": dir, "chat": human.Chat, "session_id": "s1"})
+	own := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s1"})
+	if own.Project == human.Project {
+		t.Fatal("a person's temporary chat became the session's own")
+	}
+	h.app.mu.Lock()
+	i := h.app.bindingIndex(own.Project)
+	s := h.app.s
+	s.Bindings = slices.Clone(s.Bindings)
+	lc := *s.Bindings[i].Chat
+	lc.Retired = time.Now().UTC()
+	s.Bindings[i].Chat = &lc
+	h.app.s = s
+	h.app.mu.Unlock()
+	if again := discussIn(t, h, map[string]any{"folder": dir, "chat": own.Chat, "session_id": "s2"}); again.Project != own.Project {
+		t.Fatalf("retired chat not continued by id: %+v", again)
+	}
+	h.app.mu.Lock()
+	got := h.app.s.Bindings[h.app.bindingIndex(own.Project)].Chat
+	h.app.mu.Unlock()
+	if !got.Retired.IsZero() || got.Owner == nil || got.Owner.Session != "s2" {
+		t.Fatalf("adopted chat: %+v", got)
+	}
+}
+
+// An owner that registers again while its chat's retirement waits for the
+// owner's lock keeps its chat and seats.
+func TestRetireRechecksOwnerUnderItsLock(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &threadRunner{} })
+	dir := repoDir(t)
+	project := discussIn(t, h, map[string]any{"folder": dir})
+	registerSession(t, h, "s1", dir)
+	own := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s1"})
+	seatThread(t, h, own.Project)
+	endSession(t, h, "s1")
+	now := time.Now()
+	h.app.retireOwnedChats(now)
+	mu := h.app.ownerLock("s1")
+	mu.Lock()
+	done := make(chan struct{})
+	go func() { h.app.retireOwnedChats(now.Add(RetireGrace)); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	// Back meanwhile, registered where the hook would (the folder's local project).
+	if _, err := h.app.projects[project.Project].n.RegisterSession(node.SessionRequest{SessionID: "s1", Provider: node.ProviderClaude, Folder: dir}); err != nil {
+		mu.Unlock()
+		t.Fatal(err)
+	}
+	mu.Unlock()
+	<-done
+	if !hasBinding(h, own.Project) || len(h.app.projects[own.Project].n.Seats()) != 1 {
+		t.Fatal("a returning owner's chat was retired")
 	}
 }

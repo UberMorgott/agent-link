@@ -159,6 +159,13 @@ func (a *App) sessionLock(sid string) *sync.Mutex {
 	return &a.sessLocks[h.Sum32()%uint32(len(a.sessLocks))]
 }
 
+// ownerLock is the lock of session sid's registration (App.ownerLocks).
+func (a *App) ownerLock(sid string) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(sid))
+	return &a.ownerLocks[h.Sum32()%uint32(len(a.ownerLocks))]
+}
+
 // liveSession finds session sid live in any context.
 func (a *App) liveSession(ctxs []routeCtx, sid string) (node.Session, bool) {
 	for _, c := range ctxs {

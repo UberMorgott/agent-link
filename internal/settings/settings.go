@@ -163,6 +163,9 @@ type LocalChat struct {
 	// by (Project, Owner, Topic), and the chat retires when it ends. nil for a
 	// shared chat (a person's, or one asked for with shared).
 	Owner *LocalChatOwner `json:"owner,omitempty"`
+	// Unowned marks a temporary chat of no owner made by this build (a
+	// person's, a seat's, shared): OwnerOf never takes its first session for one.
+	Unowned bool `json:"unowned,omitempty"`
 	// Retired is when the chat was closed for its owner's end (its seats
 	// removed); such a chat stays only while an unread reply holds it, hidden,
 	// and discuss never routes to it again.
@@ -199,14 +202,14 @@ func (o LocalChatOwner) valid() bool {
 }
 
 // OwnerOf is lc's owner: Owner, else for a temporary chat of an older build
-// the session that made it (Sessions[0]); nil for none.
+// (not Unowned) the session that made it (Sessions[0]); nil for none.
 func (lc *LocalChat) OwnerOf() *LocalChatOwner {
 	switch {
 	case lc == nil:
 		return nil
 	case lc.Owner != nil:
 		return lc.Owner
-	case lc.Temporary && lc.Topic == "" && len(lc.Sessions) > 0 && lc.Sessions[0] != "":
+	case lc.Temporary && !lc.Unowned && lc.Topic == "" && len(lc.Sessions) > 0 && lc.Sessions[0] != "":
 		return &LocalChatOwner{Session: lc.Sessions[0]}
 	}
 	return nil

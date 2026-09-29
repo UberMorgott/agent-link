@@ -231,10 +231,16 @@ func (a *App) controlAPI() http.Handler {
 	mux.HandleFunc("GET /unread", a.controlUnread)
 	mux.HandleFunc("POST /sessions", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Project string `json:"project"`
-			Folder  string `json:"folder"`
+			Project   string `json:"project"`
+			Folder    string `json:"folder"`
+			SessionID string `json:"session_id"`
 		}
 		if peekJSON(w, r, &body) {
+			// Under the session's lock: a retirement of its chats (retireChat)
+			// sees it back, or removes the seats before it registers.
+			mu := a.ownerLock(body.SessionID)
+			mu.Lock()
+			defer mu.Unlock()
 			a.forward(w, r, selector{project: pick(r, body.Project), folder: body.Folder}, true)
 		}
 	})
@@ -326,7 +332,7 @@ func (a *App) controlReassign(w http.ResponseWriter, r *http.Request) {
 	// Under the target's reconciliation lock: its end or expiry cannot slip
 	// between the liveness check and the new route; its reconcileSession runs
 	// after and finds the reply waiting for it (needs a person).
-	mu := a.sessionLock(body.SessionID)
+	mu := a.ownerLock(body.SessionID)
 	mu.Lock()
 	target, found := a.liveSession(ctxs, body.SessionID)
 	if !found {

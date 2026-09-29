@@ -215,6 +215,9 @@ func TestValidateOwnedLocalChats(t *testing.T) {
 	if o := legacy.OwnerOf(); o == nil || o.Session != "s1" || o.Agent != "" {
 		t.Fatalf("legacy owner: %+v", o)
 	}
+	if o := (&LocalChat{Temporary: true, Unowned: true, Sessions: []string{"s1"}}).OwnerOf(); o != nil {
+		t.Fatalf("unowned chat owned: %+v", o)
+	}
 	if o := (&LocalChat{Topic: "api", Sessions: []string{"s1"}}).OwnerOf(); o != nil {
 		t.Fatalf("shared topic owned: %+v", o)
 	}

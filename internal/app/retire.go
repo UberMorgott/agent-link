@@ -98,6 +98,22 @@ func (a *App) ownerLiveLocked(pid string, o settings.LocalChatOwner, live map[st
 
 func (a *App) forgetOwnerLocked(pid string) { delete(a.owners, pid) }
 
+// ownerGoneLocked reports whether the owner of owned local chat pid is gone
+// now (strictly: its session live in no context, or a subagent seen live and
+// no longer among its session's agents).
+func (a *App) ownerGoneLocked(pid string) bool {
+	i := a.bindingIndex(pid)
+	if i < 0 {
+		return false
+	}
+	o := a.s.Bindings[i].Chat.OwnerOf()
+	if o == nil {
+		return false
+	}
+	agents, ok := a.liveAgentsLocked()[o.Session]
+	return !ok || (o.Agent != "" && !agents[o.Agent] && a.owners[pid].agent)
+}
+
 // retireOwnedChats retires every owned local chat whose owner has been gone
 // for RetireGrace (gcLoop, every retireEvery).
 func (a *App) retireOwnedChats(now time.Time) {
@@ -123,15 +139,46 @@ func (a *App) retireOwnedChats(now time.Time) {
 // are cancelled and waited for, retireTurnWait), then the chat leaves, or,
 // with an unread reply, stays Retired until it is read (gcLocalChats).
 func (a *App) retireChat(pid string) {
+	// Checked again under a.mu, and marked retiring: discuss routes no call
+	// to it (a new own chat takes one) while its seats go.
 	a.mu.Lock()
 	c := a.projects[pid]
+	var owner string
+	if i := a.bindingIndex(pid); i >= 0 {
+		if o := a.s.Bindings[i].Chat.OwnerOf(); o != nil {
+			owner = o.Session
+		}
+	}
 	a.mu.Unlock()
+	// The owner's registration (POST /sessions) waits while its seats go: it
+	// cannot come back between the check and the removal.
+	mu := a.ownerLock(owner)
+	mu.Lock()
+	a.mu.Lock()
+	if owner == "" || !a.ownerGoneLocked(pid) {
+		a.mu.Unlock()
+		mu.Unlock()
+		return
+	}
+	if a.retiring == nil {
+		a.retiring = map[string]bool{}
+	}
+	a.retiring[pid] = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		delete(a.retiring, pid)
+		a.mu.Unlock()
+	}()
 	if c != nil {
 		for _, s := range c.n.Seats() {
 			if err := c.n.RemoveSeat(s.ID); err != nil && !errors.Is(err, node.ErrUnknownSeat) {
 				a.log.Warn("retire chat: remove seat", "project", pid, "seat", s.ID, "err", err)
 			}
 		}
+	}
+	mu.Unlock()
+	if c != nil {
 		if !c.n.WaitSeatTurns(retireTurnWait) {
 			a.log.Warn("retire chat: a turn is still running; tried again later", "project", pid)
 			return
@@ -141,6 +188,12 @@ func (a *App) retireChat(pid string) {
 	defer a.mu.Unlock()
 	i := a.bindingIndex(pid)
 	if i < 0 || a.s.Bindings[i].Chat == nil || !a.s.Bindings[i].Chat.Retired.IsZero() {
+		return
+	}
+	if !a.ownerGoneLocked(pid) {
+		// Back meanwhile (a resumed session): the chat stays; its next ask
+		// adds a seat again.
+		a.log.Info("retire chat: its owner is back; kept", "project", pid)
 		return
 	}
 	defer func() { go a.events.publish("projects", projectTopic(pid), "status", "dashboard") }()

@@ -98,6 +98,9 @@ type App struct {
 	// sessLocks serialize, per session id (sessionLock), the reconciliation
 	// of its replies (reconcileSession) and a reassign to it.
 	sessLocks [64]sync.Mutex
+	// ownerLocks serialize, per session id (ownerLock), its registration and
+	// the removal of its owned chats' seats (retireChat).
+	ownerLocks [64]sync.Mutex
 	// turns caps the seat turns of every context that run at once
 	// (node.MaxParallelTurns); the rest wait in line.
 	turns *node.TurnGate
@@ -121,6 +124,8 @@ type App struct {
 	hookStates  map[string]string // clean folder -> Hook* state of the last sync
 	// owners is what was seen of each owned local chat's owner (retire.go).
 	owners map[string]ownerWatch
+	// retiring are the owned chats whose seats go now (retireChat).
+	retiring map[string]bool
 }
 
 // Status is a snapshot for the tray and the web UI.

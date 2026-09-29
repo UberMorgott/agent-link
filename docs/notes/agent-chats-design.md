@@ -236,9 +236,11 @@ Owner decisions taken: Q1 (a), Q2 (a), Q3 4 per machine (one `node.TurnGate` sha
 context of the app, since each local chat is its own node), Q5 yes.
 
 - `settings.LocalChat`: `owner` (`LocalChatOwner {session, agent?, agent_type?, provider?}`),
-  `retired` (time; set when the owner ended but an unread reply holds the chat). An owned chat is
+  `retired` (time; set when the owner ended but an unread reply holds the chat), `unowned` (bool;
+  a temporary chat of no owner made by this build: never falls back to `sessions[0]`). An owned chat is
   `temporary: true` and may carry a `topic`. `LocalChat.OwnerOf()` = `owner`, else for an older
-  temporary chat without a topic `{session: sessions[0]}`.
+  temporary chat without a topic and not `unowned` `{session: sessions[0]}`. A retired chat continued
+  by `chat: <id>` is adopted by the caller (owner reset); a chat being retired refuses it (404).
 - Routing key = (`project`, `owner.session`, `owner.agent`, lower(`topic`)); retired chats never
   match. Agent callers (session set, no seat) get owned chats unless `shared: true` (MCP `shared`,
   CLI `--shared`, request field `shared`); `shared` with `chat`/`temporary` = 400.

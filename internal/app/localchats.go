@@ -88,6 +88,12 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 	if req.Chat != "" {
 		for i, b := range a.s.Bindings {
 			if c := a.projects[b.ID]; c != nil && b.ScopeOf() == settings.ProjectScopeLocal && c.n.OwnsChat(req.Chat) {
+				if a.retiring[b.ID] {
+					return "", errUnknownLocalChat // closing: its seats go now
+				}
+				if b.Chat != nil && !b.Chat.Retired.IsZero() {
+					return b.ID, a.adoptRetiredLocked(i, discussOwner(req))
+				}
 				return b.ID, a.touchLocalChatLocked(i, req.SessionID)
 			}
 		}
@@ -122,7 +128,8 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 		best := -1
 		for i, b := range a.s.Bindings {
 			lc := b.Chat
-			if lc == nil || lc.Project != pid || a.projects[b.ID] == nil || !strings.EqualFold(lc.Topic, req.Topic) || !lc.Retired.IsZero() {
+			if lc == nil || lc.Project != pid || a.projects[b.ID] == nil || !strings.EqualFold(lc.Topic, req.Topic) ||
+				!lc.Retired.IsZero() || a.retiring[b.ID] {
 				continue
 			}
 			var mine bool
@@ -143,8 +150,10 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 	if len(a.s.Bindings)-settings.ProjectCount(a.s.Bindings) >= settings.MaxLocalChats {
 		return "", &settings.Problem{Key: "too_many_projects"}
 	}
+	// A temporary chat of no owner says so: its first session is no owner
+	// (settings.LocalChat.OwnerOf).
 	lc := &settings.LocalChat{Temporary: req.Topic == "" || owner != nil, Topic: req.Topic, Owner: owner, Project: pid, Folder: dir,
-		LastUsed: time.Now().UTC()}
+		LastUsed: time.Now().UTC(), Unowned: owner == nil && req.Topic == ""}
 	if pid != "" {
 		lc.Folder = a.bindingDirLocked(pid)
 	}
@@ -230,14 +239,13 @@ func inWorkTree(dir string) bool {
 }
 
 // touchLocalChatLocked records a use of the local chat of binding i by
-// session ("" none), which a retired chat brings back; a folder's project
-// binding is left as it is.
+// session ("" none); a folder's project binding is left as it is.
 func (a *App) touchLocalChatLocked(i int, session string) error {
 	if a.s.Bindings[i].Chat == nil {
 		return nil
 	}
 	lc := *a.s.Bindings[i].Chat
-	lc.LastUsed, lc.Retired = time.Now().UTC(), time.Time{} // continued: in use again
+	lc.LastUsed = time.Now().UTC()
 	if session != "" && !slices.Contains(lc.Sessions, session) {
 		lc.Sessions = append(slices.Clone(lc.Sessions), session)
 	}
@@ -248,6 +256,34 @@ func (a *App) touchLocalChatLocked(i int, session string) error {
 		return err
 	}
 	a.s = s
+	return nil
+}
+
+// adoptRetiredLocked brings back retired local chat i, continued by id: it
+// becomes owner's (nil: an unowned chat, left to the idle GC), and what was
+// seen of its old owner is forgotten.
+func (a *App) adoptRetiredLocked(i int, owner *settings.LocalChatOwner) error {
+	lc := *a.s.Bindings[i].Chat
+	lc.Retired, lc.Owner, lc.LastUsed = time.Time{}, owner, time.Now().UTC()
+	switch {
+	case owner != nil:
+		lc.Temporary, lc.Unowned = true, false
+		if !slices.Contains(lc.Sessions, owner.Session) {
+			lc.Sessions = append(slices.Clone(lc.Sessions), owner.Session)
+		}
+	case lc.Topic != "":
+		lc.Temporary, lc.Unowned = false, false // a person's topic chat is shared
+	default:
+		lc.Temporary, lc.Unowned = true, true
+	}
+	s := a.s
+	s.Bindings = slices.Clone(s.Bindings)
+	s.Bindings[i].Chat = &lc
+	if err := settings.Save(a.path, s); err != nil {
+		return err
+	}
+	a.s = s
+	a.forgetOwnerLocked(s.Bindings[i].ID)
 	return nil
 }
 
