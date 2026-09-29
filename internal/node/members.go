@@ -432,6 +432,7 @@ func (n *Node) mergeMembers(recs []Member) {
 	var drop []*peerConn
 	var joined []string         // members new here, back after leaving, or on a new node
 	gone := map[string]string{} // name -> node id whose queue is dropped
+	n.ensureMu.Lock()           // the joins reach the chat before any other chat change (addJoinedLocked)
 	n.mu.Lock()
 	for _, r := range recs {
 		if !config.ValidName(r.Name) || r.Ver <= 0 || (r.ID != "" && !validID(r.ID)) {
@@ -500,9 +501,8 @@ func (n *Node) mergeMembers(recs []Member) {
 	for _, pc := range drop {
 		n.wg.Go(func() { n.tellRemoved(pc) })
 	}
-	// In order with the table, before this peer's next frame: a removal from
-	// the chat that comes after the join is never undone by it.
-	n.addJoined(joined)
+	n.addJoinedLocked(joined)
+	n.ensureMu.Unlock()
 	switch {
 	case changed:
 		n.membersChanged()
@@ -528,6 +528,7 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 	}
 	addrs = mergeAddrs(addrs, nil)
 	now := time.Now().Unix()
+	n.ensureMu.Lock() // a join reaches the chat before any other chat change (addJoinedLocked)
 	n.mu.Lock()
 	l := n.members[pc.peer]
 	changed, infoChanged, joined := false, false, false
@@ -538,6 +539,7 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 		// closes this session. A newer live record would undo the removal
 		// everywhere; only revive (a hand-added address) may do that.
 		n.mu.Unlock()
+		n.ensureMu.Unlock()
 		return
 	case l == nil || l.Removed: // new, or a re-join after leaving
 		if l != nil {
@@ -571,8 +573,9 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 		n.incarnationGone(pc.peer, oldID)
 	}
 	if joined || oldID != "" {
-		n.addJoined([]string{pc.peer})
+		n.addJoinedLocked([]string{pc.peer})
 	}
+	n.ensureMu.Unlock()
 	if changed {
 		n.membersChanged()
 		return
@@ -598,6 +601,7 @@ func (n *Node) touchSeen(peer string) {
 
 // revive brings back a removed member because the user added its address by hand.
 func (n *Node) revive(name, id string) {
+	n.ensureMu.Lock() // the join reaches the chat before any other chat change (addJoinedLocked)
 	n.mu.Lock()
 	l := n.members[name]
 	ok := l != nil && l.Removed && name != n.cfg.Node
@@ -615,9 +619,12 @@ func (n *Node) revive(name, id string) {
 		n.incarnationGone(name, oldID)
 	}
 	if ok {
+		n.addJoinedLocked([]string{name})
+	}
+	n.ensureMu.Unlock()
+	if ok {
 		n.log.Info("member added back", "peer", name)
 		n.membersChanged()
-		n.addJoined([]string{name})
 	}
 }
 

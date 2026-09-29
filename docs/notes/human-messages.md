@@ -23,9 +23,9 @@ Nobody answered and the message had no ticks.
    back after leaving, or rejoins on a new node (`mergeMembers`,
    `noteSession`, `revive`). Only the chat's owner node adds it
    (`addJoined`, through `projectChatLocked`). A member still pinned to its
-   old node rotates the chat into a new one with everyone. The add runs in
-   order with the member table, never in a goroutine, so a later removal is
-   never undone. Only a join adds a member: one that the owner removes stays
+   old node rotates the chat into a new one with everyone. The member table
+   change and the add both run under `ensureMu`, so no chat change can come
+   between them, and a later removal is never undone. Only a join adds a member: one that the owner removes stays
    out.
    `SetChatMembers` now runs under `ensureMu`, so two concurrent changes
    cannot both build on the same participants and `Rev`.

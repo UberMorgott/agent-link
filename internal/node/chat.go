@@ -774,15 +774,14 @@ func (n *Node) setChatMembersLocked(id string, add, remove []string) (ChatInfo, 
 // whoever joins a project talks in its one chat from then on. A new member is
 // added (SetChatMembers); one pinned to its old node takes the chat's rotation
 // to a new one with everyone (projectChatLocked). Only a join adds; the owner
-// may remove them again and they stay out. The caller runs it in order with
-// the member table, so no later removal is undone. A member that cannot be
-// added yet (no node id, no chat support) is logged and left out.
-func (n *Node) addJoined(names []string) {
+// may remove them again and they stay out. The caller holds n.ensureMu from
+// before its member table change to after this, so no chat change comes
+// between the join and its add (a removal is never undone). A member that
+// cannot be added yet (no node id, no chat support) is logged and left out.
+func (n *Node) addJoinedLocked(names []string) {
 	if n.cfg.Project == "" || len(names) == 0 {
 		return
 	}
-	n.ensureMu.Lock()
-	defer n.ensureMu.Unlock()
 	active := n.activeChatsLocked()
 	if len(active) == 0 || active[0].Mode != ChatModeProject || n.chatOwner(active[0]) != n.cfg.Node {
 		return
