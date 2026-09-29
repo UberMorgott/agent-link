@@ -1,18 +1,21 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import UIcon from '@nuxt/ui/components/Icon.vue'
+import LocalChatGroup, { type LocalChatRow } from '@/components/LocalChatGroup.vue'
 import ProjectMenu from '@/components/ProjectMenu.vue'
 import UserChip from '@/components/UserChip.vue'
 import VersionBadge from '@/components/VersionBadge.vue'
 import AppConfigurator from '@/layout/AppConfigurator.vue'
 import { isUnread, projectDot } from '@/lib/chat'
 import { icon } from '@/lib/icons'
+import { chatLabel, groupLocalChats, isTemporary } from '@/lib/localChats'
 import { openProject } from '@/lib/nav'
 import { t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
 import { chatKey, useInboxStore } from '@/stores/inbox'
 import { useProjectsStore } from '@/stores/projects'
+import type { ProjectView } from '@/types'
 
 // The sidebar separates chats shared with other computers from local
 // Claude/Codex chats. Each project still owns one chat.
@@ -41,7 +44,26 @@ function row(p: NonNullable<typeof projects.list>[number]) {
   }
 }
 const tree = computed(() => (projects.list || []).filter((p) => p.scope !== 'local').map(row))
-const localTree = computed(() => (projects.list || []).filter((p) => p.scope === 'local').map(row))
+
+// Local chats by project; temporary ones only while live (lib/localChats).
+// now ticks so a chat that stopped being live leaves after its grace.
+const now = ref(Date.now())
+let ticker: ReturnType<typeof setInterval> | undefined
+onMounted(() => { ticker = setInterval(() => { now.value = Date.now() }, 15_000) })
+onUnmounted(() => clearInterval(ticker))
+function localRow(p: ProjectView, group: string): LocalChatRow {
+  const base = row(p)
+  const lc = p.local_chat
+  const live = lc && isTemporary(p) && lc.live ? (lc.waiting ? 'waiting' : 'live') : ''
+  // A chat alone in its project's group keeps its project's name beside its
+  // own; in an open group the project's own chat is named as such.
+  const name = !lc ? (group ? base.name : chatLabel(p)) : group ? group + ' · ' + chatLabel(p) : chatLabel(p)
+  return { ...base, live, name }
+}
+const localTree = computed(() => groupLocalChats(projects.list || [], now.value, projects.lastLive).map((g) => ({
+  ...g,
+  rows: g.items.map((p) => localRow(p, g.items.length === 1 ? g.name : '')),
+})))
 
 // A project's row opens its one chat (the network from before projects: its page).
 function openRow(pid: string, legacy: boolean) {
@@ -157,42 +179,16 @@ function openRow(pid: string, legacy: boolean) {
           id="local_chat_tree"
           class="px-2 pb-2"
         >
-          <li
-            v-for="item in localTree"
-            :key="item.p.id"
-            :data-project="item.p.id"
-          >
-            <div
-              class="project-row"
-              :class="{ active: item.active }"
-            >
-              <button
-                type="button"
-                class="project-open"
-                :aria-current="item.active ? 'page' : undefined"
-                @click="openRow(item.p.id, false)"
-              >
-                <span
-                  class="project-dot"
-                  :class="item.dot"
-                  :data-dot="item.dot"
-                  :title="item.dotLabel"
-                  role="img"
-                  :aria-label="item.dotLabel.replace(/\n/g, '; ')"
-                />
-                <span class="project-name">{{ item.name }}</span>
-                <span
-                  v-if="item.unread"
-                  class="project-unread"
-                  :title="t('inbox.unread')"
-                >{{ item.unread }}</span>
-              </button>
-              <ProjectMenu
-                :project="item.p"
-                :name="item.name"
-              />
-            </div>
-          </li>
+          <LocalChatGroup
+            v-for="g in localTree"
+            :key="'group:' + g.key"
+            :group-key="g.key"
+            :name="g.name"
+            :rows="g.rows"
+            :expanded="!!projects.expanded[g.key]"
+            @open="openRow($event, false)"
+            @toggle="projects.setExpanded(g.key, $event)"
+          />
         </ul>
       </section>
     </div>

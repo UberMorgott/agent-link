@@ -251,6 +251,33 @@ export interface ProjectView {
   // absent for the legacy network. launch_mode: where an opened session opens.
   autonomy?: AutonomyView
   launch_mode?: 'desktop' | 'terminal'
+  // local_chat: set for a local chat that is not a folder's project chat.
+  local_chat?: LocalChatView
+}
+
+export type LocalChatScope = 'project' | 'project_temporary' | 'folderless' | 'folderless_temporary'
+
+// LocalChatOwner: the agent a local chat belongs to (agent "": the session's main agent).
+export interface LocalChatOwner {
+  session: string
+  agent?: string
+  agent_type?: string
+  provider?: string // claude | codex, known while the session is live
+}
+
+// LocalChatView (internal/app/localchats.go): a local Claude/Codex chat.
+// live: someone is in it now (its agent is open, a caller waits, a turn runs);
+// absent on older apps. project: the folder's local project ("" none).
+export interface LocalChatView {
+  scope: LocalChatScope
+  topic?: string
+  project?: string
+  folder?: string
+  expires_at?: string
+  owner?: LocalChatOwner
+  live?: boolean
+  waiting?: boolean
+  last_active?: string
 }
 
 export type AutonomyMode = 'off' | 'asked' | 'full'

@@ -10,6 +10,17 @@ import type { AutonomyRequest, ChatInfo, InviteView, JoinResult, ProjectView, Se
 export const LEGACY = 'legacy'
 // The project opened last, so /ui/inbox comes back to it.
 const LAST_KEY = 'agentlink' + '.project.last'
+// The local chat groups of the sidebar the member opened.
+const EXPANDED_KEY = 'agentlink' + '.localchats.expanded'
+
+function readExpanded(): Record<string, boolean> {
+  try {
+    const value: unknown = JSON.parse(storageGet(EXPANDED_KEY) || '{}')
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, boolean>) : {}
+  } catch {
+    return {}
+  }
+}
 
 function storageGet(key: string): string | null {
   try { return localStorage.getItem(key) } catch { return null }
@@ -347,7 +358,29 @@ export const useProjectsStore = defineStore('projects', () => {
 
   watch(list, joinProgress)
 
+  // --- the local chats section of the sidebar ---
+
+  // expanded: the local chat groups (by project) the member opened, kept
+  // across reloads.
+  const expanded = ref<Record<string, boolean>>(readExpanded())
+  function setExpanded(key: string, on: boolean) {
+    const next = { ...expanded.value }
+    if (on) next[key] = true
+    else delete next[key]
+    expanded.value = next
+    storageSet(EXPANDED_KEY, JSON.stringify(next))
+  }
+  // lastLive: when each local chat was last seen live (or stopped being
+  // live), so a chat idle between two turns does not vanish at once.
+  const lastLive = new Map<string, number>()
+  watch(list, (next, prev) => {
+    const now = Date.now()
+    const wasLive = new Set((prev || []).filter((p) => p.local_chat?.live).map((p) => p.id))
+    for (const p of next || []) if (p.local_chat?.live || wasLive.has(p.id)) lastLive.set(p.id, now)
+  })
+
   return {
+    expanded, setExpanded, lastLive,
     list, chats, history, refreshHistory, colorOf, displayOf, seats, refreshSeats, seatAction, current, currentProject, hasLegacy, loaded, invite, inviteFor,
     joinStep, joinProject, joinCreated,
     byID, upsert, listSettled, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped,

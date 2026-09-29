@@ -142,6 +142,16 @@
     background: var(--app-accent); color: var(--ui-bg); font-size: 0.7rem; font-weight: 600; line-height: 1.2rem;
   }
 
+  /* Local chats grouped by project: a project with several chats opens and
+     closes; a temporary chat shows whether someone is in it. */
+  .local-group-head { gap: 0.4rem; padding-left: 0.5rem; }
+  .local-group-count { flex: none; min-width: 1.2rem; text-align: center; font-size: 0.72rem; color: var(--app-muted); }
+  .local-group-items { margin-left: 0.9rem; padding-left: 0.3rem; border-left: 1px solid var(--app-soft); }
+  .chat-live { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-dot-many); }
+  .chat-live.waiting { background: var(--app-dot-one); animation: chat-live-pulse 1.6s ease-in-out infinite; }
+  @keyframes chat-live-pulse { 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) { .chat-live.waiting { animation: none; } }
+
   /* The foot of the sidebar: the member's own chip, then icon buttons. */
   .user-chip {
     flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.6rem; border: 0; border-radius: 999px;
