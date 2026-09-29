@@ -46,6 +46,17 @@ describe('delivery attempts', () => {
     expect(ticksFor(out({ peer: 'bob', status: 'sent', state: 'read', attempt: 'needs_human' }), null)!.state).toBe('read')
   })
 
+  it("ticks a person's own message by this computer's agent too", () => {
+    runtime.strings = { ...runtime.strings, 'inbox.tick.agent_read': 'прочитано агентом', 'inbox.tick.agent_unread': 'не прочитано агентом' }
+    const own = (extra: Partial<ChatMessage>): ChatMessage => ({ id: 'm1', direction: 'out', from: 'me', created_at: '', own_human: true, ...extra }) as ChatMessage
+    expect(ticksFor(own({ unread: true }), null)).toEqual({ state: 'delivered', label: 'не прочитано агентом' })
+    expect(ticksFor(own({}), null)).toEqual({ state: 'read', label: 'прочитано агентом' })
+    const both = ticksFor(own({ unread: true, delivery: [{ peer: 'bob', status: 'sent', state: 'read' }] }), null)!
+    expect(both.state).toBe('delivered')
+    expect(both.label).toBe('bob: прочитано\nне прочитано агентом')
+    expect(ticksFor(own({ ask_seats: ['s1'] }), null)).toBeNull()
+  })
+
   it('names why a delivered message is held', () => {
     const held = ticksFor(out({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'held:stopped' }), null)!
     expect(held.state).toBe('held')

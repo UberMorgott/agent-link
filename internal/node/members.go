@@ -430,6 +430,7 @@ func (n *Node) aliveLocked() int {
 func (n *Node) mergeMembers(recs []Member) {
 	changed, seen := false, false
 	var drop []*peerConn
+	var joined []string         // members new here, or back after leaving
 	gone := map[string]string{} // name -> node id whose queue is dropped
 	n.mu.Lock()
 	for _, r := range recs {
@@ -475,6 +476,9 @@ func (n *Node) mergeMembers(recs []Member) {
 		case r.Removed && r.Left && r.ID != "":
 			gone[r.Name] = r.ID // it left: its queue is never sent
 		}
+		if !r.Removed && (l == nil || l.Removed) {
+			joined = append(joined, r.Name)
+		}
 		n.members[r.Name] = &r
 		changed = true
 		if r.Removed {
@@ -495,6 +499,9 @@ func (n *Node) mergeMembers(recs []Member) {
 	// had not finished setting up.
 	for _, pc := range drop {
 		n.wg.Go(func() { n.tellRemoved(pc) })
+	}
+	if len(joined) > 0 {
+		n.wg.Go(func() { n.addJoined(joined) })
 	}
 	switch {
 	case changed:
@@ -523,7 +530,7 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 	now := time.Now().Unix()
 	n.mu.Lock()
 	l := n.members[pc.peer]
-	changed, infoChanged := false, false
+	changed, infoChanged, joined := false, false, false
 	oldID := ""
 	switch {
 	case l != nil && l.Removed && !n.rejoinLocked(pc.peer, pc.id):
@@ -537,7 +544,7 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 			oldID = l.ID
 		}
 		n.members[pc.peer] = &Member{Name: pc.peer, ID: pc.id, Addrs: addrs, Ver: nextVer(l), Seen: now, App: pc.app}
-		changed = true
+		changed, joined = true, true
 	case (pc.id != "" && pc.id != l.ID) || !containsAll(l.Addrs, addrs):
 		r := &Member{Name: pc.peer, ID: l.ID, Addrs: mergeAddrs(addrs, l.Addrs), Ver: nextVer(l), Seen: now, App: l.App, Color: l.Color,
 			Display: l.Display, Aliases: l.Aliases}
@@ -562,6 +569,9 @@ func (n *Node) noteSession(pc *peerConn, dialed string) {
 	n.mu.Unlock()
 	if oldID != "" {
 		n.incarnationGone(pc.peer, oldID)
+	}
+	if joined {
+		n.wg.Go(func() { n.addJoined([]string{pc.peer}) })
 	}
 	if changed {
 		n.membersChanged()
@@ -607,6 +617,7 @@ func (n *Node) revive(name, id string) {
 	if ok {
 		n.log.Info("member added back", "peer", name)
 		n.membersChanged()
+		n.wg.Go(func() { n.addJoined([]string{name}) })
 	}
 }
 

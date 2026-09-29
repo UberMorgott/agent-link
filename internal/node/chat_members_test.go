@@ -107,6 +107,50 @@ func TestProjectChatMembers(t *testing.T) {
 	}
 }
 
+// A member that joins the project after its chat began is taken into the
+// owner's active chat; one the owner removed stays out until it joins again.
+func TestProjectChatAddsJoinedMember(t *testing.T) {
+	p := newTestProject(t)
+	a := newProjectNode(t, "a", p, listen(t), nil)
+	a.start(t)
+	solo, err := a.NewProjectChat(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedMember(a.Node, "b", newID(), 1)
+	eventually(t, "b taken into the chat", func() bool {
+		c, _ := a.ChatOf(solo.ID)
+		return slices.Equal(c.Participants, []string{"a", "b"})
+	})
+	if _, err := a.SetChatMembers(solo.ID, nil, []string{"b"}); err != nil {
+		t.Fatal(err)
+	}
+	seedMember(a.Node, "c", newID(), 1)
+	eventually(t, "c taken in, b left out", func() bool {
+		c, _ := a.ChatOf(solo.ID)
+		return slices.Equal(c.Participants, []string{"a", "c"})
+	})
+}
+
+// A person's message that names nobody asks every other participant; one
+// that asks this node's seats, or names someone, keeps that.
+func TestHumanMessageAsksOthers(t *testing.T) {
+	p := newTestProject(t)
+	a, _ := projectPair(t, p)
+	info, err := a.NewProjectChat([]string{"b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	human, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "anyone?", AuthorKind: AuthorHuman})
+	if err != nil || !slices.Equal(human.Responders, []string{"b"}) {
+		t.Fatalf("person's message asks %v, %v", human.Responders, err)
+	}
+	agent, err := a.SendChat(ChatSend{ChatID: info.ID, Body: "fyi"})
+	if err != nil || len(agent.Responders) != 0 {
+		t.Fatalf("agent's message asks %v, %v", agent.Responders, err)
+	}
+}
+
 // Only the owner changes members: a change from another participant, or a
 // message of a chat this node was removed from, is dropped.
 func TestProjectChatMembersReceive(t *testing.T) {

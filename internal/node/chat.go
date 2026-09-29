@@ -538,7 +538,7 @@ func (n *Node) projectChatLocked(parts []string) (c Chat, ok bool, err error) {
 		return c, true, nil
 	}
 	if !repin && c.Mode == ChatModeProject && n.chatOwner(c) == n.cfg.Node {
-		_, err := n.SetChatMembers(c.ID, missing, nil)
+		_, err := n.setChatMembersLocked(c.ID, missing, nil)
 		if err == nil {
 			c, _ = n.chats.get(c.ID)
 			return c, true, nil
@@ -691,6 +691,14 @@ func (n *Node) chatOwner(c Chat) string {
 // removed one is told, gets nothing more and keeps its copy as archived. A
 // connected participant without CapChatMembers blocks the change.
 func (n *Node) SetChatMembers(id string, add, remove []string) (ChatInfo, error) {
+	n.ensureMu.Lock()
+	defer n.ensureMu.Unlock()
+	return n.setChatMembersLocked(id, add, remove)
+}
+
+// setChatMembersLocked is SetChatMembers; the caller holds n.ensureMu, so two
+// changes of one chat never both build on the same participants and Rev.
+func (n *Node) setChatMembersLocked(id string, add, remove []string) (ChatInfo, error) {
 	c, ok := n.chats.get(id)
 	switch {
 	case !ok:
@@ -759,6 +767,38 @@ func (n *Node) SetChatMembers(id string, add, remove []string) (ChatInfo, error)
 	}
 	n.changed("chats")
 	return n.Chat(id)
+}
+
+// addJoined takes members that just joined the project (new, or back after
+// leaving) into its active chat when this node owns it: whoever joins a
+// project talks in its one chat from then on. Only a join adds; the owner may
+// remove them again (SetChatMembers) and they stay out. A member that no owner
+// can add yet (no node id, no chat support) is logged and left out.
+func (n *Node) addJoined(names []string) {
+	if n.cfg.Project == "" || len(names) == 0 {
+		return
+	}
+	n.ensureMu.Lock()
+	defer n.ensureMu.Unlock()
+	active := n.activeChatsLocked()
+	if len(active) == 0 || active[0].Mode != ChatModeProject || n.chatOwner(active[0]) != n.cfg.Node {
+		return
+	}
+	c := active[0]
+	var add []string
+	for _, p := range names {
+		if p != n.cfg.Node && !slices.Contains(c.Participants, p) {
+			add = append(add, p)
+		}
+	}
+	if len(add) == 0 {
+		return
+	}
+	if _, err := n.setChatMembersLocked(c.ID, add, nil); err != nil {
+		n.log.Warn("add joined members to the project chat", "chat", c.ID, "members", add, "err", err)
+		return
+	}
+	n.log.Info("joined members added to the project chat", "chat", c.ID, "members", add)
 }
 
 // openChatOf returns the open chat of c's conversation: c itself when it is
@@ -920,6 +960,9 @@ func (n *Node) SendChat(s ChatSend) (Message, error) {
 		Agent: s.Agent, AskSeats: s.AskSeats}
 	// A nickname (or an earlier one) asks the member it names.
 	m.Responders = append(m.Responders, n.resolveNames(s.Ask)...)
+	if s.AuthorKind == AuthorHuman && len(m.Responders) == 0 && len(s.AskSeats) == 0 {
+		m.Responders = n.othersAsked(s.ChatID)
+	}
 	if s.Parent != "" {
 		if p, ok := n.chats.message(s.Parent); ok && p.Message.Kind == "" {
 			m.RootID = cmp.Or(p.Message.RootID, p.Message.ID)
@@ -930,6 +973,26 @@ func (n *Node) SendChat(s ChatSend) (Message, error) {
 		}
 	}
 	return n.SendMessage(m)
+}
+
+// othersAsked is whom a person's message in chat id asks when it names nobody
+// (neither members nor this node's seats):
+// every other participant still pinned to the node it was added with. A
+// person writing in a chat with other members' agents wants an answer
+// (docs/notes/human-messages.md); this node's own sessions get it as
+// information (OwnHuman).
+func (n *Node) othersAsked(id string) []string {
+	c, ok := n.chats.get(id)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for i, p := range c.Participants {
+		if p != n.cfg.Node && n.pinned(c, i) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // continueLegacy sends s, addressed to legacy chat s.ChatID with peer, as the

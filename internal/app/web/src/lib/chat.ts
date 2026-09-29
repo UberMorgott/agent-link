@@ -307,7 +307,10 @@ export function ticksFor(m: ChatMessage, info: ChatInfo | null): Tick | null {
     return { state: 'held', label: lines.join('\n') }
   }
   const delivery = m.delivery || []
-  if (!delivery.length) return null
+  // A person's own message (not one for their seats) is also for this
+  // computer's agents, as information: whether one has read it is a tick too.
+  const local = !!m.own_human && !(m.ask_seats || []).length
+  if (!delivery.length && !local) return null
   let lowest: 'queued' | 'delivered' | 'read' = 'read'
   const lines = delivery.map((d) => {
     const state = tickState(d)
@@ -316,9 +319,13 @@ export function ticksFor(m: ChatMessage, info: ChatInfo | null): Tick | null {
     const attempt = attemptText(d)
     return d.peer + ': ' + word + (state === 'read' && d.at ? ' ' + clock(d.at) : '') + (attempt ? ' — ' + attempt : '')
   })
+  if (local) {
+    if (m.unread && TICK_RANK.delivered! < TICK_RANK[lowest]!) lowest = 'delivered'
+    lines.push(t(m.unread ? "inbox.tick.agent_unread" : "inbox.tick.agent_read"))
+  }
   // A recipient whose node gave up shows «!», not a quiet delivered tick.
   const state: TickState = delivery.some(attemptFailed) ? 'held' : lowest
-  return { state, label: delivery.length === 1 ? lines[0]! : lines.join('\n') }
+  return { state, label: lines.length === 1 ? lines[0]! : lines.join('\n') }
 }
 
 // messageTick: an own message's delivery tick; on an incoming one whether an
