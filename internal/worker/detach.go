@@ -129,13 +129,18 @@ func (w *Worker) launch(ctx context.Context, j *Job, c Command, dir string, spec
 		}
 		files = append(files, f)
 	}
+	env := w.agentEnv(chatID, id)
+	if c.Format == FormatCodex {
+		// Codex has no agent-link MCP server of its own: add it, speaking as this job.
+		args = append(node.CodexMCPArgs(node.SelfExe(), env), args...)
+	}
 	start := func(breakaway bool) (*exec.Cmd, error) {
 		// The run outlives this app (see detach): ctx must not end it.
 		cmd := exec.CommandContext(context.WithoutCancel(ctx), c.Name, args...) //nolint:gosec // G204: the agent program the user configured, argv without a shell
 		cmd.Dir = rec.Dir
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = files[0], files[1], files[2]
 		// The agentlink CLI inside the job finds the node, its chat and request here.
-		if env := w.agentEnv(chatID, id); len(env) > 0 {
+		if len(env) > 0 {
 			cmd.Env = append(os.Environ(), env...)
 		}
 		detach(cmd, breakaway)

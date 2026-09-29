@@ -1296,7 +1296,7 @@ func (n *Node) seatEnv(seat Seat, chat string) []string {
 	if chat != "" {
 		env = append(env, "AGENTLINK_CHAT_ID="+chat)
 	}
-	if exe, err := os.Executable(); err == nil && strings.HasPrefix(strings.ToLower(filepath.Base(exe)), "agentlink") {
+	if exe := SelfExe(); exe != "" {
 		env = append(env, "PATH="+filepath.Dir(exe)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	}
 	return append(env, n.seatExtra...)

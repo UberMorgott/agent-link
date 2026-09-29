@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -258,19 +260,67 @@ func (l DesktopLauncher) runCodex(ctx context.Context, bin string, spec LaunchSp
 // gives its commands a filtered environment, so spec.Env reaches them through
 // shell_environment_policy.set (TOML literal strings; a value with a quote or
 // a newline is left out).
+// The turn also gets the agent-link MCP server (CodexMCPArgs), so a Codex seat
+// can discuss with a Claude seat the way Claude does.
 func CodexServerArgs(spec LaunchSpec) []string {
+	args := append(CodexMCPArgs(SelfExe(), spec.Env), "app-server")
+	if set := tomlEnv(spec.Env, ""); set != "" {
+		args = append(args, "-c", "shell_environment_policy.set="+set)
+	}
+	return args
+}
+
+// CodexMCPTimeout is the tool timeout of the agent-link MCP server in a Codex
+// run: Codex's default (60 s) would cut a discuss off long before its reply
+// wait (at most 15 minutes, cmd/agentlink/mcp.go).
+const CodexMCPTimeout = 16 * 60
+
+// CodexMCPArgs are Codex `-c` overrides (global options, placed before the
+// subcommand) that add exe's MCP server ("agentlink mcp") to a Codex run.
+// Codex starts MCP servers with a filtered environment (PATH, APPDATA and the
+// like, not the run's own), so the AGENTLINK_* variables of env (seat,
+// project, chat, API) are passed in the server's env table: its discuss and
+// send then speak as that seat or job. No exe (not running as agentlink):
+// none.
+func CodexMCPArgs(exe string, env []string) []string {
+	if exe == "" || strings.ContainsAny(exe, "'\r\n") {
+		return nil
+	}
+	const p = "mcp_servers.agentlink."
+	args := []string{"-c", p + "command='" + exe + "'", "-c", p + `args=["mcp"]`,
+		"-c", p + "tool_timeout_sec=" + strconv.Itoa(CodexMCPTimeout)}
+	if set := tomlEnv(env, "AGENTLINK_"); set != "" {
+		args = append(args, "-c", p+"env="+set)
+	}
+	return args
+}
+
+// tomlEnv is env's KEY=value entries whose key starts with prefix as a TOML
+// inline table of literal strings; an entry a literal cannot hold (a quote or
+// a newline) or with an odd key is left out. Empty when none is left.
+func tomlEnv(env []string, prefix string) string {
 	var set []string
-	for _, kv := range spec.Env {
+	for _, kv := range env {
 		k, v, ok := strings.Cut(kv, "=")
-		if !ok || k == "" || strings.ContainsAny(k+v, "'\r\n") || strings.ContainsAny(k, " .=\"{}") {
+		if !ok || k == "" || !strings.HasPrefix(k, prefix) || strings.ContainsAny(k+v, "'\r\n") || strings.ContainsAny(k, " .=\"{}") {
 			continue
 		}
 		set = append(set, k+"='"+v+"'")
 	}
 	if len(set) == 0 {
-		return []string{"app-server"}
+		return ""
 	}
-	return []string{"app-server", "-c", "shell_environment_policy.set={" + strings.Join(set, ",") + "}"}
+	return "{" + strings.Join(set, ",") + "}"
+}
+
+// SelfExe is this program when it is agentlink (the app or its CLI, never a
+// plugin's launcher shim), else empty (a test binary).
+func SelfExe() string {
+	exe, err := os.Executable()
+	if err != nil || !strings.HasPrefix(strings.ToLower(filepath.Base(exe)), "agentlink") {
+		return ""
+	}
+	return exe
 }
 
 // rpcMsg is one JSON-RPC message of codex app-server (no "jsonrpc" field).

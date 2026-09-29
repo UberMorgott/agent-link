@@ -373,6 +373,35 @@ func TestCodexServerArgs(t *testing.T) {
 	}
 }
 
+// The agent-link MCP server of a Codex run: global -c overrides with the
+// program, a tool timeout past discuss's longest wait and only the AGENTLINK_*
+// environment (Codex filters the rest).
+func TestCodexMCPArgs(t *testing.T) {
+	if got := CodexMCPArgs("", []string{"AGENTLINK_SEAT=s"}); got != nil {
+		t.Fatalf("no exe: %q", got)
+	}
+	if got := CodexMCPArgs(`C:\it's\agentlink.exe`, nil); got != nil {
+		t.Fatalf("quoted exe: %q", got)
+	}
+	exe := `C:\Program Files\agentlink\agentlink.exe`
+	got := CodexMCPArgs(exe, []string{"AGENTLINK_SEAT=seat-1", "AGENTLINK_CHAT_ID=c1", `PATH=C:\bin`, "AGENTLINK_BAD=it's"})
+	want := []string{
+		"-c", `mcp_servers.agentlink.command='C:\Program Files\agentlink\agentlink.exe'`,
+		"-c", `mcp_servers.agentlink.args=["mcp"]`,
+		"-c", "mcp_servers.agentlink.tool_timeout_sec=960",
+		"-c", `mcp_servers.agentlink.env={AGENTLINK_SEAT='seat-1',AGENTLINK_CHAT_ID='c1'}`,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %q", got)
+	}
+	if CodexMCPTimeout <= 15*60 {
+		t.Fatalf("tool timeout %d s does not cover a 15m discuss", CodexMCPTimeout)
+	}
+	if got := CodexMCPArgs(exe, []string{`PATH=C:\bin`}); len(got) != 6 {
+		t.Fatalf("no AGENTLINK env: %q", got)
+	}
+}
+
 // A seat whose session is open in the agent's app is not resumed (two
 // writers of one session): it waits as busy, and runs once the app left it.
 func TestSeatBusySessionNotResumed(t *testing.T) {
