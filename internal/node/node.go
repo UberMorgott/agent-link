@@ -95,7 +95,10 @@ type Node struct {
 	seats    *seatStore
 	// seatExtra is added to the environment of seat turns (SetSeatEnv).
 	seatExtra []string
-	folders   folderMap
+	// turnGate caps the seat turns that run at once, shared by the nodes of
+	// one app (SetTurnGate); nil: no cap.
+	turnGate *TurnGate
+	folders  folderMap
 	// autoAnswer: the worker answers requests no live session takes (presence).
 	autoAnswer bool
 	// waker wakes idle WakeQueue sessions (wake.go) every wakeEvery (0:

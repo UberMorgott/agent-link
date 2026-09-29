@@ -155,13 +155,18 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 }
 
 // discussOwner is the agent a discuss request's own chat belongs to: its
-// session (an agent's call), nil for a person, a seat (asking in its own
-// chat) or a request for the project's shared chat.
+// session, or the subagent of it that asks (AgentID: each subagent owns its
+// chats and threads; with no agent id the session's own); nil for a person, a
+// seat (asking in its own chat) or a request for the project's shared chat.
 func discussOwner(req discussRequest) *settings.LocalChatOwner {
 	if req.SessionID == "" || req.Seat != "" || req.Shared {
 		return nil
 	}
-	return &settings.LocalChatOwner{Session: req.SessionID, Provider: req.Source}
+	o := &settings.LocalChatOwner{Session: req.SessionID, Provider: req.Source, Agent: req.AgentID}
+	if o.Agent != "" {
+		o.AgentType = req.AgentType
+	}
+	return o
 }
 
 // sameOwner reports whether a and b are one agent: the same session and

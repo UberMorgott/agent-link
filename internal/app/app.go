@@ -98,6 +98,9 @@ type App struct {
 	// sessLocks serialize, per session id (sessionLock), the reconciliation
 	// of its replies (reconcileSession) and a reassign to it.
 	sessLocks [64]sync.Mutex
+	// turns caps the seat turns of every context that run at once
+	// (node.MaxParallelTurns); the rest wait in line.
+	turns *node.TurnGate
 
 	mu         sync.Mutex
 	s          settings.Settings
@@ -170,7 +173,7 @@ func New(path string, log *slog.Logger) (*App, error) {
 		Ifaces: settings.SystemIfaces, PickFolder: pickFolder, PickFile: pickFile,
 		Agents: settings.SystemFinder, zeroTier: true, Discovery: true,
 		Version: selfupdate.Version, Latest: latestRelease, Notes: selfupdate.Changelog,
-		events: newEventBroadcaster(),
+		events: newEventBroadcaster(), turns: node.NewTurnGate(node.MaxParallelTurns),
 	}, nil
 }
 

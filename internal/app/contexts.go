@@ -130,6 +130,9 @@ func (a *App) newNodeOf(pid string, cfg config.Config, key []byte) (*node.Node, 
 	if a.Poster != nil {
 		n.SetInboxPoster(a.Poster)
 	}
+	// Every context's seat turns share one cap (Q3: parallel subagents do not
+	// start unbounded agent processes).
+	n.SetTurnGate(a.turns)
 	if a.Launcher != nil {
 		// A new session is of the handler's agent (Claude unless it is Codex);
 		// a known last session of the folder is resumed in its own agent.

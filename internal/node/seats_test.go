@@ -1019,3 +1019,70 @@ func TestSeatMixedTurnChainBase(t *testing.T) {
 		t.Fatalf("reply to the request: depth %d root %s (deep %s)", reply.AutoDepth, reply.RootID, deep.RootID)
 	}
 }
+
+// Q3: past the turn gate's cap a seat's turn waits in line, shown queued;
+// stopping the seat ends its wait, and no more turns than the cap run.
+func TestSeatTurnsWaitForTurnGate(t *testing.T) {
+	l := &seatLauncher{}
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var now, peak int
+	count := func(d int) {
+		mu.Lock()
+		defer mu.Unlock()
+		now += d
+		peak = max(peak, now)
+	}
+	running := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	l.set(nil, func(LaunchSpec) {
+		count(1)
+		<-release
+		count(-1)
+	})
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	a.SetTurnGate(NewTurnGate(2))
+	for range 3 {
+		if _, err := a.AddSeat(SeatRequest{Provider: ProviderCodex}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queued := func() (ids []string) {
+		for _, s := range a.Seats() {
+			if s.TurnQueued && s.Status == SeatRunning {
+				ids = append(ids, s.ID)
+			}
+		}
+		return ids
+	}
+	eventually(t, "two turns run, one waits", func() bool { return running() == 2 && len(queued()) == 1 })
+	waiting := queued()[0]
+	if _, err := a.StopSeat(waiting); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "stop ends the wait", func() bool {
+		s, err := a.seatView(waiting)
+		return err == nil && s.Status == SeatStopped && !s.TurnQueued
+	})
+	if _, err := a.StartSeat(waiting, false); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "started again: waits again", func() bool { return len(queued()) == 1 })
+	close(release)
+	eventually(t, "every turn ran", func() bool {
+		for _, s := range a.Seats() {
+			if s.SessionID == "" || s.Status == SeatRunning {
+				return false
+			}
+		}
+		return true
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if peak != 2 {
+		t.Fatalf("%d turns ran at once under a cap of 2", peak)
+	}
+}

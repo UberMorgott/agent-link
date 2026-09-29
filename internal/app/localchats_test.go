@@ -306,3 +306,47 @@ func TestDiscussAgentSessionsOwnTheirChats(t *testing.T) {
 		t.Fatalf("shared temporary: %d %s", code, raw)
 	}
 }
+
+// Each subagent of a session owns its chat and thread, reused on its next
+// ask; an ask with no agent id is the session's own.
+func TestDiscussSubagentsOwnTheirThreads(t *testing.T) {
+	runner := &threadRunner{}
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = runner })
+	dir := repoDir(t)
+	ask := func(agent string) localChatResult {
+		req := map[string]any{"folder": dir, "session_id": "s1"}
+		if agent != "" {
+			req["agent_id"], req["agent_type"] = agent, "Explore"
+		}
+		return discussIn(t, h, req)
+	}
+	main, a, b := ask(""), ask("agent-a"), ask("agent-b")
+	if main.Project == a.Project || a.Project == b.Project || main.Project == b.Project {
+		t.Fatalf("subagents share a chat: main %+v a %+v b %+v", main, a, b)
+	}
+	threads := map[string]string{}
+	for name, r := range map[string]localChatResult{"main": main, "a": a, "b": b} {
+		threads[name] = seatThread(t, h, r.Project)
+	}
+	if threads["a"] == threads["b"] || threads["a"] == threads["main"] {
+		t.Fatalf("subagents share a thread: %v", threads)
+	}
+	for name, r := range map[string]localChatResult{"a": ask("agent-a"), "b": ask("agent-b"), "main": ask("")} {
+		want := map[string]localChatResult{"main": main, "a": a, "b": b}[name]
+		if r.Project != want.Project || r.Seat != want.Seat {
+			t.Fatalf("%s's second ask left its chat: %+v, first %+v", name, r, want)
+		}
+		waitLong(t, name+"'s thread resumed", func() bool { return runner.resumed(threads[name]) })
+	}
+	h.app.mu.Lock()
+	o := h.app.s.Bindings[h.app.bindingIndex(a.Project)].Chat.Owner
+	h.app.mu.Unlock()
+	if o == nil || o.Session != "s1" || o.Agent != "agent-a" || o.AgentType != "Explore" {
+		t.Fatalf("subagent owner: %+v", o)
+	}
+	code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]any{"folder": dir, "provider": node.ProviderCodex,
+		"body": "x", "session_id": "s1", "source": node.ProviderClaude, "agent_id": "bad id"}), nil)
+	if code != http.StatusBadRequest {
+		t.Fatalf("invalid agent id: %d %s", code, raw)
+	}
+}

@@ -57,7 +57,7 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		(req.Provider != node.ProviderClaude && req.Provider != node.ProviderCodex) ||
 		(req.Source != "" && req.Source != node.ProviderClaude && req.Source != node.ProviderCodex) ||
 		(req.SessionID == "") != (req.Source == "") || picks > 1 || !settings.ValidAlias(req.Topic) ||
-		(req.Shared && (req.Chat != "" || req.Temporary)) {
+		(req.Shared && (req.Chat != "" || req.Temporary)) || !validAgentRef(req.AgentID, req.AgentType) {
 		writeCodedError(w, http.StatusBadRequest, "bad_request")
 		return
 	}
@@ -145,6 +145,14 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		// the caller returns at once instead of waiting for a reply.
 		HoldReason string `json:"hold_reason,omitempty"`
 	}{pid, chat.ID, message.ID, seat, discussQueued(c.n, seat), view.Scope, view.Topic, view.ExpiresAt, message.HoldReason})
+}
+
+// validAgentRef reports a subagent id of at most 128 printable ASCII
+// characters and a type of at most 128 bytes on one line (both may be empty):
+// what a chat owner takes (settings.LocalChatOwner).
+func validAgentRef(id, typ string) bool {
+	return len(id) <= 128 && !strings.ContainsFunc(id, func(r rune) bool { return r < 0x21 || r > 0x7e }) &&
+		len(typ) <= 128 && !strings.ContainsAny(typ, "\r\n")
 }
 
 func authorKind(session, seat string) string {

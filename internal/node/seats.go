@@ -103,6 +103,9 @@ type SeatView struct {
 	// Error is why the node's last turn of it failed; it runs again at RetryAt,
 	// for a new message or at Start.
 	Error string `json:"error,omitempty"`
+	// TurnQueued: its turn (Status running) waits for a slot of the node's
+	// turn cap (TurnGate).
+	TurnQueued bool `json:"turn_queued,omitempty"`
 }
 
 // SeatRequest is the body of adding a seat.
@@ -126,6 +129,7 @@ type seatStore struct {
 	// is its setup alone, which posts nothing; deferred: added with Defer and not
 	// started yet, so seatsDue leaves it to StartSeat.
 	run      map[string]context.CancelFunc
+	queued   map[string]bool // a turn in run waits for a TurnGate slot
 	errs     map[string]string
 	busy     map[string]bool
 	quiet    map[string]bool
@@ -152,7 +156,7 @@ type seatMark struct {
 func seatKey(seat, id string) string { return seat + "/" + id }
 
 func openSeats(dir string) (*seatStore, error) {
-	st := &seatStore{path: filepath.Join(dir, "seats.json"), run: map[string]context.CancelFunc{}, errs: map[string]string{},
+	st := &seatStore{path: filepath.Join(dir, "seats.json"), run: map[string]context.CancelFunc{}, queued: map[string]bool{}, errs: map[string]string{},
 		busy: map[string]bool{}, quiet: map[string]bool{}, deferred: map[string]bool{}, marks: map[string]seatMark{}, pauseLogged: map[string]bool{},
 		handling: map[string][]Message{}}
 	if err := readJSON(st.path, &st.seats); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -212,7 +216,7 @@ func (n *Node) Seats() []SeatView {
 	for _, s := range st.seats {
 		c := *s
 		c.Pending = slices.Clone(s.Pending)
-		v := SeatView{Seat: c, Error: st.errs[s.ID]}
+		v := SeatView{Seat: c, Error: st.errs[s.ID], TurnQueued: st.queued[s.ID]}
 		l := sess[s.SessionID]
 		switch {
 		case s.Stopped:
@@ -930,18 +934,83 @@ func (n *Node) seatTurn(ctx context.Context, dl DirectLauncher, id string, intro
 		return
 	}
 	st.run[id] = cancel
+	st.mu.Unlock()
+	n.changed("seats")
+	defer func() {
+		st.mu.Lock()
+		delete(st.run, id)
+		delete(st.queued, id)
+		delete(st.quiet, id)
+		delete(st.handling, id)
+		st.mu.Unlock()
+		n.changed("seats")
+	}()
+	// Past the gate's cap the turn waits for a slot, marked running (no
+	// second turn of the seat starts) and queued; Stop or Remove ends the wait.
+	if g := n.turnGate; g != nil {
+		if !g.tryAcquire() {
+			st.mu.Lock()
+			st.queued[id] = true
+			st.mu.Unlock()
+			n.changed("seats")
+			if !g.acquire(ctx) {
+				return
+			}
+			st.mu.Lock()
+			delete(st.queued, id)
+			st.mu.Unlock()
+		}
+		defer g.release()
+	}
+	st.mu.Lock()
+	s = st.getLocked(id)
+	if s == nil || s.Stopped {
+		st.mu.Unlock()
+		return
+	}
 	seat := *s
 	seat.Pending = slices.Clone(s.Pending)
 	st.mu.Unlock()
-	n.changed("seats")
 	n.runSeatTurn(ctx, dl, seat, intro, open)
-	st.mu.Lock()
-	delete(st.run, id)
-	delete(st.quiet, id)
-	delete(st.handling, id)
-	st.mu.Unlock()
-	n.changed("seats")
 }
+
+// MaxParallelTurns is the default cap of TurnGate: the node turns of seats
+// (headless agent processes) that run at once on this machine.
+const MaxParallelTurns = 4
+
+// TurnGate caps the seat turns that run at once across the nodes sharing it
+// (SetTurnGate); a turn past the cap waits for a slot.
+type TurnGate struct{ slots chan struct{} }
+
+// NewTurnGate is a gate of max slots (at least one).
+func NewTurnGate(maxTurns int) *TurnGate {
+	return &TurnGate{slots: make(chan struct{}, max(maxTurns, 1))}
+}
+
+func (g *TurnGate) tryAcquire() bool {
+	select {
+	case g.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// acquire waits for a slot; false when ctx ended first.
+func (g *TurnGate) acquire(ctx context.Context) bool {
+	select {
+	case g.slots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (g *TurnGate) release() { <-g.slots }
+
+// SetTurnGate shares gate g's cap with this node's seat turns (nil: no cap).
+// It must be set before Run.
+func (n *Node) SetTurnGate(g *TurnGate) { n.turnGate = g }
 
 // claimTurn claims msgs of seat for the node's turn of it (a hook or wake of
 // its session does not take them meanwhile), leaving out the ones no longer
