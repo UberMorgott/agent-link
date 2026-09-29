@@ -149,6 +149,14 @@ const providerCounts = computed(() => (['claude', 'codex', 'other'] as const).ma
   label: provider === 'claude' ? 'Claude Code' : provider === 'codex' ? 'Codex' : t('inbox.activity.other'),
   count: agentMembers.value.reduce((sum, member) => sum + (member.counts?.[provider] || 0), 0),
 })).filter((entry) => entry.count > 0))
+// A network project where no computer (this one included) has Claude Code or
+// Codex open: messages to agents wait, so say so with the next step. A pause
+// already explains itself.
+const noAgents = computed(() => {
+  const project = projects.byID(pid.value)
+  return inProject.value && !localChat.value && project?.state === 'ready' && !!project.members?.length &&
+    !agentMembers.value.length && !projectStopped.value && !globallyStopped.value
+})
 const seatAsked = computed<string[]>({
   get: () => (info.value ? inbox.seatAskFor(info.value) : []),
   set: (ids) => { if (info.value) inbox.setSeatAsk(info.value, ids) },
@@ -407,6 +415,14 @@ function back() {
           role="status"
         >
           {{ inbox.subtitleError }}
+        </p>
+        <p
+          v-if="noAgents"
+          id="chat_no_agents"
+          class="chat-column flex-none pb-2 text-xs text-warning"
+          role="status"
+        >
+          {{ t('inbox.no_agents') }}
         </p>
 
         <ChatTimeline />

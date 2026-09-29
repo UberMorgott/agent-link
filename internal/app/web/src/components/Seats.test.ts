@@ -11,47 +11,70 @@ import type { ChatInfo, ChatMessage } from '@/types'
 const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T>(sel)
 const $$ = <T extends Element = HTMLElement>(sel: string) => Array.from(document.querySelectorAll<T>(sel))
 
-async function open(path: string) {
-  const api = fakeBackend()
-  const mounted = await mountApp(path)
-  useAppStore().status = { configured: true, node: 'alice' }
-  await useProjectsStore().refreshAll()
-  await settle()
-  return { ...mounted, ...api }
-}
-
 describe('local agents (seats)', () => {
   it('adds Claude and Codex in the agents dialog, stops, starts and removes one', async () => {
-    const { calls, backend } = await open('/p/' + SITE)
-    const projects = useProjectsStore()
-    projects.openDialog('agents', SITE)
+    const LOCAL = 'LOCAL_SEATS'
+    const api = fakeBackend()
+    const site = api.backend.projects.find((p) => p.id === SITE)!
+    api.backend.projects.push({ ...site, id: LOCAL, scope: 'local', has_invite: false, members: site.members.filter((m) => m.self) })
+    await mountApp('/p/' + LOCAL)
+    useAppStore().status = { configured: true, node: 'alice' }
+    await useProjectsStore().refreshAll()
     await settle()
-    expect(calls).toContain('GET projects/' + SITE + '/seats')
+    const { calls, backend } = api
+    const projects = useProjectsStore()
+    projects.openDialog('agents', LOCAL)
+    await settle()
+    expect(calls).toContain('GET projects/' + LOCAL + '/seats')
     expect(document.body.textContent).toContain('project.agents.empty')
+    expect(document.body.textContent).toContain('project.agents.hint')
     $<HTMLButtonElement>('#seat_add_claude')!.click()
     await settle()
     $<HTMLButtonElement>('#seat_add_codex')!.click()
     await settle()
-    const seats = backend.seats[SITE]!
+    const seats = backend.seats[LOCAL]!
     expect(seats.map((s) => s.label)).toEqual(['Claude', 'Codex'])
     expect($$('#project_seats [data-seat]')).toHaveLength(2)
     const codex = seats[1]!.id
     $<HTMLButtonElement>('#seat_stop_' + codex)!.click()
     await settle()
-    expect(backend.seats[SITE]![1]!.status).toBe('stopped')
+    expect(backend.seats[LOCAL]![1]!.status).toBe('stopped')
     expect($('#seat_start_' + codex)).not.toBeNull()
     $<HTMLButtonElement>('#seat_start_' + codex)!.click()
     await settle()
-    expect(backend.seats[SITE]![1]!.status).toBe('closed')
+    expect(backend.seats[LOCAL]![1]!.status).toBe('closed')
     const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(false)
     $<HTMLButtonElement>('#seat_remove_' + codex)!.click()
     await settle()
-    expect(calls).not.toContain('POST projects/' + SITE + '/seats/' + codex + '/remove')
+    expect(calls).not.toContain('POST projects/' + LOCAL + '/seats/' + codex + '/remove')
     confirm.mockReturnValue(true)
     $<HTMLButtonElement>('#seat_remove_' + codex)!.click()
     await settle()
-    expect(backend.seats[SITE]!.map((s) => s.label)).toEqual(['Claude'])
+    expect(backend.seats[LOCAL]!.map((s) => s.label)).toEqual(['Claude'])
     expect($$('#project_seats [data-seat]')).toHaveLength(1)
+  })
+
+  it('explains a network project has no add buttons and keeps stop/remove for an old seat', async () => {
+    const api = fakeBackend()
+    api.backend.seats[SITE] = [
+      { id: 'old-a', provider: 'claude', label: 'Claude', status: 'idle', session_id: 'c-1' },
+      { id: 'old-b', provider: 'codex', label: 'Codex', status: 'stopped', session_id: 'x-1' },
+    ]
+    await mountApp('/p/' + SITE)
+    useAppStore().status = { configured: true, node: 'alice' }
+    await useProjectsStore().refreshAll()
+    await settle()
+    useProjectsStore().openDialog('agents', SITE)
+    await settle()
+    expect(document.body.textContent).toContain('project.agents.network_hint')
+    expect($('#seat_add_claude')).toBeNull()
+    expect($('#seat_add_codex')).toBeNull()
+    expect($('#seat_start_old-b')).toBeNull()
+    expect($('#seat_stop_old-b')).toBeNull()
+    expect($('#seat_stop_old-a')).not.toBeNull()
+    expect($('#seat_remove_old-b')).not.toBeNull()
+    // The API itself names why a network project takes no new seat.
+    await expect(useProjectsStore().seatAction(SITE, 'add', 'claude')).rejects.toMatchObject({ code: 'seats_local_only' })
   })
 
   it('keeps local seats out of the shared project composer', async () => {

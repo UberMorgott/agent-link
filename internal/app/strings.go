@@ -472,6 +472,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"error.project_needs_folder":      "У проекта не выбрана папка — выберите её в меню проекта «Моя папка».",
 	"error.folder_not_in_project":     "Эта папка не входит в папку проекта — запустите агента внутри папки проекта.",
 	"error.project_binding":           "Запись одного из проектов в файле настроек повреждена — выйдите из проекта и присоединитесь снова по приглашению.",
+	"error.seats_local_only":          "В проект с другими компьютерами агента отсюда не добавить — откройте Claude Code или Codex в папке проекта, и он подключится к чату сам. Кнопки «Добавить» работают в локальных чатах «Мои нейросети».",
 
 	// projects: UI (Track B)
 	"page.title.welcome":                "agentlink — начало",
@@ -522,6 +523,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"project.agents.title":              "Агенты на этом компьютере",
 	"project.agents.hint":               "Claude Code и Codex в папке проекта. Спрашивайте их в чате («Спросить агента»), они могут спрашивать друг друга; вся переписка остаётся в истории чата и видна участникам.",
 	"project.agents.empty":              "Агентов пока нет.",
+	"project.agents.network_hint":       "В проекте с другими компьютерами агенты не добавляются кнопкой: отвечает Claude Code или Codex, открытый в папке проекта, — он подключается к чату сам. Добавлять агентов кнопками можно в локальных чатах «Мои нейросети».",
 	"project.agents.add_claude":         "Добавить Claude",
 	"project.agents.add_codex":          "Добавить Codex",
 	"project.agents.start":              "Запустить",
@@ -544,6 +546,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"inbox.project_pause.remove":        "Снять паузу проекта",
 	"inbox.project_pause.global":        "Общая пауза",
 	"inbox.project_pause.hint":          "Управляет вашими агентами в этом проекте. Сообщения людей продолжают идти; агенты получат накопившееся после снятия паузы.",
+	"inbox.no_agents":                   "Сейчас ни на одном компьютере проекта не открыт Claude Code или Codex — сообщения агентам будут ждать. Откройте Claude Code или Codex в папке проекта у себя или попросите участника сделать это у себя: ожидающие сообщения придут, как только агент появится.",
 	"inbox.session_pin":                 "AgentLink → Codex-чат {id}",
 	"inbox.seats.agent":                 "агент",
 	"project.invite":                    "Пригласить",

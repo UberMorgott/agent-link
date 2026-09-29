@@ -120,9 +120,11 @@ is moved automatically.
   keeps running as the project «Прежняя сеть» while its code exists; it is not converted. Its code is
   set by pasting it into **Присоединиться** and removed by leaving it (its history stays). The
   working folder and «Проекты» areas on the settings page belong to it only.
-- **Agents**: in the project's **Агенты** add Claude Code, Codex, or more than one local agent seat to a
-  project, then start, pause or remove each seat there. Pending requests wait while a seat is
-  paused. The project's **Автономия агентов…** pause holds that chat's agent delivery independently
+- **Agents**: in a local chat's **Агенты** add Claude Code, Codex, or more than one local agent seat,
+  then start, pause or remove each seat there. Pending requests wait while a seat is
+  paused. A network project takes no new seats (`409 seats_local_only`): its agents are the Claude
+  Code or Codex sessions each member opens in the project folder. When no computer of the project
+  has one open, its chat warns that agent messages wait until one is. The project's **Автономия агентов…** pause holds that chat's agent delivery independently
   of the tray's global pause. People can keep chatting; queued agent requests arrive on resume.
   The app also runs the optional fallback worker per project with a folder; workers share
   «Сколько вопросов агент решает сразу». An agent it starts for a project gets

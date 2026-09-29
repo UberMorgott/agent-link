@@ -86,16 +86,20 @@ func (a *App) projectRoutes(api *http.ServeMux) {
 
 // projectSeats serves the local agents (seats) of project pid: 404 not_found
 // for an unknown project or seat, 400 bad_request for a request the node
-// refuses (no folder, a bad provider or label).
+// refuses (no folder, a bad provider or label), 409 seats_local_only to add or
+// start one in a network project.
 func (a *App) projectSeats(do func(n *node.Node, r *http.Request) (any, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		n, ok := a.contextNode(w, r.PathValue("pid"))
 		if !ok {
 			return
 		}
+		// Seats belong to local chats: a network project's agents are the
+		// sessions its members open in the project folder. Seats left from
+		// before can still be stopped and removed.
 		if !a.localProject(r.PathValue("pid")) && r.Method == http.MethodPost &&
 			!strings.HasSuffix(r.URL.Path, "/stop") && !strings.HasSuffix(r.URL.Path, "/remove") {
-			writeCodedError(w, http.StatusBadRequest, "bad_request")
+			writeCodedError(w, http.StatusConflict, "seats_local_only")
 			return
 		}
 		v, err := do(n, r)

@@ -326,6 +326,31 @@ describe('the open chat', () => {
     expect($('#chat_activity_toggle')!.getAttribute('aria-expanded')).toBe('true')
   })
 
+  it('warns when no computer of a network project has an agent open, and not while paused', async () => {
+    const { projects, inbox } = await openInbox()
+    await inbox.selectChat(P, group, '')
+    const setAgents = (bob: number, stopped = false) => {
+      projects.list = (projects.list || []).map((project) => project.id === P ? {
+        ...project,
+        agents: bob ? 1 : 0,
+        autonomy: { ...(project.autonomy || { mode: 'full' }), stopped } as NonNullable<typeof project.autonomy>,
+        members: [
+          { name: 'local', self: true, online: true, agent_counts: {} },
+          { name: 'bob', online: true, agent: bob > 0, agent_counts: bob ? { codex: bob } : {} },
+        ],
+      } : project)
+    }
+    setAgents(1)
+    await settle()
+    expect($('#chat_no_agents')).toBeNull()
+    setAgents(0)
+    await settle()
+    expect(text($('#chat_no_agents'))).toBe('inbox.no_agents')
+    setAgents(0, true)
+    await settle()
+    expect($('#chat_no_agents')).toBeNull()
+  })
+
   it('keeps bubbles, focus, draft, caret and scroll across refreshes, then loads older and sends once', async () => {
     const { api, inbox } = await openInbox()
     await inbox.selectChat(P, group, '')

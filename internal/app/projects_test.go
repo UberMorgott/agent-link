@@ -29,7 +29,7 @@ var contractErrors = map[string]int{
 	"too_many_projects": http.StatusConflict, "conflict_secret": http.StatusConflict, "legacy_exists": http.StatusConflict,
 	"legacy_rename": http.StatusConflict, "project_busy": http.StatusConflict, "legacy_invite_unavailable": http.StatusConflict,
 	"chat_legacy": http.StatusConflict, "chat_closed": http.StatusConflict, "work_dir": http.StatusBadRequest,
-	"project_needs_folder": http.StatusConflict, "folder_not_in_project": http.StatusConflict,
+	"project_needs_folder": http.StatusConflict, "folder_not_in_project": http.StatusConflict, "seats_local_only": http.StatusConflict,
 	"not_found": http.StatusNotFound, "unknown_chat": http.StatusNotFound, "chat_owner": http.StatusForbidden,
 	"remove_self": http.StatusBadRequest, "unknown_member": http.StatusNotFound, "autonomy": http.StatusBadRequest,
 	"internal": http.StatusInternalServerError,

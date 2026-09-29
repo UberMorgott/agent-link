@@ -305,6 +305,8 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
   if (rest[0] === 'seats') {
     const list = b.seats[pid] || (b.seats[pid] = [])
     if (rest.length === 1 && method === 'GET') return list
+    // A network project takes no new seats (projectSeats).
+    if (p.scope !== 'local' && method === 'POST' && (rest.length === 1 || rest[2] === 'start')) throw apiError('seats_local_only')
     if (rest.length === 1 && method === 'POST') {
       const provider = String(req.provider || '')
       if (provider !== 'claude' && provider !== 'codex') throw apiError('bad_request')

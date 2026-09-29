@@ -83,3 +83,20 @@ func TestProjectSeatsAPI(t *testing.T) {
 		t.Fatalf("remove: %d %s", code, raw)
 	}
 }
+
+// A network project takes no new seats (its agents are the sessions opened
+// in its folder): adding or starting one names why, stop and remove pass.
+func TestNetworkProjectSeatsRefused(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
+	var site ProjectView
+	if code, raw := h.api(t, http.MethodPost, "projects", map[string]any{"name": "Сайт", "dir": t.TempDir()}, &site); code != http.StatusOK {
+		t.Fatalf("create: %d %s", code, raw)
+	}
+	base := "projects/" + site.ID + "/seats"
+	h.wantError(t, http.MethodPost, base, map[string]any{"provider": "claude"}, http.StatusConflict, "seats_local_only")
+	h.wantError(t, http.MethodPost, base+"/seat-none/start", map[string]any{}, http.StatusConflict, "seats_local_only")
+	h.wantError(t, http.MethodPost, base+"/seat-none/stop", nil, http.StatusNotFound, "not_found")
+	if code, raw := h.api(t, http.MethodGet, base, nil, nil); code != http.StatusOK {
+		t.Fatalf("list: %d %s", code, raw)
+	}
+}

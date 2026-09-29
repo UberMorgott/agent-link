@@ -179,6 +179,9 @@ const autonomyOpen = openFor('autonomy')
 watch(() => [projects.dialog, projects.dialogProject] as const, ([kind, pid]) => {
   if (kind === 'agents' && pid) void run(() => projects.refreshSeats(pid))
 })
+// Only a local chat takes new seats; a network project's agents are the
+// sessions opened in its folder, and old seats there can only stop or go.
+const seatsLocal = computed(() => view.value?.scope === 'local')
 const seatRows = computed(() => (projects.seats[projects.dialogProject] || []).map((s) => ({
   ...s,
   statusText: t('project.agents.status.' + s.status),
@@ -339,7 +342,7 @@ function leave() {
     <template #body>
       <div class="flex flex-col gap-4">
         <p class="hint">
-          {{ t("project.agents.hint") }}
+          {{ t(seatsLocal ? "project.agents.hint" : "project.agents.network_hint") }}
         </p>
         <ul
           id="project_seats"
@@ -370,7 +373,7 @@ function leave() {
               >{{ s.error }}</span>
             </span>
             <UButton
-              v-if="s.status === 'stopped' || s.error || !s.session_id"
+              v-if="seatsLocal && (s.status === 'stopped' || s.error || !s.session_id)"
               :id="'seat_start_' + s.id"
               :label="t('project.agents.start')"
               size="xs"
@@ -379,7 +382,7 @@ function leave() {
               @click="seat('start', s.id)"
             />
             <UButton
-              v-else
+              v-else-if="s.status !== 'stopped'"
               :id="'seat_stop_' + s.id"
               :label="t('project.agents.stop')"
               size="xs"
@@ -401,7 +404,10 @@ function leave() {
             />
           </li>
         </ul>
-        <span class="flex flex-wrap gap-2">
+        <span
+          v-if="seatsLocal"
+          class="flex flex-wrap gap-2"
+        >
           <UButton
             id="seat_add_claude"
             :label="t('project.agents.add_claude')"
