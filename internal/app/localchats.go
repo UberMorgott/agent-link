@@ -52,6 +52,10 @@ type LocalChatView struct {
 	// Owner is the agent the chat belongs to (settings.LocalChat.OwnerOf);
 	// absent for a shared chat.
 	Owner *settings.LocalChatOwner `json:"owner,omitempty"`
+	// Live: the chat is in use: its owner (session, and subagent) is live or
+	// something in it is pending; a shared persistent chat always is, a
+	// retired one never. Set in the project list (GET /projects).
+	Live bool `json:"live"`
 }
 
 // localChatViewOf is lc's view; nil is a folder's project chat.
@@ -118,7 +122,7 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 		best := -1
 		for i, b := range a.s.Bindings {
 			lc := b.Chat
-			if lc == nil || lc.Project != pid || a.projects[b.ID] == nil || !strings.EqualFold(lc.Topic, req.Topic) {
+			if lc == nil || lc.Project != pid || a.projects[b.ID] == nil || !strings.EqualFold(lc.Topic, req.Topic) || !lc.Retired.IsZero() {
 				continue
 			}
 			var mine bool
@@ -226,13 +230,14 @@ func inWorkTree(dir string) bool {
 }
 
 // touchLocalChatLocked records a use of the local chat of binding i by
-// session ("" none); a folder's project binding is left as it is.
+// session ("" none), which a retired chat brings back; a folder's project
+// binding is left as it is.
 func (a *App) touchLocalChatLocked(i int, session string) error {
 	if a.s.Bindings[i].Chat == nil {
 		return nil
 	}
 	lc := *a.s.Bindings[i].Chat
-	lc.LastUsed = time.Now().UTC()
+	lc.LastUsed, lc.Retired = time.Now().UTC(), time.Time{} // continued: in use again
 	if session != "" && !slices.Contains(lc.Sessions, session) {
 		lc.Sessions = append(slices.Clone(lc.Sessions), session)
 	}
@@ -246,23 +251,32 @@ func (a *App) touchLocalChatLocked(i int, session string) error {
 	return nil
 }
 
-// gcLoop collects idle temporary chats until ctx ends.
+// gcLoop collects idle temporary chats and retires the chats of ended owners
+// (retireOwnedChats) until ctx ends.
 func (a *App) gcLoop(ctx context.Context) {
 	t := time.NewTicker(localChatGCEvery)
 	defer t.Stop()
+	r := time.NewTicker(retireEvery)
+	defer r.Stop()
 	for {
 		a.gcLocalChats(time.Now())
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
+		for gc := false; !gc; {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				gc = true
+			case <-r.C:
+				a.retireOwnedChats(time.Now())
+			}
 		}
 	}
 }
 
 // gcLocalChats removes every temporary chat none of whose sessions is live,
 // with nothing pending (a seat's queue or turn, an unread message, a running
-// job) and no activity for TempChatIdle. Its data goes to .left, as a leave's.
+// job) and no activity for TempChatIdle, and every retired chat with nothing
+// pending. Its data goes to .left, as a leave's.
 // An unread reply whose session ended (ChatInfo.NeedsHuman) keeps the chat
 // until a person reads it or reassigns it: it is never dropped unseen.
 func (a *App) gcLocalChats(now time.Time) {
@@ -281,10 +295,16 @@ func (a *App) gcLocalChats(now time.Time) {
 	}
 	var drop []string
 	for _, b := range a.s.Bindings {
-		if b.Chat == nil || !b.Chat.Temporary || slices.ContainsFunc(b.Chat.Sessions, func(s string) bool { return live[s] }) {
+		if b.Chat == nil {
 			continue
 		}
-		if last, busy := localChatActivity(a.projects[b.ID], b.Chat); !busy && now.Sub(last) >= TempChatIdle {
+		// A retired chat (its owner ended) goes as soon as nothing in it is
+		// pending: it stayed for an unread reply alone (retire.go).
+		retired := !b.Chat.Retired.IsZero()
+		if !retired && (!b.Chat.Temporary || slices.ContainsFunc(b.Chat.Sessions, func(s string) bool { return live[s] })) {
+			continue
+		}
+		if last, busy := localChatActivity(a.projects[b.ID], b.Chat); !busy && (retired || now.Sub(last) >= TempChatIdle) {
 			drop = append(drop, b.ID)
 		}
 	}
@@ -293,6 +313,7 @@ func (a *App) gcLocalChats(now time.Time) {
 			a.log.Warn("remove temporary chat", "project", pid, "err", err)
 			continue
 		}
+		a.forgetOwnerLocked(pid)
 		a.log.Info("temporary chat removed", "project", pid)
 		go a.events.publish("projects", projectTopic(pid), "status", "dashboard")
 	}

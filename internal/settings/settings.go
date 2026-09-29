@@ -163,6 +163,10 @@ type LocalChat struct {
 	// by (Project, Owner, Topic), and the chat retires when it ends. nil for a
 	// shared chat (a person's, or one asked for with shared).
 	Owner *LocalChatOwner `json:"owner,omitempty"`
+	// Retired is when the chat was closed for its owner's end (its seats
+	// removed); such a chat stays only while an unread reply holds it, hidden,
+	// and discuss never routes to it again.
+	Retired time.Time `json:"retired,omitzero"`
 	// Project is the local project of the folder it belongs to; "" for a chat
 	// of sessions outside any project folder.
 	Project string `json:"project,omitempty"`

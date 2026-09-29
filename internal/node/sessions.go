@@ -130,6 +130,10 @@ func (s Session) liveAgents(now time.Time) []string {
 	return s.Agents
 }
 
+// LiveAgents are the session's subagents still live at now (Agents, until
+// agentLiveTTL after the hook event that reported them).
+func (s Session) LiveAgents(now time.Time) []string { return s.liveAgents(now) }
+
 func (s Session) live(now time.Time) bool {
 	return now.Sub(s.LastSeen) < time.Duration(s.TTLSec)*time.Second
 }

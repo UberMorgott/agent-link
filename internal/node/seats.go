@@ -427,6 +427,24 @@ func (n *Node) RemoveSeat(id string) error {
 	return err
 }
 
+// WaitSeatTurns waits up to d until no turn of a seat runs (RemoveSeat and
+// StopSeat cancel them; a turn ends once its agent process exits). It reports
+// false when one still runs.
+func (n *Node) WaitSeatTurns(d time.Duration) bool {
+	st := n.seats
+	for deadline := time.Now().Add(d); ; time.Sleep(20 * time.Millisecond) {
+		st.mu.Lock()
+		running := len(st.run)
+		st.mu.Unlock()
+		if running == 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+	}
+}
+
 func (n *Node) seatView(id string) (SeatView, error) {
 	for _, v := range n.Seats() {
 		if v.ID == id {

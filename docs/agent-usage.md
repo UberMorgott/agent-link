@@ -136,13 +136,20 @@ thread with the asked agent continues on every call and no other session shares 
 | `folderless_temporary` | default outside any project folder: the session's own chat, reused from any folder (per topic likewise); no folder or project is bound | temporary (owned) |
 | `folderless` | `--topic <name> --shared` (a person: `--topic <name>`) outside project folders: a named shared chat of no project | until a person removes it |
 
+An own chat closes when its owner ends: about 90 s after its session ends (SessionEnd, or its
+TTL lapses) or, for a subagent's chat, after the subagent stops, its seats are removed (a running
+agent turn is cancelled) and the chat leaves (data to `.left`); an unread reply keeps it, hidden
+(`retired`), until it is read. A session back within that grace (a resumed session) keeps its
+chats. Headless agent turns of all local chats run at most 4 at once; the rest wait in line
+(`turn_queued` on the seat).
+
 `--chat <id>` continues any local chat by the `chat` id an earlier call returned (the way to
 continue a temporary chat from another session). A temporary chat is removed (its data moves to
 `.left`) once none of its sessions is live, nothing in it is pending (a queued request, a running
 turn, an unread reply) and it was idle for 24 hours; `expires_at` is the earliest such time. The
 project list (`GET /projects`) shows such chats as local projects with `local_chat {scope, topic,
-project, folder, expires_at, owner?}`; `owner {session, agent?, agent_type?, provider?}` is the
-agent an own chat belongs to. A project's manual
+project, folder, expires_at, owner?, live}`; `owner {session, agent?, agent_type?, provider?}` is the
+agent an own chat belongs to, `live` whether it is in use (its owner live, or something pending). A project's manual
 agent pause applies to that chat alone and is independent of the global tray pause. People can
 keep exchanging messages while either pause holds agent delivery. This does not
 provide the old `cx.ps1` wrapper's image or review flags.

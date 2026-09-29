@@ -157,6 +157,7 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 			Autonomy: autonomyViewOf(a.effectiveBindingLocked(b), c)}
 		if b.Chat != nil {
 			view := localChatViewOf(b.Chat)
+			view.Live = a.localChatLiveLocked(b, a.liveAgentsLocked())
 			v.Chat = &view
 		}
 		if c != nil {

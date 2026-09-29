@@ -229,3 +229,31 @@ Order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 (5 can run parallel to 2-4; 6 needs 5).
   **separate section** (keeps 42a22af separation).
 - **Q5 Persistent topics from agents**: per-session (retired with owner) unless `shared:true`.
   Recommended: **yes**.
+
+## Implemented backend (PR2-PR4) - final names for PR5/PR6
+
+Owner decisions taken: Q1 (a), Q2 (a), Q3 4 per machine (one `node.TurnGate` shared by every
+context of the app, since each local chat is its own node), Q5 yes.
+
+- `settings.LocalChat`: `owner` (`LocalChatOwner {session, agent?, agent_type?, provider?}`),
+  `retired` (time; set when the owner ended but an unread reply holds the chat). An owned chat is
+  `temporary: true` and may carry a `topic`. `LocalChat.OwnerOf()` = `owner`, else for an older
+  temporary chat without a topic `{session: sessions[0]}`.
+- Routing key = (`project`, `owner.session`, `owner.agent`, lower(`topic`)); retired chats never
+  match. Agent callers (session set, no seat) get owned chats unless `shared: true` (MCP `shared`,
+  CLI `--shared`, request field `shared`); `shared` with `chat`/`temporary` = 400.
+- `LocalChatView` (JSON `local_chat` of `ProjectView`): adds `owner` (same object as above,
+  omitted for shared chats) and `live` (bool, always present; set by `GET /projects`):
+  retired -> false; owned -> owner session live (and subagent among its live agents, or never
+  seen there) or pending work (unread, running/pending seat, active job); unowned temporary ->
+  one of `sessions` live or pending; shared persistent -> true. `waiting` (open discuss waiter)
+  and the 60 s `hideGrace` are left to PR5/PR6.
+- `SeatView.turn_queued`: the seat's turn (status `running`) waits for a TurnGate slot.
+- Retire: `App.retireOwnedChats` every 15 s (gcLoop); owner gone = session live in no context
+  (after it was seen live in this app run) or subagent missing from `Session.LiveAgents` (after it
+  was seen there); after `RetireGrace = 90s` gone: `RemoveSeat` all seats (cancels turn ->
+  `killTreeOnCancel`), `WaitSeatTurns(10s)` (else retry next tick), then leave (data -> `.left`),
+  or with unread set `retired` (hidden; `gcLocalChats` drops it once read). Subagent end signal =
+  SubagentStop re-registration shrinking `Agents` (or `agentLiveTTL` lapse); no new node callback.
+- Not done: Codex subagent stamping (R3 optional; `hook.go` stays Claude-only), Codex tool timeout
+  clamp (PR7), real-process e2e with `fakeagent` (turn cancel is tested with a blocking launcher).
