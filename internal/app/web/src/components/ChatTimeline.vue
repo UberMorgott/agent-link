@@ -37,6 +37,8 @@ interface Bubble {
   canReply: boolean
 }
 
+const readOnly = computed(() => projects.byID(inbox.project)?.scope === 'local')
+
 const bubbles = computed<Bubble[]>(() => {
   const self = app.self
   const info = inbox.chat
@@ -90,7 +92,8 @@ const bubbles = computed<Bubble[]>(() => {
       tick,
       // Own messages get no reply button: a reference to oneself asks nobody;
       // a local agent's message does (the reply asks that agent).
-      canReply: !!info && !info.legacy && !info.closed && (!out || !!m.agent?.seat),
+      // A local Claude/Codex chat is read-only for a person.
+      canReply: !!info && !info.legacy && !info.closed && !readOnly.value && (!out || !!m.agent?.seat),
     }
   })
 })

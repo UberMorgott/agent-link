@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import UIcon from '@nuxt/ui/components/Icon.vue'
-import ProjectMenu from '@/components/ProjectMenu.vue'
 import { icon } from '@/lib/icons'
 import { fmt, t } from '@/lib/runtime'
 import type { ProjectView } from '@/types'
 
 // One project of the local chats section: a plain row while it has one chat,
 // else a row that opens and closes the list of its chats (a disclosure:
-// Enter/Space toggle it, ArrowRight opens, ArrowLeft closes).
+// Enter/Space toggle it, ArrowRight opens, ArrowLeft closes). The agents talk
+// among themselves here and a person only reads along: no "⋯" menu.
 export interface LocalChatRow {
   p: ProjectView
   name: string
@@ -76,10 +76,6 @@ function liveLabel(state: string): string {
           :title="t('inbox.unread')"
         >{{ rows[0]!.unread }}</span>
       </button>
-      <ProjectMenu
-        :project="rows[0]!.p"
-        :name="rows[0]!.name"
-      />
     </div>
   </li>
   <li
@@ -169,10 +165,6 @@ function liveLabel(state: string): string {
               :title="t('inbox.unread')"
             >{{ r.unread }}</span>
           </button>
-          <ProjectMenu
-            :project="r.p"
-            :name="r.name"
-          />
         </div>
       </li>
     </ul>

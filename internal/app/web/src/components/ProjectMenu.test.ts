@@ -28,7 +28,8 @@ async function menu(pid: string): Promise<HTMLElement[]> {
 }
 
 describe('the project menu', () => {
-  it('keeps member and invite controls out of a local Claude/Codex chat', async () => {
+  it('has no menu on a local Claude/Codex chat: a person only reads it', async () => {
+
     const api = fakeBackend()
     const local = 'LOCAL_CHAT'
     const site = api.backend.projects.find((p) => p.id === SITE)!
@@ -39,12 +40,8 @@ describe('the project menu', () => {
     const projects = useProjectsStore()
     await projects.refreshAll()
     await settle()
-    const labels = (await menu(local)).map((item) => item.textContent!.trim())
-    expect(labels).not.toContain('project.menu.members')
-    expect(labels).not.toContain('project.menu.invite')
-    expect(labels).toContain('project.menu.agents')
-    expect(labels).toContain('project.menu.autonomy')
-    expect(labels).toContain('inbox.history')
+    expect($('#local_chat_tree [data-project="' + local + '"]')).not.toBeNull()
+    expect($('[data-project="' + local + '"] .project-more')).toBeNull()
     projects.openDialog('members', local)
     await settle()
     expect($('#project_members')).toBeNull()

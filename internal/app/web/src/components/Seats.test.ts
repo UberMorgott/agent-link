@@ -97,7 +97,7 @@ describe('local agents (seats)', () => {
     expect(api.backend.sent.at(-1)).not.toHaveProperty('ask_seats')
   })
 
-  it('has no seat picker in a local Claude/Codex chat and sends without ask_seats', async () => {
+  it('shows a local Claude/Codex chat read-only: no composer, seat picker or reply', async () => {
     const [chat] = fixture<ChatInfo[]>('chats')
     const api = fakeBackend()
     const local = 'LOCAL_CHAT'
@@ -105,7 +105,7 @@ describe('local agents (seats)', () => {
     const site = api.backend.projects.find((p) => p.id === SITE)!
     api.backend.projects.push({ ...site, id: local, scope: 'local', name: 'Local Claude ↔ Codex', display: 'Local Claude ↔ Codex', members: site.members.filter((m) => m.self) })
     api.backend.chats[local] = [{ ...chat!, id: localChat, project: local, participants: ['alice'], members: chat!.members?.filter((m) => m.self) }]
-    api.backend.messages[localChat] = []
+    api.backend.messages[localChat] = fixture<ChatMessage[]>('chat_messages').map((m) => ({ ...m, chat_id: localChat }))
     api.backend.seats[local] = [
       { id: 'seat-a', provider: 'claude', label: 'Claude', status: 'idle' },
       { id: 'seat-b', provider: 'codex', label: 'Codex', status: 'closed' },
@@ -116,12 +116,11 @@ describe('local agents (seats)', () => {
     await settle()
     expect($('#ask_row')).toBeNull()
     expect($('#seat_row')).toBeNull()
-    const inbox = useInboxStore()
-    inbox.composer = 'посмотри тесты'
-    await inbox.submitMessage()
-    await settle()
-    expect(api.backend.sent.at(-1)).toMatchObject({ chat_id: localChat, body: 'посмотри тесты', ask: [] })
-    expect(api.backend.sent.at(-1)).not.toHaveProperty('ask_seats')
+    expect($('#send')).toBeNull()
+    expect($('#chat_agent_pause')).toBeNull()
+    expect(document.querySelectorAll('[data-message-id]').length).toBeGreaterThan(0)
+    expect($('.msg-reply')).toBeNull()
+    expect($('#chat_readonly')!.textContent).toContain('local_chat.readonly')
   })
 
   it('names a local agent as "<node> · <label>" and keeps agents apart', () => {

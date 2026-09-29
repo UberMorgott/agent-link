@@ -375,8 +375,9 @@ export const useProjectsStore = defineStore('projects', () => {
   const lastLive = new Map<string, number>()
   watch(list, (next, prev) => {
     const now = Date.now()
-    const wasLive = new Set((prev || []).filter((p) => p.local_chat?.live).map((p) => p.id))
-    for (const p of next || []) if (p.local_chat?.live || wasLive.has(p.id)) lastLive.set(p.id, now)
+    const live = (p: ProjectView) => !!(p.local_chat?.live || p.activity?.live)
+    const wasLive = new Set((prev || []).filter(live).map((p) => p.id))
+    for (const p of next || []) if (live(p) || wasLive.has(p.id)) lastLive.set(p.id, now)
   })
 
   return {

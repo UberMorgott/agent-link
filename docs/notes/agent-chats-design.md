@@ -267,5 +267,13 @@ context of the app, since each local chat is its own node), Q5 yes.
   `killTreeOnCancel`), `WaitSeatTurns(10s)` (else retry next tick), then leave (data -> `.left`),
   or with unread set `retired` (hidden; `gcLocalChats` drops it once read). Subagent end signal =
   SubagentStop re-registration shrinking `Agents` (or `agentLiveTTL` lapse); no new node callback.
+- Owner feedback 2026-09-29 (read-only viewer, dead chats): «Мои нейросети» is a viewer only — no
+  "⋯" menu on local rows (clear/history/agents/name/folder/autonomy/delete gone), no composer, pause
+  or reply in a local chat (`#chat_readonly` note); the per-folder autonomy moved to Settings
+  (`AutonomySettings` lists local project chats). Every local chat, the folder's project chat and
+  shared topics included, now shows only while live or within `HIDE_GRACE_MS` (or with unread / on
+  screen): a shared chat is live only while a caller waits, a turn/job runs or one of its sessions
+  is live (no longer "always"); a project chat reports it as `ProjectView.activity`
+  `{live, waiting, last_active}`. Data is kept; nothing is deleted.
 - Not done: Codex subagent stamping (R3 optional; `hook.go` stays Claude-only), Codex tool timeout
   clamp (PR7), real-process e2e with `fakeagent` (turn cancel is tested with a blocking launcher).

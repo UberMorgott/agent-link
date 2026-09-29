@@ -10,7 +10,7 @@ describe('agents navigation', () => {
     const projects = useProjectsStore()
     await projects.refreshAll()
     await settle()
-    expect(document.querySelectorAll('#agents_projects > li')).toHaveLength(0)
+    expect(document.querySelectorAll('#agents_projects [data-project]')).toHaveLength(0)
     expect(document.querySelector('#project_tree [data-project="' + SITE + '"]')).not.toBeNull()
 
     // A native discuss call creates this project outside the UI. The next
@@ -32,7 +32,7 @@ describe('agents navigation', () => {
     const link = document.querySelector<HTMLAnchorElement>('a[data-route="agents"]')!
     expect(link.getAttribute('href')).toBe('/ui/agents')
     expect(link.className).toContain('active')
-    expect(document.querySelectorAll('#agents_projects > li')).toHaveLength(1)
+    expect(document.querySelectorAll('#agents_projects [data-project]')).toHaveLength(1)
     expect(document.querySelector('#agents_projects')!.textContent).toContain('Codex')
     expect(document.querySelector('#agents_projects')!.textContent).toContain('Claude Code')
     expect(document.querySelector('#project_tree [data-project="' + local + '"]')).toBeNull()

@@ -266,6 +266,16 @@ export interface ProjectView {
   launch_mode?: 'desktop' | 'terminal'
   // local_chat: set for a local chat that is not a folder's project chat.
   local_chat?: LocalChatView
+  // activity: for a folder's local project chat, whether it is in use now
+  // and when it was last used; absent on older apps.
+  activity?: LocalActivityView
+}
+
+// LocalActivityView (internal/app/localchats.go): a local project chat's use.
+export interface LocalActivityView {
+  live: boolean
+  waiting?: boolean
+  last_active?: string
 }
 
 export type LocalChatScope = 'project' | 'project_temporary' | 'folderless' | 'folderless_temporary'

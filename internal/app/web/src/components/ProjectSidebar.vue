@@ -44,7 +44,7 @@ function row(p: NonNullable<typeof projects.list>[number]) {
 }
 const tree = computed(() => (projects.list || []).filter((p) => p.scope !== 'local').map(row))
 
-// Local chats by project; temporary ones only while live (lib/localChats).
+// Local chats by project, each only while live (lib/localChats).
 // now ticks so a chat that stopped being live leaves after its grace.
 const now = ref(Date.now())
 let ticker: ReturnType<typeof setInterval> | undefined
@@ -59,7 +59,9 @@ function localRow(p: ProjectView, group: string): LocalChatRow {
   const name = !lc ? (group ? base.name : chatLabel(p)) : group ? group + ' · ' + chatLabel(p) : chatLabel(p)
   return { ...base, live, name }
 }
-const localTree = computed(() => groupLocalChats(projects.list || [], now.value, projects.lastLive).map((g) => ({
+// A chat with unread messages or on screen stays until read or left.
+const keepLocal = (p: ProjectView) => unread(p.id) > 0 || row(p).active
+const localTree = computed(() => groupLocalChats(projects.list || [], now.value, projects.lastLive, keepLocal).map((g) => ({
   ...g,
   rows: g.items.map((p) => localRow(p, g.items.length === 1 ? g.name : '')),
 })))

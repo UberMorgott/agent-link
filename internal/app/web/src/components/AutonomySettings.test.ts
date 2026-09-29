@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { SITE, JOINING } from '@/test/backend'
+import { SITE, JOINING, fixture } from '@/test/backend'
+import type { ProjectView } from '@/types'
 import { fakeBackend, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
 import { useProjectsStore } from '@/stores/projects'
@@ -32,6 +33,21 @@ async function change(el: HTMLInputElement | HTMLSelectElement, value: string) {
 }
 
 describe('agent autonomy settings', () => {
+  it('sets the autonomy of the local folders\' chats on the settings page, not of their temporary chats', async () => {
+    const api = fakeBackend()
+    const local = { ...fixture<ProjectView>('project_local'), id: 'LOCAL_SITE' }
+    const temp = { ...fixture<ProjectView>('project_local_chat'), id: 'LOCAL_TEMP', autonomy: local.autonomy }
+    api.backend.projects.push(local, temp)
+    await mountApp('/settings')
+    useAppStore().status = { configured: true, node: 'alice' }
+    await useProjectsStore().refreshAll()
+    await settle()
+    expect($('[data-autonomy="LOCAL_SITE"] select.autonomy-mode')).not.toBeNull()
+    expect($('[data-autonomy="LOCAL_TEMP"]')).toBeNull()
+    expect(card()).toBeNull() // a network project's controls live in its menu
+    expect($('#autonomy_local_hint')!.textContent).toContain('autonomy.local.hint')
+  })
+
   it('lists the projects with every option described, and saves each change on its own', async () => {
     const { requests } = await open()
     expect(card()).toBeNull() // project controls live in the project menu

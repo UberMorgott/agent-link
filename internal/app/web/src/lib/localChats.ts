@@ -1,5 +1,5 @@
 // The local chats section of the sidebar: every local binding grouped by its
-// project, temporary chats only while someone is in them
+// project, each only while someone is in it
 // (docs/notes/agent-chats-design.md R6, R7).
 import { t } from '@/lib/runtime'
 import type { ProjectView } from '@/types'
@@ -22,15 +22,18 @@ export function isTemporary(p: ProjectView): boolean {
   return scope === 'project_temporary' || scope === 'folderless_temporary'
 }
 
-// chatVisible: project chats and named topics always show; a temporary chat
-// while live, and for HIDE_GRACE_MS after it was last seen live or active;
-// a retired chat never (the dashboard's needs_human shows its reply).
-// An app without the live flag shows it as before.
-export function chatVisible(p: ProjectView, now: number, lastLive: ReadonlyMap<string, number>): boolean {
+// chatVisible: every local chat (a folder's project chat, a topic, a
+// temporary chat) shows while live, and for HIDE_GRACE_MS after it was last
+// seen live or active: a chat nobody talks in is dead weight. keep holds one
+// that must stay anyway (its unread messages, the chat on screen). A retired
+// chat never shows (the dashboard's needs_human shows its reply). An app
+// without the live flag shows it as before.
+export function chatVisible(p: ProjectView, now: number, lastLive: ReadonlyMap<string, number>, keep?: (p: ProjectView) => boolean): boolean {
   const lc = p.local_chat
   if (lc?.retired) return false
-  if (!lc || !isTemporary(p) || lc.live === undefined || lc.live) return true
-  const active = Date.parse(lc.last_active || '') || 0
+  const state = lc || p.activity
+  if (!state || state.live === undefined || state.live || keep?.(p)) return true
+  const active = Date.parse(state.last_active || '') || 0
   return now - Math.max(active, lastLive.get(p.id) || 0) < HIDE_GRACE_MS
 }
 
@@ -54,11 +57,11 @@ export function chatLabel(p: ProjectView): string {
 // groupLocalChats groups the visible local bindings by project: groups by
 // name, the chats outside projects last; in a group the project's own chat
 // first, then the rest by name.
-export function groupLocalChats(list: ProjectView[], now: number, lastLive: ReadonlyMap<string, number>): LocalChatGroupView[] {
+export function groupLocalChats(list: ProjectView[], now: number, lastLive: ReadonlyMap<string, number>, keep?: (p: ProjectView) => boolean): LocalChatGroupView[] {
   const local = list.filter((p) => p.scope === 'local')
   const byKey = new Map<string, ProjectView[]>()
   for (const p of local) {
-    if (!chatVisible(p, now, lastLive)) continue
+    if (!chatVisible(p, now, lastLive, keep)) continue
     const key = groupKey(p)
     byKey.set(key, [...(byKey.get(key) || []), p])
   }

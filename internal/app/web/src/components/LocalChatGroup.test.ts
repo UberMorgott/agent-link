@@ -7,8 +7,9 @@ import type { LocalChatView, ProjectView } from '@/types'
 
 const NOW = Date.parse('2026-09-01T12:00:00Z')
 
-function project(id: string, display: string): ProjectView {
-  return { ...fixture<ProjectView>('project_local'), id, name: display, display }
+function project(id: string, display: string, activity?: ProjectView['activity']): ProjectView {
+  const base = fixture<ProjectView>('project_local')
+  return { ...base, id, name: display, display, activity: activity === undefined ? base.activity : activity }
 }
 
 function chat(id: string, of: string, lc: Partial<LocalChatView>): ProjectView {
@@ -17,10 +18,13 @@ function chat(id: string, of: string, lc: Partial<LocalChatView>): ProjectView {
 }
 
 describe('local chats grouping', () => {
-  it('keeps project chats and topics, and temporary chats only while live or within the grace', () => {
+  it('keeps every local chat only while live or within the grace, or while kept', () => {
     const old = new Date(NOW - 10 * 60_000).toISOString()
     const list = [
       project('SITE', 'Сайт'),
+      project('IDLE', 'Старый', { live: false, last_active: old }),
+      project('KEPT', 'Непрочитанный', { live: false, last_active: old }),
+      project('BUSY', 'Занятой', { live: true, waiting: true, last_active: old }),
       chat('live', 'SITE', { live: true }),
       chat('ended', 'SITE', { live: false, last_active: old }),
       chat('just_ended', 'SITE', { live: false, last_active: old }),
@@ -31,15 +35,21 @@ describe('local chats grouping', () => {
       chat('retired', 'SITE', { live: false, retired: true, last_active: new Date(NOW - 5_000).toISOString() }),
     ]
     const lastLive = new Map([['just_ended', NOW - HIDE_GRACE_MS / 2]])
-    const groups = groupLocalChats(list, NOW, lastLive)
-    expect(groups.map((g) => g.key)).toEqual(['SITE', NO_PROJECT])
-    expect(groups[0]!.items.map((p) => p.id)).toEqual(expect.arrayContaining(['SITE', 'live', 'just_ended', 'recent', 'topic', 'older_app']))
-    expect(groups[0]!.items[0]!.id).toBe('SITE')
-    expect(groups[0]!.items.some((p) => p.id === 'ended')).toBe(false)
+    const keep = (p: ProjectView) => p.id === 'KEPT'
+    const groups = groupLocalChats(list, NOW, lastLive, keep)
+    // An idle folder's project chat leaves like any other; an unread (kept) one and a busy one stay.
+    expect(groups.map((g) => g.key)).toEqual(['BUSY', 'KEPT', 'SITE', NO_PROJECT])
+    expect(groups[2]!.items.map((p) => p.id)).toEqual(expect.arrayContaining(['SITE', 'live', 'just_ended', 'recent', 'older_app']))
+    expect(groups[2]!.items[0]!.id).toBe('SITE')
+    expect(groups[2]!.items.some((p) => p.id === 'ended')).toBe(false)
+    // A shared topic nobody talks in is dead weight too.
+    expect(groups[2]!.items.some((p) => p.id === 'topic')).toBe(false)
+    // An app without the activity flag shows a project chat as before.
+    expect(groupLocalChats([project('OLD', 'Прежний', null as never)], NOW + 3_600_000, lastLive).map((g) => g.key)).toEqual(['OLD'])
     // A retired chat leaves at once, its recent reply notwithstanding.
-    expect(groups[0]!.items.some((p) => p.id === 'retired')).toBe(false)
+    expect(groups[2]!.items.some((p) => p.id === 'retired')).toBe(false)
     // After the grace the chat that just ended leaves too.
-    expect(groupLocalChats(list, NOW + HIDE_GRACE_MS, lastLive)[0]!.items.some((p) => p.id === 'just_ended')).toBe(false)
+    expect(groupLocalChats(list, NOW + HIDE_GRACE_MS, lastLive, keep).find((g) => g.key === 'SITE')?.items.some((p) => p.id === 'just_ended') ?? false).toBe(false)
   })
 })
 
@@ -50,10 +60,11 @@ describe('local chats sidebar', () => {
     const projects = useProjectsStore()
     const old = new Date(Date.now() - 10 * 60_000).toISOString()
     const added = [
-      project('SITE_LOCAL', 'Сайт'),
+      project('SITE_LOCAL', 'Сайт', { live: true }),
       chat('c1', 'SITE_LOCAL', { live: true, waiting: true, owner: { session: 's1', provider: 'claude' } }),
       chat('c2', 'SITE_LOCAL', { live: true, owner: { session: 's2', agent: 'a1', agent_type: 'reviewer' } }),
-      project('SHOP_LOCAL', 'Магазин'),
+      project('SHOP_LOCAL', 'Магазин', { live: true }),
+      project('IDLE_LOCAL', 'Заброшенный', { live: false, last_active: old }),
       chat('c3', 'SHOP_LOCAL', { live: false, last_active: old }),
     ]
     for (const p of added) {
@@ -92,6 +103,9 @@ describe('local chats sidebar', () => {
     expect(tree.querySelector('[data-group="SHOP_LOCAL"]')).toBeNull()
     expect(tree.querySelector(':scope > [data-project="SHOP_LOCAL"]')).not.toBeNull()
     expect(tree.querySelector('[data-project="c3"]')).toBeNull()
+    // An idle folder's project chat is not listed; a person reads along, so no row has a menu.
+    expect(tree.querySelector('[data-project="IDLE_LOCAL"]')).toBeNull()
+    expect(tree.querySelector('.project-more')).toBeNull()
 
     // The chat comes back once someone is in it again.
     api.backend.projects = api.backend.projects.map((p) => (p.id === 'c3' ? { ...p, local_chat: { ...p.local_chat!, live: true } } : p))

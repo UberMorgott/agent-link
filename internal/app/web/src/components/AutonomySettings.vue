@@ -19,7 +19,11 @@ const projects = useProjectsStore()
 
 const MODES: AutonomyMode[] = ['off', 'asked', 'full']
 
-const list = computed(() => (projects.list || []).filter((p) => !p.legacy && p.autonomy && p.id === props.project))
+// A project's menu shows its own project; the settings page shows the local
+// folders' chats of «Мои нейросети» (read-only there, so set here); their
+// temporary chats follow their folder's.
+const list = computed(() => (projects.list || []).filter((p) => !p.legacy && p.autonomy &&
+  (props.project ? p.id === props.project : p.scope === 'local' && !p.local_chat)))
 const stopAll = computed(() => !!app.status?.stop_all)
 const stopBusy = ref(false)
 const stopText = ref('')
@@ -147,6 +151,13 @@ const depthDefault = (p: ProjectView) => fmt("autonomy.depth.default", {
       class="hint"
     >
       {{ t("autonomy.none") }}
+    </p>
+    <p
+      v-if="!project && list.length"
+      id="autonomy_local_hint"
+      class="hint"
+    >
+      {{ t("autonomy.local.hint") }}
     </p>
     <ul class="flex flex-col gap-6">
       <li

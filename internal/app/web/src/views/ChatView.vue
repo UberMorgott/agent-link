@@ -305,8 +305,22 @@ function back() {
 
         <ChatTimeline />
         <div class="chat-column flex flex-none flex-col gap-2 pb-4">
+          <!-- A local Claude/Codex chat is the agents' own: a person reads it,
+               nothing more (no composer, no pause, no reply). -->
+          <p
+            v-if="localChat"
+            id="chat_readonly"
+            class="chat-note flex items-center gap-2 rounded-xl bg-elevated px-4 py-3 text-sm text-muted"
+            role="note"
+          >
+            <UIcon
+              :name="icon('agent')"
+              class="size-4 flex-none"
+            />
+            <span>{{ t('local_chat.readonly') }}</span>
+          </p>
           <form
-            v-if="writable"
+            v-else-if="writable"
             id="send"
             class="composer flex flex-col gap-2"
             :aria-busy="inbox.sending ? 'true' : undefined"
