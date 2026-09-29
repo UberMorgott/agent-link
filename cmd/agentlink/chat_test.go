@@ -52,6 +52,9 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 				w.WriteHeader(http.StatusNoContent)
 			case "21ms":
 				_, _ = w.Write([]byte(`{"id":"m2",`)) // the reply is cut off: the caller never gets it
+			case "22ms":
+				w.WriteHeader(http.StatusConflict) // the asked seat's turns fail
+				_, _ = w.Write([]byte(`{"error":"usage limit","code":"seat_failed","hold_reason":"seat_failed","seat_error":"You've hit your usage limit","retry_at":"2026-10-03T09:00:00Z"}`))
 			default:
 				_ = json.NewEncoder(w).Encode(node.Message{ID: "m2", ReplyTo: "m1", Body: "answer", Agent: &node.AgentRef{Seat: "seat-codex"}})
 			}
@@ -119,6 +122,16 @@ func TestDiscussCLIWaitsAndReadsPromptFile(t *testing.T) {
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil || !got.TimedOut || got.ID != "m1" {
 		t.Fatalf("timeout result: %q: %v", stdout.String(), err)
+	}
+	// A seat that cannot answer ends the wait with its reason, held.
+	stdout.Reset()
+	if code := run([]string{"discuss", "--with", "codex", "--body", "limit", "--timeout", "22ms", "--config", f.cfg}, &stdout, &stderr); code != 0 {
+		t.Fatalf("failed seat exit: %d, out %q, err %q", code, stdout.String(), stderr.String())
+	}
+	got = discussResult{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil || !got.Held || got.HoldReason != node.HoldSeatFailed ||
+		got.SeatError != "You've hit your usage limit" || got.RetryAt.IsZero() || got.Note != "usage limit" || got.TimedOut {
+		t.Fatalf("failed seat result: %q: %v", stdout.String(), err)
 	}
 	// A reply the call failed to read stays unread: the hooks deliver it.
 	f.reqs = nil

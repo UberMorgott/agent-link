@@ -115,12 +115,15 @@ agentlink discuss      --with claude --prompt-file question.md --async # post to
 **local** project and chat for the caller's working folder, including when the folder also has a
 shared network project. Local messages never go to network peers; existing shared messages stay
 in the network chat. It creates a seat for the named
-provider if one does not exist. `--folder <path>` selects the folder; `--body <text>` and
+provider if one does not exist (never the caller's own seat, nor one waiting upstream in the
+caller's chain of agents). `--folder <path>` selects the folder; `--body <text>` and
 `--prompt-file <path>` are alternatives. It returns JSON with `project`, `chat`, `id`, `seat`
 and, by default, waits up to 10 minutes for that seat's direct `reply`. `--timeout` accepts a
 duration up to 15 minutes. Timeout returns the IDs with `timed_out: true` and CLI exit code 2;
 `--async` returns IDs immediately. During a global, project or seat pause it returns
-`queued: true` promptly; the request stays in the local chat for delivery after resume. The MCP
+`queued: true` promptly; the request stays in the local chat for delivery after resume. When the
+seat's turns fail and it does not retry within the wait (e.g. a usage limit) it returns promptly
+with `held: true`, `hold_reason: seat_failed`, `seat_error` and `retry_at`; the request stays pending for it. The MCP
 `discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?, shared?}` tool has the same
 behavior.
 

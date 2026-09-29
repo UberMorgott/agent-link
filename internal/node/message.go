@@ -192,6 +192,7 @@ const (
 	HoldChatClosed = "chat_closed" // the chat is closed (or gone)
 	HoldAnswered   = "answered"    // a person on this node answered it
 	HoldNoFolder   = "no_folder"   // a project member has no folder bound: no agent runs
+	HoldSeatFailed = "seat_failed" // the asked seat's turns fail (usage limit, …): it waits for a person or its retry
 )
 
 // HoldText is the text shown for a hold reason.
@@ -209,6 +210,8 @@ func HoldText(reason string) string {
 		return "ответил человек"
 	case HoldNoFolder:
 		return "у участника не выбрана папка проекта"
+	case HoldSeatFailed:
+		return "агент не смог ответить — ждёт человека или повтора"
 	}
 	return "не отвечает автоматически — ждёт человека"
 }

@@ -49,7 +49,8 @@ to start it.
   adding the target seat when missing. By default wait up
   to 10 minutes for that seat's direct reply. Returns project/chat/message/seat IDs and `reply`,
   or `timed_out` after the wait; `async: true` returns IDs immediately. A global, project or seat
-  pause returns `queued: true` with IDs; the agent receives the request after resume. Use this
+  pause returns `queued: true` with IDs; the agent receives the request after resume. `held` with `hold_reason: seat_failed`,
+  `seat_error` and `retry_at`: the agent cannot answer (e.g. its usage limit). Use this
   for local Claude Code ↔ Codex discussion.
   Each session, and each subagent of it, asks in its **own** chat by default: the same thread of
   the asked agent on every later call (it remembers the discussion), closed when that session or

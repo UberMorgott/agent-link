@@ -144,7 +144,7 @@ func newMCPServer(cfg config.Config) *mcp.Server {
 		key, _ := mcpAskKey("send", args)
 		return mcpSendMessage(cfg, in, proj(""), key)
 	})
-	addToolArgs(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's private agent chat. Each session (and each subagent) has its own chat and thread with that agent, reused on every call and closed when the session ends; topic names another own thread, shared the folder's shared project chat, chat an earlier chat by id, temporary a new one. Local only, separate from any network project for the same folder, waits for the exact agent's reply (default 10m), and returns the reply with project/chat IDs. Use async to post without waiting; timed_out returns IDs for later history lookup.", func(in mcpDiscuss, args json.RawMessage) (any, error) {
+	addToolArgs(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's private agent chat. Each session (and each subagent) has its own chat and thread with that agent, reused on every call and closed when the session ends; topic names another own thread, shared the folder's shared project chat, chat an earlier chat by id, temporary a new one. Local only, separate from any network project for the same folder, waits for the exact agent's reply (default 10m), and returns the reply with project/chat IDs. Use async to post without waiting; timed_out returns IDs for later history lookup; held with hold_reason seat_failed, seat_error and retry_at when the agent cannot answer (e.g. its usage limit), the question staying pending for it.", func(in mcpDiscuss, args json.RawMessage) (any, error) {
 		key, _ := mcpAskKey("discuss", args)
 		timeout := in.Timeout
 		if timeout == "" {

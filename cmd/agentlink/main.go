@@ -412,6 +412,20 @@ type discussResult struct {
 	Held       bool   `json:"held,omitempty"`
 	HoldReason string `json:"hold_reason,omitempty"`
 	Note       string `json:"note,omitempty"`
+	// SeatError is why the asked seat's turns fail (HoldReason seat_failed:
+	// e.g. the provider's usage limit), RetryAt its next automatic try; the
+	// question stays pending for it.
+	SeatError string    `json:"seat_error,omitempty"`
+	RetryAt   time.Time `json:"retry_at,omitzero"`
+}
+
+// discussHeld is the 409 answer of GET /discuss/reply when the asked seat
+// cannot answer in time (node.HoldSeatFailed).
+type discussHeld struct {
+	Error      string    `json:"error"`
+	HoldReason string    `json:"hold_reason"`
+	SeatError  string    `json:"seat_error"`
+	RetryAt    time.Time `json:"retry_at"`
 }
 
 // discussPick names the local chat of a discuss: an earlier chat's id, a
@@ -477,6 +491,14 @@ func discussMessage(cfg config.Config, provider, body, folder string, async bool
 	if resp.StatusCode == http.StatusNoContent {
 		result.TimedOut = true
 		return result, nil
+	}
+	if resp.StatusCode == http.StatusConflict {
+		var held discussHeld
+		if json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&held) == nil && held.HoldReason != "" {
+			result.Held, result.HoldReason, result.Note = true, held.HoldReason, cmp.Or(held.Error, node.HoldText(held.HoldReason))
+			result.SeatError, result.RetryAt = held.SeatError, held.RetryAt
+			return result, nil
+		}
 	}
 	if err := checkStatus(resp, http.StatusOK); err != nil {
 		return result, err

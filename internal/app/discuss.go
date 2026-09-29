@@ -1,6 +1,8 @@
 package app
 
 import (
+	"cmp"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -96,34 +98,43 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		a.failed(w, "discuss chat", err)
 		return
 	}
+	// An external interactive session keeps its folder hook in the network
+	// project when one exists. The message records the session (its origin):
+	// the seat's reply is unread for it alone, and its hooks take it from here
+	// also after the direct wait ends (controlUnread). AgentLink-launched
+	// seats use their explicit project selector in hooks.
+	send := node.SendRequest{ChatID: chat.ID, Body: req.Body, Folder: dir, SessionID: req.SessionID, AgentID: req.AgentID,
+		AgentType: req.AgentType, Seat: req.Seat, AuthorKind: authorKind(req.SessionID, req.Seat)}
 	// Serialize the check and addition across concurrent discuss requests.
+	// The seat is never the caller's own, nor one waiting upstream in the
+	// caller's chain (DiscussSeat): another seat of the provider is added.
 	a.mu.Lock()
-	seat, added := "", false
-	for _, s := range c.n.Seats() {
-		if s.Provider == req.Provider {
-			seat = s.ID
-			break
-		}
+	seat, err := c.n.DiscussSeat(req.Provider, chat.ID, send)
+	if err != nil {
+		a.mu.Unlock()
+		a.failed(w, "discuss agent", err)
+		return
 	}
+	added := false
 	if seat == "" {
 		// The new seat starts only after the message is queued for it, so its
 		// first turn (with the introduction) carries the message.
 		view, addErr := c.n.AddSeat(node.SeatRequest{Provider: req.Provider, Defer: true}) //nolint:contextcheck // the seat turn outlives the request and runs under the node's own context
 		if addErr != nil {
 			a.mu.Unlock()
+			if errors.Is(addErr, node.ErrSeatLimit) {
+				// Every seat of the provider is the caller or waits in its chain.
+				writeCodedError(w, http.StatusConflict, "discuss_no_seat")
+				return
+			}
 			a.failed(w, "discuss agent", addErr)
 			return
 		}
 		seat, added = view.ID, true
 	}
 	a.mu.Unlock()
-	// An external interactive session keeps its folder hook in the network
-	// project when one exists. The message records the session (its origin):
-	// the seat's reply is unread for it alone, and its hooks take it from here
-	// also after the direct wait ends (controlUnread). AgentLink-launched
-	// seats use their explicit project selector in hooks.
-	message, err := c.n.SendRequest(node.SendRequest{ChatID: chat.ID, Body: req.Body, Folder: dir,
-		SessionID: req.SessionID, AgentID: req.AgentID, AgentType: req.AgentType, Seat: req.Seat, AskSeats: []string{seat}, AuthorKind: authorKind(req.SessionID, req.Seat)})
+	send.AskSeats = []string{seat}
+	message, err := c.n.SendRequest(send)
 	if added {
 		if _, startErr := c.n.StartSeat(seat, false); startErr != nil { //nolint:contextcheck // the seat turn outlives the request and runs under the node's own context
 			a.log.Warn("start discuss seat", "seat", seat, "err", startErr)
@@ -203,14 +214,24 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 		a.failed(w, "discuss history", err)
 		return
 	}
-	if !ok || ask.Kind != "" || !slices.Contains(ask.AskSeats, seat) {
-		http.Error(w, "unknown discuss request or seat", http.StatusNotFound)
+	if !ok || ask.Kind != "" {
+		http.Error(w, "unknown discuss request "+id+" in chat "+chat, http.StatusNotFound)
+		return
+	}
+	if !slices.Contains(ask.AskSeats, seat) {
+		http.Error(w, "discuss request "+id+" does not ask seat "+seat+" (asked: "+strings.Join(ask.AskSeats, ", ")+")", http.StatusNotFound)
 		return
 	}
 	a.discussWaiting(pid, 1)
 	defer a.discussWaiting(pid, -1)
+	if ask.Agent != nil {
+		// The asking seat's turn waits here: its turn slot goes to the seats
+		// of its chain meanwhile (LendTurn).
+		defer c.n.LendTurn(ask.Agent.Seat)()
+	}
 	sub := a.events.subscribe()
 	defer sub.close()
+	deadline := time.Now().Add(timeout)
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	cursor := ask.Seq
@@ -236,6 +257,12 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 		}
 		if discussQueued(c.n, seat) || c.n.AutoHeld(ask.Message) { // held: no turn runs for it
 			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if st := c.n.SeatAsk(seat, id, deadline); st.Stuck {
+			// The seat's turns fail and it does not try again in time: the
+			// caller learns why now; the question stays pending for the seat.
+			writeDiscussHeld(w, st)
 			return
 		}
 		select {
@@ -268,6 +295,25 @@ func (a *App) discussReplied(w http.ResponseWriter, n *node.Node, chat string, r
 		}
 	}
 	writeJSON(w, reply.Message)
+}
+
+// writeDiscussHeld answers a discuss wait whose seat cannot answer in time
+// (node.SeatAskState): 409 with the hold reason, the seat's error and its next
+// try, like a held message (node.HoldSeatFailed).
+func writeDiscussHeld(w http.ResponseWriter, st node.SeatAskState) {
+	text := cmp.Or(st.Error, "—")
+	if !st.RetryAt.IsZero() {
+		text += "; next try " + st.RetryAt.Local().Format("2006-01-02 15:04")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusConflict)
+	_ = json.NewEncoder(w).Encode(struct {
+		Error      string    `json:"error"`
+		Code       string    `json:"code"`
+		HoldReason string    `json:"hold_reason"`
+		SeatError  string    `json:"seat_error,omitempty"`
+		RetryAt    time.Time `json:"retry_at,omitzero"`
+	}{msg("error.seat_failed", map[string]string{"error": text}), node.HoldSeatFailed, node.HoldSeatFailed, st.Error, st.RetryAt})
 }
 
 func discussQueued(n *node.Node, seat string) bool {

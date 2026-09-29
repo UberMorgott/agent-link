@@ -1,6 +1,7 @@
 package node
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -67,6 +68,9 @@ const maxSeats = 8
 
 // ErrUnknownSeat: no seat with that id or label.
 var ErrUnknownSeat = errors.New("unknown seat")
+
+// ErrSeatLimit: the node has maxSeats seats already.
+var ErrSeatLimit = errors.New("seat limit reached")
 
 // Seat is one local agent of the project conversation.
 type Seat struct {
@@ -140,6 +144,9 @@ type seatStore struct {
 	// handling: per seat, the messages the node's running turn of it handles:
 	// the base of the chain of its messages without a reply (seatTurnBase).
 	handling map[string][]Message
+	// gated: seats whose running turn holds a TurnGate slot; lent: the ones
+	// that lent it while they wait for a discuss answer (LendTurn).
+	gated, lent map[string]bool
 	// dirty: the last save failed; seatsDue saves again.
 	dirty bool
 	// pauseLogged: seats whose hop-limit pause seatsDue logged (once per pause).
@@ -158,7 +165,7 @@ func seatKey(seat, id string) string { return seat + "/" + id }
 func openSeats(dir string) (*seatStore, error) {
 	st := &seatStore{path: filepath.Join(dir, "seats.json"), run: map[string]context.CancelFunc{}, queued: map[string]bool{}, errs: map[string]string{},
 		busy: map[string]bool{}, quiet: map[string]bool{}, deferred: map[string]bool{}, marks: map[string]seatMark{}, pauseLogged: map[string]bool{},
-		handling: map[string][]Message{}}
+		handling: map[string][]Message{}, gated: map[string]bool{}, lent: map[string]bool{}}
 	if err := readJSON(st.path, &st.seats); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -310,7 +317,7 @@ func (n *Node) AddSeat(req SeatRequest) (SeatView, error) {
 	st.mu.Lock()
 	if len(st.seats) >= maxSeats {
 		st.mu.Unlock()
-		return SeatView{}, fmt.Errorf("%w: at most %d seats", ErrBadRequest, maxSeats)
+		return SeatView{}, fmt.Errorf("%w: %w: at most %d seats", ErrBadRequest, ErrSeatLimit, maxSeats)
 	}
 	label, err := seatLabel(req.Label, req.Provider, func(l string) bool {
 		return slices.ContainsFunc(st.seats, func(s *Seat) bool { return strings.EqualFold(s.Label, l) || s.ID == l })
@@ -519,6 +526,85 @@ func (n *Node) resolveSeats(names []string, except string) ([]string, error) {
 	out = slices.DeleteFunc(out, func(id string) bool { return id == except })
 	slices.Sort(out)
 	return slices.Compact(out), nil
+}
+
+// DiscussSeat picks the seat of provider that req, a message without a reply
+// to be sent in chat (discuss), asks: never the sender's own seat (the node
+// drops it from AskSeats, resolveSeats), and within the hop limit never one
+// whose running turn is in the same automatic chain (inheritChain): that turn
+// waits upstream for this very answer, so asking it would wait until the
+// timeout. "" when none fits: the caller adds a seat. Past the hop limit the
+// message waits for a person (no seat answers it automatically), so any other
+// seat of provider may keep it.
+func (n *Node) DiscussSeat(provider, chat string, req SendRequest) (string, error) {
+	agent, err := n.senderAgent(req)
+	if err != nil {
+		return "", err
+	}
+	m := Message{AuthorKind: req.AuthorKind, Agent: agent}
+	if c, ok := n.chats.get(chat); ok {
+		n.inheritChain(c, &m)
+	}
+	held := n.overDepth(m)
+	sender := ""
+	if agent != nil {
+		sender = agent.Seat
+	}
+	st := n.seats
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, s := range st.seats {
+		if s.Provider != provider || s.ID == sender {
+			continue
+		}
+		if !held && m.RootID != "" && st.run[s.ID] != nil && slices.ContainsFunc(st.handling[s.ID], func(h Message) bool {
+			return cmp.Or(h.RootID, h.ID) == m.RootID
+		}) {
+			continue
+		}
+		return s.ID, nil
+	}
+	return "", nil
+}
+
+// SeatAskState is why seat does not answer pending message id by itself:
+// Error is its last failed turn's, RetryAt when it tries again; Stuck when it
+// does not try again before deadline (a person decides: its tries are spent,
+// the message's lease failed, or the retry comes later).
+type SeatAskState struct {
+	Error   string
+	RetryAt time.Time
+	Stuck   bool
+}
+
+// SeatAsk reports the state of seat's pending message id (SeatAskState); the
+// zero state while the seat may still answer it before deadline.
+func (n *Node) SeatAsk(seat, id string, deadline time.Time) SeatAskState {
+	failed := false
+	if l, ok := n.leases.get(leaseKey(seat, id)); ok {
+		failed = l.Failed
+	}
+	st := n.seats
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	s := st.getLocked(seat)
+	if s == nil || st.run[s.ID] != nil || s.Fails == 0 && !failed {
+		return SeatAskState{}
+	}
+	out := SeatAskState{Error: st.errs[s.ID]}
+	if !s.needsHuman() {
+		out.RetryAt = s.RetryAt
+	}
+	out.Stuck = failed || s.needsHuman() || s.RetryAt.After(deadline) || usageLimited(out.Error)
+	return out
+}
+
+// usageLimited reports a provider's usage or quota limit in a turn's error
+// ("You've hit your usage limit … try again at …"): its retries within minutes
+// fail the same way.
+func usageLimited(msg string) bool {
+	msg = strings.ToLower(msg)
+	return strings.Contains(msg, "usage limit") || strings.Contains(msg, "quota")
 }
 
 // seatTo is a seat a message goes to: asked, else informed.
@@ -978,7 +1064,21 @@ func (n *Node) seatTurn(ctx context.Context, dl DirectLauncher, id string, intro
 			delete(st.queued, id)
 			st.mu.Unlock()
 		}
-		defer g.release()
+		st.mu.Lock()
+		st.gated[id] = true
+		st.mu.Unlock()
+		defer func() {
+			// A slot lent while the turn waits for a discuss answer is not the
+			// turn's any more (LendTurn).
+			st.mu.Lock()
+			lent := st.lent[id]
+			delete(st.lent, id)
+			delete(st.gated, id)
+			st.mu.Unlock()
+			if !lent {
+				g.release()
+			}
+		}()
 	}
 	st.mu.Lock()
 	s = st.getLocked(id)
@@ -997,8 +1097,15 @@ func (n *Node) seatTurn(ctx context.Context, dl DirectLauncher, id string, intro
 const MaxParallelTurns = 4
 
 // TurnGate caps the seat turns that run at once across the nodes sharing it
-// (SetTurnGate); a turn past the cap waits for a slot.
-type TurnGate struct{ slots chan struct{} }
+// (SetTurnGate); a turn past the cap waits for a slot. A turn waiting for a
+// discuss answer lends its slot (LendTurn), so a chain of seats asking each
+// other never waits on its own slots; the slot it takes back when the cap is
+// full is a debt the next release pays instead of freeing a slot.
+type TurnGate struct {
+	slots chan struct{}
+	mu    sync.Mutex
+	debt  int
+}
 
 // NewTurnGate is a gate of max slots (at least one).
 func NewTurnGate(maxTurns int) *TurnGate {
@@ -1024,7 +1131,63 @@ func (g *TurnGate) acquire(ctx context.Context) bool {
 	}
 }
 
-func (g *TurnGate) release() { <-g.slots }
+// release frees the slot of a turn (or pays a debt): the slots in the gate
+// plus the debt count the turns holding one, so a release never blocks.
+func (g *TurnGate) release() {
+	g.mu.Lock()
+	if g.debt > 0 {
+		g.debt--
+		g.mu.Unlock()
+		return
+	}
+	g.mu.Unlock()
+	<-g.slots
+}
+
+// lend frees the slot of a turn that keeps running (restore takes it back).
+func (g *TurnGate) lend() { g.release() }
+
+// restore takes back a lent slot: a free one, else a debt (the cap is
+// exceeded until the next release).
+func (g *TurnGate) restore() {
+	select {
+	case g.slots <- struct{}{}:
+	default:
+		g.mu.Lock()
+		g.debt++
+		g.mu.Unlock()
+	}
+}
+
+// LendTurn lends the TurnGate slot of seat's running node turn while the turn
+// waits for a discuss answer: the seats it asks (and any they ask in turn)
+// run even when the chain's waiting turns hold every slot. restore takes the
+// slot back; it does nothing when nothing was lent or the turn ended since.
+func (n *Node) LendTurn(seat string) (restore func()) {
+	g := n.turnGate
+	st := n.seats
+	if g == nil || seat == "" {
+		return func() {}
+	}
+	st.mu.Lock()
+	ok := st.gated[seat] && !st.lent[seat]
+	if ok {
+		st.lent[seat] = true
+		g.lend()
+	}
+	st.mu.Unlock()
+	if !ok {
+		return func() {}
+	}
+	return func() {
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		if st.lent[seat] {
+			delete(st.lent, seat)
+			g.restore()
+		}
+	}
+}
 
 // SetTurnGate shares gate g's cap with this node's seat turns (nil: no cap).
 // It must be set before Run.
