@@ -169,12 +169,6 @@
   .account-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; color: var(--who); }
   .account-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; }
   .account-status.off { color: var(--app-muted); }
-  .account-item {
-    display: flex; align-items: center; gap: 0.5rem; width: 100%; padding: 0.4rem 0.5rem; border: 0; border-radius: 0.4rem;
-    background: transparent; color: var(--app-text); font: inherit; font-size: 0.85rem; text-align: left; cursor: pointer;
-  }
-  .account-item:hover, .account-item:focus-visible { background: var(--app-soft); outline: none; }
-  .account-back { padding-left: 0.3rem; font-weight: 600; }
   .account-section { margin-top: 0.4rem; padding: 0.6rem 0.5rem 0.2rem; border-top: 1px solid var(--app-line); }
   .panel-icon {
     flex: none; display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: 0.5rem;

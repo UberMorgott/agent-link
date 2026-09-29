@@ -56,7 +56,9 @@ export function statusLine(s: Status | null): { text: string; cls: 'on' | 'off' 
     text = fmt("link.on_many", { online: s.online || 0, total: s.total || 0 })
     cls = 'on'
   } else if (s.problem) text = t(s.problem)
-  else text = fmt("link.off_count", { online: s.online || 0, total: s.total || 0 })
+  // Online and total count the other members of every network, projects included.
+  else if (s.total) text = fmt("link.on_many", { online: s.online || 0, total: s.total })
+  else text = t("link.nobody")
   if (s.configured && !s.zerotier) text += ' · ' + t("link.no_zerotier")
   if (s.warning) { text += ' · ' + t(s.warning); cls = 'off' }
   return { text, cls }

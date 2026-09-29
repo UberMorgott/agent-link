@@ -20,8 +20,6 @@ async function open() {
 async function openChip() {
   $<HTMLButtonElement>('#user_chip')!.click()
   await settle()
-  $<HTMLButtonElement>('#account_profile')!.click()
-  await settle()
 }
 
 function type(sel: string, value: string) {
@@ -30,32 +28,31 @@ function type(sel: string, value: string) {
   input.dispatchEvent(new Event('input'))
 }
 
+function enter(sel: string) {
+  $(sel)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+}
+
+const posts = <R extends { url: string }>(requests: R[]) => requests.filter((r) => r.url.endsWith('/ui/api/profile'))
+
 describe('the member\'s own chip', () => {
-  it('opens one menu: the name and connection, the profile, the theme; arrows move through it', async () => {
+  it('opens one menu: the name and connection, the profile in place, the theme; arrows move through it', async () => {
     await open()
     expect($('#account_menu')).toBeNull()
-    $<HTMLButtonElement>('#user_chip')!.click()
-    await settle()
+    await openChip()
     expect($('#user_chip')!.getAttribute('aria-expanded')).toBe('true')
     expect($('#account_head')!.textContent).toContain('alice')
     expect($('#account_status')!.textContent!.trim()).not.toBe('')
-    expect($('#account_profile')).not.toBeNull()
+    expect($('#profile_nickname')).not.toBeNull()
+    expect($('#account_back')).toBeNull()
     expect($$('#theme_mode button')).toHaveLength(3)
-    $<HTMLButtonElement>('#account_profile')!.focus()
-    $('#account_menu')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
-    expect(document.activeElement).toBe($('#theme_mode [data-mode="light"]'))
+    $<HTMLButtonElement>('#profile_color button')!.focus()
     $('#account_menu')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
-    expect(document.activeElement).toBe($('#account_profile'))
-    $<HTMLButtonElement>('#account_profile')!.click()
-    await settle()
-    expect($('#theme_panel')).toBeNull()
-    $<HTMLButtonElement>('#account_back')!.click()
-    await settle()
-    expect($('#profile_form')).toBeNull()
-    expect($('#theme_panel')).not.toBeNull()
+    expect(document.activeElement).toBe($('#profile_color button'))
+    $('#account_menu')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    expect(document.activeElement).toBe($$('#theme_font button').at(-1))
   })
 
-  it('shows the nickname in the member\'s color and saves a new nickname and color at once', async () => {
+  it('saves the nickname on Enter and a color on its click, staying open', async () => {
     const { app, requests } = await open()
     const chip = $('#user_chip')!
     expect(chip.textContent).toContain('alice')
@@ -64,31 +61,36 @@ describe('the member\'s own chip', () => {
     expect($<HTMLInputElement>('#profile_nickname')!.value).toBe('alice')
     expect($$('#profile_color [data-chat-color]')).toHaveLength(8)
     for (const b of $$('#profile_color button')) expect(b.getAttribute('aria-label')).toMatch(/^profile\.color\./)
+    // Unchanged: nothing to send.
+    $('#profile_nickname')!.dispatchEvent(new Event('blur'))
+    await settle()
+    expect(posts(requests)).toHaveLength(0)
     type('#profile_nickname', 'Алиса')
-    $<HTMLButtonElement>('#profile_color [data-chat-color="teal"]')!.click()
+    enter('#profile_nickname')
     await settle()
-    $<HTMLFormElement>('#profile_form')!.dispatchEvent(new Event('submit', { cancelable: true }))
-    await settle()
-    const post = requests.find((r) => r.url.endsWith('/ui/api/profile'))!
-    expect(JSON.parse(String(post.init.body))).toEqual({ nickname: 'Алиса', color: 'teal' })
+    expect(JSON.parse(String(posts(requests)[0]!.init.body))).toEqual({ nickname: 'Алиса', color: '' })
     expect(app.status!.nickname).toBe('Алиса')
     expect($('#user_chip')!.textContent).toContain('Алиса')
+    $<HTMLButtonElement>('#profile_color [data-chat-color="teal"]')!.click()
+    await settle()
+    expect(JSON.parse(String(posts(requests)[1]!.init.body))).toEqual({ nickname: 'Алиса', color: 'teal' })
     expect($('#user_chip')!.getAttribute('style')).toContain('var(--who-teal)')
-    expect($('#profile_form')).toBeNull()
+    expect($('#profile_color [data-chat-color="teal"]')!.getAttribute('aria-pressed')).toBe('true')
+    expect($('#account_menu')).not.toBeNull()
   })
 
   it('refuses an empty nickname and says why a taken one is refused', async () => {
     const { requests } = await open()
     await openChip()
     type('#profile_nickname', '  ')
-    $<HTMLFormElement>('#profile_form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    enter('#profile_nickname')
     await settle()
     expect($('#profile_result')!.textContent).toContain('profile.nickname.empty')
-    expect(requests.some((r) => r.url.endsWith('/ui/api/profile'))).toBe(false)
+    expect(posts(requests)).toHaveLength(0)
     type('#profile_nickname', 'BOB')
-    $<HTMLFormElement>('#profile_form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    $('#profile_nickname')!.dispatchEvent(new Event('blur'))
     await settle()
     expect($('#profile_result')!.textContent).toContain('Этот ник уже занят')
-    expect($('#profile_form')).not.toBeNull()
+    expect($<HTMLInputElement>('#profile_nickname')!.value).toBe('BOB')
   })
 })

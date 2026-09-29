@@ -141,7 +141,8 @@ type Status struct {
 	// Connected: a session with at least one member.
 	Connected bool   `json:"connected"`
 	Handler   string `json:"handler"`
-	// Online and Total count the other members (not removed).
+	// Online and Total count the other members (not removed) of every network,
+	// the projects' included; Connected is also set by an online project member.
 	Online int `json:"online"`
 	Total  int `json:"total"`
 	// Members lists this node first, then the others (node.Members).
@@ -266,12 +267,34 @@ func (a *App) Status() Status {
 		}
 		st.Connected = st.Peer != "" && a.n.Connected(st.Peer)
 		st.Members = a.n.Members()
-		for _, m := range st.Members[1:] {
-			st.Total++
-			if m.Online {
-				st.Online++
+	}
+	// Online and Total count the other members over every network this node is
+	// in (the legacy one and each project's); a member of several counts once,
+	// online if any of them has a session with it.
+	others := map[string]bool{}
+	count := func(members []node.MemberInfo) {
+		for _, m := range members {
+			if !m.Self {
+				others[m.Name] = others[m.Name] || m.Online
 			}
 		}
+	}
+	count(st.Members)
+	for _, c := range a.projects {
+		if c != nil && c.n != nil {
+			count(c.n.Members())
+		}
+	}
+	names := slices.Sorted(maps.Keys(others))
+	for _, name := range names {
+		st.Total++
+		if others[name] {
+			st.Online++
+		}
+	}
+	if !st.Connected && st.Online > 0 {
+		st.Connected = true
+		st.Peer = names[slices.IndexFunc(names, func(n string) bool { return others[n] })]
 	}
 	switch {
 	case a.n != nil && errors.Is(a.n.Problem(), node.ErrRemoved):

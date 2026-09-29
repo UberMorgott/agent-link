@@ -58,6 +58,9 @@ describe('event parsing', () => {
     expect(statusLine({ configured: true, connected: true, zerotier: true, online: 1, total: 2 })).toEqual({ text: 'link.on_many', cls: 'on' })
     expect(statusLine({ configured: true, connected: true, zerotier: true, warning: 'w.key' })).toEqual({ text: 'link.on_many · w.key', cls: 'off' })
     expect(statusLine({ configured: true, zerotier: false, problem: 'p.key' }).text).toBe('p.key · link.no_zerotier')
+    // No other member anywhere: nothing to be out of touch with.
+    expect(statusLine({ configured: true, zerotier: true, online: 0, total: 0 })).toEqual({ text: 'link.nobody', cls: 'off' })
+    expect(statusLine({ configured: true, zerotier: true, online: 0, total: 2 })).toEqual({ text: 'link.on_many', cls: 'off' })
   })
 })
 

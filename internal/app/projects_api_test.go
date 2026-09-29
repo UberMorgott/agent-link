@@ -387,6 +387,10 @@ func TestProjectsJoinFlow(t *testing.T) {
 	if v.Total != 1 || len(v.Members) != 2 || !v.Members[0].Self || !v.Members[1].Online {
 		t.Fatalf("counts online=%d total=%d, members %+v", v.Online, v.Total, v.Members)
 	}
+	// The app status counts the project's members too: no legacy network here.
+	if st := bob.app.Status(); !st.Connected || st.Online != 1 || st.Total != 1 || st.Peer != "alice" {
+		t.Fatalf("status connected=%v online=%d total=%d peer=%q", st.Connected, st.Online, st.Total, st.Peer)
+	}
 	if code, raw := bob.api(t, http.MethodPost, "projects/"+p.ID+"/binding", map[string]any{"dir": t.TempDir()}, &v); code != http.StatusOK || v.State != ProjectReady {
 		t.Fatalf("bind: %d %s", code, raw)
 	}
