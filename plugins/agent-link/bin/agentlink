@@ -3,7 +3,9 @@
 # Runs agentlink with this script's arguments; stdin, stdout, stderr and the exit
 # code pass through. The executable is, in order: $AGENTLINK_EXE, the path the
 # desktop app records at start in <config dir>/agentlink/executable.path, agentlink
-# on PATH (this script's own folder skipped). POSIX sh: macOS, Linux, Git Bash.
+# on PATH. This script's own folder is skipped: the plugin ships no executable,
+# so one there is a leftover of an older version (issue #31). POSIX sh: macOS,
+# Linux, Git Bash.
 if [ -n "${AGENTLINK_EXE:-}" ]; then
 	if [ -f "$AGENTLINK_EXE" ]; then
 		exec "$AGENTLINK_EXE" "$@"
@@ -26,9 +28,6 @@ if [ -f "$marker" ]; then
 	fi
 fi
 self=$(cd "${0%/*}" && pwd)
-if [ -f "$self/agentlink.exe" ]; then
-	exec "$self/agentlink.exe" "$@"
-fi
 IFS=:
 for dir in $PATH; do
 	[ "$(cd "$dir" 2>/dev/null && pwd)" = "$self" ] && continue

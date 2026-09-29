@@ -355,10 +355,13 @@ claude plugin install agent-link@agent-link
 The plugin runs agentlink through its launcher `bin/agentlink.cmd` (cmd.exe built-ins only, no
 PowerShell or Git Bash needed), which takes the first of: `%AGENTLINK_EXE%`, the path the desktop
 app writes at every start to `%APPDATA%\agentlink\executable.path`, `agentlink.exe` on `PATH`.
+The plugin ships no executable: an `agentlink.exe` in its own `bin` (say, one left in a source
+checkout and copied along by a reinstall) is never run, so the plugin always runs the desktop
+app's self-updated binary.
 Start the desktop app once after installing it, or set `AGENTLINK_EXE`. The plugin's hooks and MCP
 server are Windows only (the launcher is a `.cmd`); elsewhere use `agentlink hook install claude`.
 The one `.mcp.json` serves Claude Code and Codex: it puts the plugin's `bin` first on `PATH` from
-the host's `PLUGIN_ROOT` or `CLAUDE_PLUGIN_ROOT` variable and runs `agentlink mcp`; a host that
+the host's `PLUGIN_ROOT` or `CLAUDE_PLUGIN_ROOT` variable and runs `agentlink.cmd mcp`; a host that
 sets neither (Codex 0.155) puts the folder of the `agentlink.exe` named in
 `%APPDATA%\agentlink\executable.path` first on `PATH`, else gets `agentlink.exe` from `PATH`.
 So on Codex 0.155 `AGENTLINK_EXE` is not used for the MCP server: it needs the marker
