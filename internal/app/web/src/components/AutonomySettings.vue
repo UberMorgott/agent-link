@@ -20,10 +20,25 @@ const projects = useProjectsStore()
 const MODES: AutonomyMode[] = ['off', 'asked', 'full']
 
 // A project's menu shows its own project; the settings page shows the local
-// folders' chats of «Мои нейросети» (read-only there, so set here); their
-// temporary chats follow their folder's.
+// folders' chats of «Мои нейросети» (read-only there, so set here), and a
+// temporary or topic chat only while paused or stopped, to resume it: else it
+// follows its folder's.
 const list = computed(() => (projects.list || []).filter((p) => !p.legacy && p.autonomy &&
-  (props.project ? p.id === props.project : p.scope === 'local' && !p.local_chat)))
+  (props.project ? p.id === props.project
+    : p.scope === 'local' && (!p.local_chat || !!p.autonomy.paused || p.autonomy.stopped))))
+
+// The pause of a local chat's agents: its chat has no composer, so it is here.
+async function setStopped(p: ProjectView, on: boolean) {
+  busy[p.id] = true
+  notes[p.id] = ''
+  try {
+    await projects.stopAutonomy(p.id, on)
+  } catch (e) {
+    notes[p.id] = (e as Error).message
+  } finally {
+    busy[p.id] = false
+  }
+}
 const stopAll = computed(() => !!app.status?.stop_all)
 const stopBusy = ref(false)
 const stopText = ref('')
@@ -167,6 +182,27 @@ const depthDefault = (p: ProjectView) => fmt("autonomy.depth.default", {
         :data-autonomy="p.id"
       >
         <h3>{{ fmt("autonomy.project", { name: p.display || p.id }) }}</h3>
+        <p
+          v-if="!project"
+          class="flex flex-wrap items-center gap-2"
+        >
+          <span
+            v-if="p.autonomy!.stopped"
+            class="hint warn"
+            role="status"
+          >{{ t('inbox.project_pause.banner') }}</span>
+          <UButton
+            class="autonomy-stop"
+            type="button"
+            size="sm"
+            color="neutral"
+            variant="outline"
+            :label="t(p.autonomy!.stopped ? 'inbox.project_pause.resume' : 'inbox.project_pause.pause')"
+            :aria-pressed="p.autonomy!.stopped ? 'true' : 'false'"
+            :disabled="busy[p.id]"
+            @click="setStopped(p, !p.autonomy!.stopped)"
+          />
+        </p>
         <p
           v-if="p.autonomy!.paused"
           class="autonomy-paused hint warn flex flex-wrap items-center gap-2"

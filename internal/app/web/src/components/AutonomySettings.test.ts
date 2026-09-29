@@ -46,6 +46,17 @@ describe('agent autonomy settings', () => {
     expect($('[data-autonomy="LOCAL_TEMP"]')).toBeNull()
     expect(card()).toBeNull() // a network project's controls live in its menu
     expect($('#autonomy_local_hint')!.textContent).toContain('autonomy.local.hint')
+    // The local chats have no composer: their agents' pause is here, and a
+    // stopped temporary chat is listed to resume it.
+    $<HTMLButtonElement>('[data-autonomy="LOCAL_SITE"] .autonomy-stop')!.click()
+    await settle()
+    expect(api.backend.projects.find((p) => p.id === 'LOCAL_SITE')!.autonomy!.stopped).toBe(true)
+    api.backend.projects = api.backend.projects.map((p) => (p.id === 'LOCAL_TEMP' ? { ...p, autonomy: { ...p.autonomy!, stopped: true } } : p))
+    await useProjectsStore().refreshList()
+    await settle()
+    $<HTMLButtonElement>('[data-autonomy="LOCAL_TEMP"] .autonomy-stop')!.click()
+    await settle()
+    expect(api.backend.projects.find((p) => p.id === 'LOCAL_TEMP')!.autonomy!.stopped).toBe(false)
   })
 
   it('lists the projects with every option described, and saves each change on its own', async () => {
