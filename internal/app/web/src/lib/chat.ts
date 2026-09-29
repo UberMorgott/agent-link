@@ -267,14 +267,21 @@ export function attemptText(d: Delivery): string {
   if (!d.attempt || tickState(d) === 'read') return ''
   const [event, reason] = d.attempt.split(':', 2)
   if (event === 'launch_failed') return fmt("inbox.attempt.launch_failed", { reason: reason || '?' })
+  if (event === 'held') {
+    return HOLDS.includes(reason!) ? t("inbox.attempt.held." + reason) : fmt("inbox.attempt.held", { reason: reason || '?' })
+  }
   return ATTEMPTS.includes(event!) ? t("inbox.attempt." + event) : ''
 }
 const ATTEMPTS = ['wake_requested', 'woken_confirmed', 'launch_requested', 'launch_confirmed', 'needs_human']
+// HOLDS: the reasons of held:<reason> (node.Hold*) with a text of their own.
+const HOLDS = ['stopped', 'autonomy_off', 'paused_turns', 'paused_run', 'next_event']
 
-// attemptFailed: the recipient's node gave up getting the message seen
-// (it could not open a session, or the chain is paused): a person must act.
+// attemptFailed: the recipient's node gave up getting the message seen, or
+// holds it (it could not open a session, the chain is paused, or the owner's
+// settings keep anything from waking): a person must act.
 export function attemptFailed(d: Delivery): boolean {
-  return tickState(d) !== 'read' && !!d.attempt && (d.attempt.startsWith('launch_failed:') || d.attempt === 'needs_human')
+  return tickState(d) !== 'read' && !!d.attempt &&
+    (d.attempt.startsWith('launch_failed:') || d.attempt.startsWith('held:') || d.attempt === 'needs_human')
 }
 
 // holdsFor lists the participants that were asked message id but will not

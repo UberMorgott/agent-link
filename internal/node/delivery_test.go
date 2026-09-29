@@ -369,12 +369,74 @@ func TestLaunchLadderEligibility(t *testing.T) {
 	if len(l.all()) != 0 {
 		t.Fatal("launched with auto-open off")
 	}
+	waitAttempts(t, b, m2, AttemptHeld+":"+HoldAutonomyOff)
 	a.SetAutonomy(Autonomy{Mode: AutonomyAsked, MaxDepth: -1})
 	l.mu.Lock()
 	l.err = ErrNoAgent
 	l.mu.Unlock()
 	a.launchDue(ctx, time.Now().Add(launchGrace+time.Second))
-	waitAttempts(t, b, m2, AttemptLaunchRequested, AttemptLaunchFailed+":no_agent")
+	waitAttempts(t, b, m2, AttemptHeld+":"+HoldAutonomyOff, AttemptLaunchRequested, AttemptLaunchFailed+":no_agent")
+}
+
+// A delivered message that the owner's stop or a budget pause keeps from
+// waking or opening anything tells its author why (held:<reason>) instead of
+// staying a silent "delivered"; once free, the ladder goes on (issue #25).
+func TestLaunchHeldReasons(t *testing.T) {
+	l := &fakeLauncher{}
+	a, b := deliveryPair(t, t.TempDir(), nil, l)
+	ctx := context.Background()
+	m := ask(t, a, b, "while stopped")
+	a.SetStopped(true)
+	a.launchDue(ctx, time.Now().Add(launchGrace+time.Second))
+	if len(l.all()) != 0 {
+		t.Fatal("launched while stopped")
+	}
+	waitAttempts(t, b, m, AttemptHeld+":"+HoldStopped)
+
+	a.SetStopped(false)
+	a.auto.mu.Lock()
+	a.auto.st = autonomyState{Paused: true, Reason: PauseTurns, PausedAt: time.Now()}
+	a.auto.mu.Unlock()
+	a.launchDue(ctx, time.Now().Add(launchGrace+time.Second))
+	waitAttempts(t, b, m, AttemptHeld+":"+HoldStopped, AttemptHeld+":"+HoldPaused+PauseTurns)
+
+	a.ResumeAutonomy()
+	a.launchDue(ctx, time.Now().Add(launchGrace+time.Second))
+	waitAttempts(t, b, m, AttemptHeld+":"+HoldStopped, AttemptHeld+":"+HoldPaused+PauseTurns, AttemptLaunchRequested)
+}
+
+// Autonomy off with no live session: a message past the hop limit needs a
+// person (not silence); an idle session no one can wake holds a message until
+// its next event, and its author hears so.
+func TestLaunchHeldOffAndNextEvent(t *testing.T) {
+	l := &fakeLauncher{}
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, nil, l)
+	ctx := context.Background()
+	a.SetAutonomy(Autonomy{Mode: AutonomyOff, MaxDepth: -1})
+	chat, err := b.CreateChat([]string{"a"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a knows chat", func() bool { _, ok := a.ChatOf(chat.ID); return ok })
+	deep, err := b.SendMessage(Message{ChatID: chat.ID, Body: "guarded", Responders: []string{"a"}, RootID: newID(), AutoDepth: MaxAutoDepth + 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the paused message", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 1 })
+	a.launchDue(ctx, time.Now().Add(launchGrace+time.Second))
+	waitAttempts(t, b, deep, AttemptNeedsHuman)
+
+	a.SetAutonomy(Autonomy{Mode: AutonomyAsked, MaxDepth: -1})
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-n", Provider: "codex", Folder: dir, Wake: WakeNextEvent, Idle: true}); err != nil {
+		t.Fatal(err)
+	}
+	m := ask(t, a, b, "idle, not wakeable")
+	a.launchDue(ctx, time.Now().Add(launchGrace+time.Second))
+	waitAttempts(t, b, m, AttemptHeld+":"+HoldNextEvent)
+	if len(l.all()) != 0 {
+		t.Fatal("launched beside a live session")
+	}
 }
 
 func TestAttemptEvents(t *testing.T) {
@@ -382,6 +444,7 @@ func TestAttemptEvents(t *testing.T) {
 		AttemptWakeRequested: true, AttemptNeedsHuman: true, "launch_failed:timeout": true, "launch_failed:no_agent": true,
 		"launch_failed:": false, "launch_failed:Bad Reason": false, "launch_failed": false, "other": false,
 		"launch_failed:" + strings.Repeat("x", maxAttemptReason+1): false,
+		"held:stopped": true, "held:paused_turns": true, "held:": false, "held": false, "held:Bad": false,
 	} {
 		if validAttemptEvent(e) != ok {
 			t.Errorf("validAttemptEvent(%q) != %v", e, ok)

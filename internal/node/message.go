@@ -77,6 +77,24 @@ const (
 	// AttemptNeedsHuman: the message is paused (loop guard); nothing is woken
 	// or opened for it until a person acts.
 	AttemptNeedsHuman = "needs_human"
+	// AttemptHeld is the prefix of "held:<reason>": the owner's settings keep
+	// anything from being woken or opened for the message now (HoldStopped,
+	// HoldAutonomyOff, HoldPaused+<budget>), or no live session can be woken
+	// for it (HoldNextEvent); it waits unread.
+	AttemptHeld = "held"
+)
+
+// Hold reasons (AttemptHeld).
+const (
+	// HoldStopped: the project's or the global stop of the agents is on.
+	HoldStopped = "stopped"
+	// HoldAutonomyOff: no session is live and the project's autonomy is off.
+	HoldAutonomyOff = "autonomy_off"
+	// HoldPaused is the prefix of a budget pause: paused_turns, paused_run.
+	HoldPaused = "paused_"
+	// HoldNextEvent: the area's live sessions are idle and none can be woken;
+	// one reads the message at its next event.
+	HoldNextEvent = "next_event"
 )
 
 // Attempt limits: events per KindReceipt message, kept per recipient of one
@@ -95,13 +113,16 @@ type Attempt struct {
 }
 
 // validAttemptEvent reports whether e is a known attempt event;
-// launch_failed carries a short [a-z0-9_] reason.
+// launch_failed and held carry a short [a-z0-9_] reason.
 func validAttemptEvent(e string) bool {
 	switch e {
 	case AttemptWakeRequested, AttemptWokenConfirmed, AttemptLaunchRequested, AttemptLaunchConfirmed, AttemptNeedsHuman:
 		return true
 	}
 	reason, ok := strings.CutPrefix(e, AttemptLaunchFailed+":")
+	if !ok {
+		reason, ok = strings.CutPrefix(e, AttemptHeld+":")
+	}
 	if !ok || reason == "" || len(reason) > maxAttemptReason {
 		return false
 	}

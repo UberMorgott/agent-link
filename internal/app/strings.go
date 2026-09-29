@@ -388,13 +388,19 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"inbox.history.count":          "Сообщений: {n}",
 
 	// Delivery attempts the recipient's node reports (node.Attempt*).
-	"inbox.attempt.wake_requested":   "сессия разбужена — ждём, пока прочитает",
-	"inbox.attempt.woken_confirmed":  "разбуженная сессия взяла сообщение",
-	"inbox.attempt.launch_requested": "сессии не было — открывается новая",
-	"inbox.attempt.launch_confirmed": "открытая сессия запустилась",
-	"inbox.attempt.launch_failed":    "не удалось открыть сессию ({reason}) — нужен человек",
-	"inbox.attempt.needs_human":      "цепочка на паузе — нужен человек",
-	"inbox.reply_to":                 "ответ на сообщение от {name}: {text}",
+	"inbox.attempt.wake_requested":    "сессия разбужена — ждём, пока прочитает",
+	"inbox.attempt.woken_confirmed":   "разбуженная сессия взяла сообщение",
+	"inbox.attempt.launch_requested":  "сессии не было — открывается новая",
+	"inbox.attempt.launch_confirmed":  "открытая сессия запустилась",
+	"inbox.attempt.launch_failed":     "не удалось открыть сессию ({reason}) — нужен человек",
+	"inbox.attempt.needs_human":       "цепочка на паузе — нужен человек",
+	"inbox.attempt.held":              "сообщение ждёт ({reason})",
+	"inbox.attempt.held.stopped":      "агенты остановлены — сообщение ждёт, пока их включат",
+	"inbox.attempt.held.autonomy_off": "живой сессии нет, автономия выключена — сообщение ждёт человека",
+	"inbox.attempt.held.paused_turns": "лимит ходов в час исчерпан — автономия на паузе, сообщение ждёт",
+	"inbox.attempt.held.paused_run":   "лимит непрерывной работы исчерпан — автономия на паузе, сообщение ждёт",
+	"inbox.attempt.held.next_event":   "сессия простаивает и её нельзя разбудить — прочитает при следующем событии",
+	"inbox.reply_to":                  "ответ на сообщение от {name}: {text}",
 
 	// Inbox page: live activity of the participants' agents.
 	"inbox.activity.label":           "Кто сейчас работает",

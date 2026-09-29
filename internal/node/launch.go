@@ -381,14 +381,73 @@ func (n *Node) launchable(dir string, now time.Time) (eligible, paused []UnreadM
 	return eligible, paused
 }
 
-// launchDue runs one step of the launch ladder for every area.
+// launchDue runs one step of the launch ladder for every area. While the
+// owner's settings hold autonomous delivery (holdReason), or autonomy is off
+// and an area has no live session, the messages a launch would be for are
+// reported held:<reason> to their authors instead (once per reason).
 func (n *Node) launchDue(ctx context.Context, now time.Time) {
-	if n.launcher == nil || n.autoMode() == AutonomyOff || !n.autoOK() {
+	if reason := n.holdReason(); reason != "" {
+		n.reportHeld(reason, now, false)
+		return
+	}
+	if n.launcher == nil {
+		return
+	}
+	if n.autoMode() == AutonomyOff {
+		n.reportHeld(HoldAutonomyOff, now, true)
 		return
 	}
 	for area, dir := range n.launchAreas() {
 		n.launchArea(ctx, area, dir, now)
 	}
+}
+
+// holdReason is why no autonomous turn may start now (HoldStopped,
+// HoldPaused+<budget>); "" when one may.
+func (n *Node) holdReason() string {
+	if n.Stopped() {
+		return HoldStopped
+	}
+	a := n.auto
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.st.Paused {
+		return HoldPaused + a.st.Reason
+	}
+	return ""
+}
+
+// reportHeld reports held:<reason> for the messages a launch would be for, in
+// every area (only those with no live session when unattended), and
+// needs_human for the ones past the hop limit, as launchArea does.
+func (n *Node) reportHeld(reason string, now time.Time, unattended bool) {
+	for area, dir := range n.launchAreas() {
+		if unattended && n.areaLive(area, now) {
+			continue
+		}
+		eligible, paused := n.launchable(dir, now)
+		n.report(ids(paused), AttemptNeedsHuman)
+		n.report(ids(eligible), AttemptHeld+":"+reason)
+	}
+}
+
+// areaReachable reports whether a live session of area takes a message by
+// itself now: one in a turn (its hooks), or an idle one the node can wake.
+func (n *Node) areaReachable(area string, now time.Time) bool {
+	queue := n.canQueue()
+	r := n.sess
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.sessions {
+		if s.Area != area || !s.live(now) {
+			continue
+		}
+		_, inbox := r.inbox[s.SessionID]
+		if !s.Idle || (inbox && n.poster != nil) || (s.Wake == WakeQueue && queue) || s.Wake == WakeRewake {
+			return true
+		}
+	}
+	return false
 }
 
 func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) {
@@ -403,6 +462,11 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 	}
 	live := n.areaLive(area, now)
 	if live {
+		// Sessions live but idle and none can be woken (WakeNextEvent): they
+		// read at their next event; the authors hear why nothing wakes.
+		if p == nil && !n.areaReachable(area, now) {
+			n.report(ids(eligible), AttemptHeld+":"+HoldNextEvent)
+		}
 		// Sessions live: only the orphans (every one of them passed over for
 		// the message) open a new one.
 		eligible = n.orphans(area, eligible, now)

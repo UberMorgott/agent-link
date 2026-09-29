@@ -23,6 +23,7 @@ describe('delivery attempts', () => {
       'inbox.tick.delivered': 'доставлено', 'inbox.tick.read': 'прочитано',
       'inbox.attempt.wake_requested': 'разбужена', 'inbox.attempt.launch_requested': 'открывается',
       'inbox.attempt.launch_failed': 'не открылась ({reason})', 'inbox.attempt.needs_human': 'нужен человек',
+      'inbox.attempt.held': 'ждёт ({reason})', 'inbox.attempt.held.stopped': 'агенты остановлены',
     }
   })
   const out = (d: Delivery): ChatMessage => ({ id: 'm1', direction: 'out', from: 'me', created_at: '', delivery: [d] }) as unknown as ChatMessage
@@ -43,6 +44,14 @@ describe('delivery attempts', () => {
     expect(failed.label).toBe('bob: доставлено — не открылась (timeout)')
     expect(ticksFor(out({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'needs_human' }), null)!.state).toBe('held')
     expect(ticksFor(out({ peer: 'bob', status: 'sent', state: 'read', attempt: 'needs_human' }), null)!.state).toBe('read')
+  })
+
+  it('names why a delivered message is held', () => {
+    const held = ticksFor(out({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'held:stopped' }), null)!
+    expect(held.state).toBe('held')
+    expect(held.label).toBe('bob: доставлено — агенты остановлены')
+    expect(attemptText({ peer: 'bob', status: 'sent', state: 'delivered', attempt: 'held:future_reason' })).toBe('ждёт (future_reason)')
+    expect(ticksFor(out({ peer: 'bob', status: 'sent', state: 'read', attempt: 'held:stopped' }), null)!.state).toBe('read')
   })
 
   it('puts the attempt under the chat instead of presence', () => {

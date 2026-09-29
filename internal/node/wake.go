@@ -77,16 +77,14 @@ func (n *Node) wakeLoop(ctx context.Context) {
 		}
 		n.leaseSweep(time.Now())
 		// Stopped (SetStopped) or paused by the budgets (autonomy.go): no
-		// wake, seat turn or launch starts; messages wait unread.
-		auto := n.autoOK()
-		if auto {
+		// wake, seat turn or launch starts; messages wait unread, and
+		// launchDue tells their authors why (held:<reason>).
+		if n.autoOK() {
 			n.wakeIdle(ctx)
 		}
 		n.seatsDue(ctx, time.Now())
 		n.launchMaintain(ctx, time.Now())
-		if auto {
-			n.launchDue(ctx, time.Now())
-		}
+		n.launchDue(ctx, time.Now())
 		select {
 		case <-ctx.Done():
 			return
