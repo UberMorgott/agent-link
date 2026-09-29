@@ -1,0 +1,44 @@
+{
+  "id": "ORSXG5BAMNUGC5DAMJUW4ZDJNZTQ",
+  "scope": "local",
+  "legacy": false,
+  "name": "Temporary site",
+  "alias": "",
+  "display": "Temporary site",
+  "dir": "",
+  "state": "ready",
+  "problem": "",
+  "online": 0,
+  "total": 0,
+  "agents": 1,
+  "members": [
+    {
+      "name": "alice",
+      "self": true,
+      "online": true,
+      "addrs": [
+        "10.147.20.5:7420"
+      ],
+      "app": "v0.9.0",
+      "proto": 6,
+      "agent": true
+    }
+  ],
+  "can_rename": true,
+  "has_invite": false,
+  "busy": false,
+  "launch_mode": "desktop",
+  "local_chat": {
+    "scope": "project_temporary",
+    "project": "MFRGGZDFMZTWQ2LKNNWG23TPOA",
+    "folder": "C:\\work\\site",
+    "expires_at": "2026-09-02T12:00:00Z",
+    "owner": {
+      "session": "claude-1f2e",
+      "provider": "claude"
+    },
+    "live": true,
+    "waiting": true,
+    "last_active": "2026-09-01T12:00:00Z"
+  }
+}

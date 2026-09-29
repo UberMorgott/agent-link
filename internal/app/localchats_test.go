@@ -138,6 +138,71 @@ func TestDiscussOutsideProjectFolderUsesSessionChat(t *testing.T) {
 	}
 }
 
+// chatViewOf is the local chat view of binding pid in the project list.
+func chatViewOf(t *testing.T, h *harness, pid string) LocalChatView {
+	t.Helper()
+	for _, p := range h.app.Projects() {
+		if p.ID == pid {
+			if p.Chat == nil {
+				t.Fatalf("project %s has no local chat view", pid)
+			}
+			return *p.Chat
+		}
+	}
+	t.Fatalf("project %s not listed", pid)
+	return LocalChatView{}
+}
+
+// A temporary chat is live while its owner's session is open, a caller waits
+// for a reply or a turn runs; an unread reply after the owner ended does not
+// keep it live (it is for a person, not the sidebar). Its owner is the stored
+// one (settings.LocalChat.Owner).
+func TestLocalChatLiveFollowsOwnerWaitersAndTurns(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
+	dir := repoDir(t)
+	chat := discussIn(t, h, map[string]any{"folder": dir, "temporary": true, "session_id": "owner-1"})
+	n := h.app.projects[chat.Project].n
+	eventuallyApp(t, "seat's first turn", func() bool {
+		seats := n.Seats()
+		return len(seats) == 1 && seats[0].Status != node.SeatRunning && len(seats[0].Pending) == 0
+	})
+	v := chatViewOf(t, h, chat.Project)
+	if v.Live || v.Waiting || v.Owner == nil || v.Owner.Session != "owner-1" || v.Owner.Provider != node.ProviderClaude || v.LastActive.IsZero() {
+		t.Fatalf("idle chat of an ended owner: %+v owner %+v", v, v.Owner)
+	}
+
+	owner := node.SessionRequest{SessionID: "owner-1", Provider: node.ProviderClaude, Folder: dir}
+	if code, raw := h.do(t, http.MethodPost, "/sessions", jsonOf(t, owner), nil); code != http.StatusOK {
+		t.Fatalf("register session: %d %s", code, raw)
+	}
+	if v := chatViewOf(t, h, chat.Project); !v.Live || v.Waiting || v.Owner == nil || v.Owner.Session != "owner-1" {
+		t.Fatalf("owner live: %+v owner %+v", v, v.Owner)
+	}
+	if code, raw := h.do(t, http.MethodDelete, "/sessions/owner-1", "", nil); code != http.StatusNoContent {
+		t.Fatalf("end session: %d %s", code, raw)
+	}
+	if v := chatViewOf(t, h, chat.Project); v.Live {
+		t.Fatalf("owner ended, still live: %+v", v)
+	}
+
+	h.app.discussWaiting(chat.Project, 1)
+	if v := chatViewOf(t, h, chat.Project); !v.Live || !v.Waiting {
+		t.Fatalf("caller waits: %+v", v)
+	}
+	h.app.discussWaiting(chat.Project, -1)
+	if v := chatViewOf(t, h, chat.Project); v.Live || v.Waiting {
+		t.Fatalf("wait ended: %+v", v)
+	}
+
+	if _, err := n.SendRequest(node.SendRequest{ChatID: chat.Chat, ReplyTo: chat.ID, Body: "answer",
+		Seat: chat.Seat, AuthorKind: node.AuthorAgent}); err != nil {
+		t.Fatal(err)
+	}
+	if v := chatViewOf(t, h, chat.Project); v.Live {
+		t.Fatalf("unread reply of an ended owner keeps the chat live: %+v", v)
+	}
+}
+
 func TestGCRemovesOnlyEndedIdleTemporaryChats(t *testing.T) {
 	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
 	dir := repoDir(t)

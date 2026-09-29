@@ -156,9 +156,7 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 			HasInvite: b.ScopeOf() == settings.ProjectScopeNetwork, LaunchMode: b.LaunchModeOf(),
 			Autonomy: autonomyViewOf(a.effectiveBindingLocked(b), c)}
 		if b.Chat != nil {
-			view := localChatViewOf(b.Chat)
-			view.Live = a.localChatLiveLocked(b, a.liveAgentsLocked())
-			v.Chat = &view
+			v.Chat = a.localChatViewLocked(b, a.liveAgentsLocked())
 		}
 		if c != nil {
 			v.Name = c.n.ProjectMeta().Name

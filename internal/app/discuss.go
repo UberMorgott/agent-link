@@ -207,6 +207,8 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown discuss request or seat", http.StatusNotFound)
 		return
 	}
+	a.discussWaiting(pid, 1)
+	defer a.discussWaiting(pid, -1)
 	sub := a.events.subscribe()
 	defer sub.close()
 	timer := time.NewTimer(timeout)

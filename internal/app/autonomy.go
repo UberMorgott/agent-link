@@ -150,12 +150,15 @@ func (a *App) contextAutonomyLocked() []ContextAutonomy {
 	if a.legacy != nil {
 		add(LegacyProjectID, "legacy", a.s.WorkDir, a.legacy.n)
 	}
+	var live map[string]map[string]bool
 	for _, b := range a.s.Bindings {
 		if c := a.projects[b.ID]; c != nil {
 			add(b.ID, b.ScopeOf(), b.Dir, c.n)
 			if b.Chat != nil {
-				view := localChatViewOf(b.Chat)
-				out[len(out)-1].Chat = &view
+				if live == nil {
+					live = a.liveAgentsLocked()
+				}
+				out[len(out)-1].Chat = a.localChatViewLocked(b, live)
 			}
 		}
 	}

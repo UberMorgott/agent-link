@@ -126,6 +126,9 @@ type App struct {
 	owners map[string]ownerWatch
 	// retiring are the owned chats whose seats go now (retireChat).
 	retiring map[string]bool
+	// discussWaiters counts, per local binding, the discuss callers waiting
+	// for a reply right now (discussReply): such a chat is live.
+	discussWaiters map[string]int
 }
 
 // Status is a snapshot for the tray and the web UI.

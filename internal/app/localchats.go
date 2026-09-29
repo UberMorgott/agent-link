@@ -52,10 +52,44 @@ type LocalChatView struct {
 	// Owner is the agent the chat belongs to (settings.LocalChat.OwnerOf);
 	// absent for a shared chat.
 	Owner *settings.LocalChatOwner `json:"owner,omitempty"`
-	// Live: the chat is in use: its owner (session, and subagent) is live or
-	// something in it is pending; a shared persistent chat always is, a
-	// retired one never. Set in the project list (GET /projects).
+
+	// The state below is set in the project list (localChatViewLocked), not in
+	// a discuss answer.
+
+	// Live: the chat is in use (localChatLiveLocked); a shared persistent chat
+	// always is, a retired one never.
 	Live bool `json:"live"`
+	// Waiting: a discuss caller waits for a reply, or an asked agent's turn
+	// runs or is queued (SeatView.TurnQueued).
+	Waiting bool `json:"waiting,omitempty"`
+	// LastActive is the chat's last message or use.
+	LastActive time.Time `json:"last_active,omitzero"`
+}
+
+// localChatViewLocked is the view of the local chat of binding b with its
+// live state now (live: liveAgentsLocked); nil for a folder's project binding.
+func (a *App) localChatViewLocked(b settings.ProjectBinding, live map[string]map[string]bool) *LocalChatView {
+	if b.Chat == nil {
+		return nil
+	}
+	v := localChatViewOf(b.Chat)
+	v.Live, v.Waiting, v.LastActive = a.localChatLiveLocked(b, live)
+	return &v
+}
+
+// discussWaiting counts a discuss caller starting (+1) or ending (-1) its
+// wait for a reply in binding pid; the project list shows the change.
+func (a *App) discussWaiting(pid string, delta int) {
+	a.mu.Lock()
+	if a.discussWaiters == nil {
+		a.discussWaiters = map[string]int{}
+	}
+	a.discussWaiters[pid] += delta
+	if a.discussWaiters[pid] <= 0 {
+		delete(a.discussWaiters, pid)
+	}
+	a.mu.Unlock()
+	a.changed(pid)
 }
 
 // localChatViewOf is lc's view; nil is a folder's project chat.
@@ -318,17 +352,7 @@ func (a *App) gcLoop(ctx context.Context) {
 func (a *App) gcLocalChats(now time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	live := map[string]bool{}
-	for _, c := range a.projects {
-		for _, s := range c.n.Sessions() {
-			live[s.SessionID] = true
-		}
-	}
-	if a.legacy != nil {
-		for _, s := range a.legacy.n.Sessions() {
-			live[s.SessionID] = true
-		}
-	}
+	live := a.liveAgentsLocked()
 	var drop []string
 	for _, b := range a.s.Bindings {
 		if b.Chat == nil {
@@ -337,7 +361,7 @@ func (a *App) gcLocalChats(now time.Time) {
 		// A retired chat (its owner ended) goes as soon as nothing in it is
 		// pending: it stayed for an unread reply alone (retire.go).
 		retired := !b.Chat.Retired.IsZero()
-		if !retired && (!b.Chat.Temporary || slices.ContainsFunc(b.Chat.Sessions, func(s string) bool { return live[s] })) {
+		if !retired && (!b.Chat.Temporary || slices.ContainsFunc(b.Chat.Sessions, func(s string) bool { _, ok := live[s]; return ok })) {
 			continue
 		}
 		if last, busy := localChatActivity(a.projects[b.ID], b.Chat); !busy && (retired || now.Sub(last) >= TempChatIdle) {
@@ -358,22 +382,40 @@ func (a *App) gcLocalChats(now time.Time) {
 // localChatActivity is the last activity of local chat lc run by c (nil: not
 // running) and whether something in it is pending.
 func localChatActivity(c *appContext, lc *settings.LocalChat) (last time.Time, busy bool) {
+	last, waiting, running := localChatState(c, lc)
+	return last, waiting || running || localChatUnread(c)
+}
+
+// localChatState is the last activity of local chat lc run by c (nil: not
+// running), whether an asked seat's turn runs or is queued (waiting) and
+// whether other work runs in it (an active chat, a job). An unreadable chat
+// list counts as running: never collect or hide what cannot be read.
+func localChatState(c *appContext, lc *settings.LocalChat) (last time.Time, waiting, running bool) {
 	last = lc.LastUsed
 	if c == nil {
-		return last, false
+		return last, false, false
+	}
+	for _, s := range c.n.Seats() {
+		waiting = waiting || len(s.Pending) > 0 || s.Status == node.SeatRunning || s.TurnQueued
 	}
 	chats, err := c.n.Chats(false, false)
 	if err != nil {
-		return last, true
+		return last, waiting, true
 	}
 	for _, ci := range chats {
 		if ci.LastAt.After(last) {
 			last = ci.LastAt
 		}
-		busy = busy || ci.Unread > 0 || ci.Active
+		running = running || ci.Active
 	}
-	for _, s := range c.n.Seats() {
-		busy = busy || len(s.Pending) > 0 || s.Status == node.SeatRunning
+	return last, waiting, running || (c.w != nil && c.w.Busy())
+}
+
+// localChatUnread reports whether a chat run by c has an unread message.
+func localChatUnread(c *appContext) bool {
+	if c == nil {
+		return false
 	}
-	return last, busy || (c.w != nil && c.w.Busy())
+	chats, err := c.n.Chats(false, false)
+	return err != nil || slices.ContainsFunc(chats, func(ci node.ChatInfo) bool { return ci.Unread > 0 })
 }

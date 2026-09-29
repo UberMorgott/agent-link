@@ -57,6 +57,12 @@ func contractValues() map[string]any {
 		CanRename: true, HasInvite: true}
 	local := ready
 	local.Scope, local.HasInvite, local.Members, local.Online, local.Total, local.Agents = settings.ProjectScopeLocal, false, []node.MemberInfo{selfAgent}, 0, 0, 1
+	// A temporary Claude <-> Codex chat of the local project, its owner's session open.
+	localChat := local
+	localChat.ID, localChat.Name, localChat.Display, localChat.Dir = "ORSXG5BAMNUGC5DAMJUW4ZDJNZTQ", "Temporary site", "Temporary site", ""
+	localChat.Autonomy = nil
+	localChat.Chat = &LocalChatView{Scope: ChatScopeProjectTemporary, Project: pid, Folder: `C:\work\site`, ExpiresAt: at.Add(TempChatIdle),
+		Owner: &settings.LocalChatOwner{Session: "claude-1f2e", Provider: "claude"}, Live: true, Waiting: true, LastActive: at}
 	needsFolder := ready
 	needsFolder.Dir, needsFolder.State = "", ProjectNeedsFolder
 	failed := connecting
@@ -97,6 +103,7 @@ func contractValues() map[string]any {
 		"projects":             []ProjectView{aliased, connecting, failed, needsFolder, ready, legacy},
 		"project_ready":        ready,
 		"project_local":        local,
+		"project_local_chat":   localChat,
 		"project_busy":         busy,
 		"project_connecting":   connecting,
 		"project_needs_folder": needsFolder,
