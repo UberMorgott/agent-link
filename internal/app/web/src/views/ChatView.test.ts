@@ -125,13 +125,22 @@ beforeEach(() => {
   runtime.strings = {
     'inbox.activity.type.edit': 'правит', 'inbox.activity.ago': '{t} назад', 'inbox.author.agent': 'агент {name}',
     'inbox.member.queued': 'в очереди {n}',
-    'inbox.project_pause.pause': 'Пауза агентов', 'inbox.project_pause.resume': 'Продолжить работу агентов',
-    'inbox.project_pause.remove': 'Снять паузу проекта', 'inbox.project_pause.global': 'Общая пауза',
+    'inbox.project_pause.pause': 'Приостановить агентов', 'inbox.project_pause.resume': 'Возобновить',
+    'inbox.project_pause.remove': 'Снять паузу проекта', 'inbox.project_pause.global': 'Общая пауза: все агенты приостановлены',
+    'inbox.project_pause.banner': 'Агенты проекта на паузе.',
+    'inbox.agents.state.working': 'работает', 'inbox.agents.state.idle': 'ждёт вопроса', 'inbox.agents.state.paused': 'на паузе',
     'inbox.session_pin': 'AgentLink → Codex-чат {id}',
   }
 })
 
 afterEach(() => { releaseSend?.() })
+
+// The agents popover opens from the header's agents button.
+async function openAgents() {
+  if (!$('#chat_agents_popover')) $<HTMLButtonElement>('#chat_agents_toggle')!.click()
+  await settle()
+}
+const agentRows = (kind?: string) => $$('#chat_agents > li' + (kind ? '[data-kind="' + kind + '"]' : ''))
 
 async function openInbox() {
   const api = serve()
@@ -146,6 +155,47 @@ async function openInbox() {
 }
 
 describe('the open chat', () => {
+  it('keeps agent status and pause as icon buttons in the header, nothing over the composer', async () => {
+    const { inbox } = await openInbox()
+    await inbox.selectChat(P, group, '')
+    await settle()
+    const toolbar = $('#chat_header #chat_toolbar')!
+    expect(toolbar).not.toBeNull()
+    expect(toolbar.getAttribute('role')).toBe('toolbar')
+    const agents = $<HTMLButtonElement>('#chat_agents_toggle')!
+    const pause = $<HTMLButtonElement>('#chat_agent_pause')!
+    expect(toolbar.contains(agents) && toolbar.contains(pause)).toBe(true)
+    expect(agents.compareDocumentPosition(pause) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // Icon buttons: no caption text, the label in aria-label and the tooltip.
+    expect(text(pause).trim()).toBe('')
+    expect(pause.title).toBe('Приостановить агентов')
+    expect(agents.dataset.state).toBe('working')
+    expect(agents.querySelector('.chat-tool-dot')!.className).toContain('working')
+    // Nothing of the agents sits between the timeline and the composer.
+    expect($('#send')!.previousElementSibling).toBeNull()
+    expect($('#send')!.parentElement!.querySelector('#chat_agents_toggle, #chat_agent_pause')).toBeNull()
+    expect($('.chat-activity-dock, #chat_activity_toggle')).toBeNull()
+    expect($('#chat_pause_banner')).toBeNull()
+  })
+
+  it('opens the agents popover under its button and closes it with Escape', async () => {
+    const { inbox } = await openInbox()
+    await inbox.selectChat(P, group, '')
+    await settle()
+    expect($('#chat_agents_popover')).toBeNull()
+    await openAgents()
+    expect($('#chat_agents_popover')).not.toBeNull()
+    expect($('#chat_agents_toggle')!.getAttribute('aria-expanded')).toBe('true')
+    // One row per agent: dot, name, short state, time — aligned columns.
+    for (const row of agentRows()) {
+      expect(Array.from(row.children).map((c) => c.className)).toEqual(['agent-dot', 'agent-name', 'agent-state', 'agent-time'])
+    }
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await settle()
+    expect($('#chat_agents_popover')).toBeNull()
+    expect($('#chat_agents_toggle')!.getAttribute('aria-expanded')).toBe('false')
+  })
+
   it('shows a per-project pause button and keeps human chat usable while paused', async () => {
     const { api, app, inbox, projects } = await openInbox()
     await inbox.selectChat(P, 'c3', '')
@@ -153,13 +203,17 @@ describe('the open chat', () => {
     const pause = $<HTMLButtonElement>('#chat_agent_pause')!
     expect(pause).not.toBeNull()
     expect(pause.getAttribute('aria-pressed')).toBe('false')
-    expect(text(pause)).toContain('Пауза агентов')
+    expect(pause.getAttribute('aria-label')).toBe('Приостановить агентов')
     pause.click()
     await settle()
     expect(api.calls).toContain('POST projects/PROJ/autonomy/stop')
     expect(projects.byID(P)?.autonomy?.stopped).toBe(true)
     expect(pause.getAttribute('aria-pressed')).toBe('true')
-    expect(text(pause)).toContain('Продолжить работу агентов')
+    expect(pause.className).toContain('paused')
+    expect(pause.getAttribute('aria-label')).toBe('Возобновить')
+    expect(pause.title).toBe('Возобновить')
+    expect(text($('#chat_pause_banner'))).toContain('Агенты проекта на паузе.')
+    expect($('#chat_agents_toggle')!.dataset.state).toBe('paused')
 
     const body = $<HTMLTextAreaElement>('#body')!
     body.value = 'human message during pause'
@@ -172,14 +226,17 @@ describe('the open chat', () => {
 
     app.status = { ...app.status!, stop_all: true }
     await settle()
-    expect(text($('#chat_global_pause'))).toContain('Общая пауза')
-    expect(text(pause)).toContain('Снять паузу проекта')
+    expect(text($('#chat_pause_banner'))).toContain('Общая пауза')
+    expect(pause.getAttribute('aria-label')).toBe('Снять паузу проекта')
     pause.click()
     await settle()
     expect(projects.byID(P)?.autonomy?.stopped).toBe(false)
     expect(pause.getAttribute('aria-pressed')).toBe('false')
     expect(app.status.stop_all).toBe(true)
-    expect(text($('#chat_global_pause'))).toContain('Общая пауза')
+    expect(text($('#chat_pause_banner'))).toContain('Общая пауза')
+    app.status = { ...app.status!, stop_all: false }
+    await settle()
+    expect($('#chat_pause_banner')).toBeNull()
   })
 
   it('shows the pinned Codex thread', async () => {
@@ -263,25 +320,22 @@ describe('the open chat', () => {
     expect(tick('m199')!.className).toContain('read')
     expect(tick('m199')!.title).toBe('inbox.tick.agent_read')
 
-    // A project has one chat: it goes by the project's name, and it has no
-    // header — the project's row and its menu stand for it.
+    // A project has one chat: it goes by the project's name; its thin header
+    // holds only the agents toolbar — the project's row and menu stand for it.
     expect(text($('#conversation_title'))).toBe('Сайт')
     expect($('#conversation_title')!.className).toContain('sr-only')
-    expect($('#conversation_panel header')).toBeNull()
+    expect($('#conversation_panel header')!.id).toBe('chat_header')
     expect($('#chat_archive')).toBeNull()
     expect($('#send')).not.toBeNull()
     expect($('#ask_row')).toBeNull()
     expect($('#ask_hint')).toBeNull()
 
-    // Activity is in a compact top control, never between the timeline and composer.
-    expect($('#chat_activity_toggle')).not.toBeNull()
-    expect($('#chat_activity')!.closest('.chat-activity-popover')).not.toBeNull()
-    expect($('#send')!.previousElementSibling).toBeNull()
-    expect(text($('#chat_activity_toggle .chat-activity-count'))).toBe('1')
-    // Live activity: one row per job, local timers, no app calls.
-    const rows = $$('#chat_activity > li')
+    // Live activity: one popover row per job, local timers, no app calls.
+    await openAgents()
+    const rows = agentRows('activity')
     expect(rows).toHaveLength(2)
-    expect(text(rows[0]!)).toContain('правит app.go')
+    expect(rows[0]!.className).toContain('running')
+    expect(text(rows[0]!.querySelector('.agent-state'))).toBe('правит app.go')
     expect(rows[1]!.className).toContain('stale')
     expect(text(rows[1]!)).toContain('inbox.activity.stale')
     const before = api.calls.length
@@ -289,17 +343,17 @@ describe('the open chat', () => {
     vi.advanceTimersByTime(1000)
     await nextTick()
     // A running line's time is how long ago its agent was last heard of.
-    expect(text(rows[0]!.querySelector('.act-time'))).toBe('· 0:05 назад')
+    expect(text(agentRows('activity')[0]!.querySelector('.agent-time'))).toBe('0:05 назад')
     vi.spyOn(Date, 'now').mockReturnValue(base + 306000)
     vi.advanceTimersByTime(1000)
     await nextTick()
-    expect(text(rows[0]!.querySelector('.act-time'))).toBe('· 1:05 назад')
+    expect(text(agentRows('activity')[0]!.querySelector('.agent-time'))).toBe('1:05 назад')
     expect(api.calls.length).toBe(before)
   })
 
-  it('summarizes local and remote agents by provider and shows seat state in details', async () => {
+  it('lists local seats and other members\' agents in the popover with short states', async () => {
     const { projects, inbox } = await openInbox()
-    await inbox.selectChat(P, group, '')
+    await inbox.selectChat(P, 'c3', '')
     projects.seats = { [P]: [
       { id: 'claude1', provider: 'claude', label: 'Claude work', status: 'running' },
       { id: 'claude2', provider: 'claude', label: 'Claude paused', status: 'stopped' },
@@ -314,16 +368,38 @@ describe('the open chat', () => {
       ],
     } : project)
     await settle()
-    const badges = $$('#chat_activity_toggle .chat-activity-provider')
-    expect(badges.map(text)).toEqual(['Claude Code 2', 'Codex 3'])
-    expect(text($('.chat-activity-popover'))).toContain('inbox.activity.unknown_count')
-    expect($('#chat_agent_seats')).not.toBeNull()
-    expect(text($('#chat_agent_seats'))).toContain('Claude paused')
-    expect($('#chat_activity_toggle')!.tagName).toBe('BUTTON')
-    expect($('#chat_activity_toggle')!.getAttribute('aria-controls')).toBe('chat_activity_popover')
-    $('#chat_activity_toggle')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    await nextTick()
-    expect($('#chat_activity_toggle')!.getAttribute('aria-expanded')).toBe('true')
+    // The button counts the popover's rows: 3 seats here, bob and карл.
+    const toggle = $('#chat_agents_toggle')!
+    expect(toggle.tagName).toBe('BUTTON')
+    expect(text(toggle.querySelector('.chat-tool-count'))).toBe('5')
+    expect(toggle.getAttribute('aria-label')).toBe('inbox.agents.button')
+    await openAgents()
+    const seats = agentRows('seat')
+    expect(seats.map((row) => text(row.querySelector('.agent-name')))).toEqual(['Claude work', 'Claude paused', 'Codex work'])
+    expect(seats.map((row) => text(row.querySelector('.agent-state')))).toEqual(['работает', 'inbox.agents.state.stopped', 'ждёт вопроса'])
+    expect(seats[0]!.className).toContain('running')
+    // This computer is its seats; the others by provider, one row each.
+    const members = agentRows('member')
+    expect(members.map((row) => text(row.querySelector('.agent-name')))).toEqual(['bob', 'карл & sons'])
+    expect(text(members[0]!.querySelector('.agent-state'))).toBe('Claude Code 1 · Codex 2')
+    expect(text(members[1]!.querySelector('.agent-state'))).toBe('inbox.activity.unknown_count')
+
+    // Paused: every seat of this computer says so.
+    projects.list = (projects.list || []).map((project) => project.id === P
+      ? { ...project, autonomy: { ...project.autonomy!, stopped: true } } : project)
+    await settle()
+    expect(agentRows('seat').every((row) => text(row.querySelector('.agent-state')) === 'на паузе')).toBe(true)
+  })
+
+  it('says in one line when no agent is known', async () => {
+    const { inbox } = await openInbox()
+    await inbox.selectChat(P, 'c3', '')
+    await settle()
+    expect($('#chat_agents_toggle')!.dataset.state).toBe('none')
+    expect($('#chat_agents_toggle .chat-tool-count')).toBeNull()
+    await openAgents()
+    expect(text($('#chat_agents_empty'))).toContain('inbox.agents.empty')
+    expect($('#chat_agents')).toBeNull()
   })
 
   it('warns when no computer of a network project has an agent open, and not while paused', async () => {
@@ -505,16 +581,17 @@ describe('the chat list and the ways into a chat', () => {
     // Not yet read by this computer's agent: one tick, and it says so.
     expect(tick('u1')!.className).toContain('delivered')
     expect(tick('u1')!.title).toBe('inbox.tick.agent_unread')
-    expect(text($('#chat_activity'))).toContain('inbox.activity.waiting_session')
+    await openAgents()
+    expect(text($('#chat_agents'))).toContain('inbox.activity.waiting_session')
     app.sessions = []
     await settle()
-    expect(text($('#chat_activity'))).toContain('inbox.activity.no_session')
+    expect(text($('#chat_agents'))).toContain('inbox.activity.no_session')
     app.sessions = [{ session_id: 's', provider: 'claude', folder: 'W:/work', area: '', wake: 'rewake' }]
     await settle()
-    expect($('#chat_activity')).toBeNull()
+    expect(agentRows('activity')).toHaveLength(0)
     app.sessions = [{ session_id: 's', provider: 'codex', folder: 'W:/work', area: '', wake: 'queue' }]
     await settle()
-    expect($('#chat_activity')).toBeNull()
+    expect(agentRows('activity')).toHaveLength(0)
 
     // The peer's session, under an own message it has but has not read: one muted line.
     const cases: [Presence, string][] = [
@@ -528,7 +605,8 @@ describe('the chat list and the ways into a chat', () => {
       chats.c5 = bobPresence(presence)
       await inbox.selectChat(P, 'c5', '')
       await settle()
-      const lines = $$('#chat_activity > li')
+      await openAgents()
+      const lines = agentRows('activity')
       expect(lines, key).toHaveLength(1)
       expect(lines[0]!.className).toContain('presence')
       expect(text(lines[0]!)).toContain('bob:')
@@ -538,7 +616,7 @@ describe('the chat list and the ways into a chat', () => {
       chats.c5 = fixture
       await inbox.selectChat(P, 'c5', '')
       await settle()
-      expect($$('#chat_activity > li.presence')).toHaveLength(0)
+      expect($$('#chat_agents > li.presence')).toHaveLength(0)
     }
 
     // Clearing the chat: the old chat leaves the list at once and the view

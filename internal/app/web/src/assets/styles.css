@@ -185,49 +185,46 @@
   .composer-hint { color: var(--app-muted); opacity: 0.75; white-space: nowrap; }
   /* The open chat: one centered column. */
   .chat-column { width: 100%; max-width: 48rem; margin: 0 auto; padding: 0 1rem; }
-  .chat-topbar { min-height: 2.25rem; padding-top: 0.2rem; padding-bottom: 0.2rem; flex-wrap: wrap; }
-  .chat-pause-controls { flex-wrap: wrap; justify-content: flex-end; }
-  .chat-global-pause { color: var(--app-muted); font-size: 0.75rem; white-space: nowrap; }
-  .chat-agent-pause { white-space: nowrap; }
-  .chat-activity-dock { position: relative; z-index: 5; min-width: 0; }
-  .chat-activity-toggle {
-    display: flex; align-items: center; justify-content: flex-end; gap: 0.35rem;
-    max-width: min(100%, 40rem); min-height: 1.75rem; padding: 0.2rem 0.55rem;
-    border: 1px solid var(--app-line); border-radius: 999px;
-    background: var(--app-bg); color: var(--app-muted); cursor: pointer;
-    font-size: 0.75rem;
+  /* The chat's thin header: the pinned thread left, the agents toolbar right. */
+  .chat-topbar { min-height: 2.5rem; padding-top: 0.25rem; padding-bottom: 0.25rem; }
+  .chat-pinned { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--app-muted); font-size: 0.75rem; }
+  .chat-toolbar { display: flex; flex: none; align-items: center; gap: 0.25rem; }
+  .chat-tool { position: relative; width: auto; min-width: 2rem; gap: 0.25rem; padding: 0 0.45rem; border: 0; background: transparent; cursor: pointer; }
+  .chat-tool:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 1px; }
+  .chat-tool:disabled { opacity: 0.5; cursor: default; }
+  .chat-tool.paused { background: color-mix(in srgb, var(--app-off) 16%, transparent); color: var(--app-off); }
+  .chat-tool-dot {
+    position: absolute; top: 0.3rem; left: 1.35rem; width: 0.5rem; height: 0.5rem; border-radius: 50%;
+    box-shadow: 0 0 0 2px var(--app-bg); background: var(--app-muted);
   }
-  .chat-activity-toggle:hover, .chat-activity-toggle:focus-visible, .chat-activity-dock.open .chat-activity-toggle {
-    color: var(--app-text); border-color: var(--app-accent);
+  .chat-tool-dot.none { background: transparent; box-shadow: inset 0 0 0 1.5px var(--app-muted), 0 0 0 2px var(--app-bg); }
+  .chat-tool-dot.working { background: var(--app-on); animation: act-pulse 1.4s ease-in-out infinite; }
+  .chat-tool-dot.paused { background: var(--app-off); }
+  .chat-tool-count { font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  /* A thin line under the header while the agents are paused. */
+  .chat-pause-banner {
+    display: flex; align-items: center; gap: 0.4rem; padding-top: 0.3rem; padding-bottom: 0.3rem;
+    color: var(--app-off); font-size: 0.75rem;
   }
-  .chat-activity-toggle:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
-  .chat-activity-caption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chat-activity-dot { width: 0.45rem; height: 0.45rem; flex: none; border-radius: 50%; background: var(--app-muted); }
-  .chat-activity-dot.active { background: var(--app-on); animation: act-pulse 1.4s ease-in-out infinite; }
-  .chat-activity-count, .chat-activity-provider {
-    flex: none; padding: 0 0.35rem; border-radius: 999px;
-    background: var(--app-soft); color: var(--app-text); white-space: nowrap;
+  /* The agents popover: one aligned row per agent. */
+  .agents-pop { width: min(24rem, calc(100vw - 2rem)); max-height: min(24rem, 60vh); overflow: auto; padding: 0.6rem 0.4rem; }
+  .agents-pop-title { padding: 0 0.5rem 0.4rem; font-size: 0.75rem; font-weight: 650; color: var(--app-muted); }
+  .agents-list { display: flex; flex-direction: column; }
+  .agent-row {
+    display: grid; grid-template-columns: 0.5rem minmax(0, 8.5rem) minmax(0, 1fr) auto; align-items: center; gap: 0.6rem;
+    padding: 0.3rem 0.5rem; border-radius: 0.4rem; font-size: 0.8rem;
   }
-  .chat-activity-popover {
-    display: none; position: absolute; top: calc(100% + 0.35rem); right: 0;
-    width: min(28rem, calc(100vw - 2rem)); max-height: min(24rem, 60vh); overflow: auto;
-    padding: 0.75rem; border: 1px solid var(--app-line); border-radius: 0.85rem;
-    background: var(--app-bg); box-shadow: 0 0.75rem 2rem color-mix(in srgb, black 18%, transparent);
-  }
-  .chat-activity-dock:hover .chat-activity-popover,
-  .chat-activity-dock:focus-within .chat-activity-popover,
-  .chat-activity-dock.open .chat-activity-popover { display: block; }
-  .chat-activity-heading { margin-bottom: 0.5rem; font-size: 0.8rem; font-weight: 650; }
-  .chat-agent-seats { display: grid; gap: 0.3rem; margin-bottom: 0.6rem; font-size: 0.78rem; }
-  .chat-agent-seat { display: flex; justify-content: space-between; gap: 0.5rem; }
-  .chat-agent-seat strong { font-weight: 600; }
-  .chat-agent-seat span { color: var(--app-muted); text-align: right; }
-  .chat-activity { display: flex; flex-direction: column; gap: 0.35rem; }
-  @media (max-width: 36rem) {
-    .chat-activity-caption { display: none; }
-    .chat-activity-toggle { max-width: calc(100vw - 5rem); }
-    .chat-activity-provider { max-width: 5.5rem; overflow: hidden; text-overflow: ellipsis; }
-  }
+  .agent-row:hover { background: var(--app-soft); }
+  .agent-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-muted); }
+  .agent-row.running .agent-dot { background: var(--app-on); animation: act-pulse 1.4s ease-in-out infinite; }
+  .agent-row.paused .agent-dot, .agent-row.stale .agent-dot { background: var(--app-off); }
+  .agent-row.off .agent-dot, .agent-row.idle .agent-dot { opacity: 0.55; }
+  .agent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--who, var(--app-text)); }
+  .agent-row.sub .agent-name { padding-left: 0.75rem; font-weight: 500; }
+  .agent-state { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--app-muted); }
+  .agent-time { color: var(--app-muted); font-size: 0.72rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .agents-empty { padding: 0.2rem 0.5rem; font-size: 0.8rem; color: var(--app-muted); }
+  @media (prefers-reduced-motion: reduce) { .chat-tool-dot.working, .agent-row.running .agent-dot { animation: none; } }
   .presence.on { color: var(--app-on); }
   .presence.old, .presence.away { color: var(--app-muted); }
 
@@ -264,16 +261,7 @@
   .msg-event { display: flex; justify-content: center; gap: 0.5rem; margin: 0.75rem 0; font-size: 0.78rem; color: var(--app-muted); }
   .msg-event .msg-author { font-weight: 400; }
 
-  .act-row { display: flex; align-items: baseline; gap: 0.4rem; font-size: 0.82rem; color: var(--app-muted); min-width: 0; }
-  .act-row .act-who { color: var(--who); font-weight: 600; white-space: nowrap; }
-  .act-row .act-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .act-spin { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-on); animation: act-pulse 1.4s ease-in-out infinite; align-self: center; }
-  .act-row.queued .act-spin, .act-row.waiting .act-spin, .act-row.presence .act-spin { background: var(--app-muted); animation: none; }
-  .act-row.stale .act-spin { background: var(--app-off); animation: none; }
-  .act-row.idle .act-spin { background: var(--app-muted); animation: none; opacity: 0.5; }
-  .act-node { display: flex; flex-direction: column; gap: 0.15rem; }
-  .act-row.act-sub { padding-left: 1.1rem; }
-  .act-row.act-sub .act-who { font-weight: 500; }
   @keyframes act-pulse { 50% { opacity: 0.3; } }
 
   /* The appearance panel (layout/AppConfigurator.vue): round colour swatches. */

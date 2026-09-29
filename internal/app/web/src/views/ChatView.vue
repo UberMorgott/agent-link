@@ -3,6 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UChatPrompt from '@nuxt/ui/components/ChatPrompt.vue'
+import UIcon from '@nuxt/ui/components/Icon.vue'
+import UPopover from '@nuxt/ui/components/Popover.vue'
 import AttachButton from '@/components/AttachButton.vue'
 import ChatTimeline from '@/components/ChatTimeline.vue'
 import ComposerAttachments from '@/components/ComposerAttachments.vue'
@@ -39,8 +41,9 @@ watch(() => route.fullPath, () => {
 const info = computed(() => inbox.chat)
 const self = computed(() => app.self)
 
-// The chat has no header: the project's row in the sidebar names it, and its
-// "⋯" menu holds the chat's controls (ProjectMenu.vue).
+// The chat has no title bar: the project's row in the sidebar names it, and its
+// "⋯" menu holds the chat's controls (ProjectMenu.vue). Its thin header holds
+// only the agents toolbar: their status and the project's pause.
 const inProject = computed(() => !!info.value && !info.value.legacy && pid.value !== 'legacy')
 const localChat = computed(() => inProject.value && projects.byID(pid.value)?.scope === 'local')
 const projectStopped = computed(() => !!projects.byID(pid.value)?.autonomy?.stopped)
@@ -79,28 +82,11 @@ const chatSessions = computed(() => chatSessionList(info.value, app.sessions, ap
 const pinnedSession = computed(() => app.sessions?.find((session) => session.project === pid.value && session.pinned))
 const activity = computed(() => keepLastKnown(activityLines(info.value, inbox.messages, self.value,
   chatSessions.value, app.settings, now.value), info.value, lastKnown))
-const workingCount = computed(() => activity.value.reduce((count, row) =>
-  count + (row.cls === 'running' ? 1 : 0) + (row.children?.filter((child) => child.cls === 'running').length || 0), 0))
-const activityOpen = ref(false)
-const activityHover = ref(false)
-const activityFocused = ref(false)
-const activityVisible = computed(() => activityOpen.value || activityHover.value || activityFocused.value)
-function closeActivity(event: FocusEvent | KeyboardEvent) {
-  if (event instanceof KeyboardEvent) {
-    activityOpen.value = false
-    document.getElementById('chat_activity_toggle')?.blur()
-    return
-  }
-  const dock = event.currentTarget as HTMLElement | null
-  if (!dock?.contains(event.relatedTarget as Node | null)) {
-    activityOpen.value = false
-    activityFocused.value = false
-  }
-}
-function toggleActivity() {
-  activityOpen.value = !activityOpen.value
-  if (!activityOpen.value) document.getElementById('chat_activity_toggle')?.blur()
-}
+// Working: the running job lines, or at least this computer's running seats.
+const workingCount = computed(() => Math.max(activity.value.reduce((count, row) =>
+  count + (row.cls === 'running' ? 1 : 0) + (row.children?.filter((child) => child.cls === 'running').length || 0), 0),
+projectStopped.value || globallyStopped.value ? 0 : seatList.value.filter((seat) => seat.status === 'running' || seat.status === 'active').length))
+const agentsOpen = ref(false)
 // A running line's time is how long ago its agent was last heard of («0:12
 // назад»); the tooltip adds when it took the request. A waiting or queued
 // line's time is how long it has waited.
@@ -108,7 +94,7 @@ function since(row: ActivityLine) {
   const at = Date.parse(row.heard || row.since)
   if (Number.isNaN(at)) return ''
   const span = elapsed(now.value - at)
-  return '· ' + (row.heard ? fmt("inbox.activity.ago", { t: span }) : span)
+  return row.heard ? fmt("inbox.activity.ago", { t: span }) : span
 }
 function sinceTitle(row: ActivityLine) {
   if (!row.heard) return ''
@@ -123,7 +109,7 @@ function sinceTitle(row: ActivityLine) {
 const writable = computed(() => !!info.value && !info.value.closed && !info.value.removed)
 const replying = computed(() => (inbox.replyTo ? fmt("inbox.replying", { text: authorLabel(inbox.replyTo, self.value) + ': ' + preview(inbox.replyTo.body, 60) }) : ''))
 
-// This member's local agents (seats), shown in the activity popover.
+// This member's local agents (seats), shown in the agents popover.
 watch(() => [pid.value, inProject.value] as const, ([p, on]) => {
   if (on && p && !Object.hasOwn(projects.seats, p)) void projects.refreshSeats(p).catch(() => {})
 }, { immediate: true })
@@ -131,12 +117,41 @@ const seatList = computed(() => (inProject.value ? projects.seats[pid.value] || 
 const agentMembers = computed(() => (projects.byID(pid.value)?.members || [])
   .filter((member) => (member.self || member.online) &&
     (member.agent || Object.values(member.agent_counts || {}).some((count) => count > 0)))
-  .map((member) => ({ name: member.display || member.name, counts: member.agent_counts })))
-const providerCounts = computed(() => (['claude', 'codex', 'other'] as const).map((provider) => ({
-  provider,
-  label: provider === 'claude' ? 'Claude Code' : provider === 'codex' ? 'Codex' : t('inbox.activity.other'),
-  count: agentMembers.value.reduce((sum, member) => sum + (member.counts?.[provider] || 0), 0),
-})).filter((entry) => entry.count > 0))
+  .map((member) => ({ name: member.display || member.name, counts: member.agent_counts, self: !!member.self })))
+const paused = computed(() => projectStopped.value || globallyStopped.value)
+
+// The agents popover: one row per agent — this computer's seats, the live
+// lines of the chat's jobs, then the other members' agents by provider.
+interface AgentRow { key: string; dot: string; name: string; state: string; time?: string; title?: string; sub?: boolean; kind: string; who?: string }
+const SEAT_STATE: Record<string, [string, string]> = {
+  running: ['running', 'working'], active: ['running', 'working'], idle: ['idle', 'idle'], closed: ['off', 'closed'],
+  stopped: ['paused', 'stopped'], busy: ['idle', 'busy'], needs_human: ['stale', 'needs_human'], paused: ['paused', 'paused'],
+}
+const agentRows = computed<AgentRow[]>(() => {
+  const rows: AgentRow[] = seatList.value.map((seat) => {
+    const [dot, state] = paused.value ? ['paused', 'paused'] : SEAT_STATE[seat.status] || ['idle', 'idle']
+    return { key: 'seat\n' + seat.id, kind: 'seat', dot, name: seat.label, state: t('inbox.agents.state.' + state) }
+  })
+  for (const row of activity.value) {
+    for (const line of [row, ...(row.children || [])]) {
+      rows.push({
+        key: line.key, kind: 'activity', dot: line.cls, name: line.who, state: line.text, time: since(line), title: sinceTitle(line),
+        sub: line !== row, who: whoColor(line.name, projects.colorOf(pid.value, line.name)),
+      })
+    }
+  }
+  // A member already on a live line, or this computer by its seats, is not listed again.
+  const listed = new Set(activity.value.map((row) => row.name))
+  for (const member of agentMembers.value) {
+    if ((member.self && seatList.value.length) || listed.has(member.name)) continue
+    rows.push({ key: 'member\n' + member.name, kind: 'member', dot: paused.value && member.self ? 'paused' : 'idle', name: member.name, state: memberCountText(member.counts) })
+  }
+  return rows
+})
+// The button's count is the popover's rows: one per agent (subagents aside).
+const agentTotal = computed(() => agentRows.value.filter((row) => !row.sub).length)
+// The toolbar dot: paused, working, idle (agents known) or none.
+const agentsState = computed(() => paused.value ? 'paused' : workingCount.value ? 'working' : agentRows.value.length ? 'idle' : 'none')
 // A network project where no computer (this one included) has Claude Code or
 // Codex open: messages to agents wait, so say so with the next step. A pause
 // already explains itself.
@@ -219,8 +234,11 @@ function back() {
         >
           {{ title }}
         </h1>
-        <div
-          v-if="isNarrow || inProject || activity.length || seatList.length || agentMembers.length"
+        <!-- The chat's header: back (narrow screens), the pinned thread, then
+             the agents toolbar on the right. Nothing floats over the composer. -->
+        <header
+          v-if="isNarrow || inProject || agentRows.length"
+          id="chat_header"
           class="chat-column chat-topbar flex flex-none items-center gap-2"
         >
           <UButton
@@ -233,151 +251,126 @@ function back() {
             size="sm"
             @click="back"
           />
+          <span
+            v-if="pinnedSession"
+            id="chat_pinned_session"
+            class="chat-pinned"
+            role="status"
+          >{{ fmt('inbox.session_pin', { id: pinnedSession.session_id || '' }) }}</span>
           <div
-            v-if="activity.length || seatList.length || agentMembers.length"
-            class="chat-activity-dock"
-            :class="{ open: activityOpen }"
-            @mouseenter="activityHover = true"
-            @mouseleave="activityHover = false"
-            @focusin="activityFocused = true"
-            @keydown.esc="closeActivity"
-            @focusout="closeActivity"
+            id="chat_toolbar"
+            class="chat-toolbar ml-auto"
+            role="toolbar"
+            :aria-label="t('inbox.agents.title')"
           >
-            <button
-              id="chat_activity_toggle"
-              type="button"
-              class="chat-activity-toggle"
-              :aria-label="t('inbox.activity.compact')"
-              :aria-expanded="activityVisible"
-              aria-controls="chat_activity_popover"
-              @click="toggleActivity"
+            <UPopover
+              v-if="inProject || agentRows.length"
+              v-model:open="agentsOpen"
+              :content="{ side: 'bottom', align: 'end', sideOffset: 6 }"
             >
-              <span
-                class="chat-activity-dot"
-                :class="{ active: workingCount > 0 }"
-                aria-hidden="true"
-              />
-              <span class="chat-activity-caption">{{ t('inbox.activity.compact') }}</span>
-              <span
-                v-if="workingCount"
-                class="chat-activity-count"
-                :aria-label="fmt('inbox.activity.running_count', { n: workingCount })"
-              >{{ workingCount }}</span>
-              <span
-                v-for="entry in providerCounts"
-                :key="entry.provider"
-                class="chat-activity-provider"
-                :aria-label="fmt('inbox.activity.provider_count', { provider: entry.label, n: entry.count })"
-              >{{ entry.label }} {{ entry.count }}</span>
-            </button>
-            <div
-              id="chat_activity_popover"
-              class="chat-activity-popover"
-              role="region"
-              :aria-label="t('inbox.activity.compact')"
-            >
-              <p class="chat-activity-heading">
-                {{ t('inbox.activity.compact') }}
-              </p>
-              <ul
-                v-if="agentMembers.length"
-                class="chat-agent-seats"
-                :aria-label="t('inbox.activity.member_counts')"
+              <button
+                id="chat_agents_toggle"
+                type="button"
+                class="panel-icon chat-tool"
+                :class="{ active: agentsOpen }"
+                :data-state="agentsState"
+                :title="t('inbox.agents.title')"
+                :aria-label="fmt('inbox.agents.button', { n: agentTotal, w: workingCount })"
               >
-                <li
-                  v-for="member in agentMembers"
-                  :key="member.name"
-                  class="chat-agent-seat"
+                <UIcon
+                  :name="icon('agent')"
+                  class="size-[1.1rem]"
+                />
+                <span
+                  class="chat-tool-dot"
+                  :class="agentsState"
+                  aria-hidden="true"
+                />
+                <span
+                  v-if="agentTotal"
+                  class="chat-tool-count"
+                  aria-hidden="true"
+                >{{ agentTotal }}</span>
+              </button>
+              <template #content>
+                <div
+                  id="chat_agents_popover"
+                  class="agents-pop"
+                  role="region"
+                  :aria-label="t('inbox.agents.title')"
                 >
-                  <strong>{{ member.name }}</strong>
-                  <span>{{ memberCountText(member.counts) }}</span>
-                </li>
-              </ul>
-              <ul
-                v-if="seatList.length"
-                id="chat_agent_seats"
-                class="chat-agent-seats"
-                :aria-label="t('project.agents.title')"
-              >
-                <li
-                  v-for="seat in seatList"
-                  :key="seat.id"
-                  class="chat-agent-seat"
-                >
-                  <strong>{{ seat.label }}</strong>
-                  <span>{{ t('project.agents.status.' + seat.status) }}</span>
-                </li>
-              </ul>
-              <ul
-                v-if="activity.length"
-                id="chat_activity"
-                class="chat-activity"
-                :aria-label="t('inbox.activity.label')"
-              >
-                <li
-                  v-for="row in activity"
-                  :key="row.key"
-                  class="act-node"
-                  :class="row.cls"
-                  :style="{ '--who': whoColor(row.name, projects.colorOf(pid, row.name)) }"
-                >
-                  <div
-                    v-for="line in [row, ...(row.children || [])]"
-                    :key="line.key"
-                    class="act-row"
-                    :class="[line.cls, { 'act-sub': line !== row }]"
+                  <p class="agents-pop-title">
+                    {{ t('inbox.agents.title') }}
+                  </p>
+                  <ul
+                    v-if="agentRows.length"
+                    id="chat_agents"
+                    class="agents-list"
                   >
-                    <span
-                      class="act-spin"
-                      aria-hidden="true"
-                    />
-                    <strong class="act-who">{{ line.who }}</strong>
-                    <span
-                      class="act-text"
-                      :title="line.text"
-                    >{{ line.text }}</span>
-                    <span
-                      class="act-time"
-                      :title="sinceTitle(line)"
-                    >{{ since(line) }}</span>
-                  </div>
-                </li>
-              </ul>
-            </div>
-          </div>
-          <div
-            v-if="inProject"
-            class="chat-pause-controls ml-auto flex items-center gap-2"
-          >
-            <span
-              v-if="pinnedSession"
-              id="chat_pinned_session"
-              class="chat-global-pause"
-              role="status"
-            >{{ fmt('inbox.session_pin', { id: pinnedSession.session_id || '' }) }}</span>
-            <span
-              v-if="globallyStopped"
-              id="chat_global_pause"
-              class="chat-global-pause"
-              role="status"
-            >{{ t('inbox.project_pause.global') }}</span>
-            <UButton
+                    <li
+                      v-for="row in agentRows"
+                      :key="row.key"
+                      class="agent-row"
+                      :class="[row.dot, { sub: row.sub }]"
+                      :data-kind="row.kind"
+                      :style="row.who ? { '--who': row.who } : undefined"
+                    >
+                      <span
+                        class="agent-dot"
+                        aria-hidden="true"
+                      />
+                      <span class="agent-name">{{ row.name }}</span>
+                      <span
+                        class="agent-state"
+                        :title="row.state"
+                      >{{ row.state }}</span>
+                      <span
+                        class="agent-time"
+                        :title="row.title || undefined"
+                      >{{ row.time || '' }}</span>
+                    </li>
+                  </ul>
+                  <p
+                    v-else
+                    id="chat_agents_empty"
+                    class="agents-empty"
+                  >
+                    {{ t('inbox.agents.empty') }}
+                  </p>
+                </div>
+              </template>
+            </UPopover>
+            <button
+              v-if="inProject"
               id="chat_agent_pause"
               type="button"
-              class="chat-agent-pause"
-              :icon="icon(projectStopped ? 'play' : 'pause')"
-              :label="pauseLabel"
+              class="panel-icon chat-tool"
+              :class="{ paused: projectStopped }"
+              :title="pauseLabel"
               :aria-label="pauseLabel"
-              :aria-pressed="projectStopped"
-              :title="t('inbox.project_pause.hint')"
+              :aria-pressed="projectStopped ? 'true' : 'false'"
               :disabled="pauseBusy"
-              color="neutral"
-              variant="soft"
-              size="sm"
               @click="toggleProjectPause"
-            />
+            >
+              <UIcon
+                :name="icon(projectStopped ? 'play' : 'pause')"
+                class="size-[1.1rem]"
+              />
+            </button>
           </div>
-        </div>
+        </header>
+        <p
+          v-if="inProject && paused"
+          id="chat_pause_banner"
+          class="chat-column chat-pause-banner flex-none"
+          role="status"
+        >
+          <UIcon
+            :name="icon('pause')"
+            class="size-3.5 flex-none"
+          />
+          <span>{{ t(globallyStopped ? 'inbox.project_pause.global' : 'inbox.project_pause.banner') }}</span>
+        </p>
         <p
           v-if="pauseError"
           id="chat_pause_error"
