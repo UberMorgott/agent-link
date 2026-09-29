@@ -289,6 +289,38 @@ func (r *sessionRegistry) pinned(area string) (PinnedSession, bool) {
 	return p, ok
 }
 
+// pinKeepEvery: how often keepPinned refreshes (and saves) a pinned thread.
+const pinKeepEvery = time.Minute
+
+// keepPinned keeps each area's pinned Codex thread registered while it is idle
+// and the node can wake it (WakeQueue): Codex sends no heartbeat, so an idle
+// UI thread would expire after its TTL though `codex queue` still wakes it. It
+// is a heartbeat (LastSeen), no activity. A thread in a turn, or one that let
+// every wake of its idle period lapse (maxIdleWakes), is left to its TTL:
+// then the launch ladder takes its messages.
+func (n *Node) keepPinned(now time.Time) {
+	if !n.canQueue() {
+		return
+	}
+	r := n.sess
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	changed := false
+	for _, p := range r.pins {
+		s := r.sessions[p.SessionID]
+		if s == nil || !s.live(now) || !s.Idle || s.Wake != WakeQueue || now.Sub(s.LastSeen) < pinKeepEvery ||
+			(s.Woken && s.Wakes >= maxIdleWakes && now.Sub(s.WokeAt) >= inboxWakeGrace) {
+			continue
+		}
+		s.LastSeen, changed = now, true
+	}
+	if changed {
+		if err := r.saveLocked(now); err != nil {
+			n.log.Warn("save sessions", "err", err)
+		}
+	}
+}
+
 // saveLocked writes the live sessions. The caller holds r.mu.
 func (r *sessionRegistry) saveLocked(now time.Time) error {
 	list := []Session{}

@@ -74,6 +74,7 @@ func (n *Node) wakeLoop(ctx context.Context) {
 		if n.waker != nil {
 			n.waker.Check(ctx, false)
 			n.syncQueueWake()
+			n.keepPinned(time.Now())
 		}
 		n.leaseSweep(time.Now())
 		// Stopped (SetStopped) or paused by the budgets (autonomy.go): no

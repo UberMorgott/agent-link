@@ -142,6 +142,13 @@ func seatOwner(seat string) string { return seatOwnerPrefix + seat }
 func (n *Node) leaseSweep(now time.Time) {
 	live := n.sess.liveIDs(now)
 	active := n.sess.activeAts()
+	// A desktop launch's session runs its first turn headless: not registered
+	// (yet), it is not gone (runDirect ends its leases).
+	n.deliv.mu.Lock()
+	for id := range n.deliv.turns {
+		live[id] = true
+	}
+	n.deliv.mu.Unlock()
 	ends := n.leases.due(now, func(owner string) bool { return sessionOwner(owner) && !live[owner] },
 		func(owner string) time.Time { return active[owner] })
 	type group struct{ owner, reason string }

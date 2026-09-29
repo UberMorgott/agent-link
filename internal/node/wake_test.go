@@ -86,6 +86,58 @@ func wakePair(t *testing.T, w SessionWaker) (*testNode, *testNode) {
 	return a, b
 }
 
+// A pinned idle Codex thread stays registered while the node can wake it
+// (Codex sends no heartbeat): an unpinned one, a pinned one in a turn, or one
+// that let its wakes lapse still expires by its TTL (#27).
+func TestKeepPinnedCodexThread(t *testing.T) {
+	w := &fakeWaker{}
+	a, _ := wakePair(t, w)
+	dir, home := t.TempDir(), t.TempDir()
+	for _, id := range []string{"s-chef", "s-free"} {
+		if _, err := a.RegisterSession(SessionRequest{SessionID: id, Provider: ProviderCodex, Folder: dir, Wake: WakeQueue,
+			Idle: true, CodexHome: home, TTLSec: 120}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.PinSession(PinSessionRequest{SessionID: "s-chef"}); err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Now()
+	live := func(at time.Time) map[string]bool { return a.sess.liveIDs(at) }
+	a.keepPinned(t0.Add(90 * time.Second)) // no waker ready: nothing kept
+	if l := live(t0.Add(150 * time.Second)); l["s-chef"] || l["s-free"] {
+		t.Fatalf("kept without a ready waker: %v", l)
+	}
+	w.mu.Lock()
+	w.ready = true
+	w.mu.Unlock()
+	a.syncQueueWake()
+	a.keepPinned(t0.Add(90 * time.Second))
+	if l := live(t0.Add(150 * time.Second)); !l["s-chef"] || l["s-free"] {
+		t.Fatalf("pinned idle thread not kept, or the unpinned one kept: %v", l)
+	}
+	if got := a.Sessions(); len(got) != 2 {
+		t.Fatalf("keeping must not drop anyone now: %+v", got)
+	}
+	// Its wakes lapsed untaken: left to its TTL.
+	a.sess.mu.Lock()
+	s := a.sess.sessions["s-chef"]
+	s.Woken, s.Wakes, s.WokeAt = true, maxIdleWakes, t0
+	a.sess.mu.Unlock()
+	a.keepPinned(t0.Add(160 * time.Second))
+	if live(t0.Add(215 * time.Second))["s-chef"] {
+		t.Fatal("thread whose wakes lapsed still kept")
+	}
+	// In a turn: its own events keep it.
+	a.sess.mu.Lock()
+	s.Woken, s.Wakes, s.Idle = false, 0, false
+	a.sess.mu.Unlock()
+	a.keepPinned(t0.Add(160 * time.Second))
+	if live(t0.Add(215 * time.Second))["s-chef"] {
+		t.Fatal("busy thread kept")
+	}
+}
+
 // An idle WakeQueue session with unread messages is woken once per idle
 // period; a busy one is not; without a ready waker, or after a failed wake,
 // it reads at its next event.

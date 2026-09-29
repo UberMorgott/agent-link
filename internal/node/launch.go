@@ -246,6 +246,9 @@ type deliveryState struct {
 	acks    []*ackJob                 // pending acks of desktop launches
 	pending map[string]*pendingLaunch // by area
 	last    map[string]time.Time      // last launch per area
+	// turns: the sessions whose first turn a desktop launch runs (runDirect).
+	// Headless, they register late or never: their leases are not gone.
+	turns map[string]bool
 	// statePath: launch_state.json; pruned: last pruneLaunchState.
 	statePath string
 	pruned    time.Time
@@ -269,7 +272,7 @@ type pendingLaunch struct {
 
 func newDeliveryState() *deliveryState {
 	return &deliveryState{provider: ProviderClaude, mode: LaunchDesktop, sent: map[string]bool{}, woken: map[string]bool{}, spent: map[string]spentMark{},
-		pending: map[string]*pendingLaunch{}, last: map[string]time.Time{}}
+		pending: map[string]*pendingLaunch{}, last: map[string]time.Time{}, turns: map[string]bool{}}
 }
 
 // report sends event for the ids not reported with it yet.
@@ -581,6 +584,16 @@ func (n *Node) startDirect(ctx context.Context, dl DirectLauncher, area string, 
 func (n *Node) runDirect(ctx context.Context, dl DirectLauncher, area string, p *pendingLaunch) {
 	var mu sync.Mutex
 	session := ""
+	defer func() {
+		// Its leases are acked, held or failed by now: the sweep judges the
+		// session by the registry again.
+		mu.Lock()
+		id := session
+		mu.Unlock()
+		n.deliv.mu.Lock()
+		delete(n.deliv.turns, id)
+		n.deliv.mu.Unlock()
+	}()
 	err := dl.Run(ctx, p.spec, func(id string) {
 		mu.Lock()
 		first := session == ""
@@ -589,6 +602,9 @@ func (n *Node) runDirect(ctx context.Context, dl DirectLauncher, area string, p 
 		}
 		mu.Unlock()
 		if first {
+			n.deliv.mu.Lock()
+			n.deliv.turns[id] = true
+			n.deliv.mu.Unlock()
 			n.launchSeen(area, p, id)
 			// Proof the first turn runs with them: the lease is the session's now.
 			if _, err := n.leases.start(launchOwner(area), id, "", p.ids, time.Now()); err != nil {

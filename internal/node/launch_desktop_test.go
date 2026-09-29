@@ -251,6 +251,33 @@ func TestCodexTurn(t *testing.T) {
 	<-done
 }
 
+// A desktop launch's first turn runs headless: its session is not registered,
+// yet the sweep does not end its running lease as session_gone (#28).
+func TestLaunchDirectLeaseNotGone(t *testing.T) {
+	l := &fakeDirect{direct: true, session: "sess-h"}
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, nil, l)
+	m := ask(t, a, b, "please look")
+	l.during = func() {
+		a.leaseSweep(time.Now())
+		if v, _ := a.leases.get(m.ID); v.State != LeaseRunning || v.Owner != "sess-h" || len(v.Fails) != 0 || v.Reason != "" {
+			t.Errorf("lease of the running first turn: %+v", v)
+		}
+	}
+	a.launchDue(context.Background(), time.Now().Add(launchGrace+time.Second))
+	a.directWG.Wait()
+	waitAttempts(t, b, m, AttemptLaunchRequested, AttemptLaunchConfirmed)
+	if v, _ := a.leases.get(m.ID); v.State != LeaseAcked || v.Owner != "sess-h" || v.Attempts != 1 {
+		t.Fatalf("lease %+v", v)
+	}
+	a.deliv.mu.Lock()
+	turns := len(a.deliv.turns)
+	a.deliv.mu.Unlock()
+	if turns != 0 {
+		t.Fatalf("first turn still tracked after it ended: %d", turns)
+	}
+}
+
 // In desktop mode the node claims the messages, runs the first turn itself
 // with them as its prompt and reads them as the opened session's only once
 // the turn succeeded; it is the area's last session from then on (its
