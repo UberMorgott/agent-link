@@ -67,7 +67,6 @@ export const useInboxStore = defineStore('inbox', () => {
   const sending = ref(false)
   const closing = ref(false)
   const focusComposer = ref(0)
-  const seatAskState = ref<Record<string, string[]>>({}) // local chat -> this member's seat ids
 
   // starting: the project's one chat is being started (startChat).
   const starting = ref(false)
@@ -134,13 +133,6 @@ export const useInboxStore = defineStore('inbox', () => {
     if (project.value !== 'legacy') return []
     const names = others(info, app.self)
     return names.length === 1 ? names : []
-  }
-  function seatAskFor(info: ChatInfo): string[] {
-    return projects.byID(project.value)?.scope === 'local' ? seatAskState.value[chatKey(project.value, info.id)] || [] : []
-  }
-  function setSeatAsk(info: ChatInfo, ids: string[]) {
-    if (projects.byID(project.value)?.scope !== 'local') return
-    seatAskState.value = { ...seatAskState.value, [chatKey(project.value, info.id)]: ids }
   }
 
   // --- loading ---
@@ -236,8 +228,6 @@ export const useInboxStore = defineStore('inbox', () => {
     try {
       const body: Record<string, unknown> = { chat_id: id, body: composer.value, ask: messageAsk(info) }
       if (replyTo.value) body.reply_to = replyTo.value.id
-      const seats = seatAskFor(info)
-      if (seats.length) body.ask_seats = [...seats].sort()
       const files = useAttachmentsStore()
       if (files.uploading) return // the send button waits for the uploads
       if (files.ready.length) body.attachments = files.ready
@@ -459,7 +449,7 @@ export const useInboxStore = defineStore('inbox', () => {
   return {
     project, selectedChat, selectedMessage, chat, messages, hasOlder, scrollIntent, drafts, composer, replyTo, sendResult,
     subtitleError, sending, closing, focusComposer, reads, toasts, starting, startResult,
-    seatAskFor, setSeatAsk, loadChat, loadOlder, saveDraft, setReply, selectChat, canSend, submitMessage,
+    loadChat, loadOlder, saveDraft, setReply, selectChat, canSend, submitMessage,
     startChat, openPeer, activeChat, openActive, closeChat, confirmClose, clearChat, confirmClear, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, openKey,
   }
 })

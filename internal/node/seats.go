@@ -22,8 +22,7 @@ import (
 //   - The person adds a seat (AddSeat): the node opens a new session of its
 //     provider in the folder (DirectLauncher, the desktop app's CLI) with an
 //     introduction, and keeps its session id.
-//   - A message asks seats by Message.AskSeats (the composer's selector, send
-//     --ask-seat): each asked seat gets it (Seat.Pending), never another
+//   - A message asks seats by Message.AskSeats (send --ask-seat, discuss): each asked seat gets it (Seat.Pending), never another
 //     session. A reply (ReplyTo) to a seat's message goes back to that seat: a
 //     person's reply asks it, an agent's informs it.
 //   - A message from a peer that replies to a seat's message goes to that

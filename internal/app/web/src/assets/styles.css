@@ -276,8 +276,6 @@
   .act-row.act-sub .act-who { font-weight: 500; }
   @keyframes act-pulse { 50% { opacity: 0.3; } }
 
-  .choice { color: var(--who); }
-
   /* The appearance panel (layout/AppConfigurator.vue): round colour swatches. */
   .config-swatch {
     width: 1.25rem; height: 1.25rem; padding: 0; border: 0; border-radius: 50%; cursor: pointer;

@@ -3,7 +3,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UChatPrompt from '@nuxt/ui/components/ChatPrompt.vue'
-import UCheckbox from '@nuxt/ui/components/Checkbox.vue'
 import AttachButton from '@/components/AttachButton.vue'
 import ChatTimeline from '@/components/ChatTimeline.vue'
 import ComposerAttachments from '@/components/ComposerAttachments.vue'
@@ -124,22 +123,11 @@ function sinceTitle(row: ActivityLine) {
 const writable = computed(() => !!info.value && !info.value.closed && !info.value.removed)
 const replying = computed(() => (inbox.replyTo ? fmt("inbox.replying", { text: authorLabel(inbox.replyTo, self.value) + ': ' + preview(inbox.replyTo.body, 60) }) : ''))
 
-// This member's local agents (seats) the message asks: none by default.
+// This member's local agents (seats), shown in the activity popover.
 watch(() => [pid.value, inProject.value] as const, ([p, on]) => {
   if (on && p && !Object.hasOwn(projects.seats, p)) void projects.refreshSeats(p).catch(() => {})
 }, { immediate: true })
 const seatList = computed(() => (inProject.value ? projects.seats[pid.value] || [] : []))
-const seatChoices = computed(() => {
-  const totals = new Map<string, number>()
-  const seen = new Map<string, number>()
-  for (const seat of seatList.value) totals.set(seat.label, (totals.get(seat.label) || 0) + 1)
-  return seatList.value.map((seat) => {
-    const number = (seen.get(seat.label) || 0) + 1
-    seen.set(seat.label, number)
-    const name = (totals.get(seat.label) || 0) > 1 ? `${seat.label} (${number})` : seat.label
-    return { ...seat, askLabel: fmt('inbox.seats.mine', { name }) }
-  })
-})
 const agentMembers = computed(() => (projects.byID(pid.value)?.members || [])
   .filter((member) => (member.self || member.online) &&
     (member.agent || Object.values(member.agent_counts || {}).some((count) => count > 0)))
@@ -156,10 +144,6 @@ const noAgents = computed(() => {
   const project = projects.byID(pid.value)
   return inProject.value && !localChat.value && project?.state === 'ready' && !!project.members?.length &&
     !agentMembers.value.length && !projectStopped.value && !globallyStopped.value
-})
-const seatAsked = computed<string[]>({
-  get: () => (info.value ? inbox.seatAskFor(info.value) : []),
-  set: (ids) => { if (info.value) inbox.setSeatAsk(info.value, ids) },
 })
 function memberCountText(counts: AgentCounts | undefined): string {
   if (!counts) return t('inbox.activity.unknown_count')
@@ -188,12 +172,6 @@ const note = computed(() => {
   const rest = others(i, self.value)
   return { text: fmt("inbox.closed_note", closed), invite: rest.length === 1 ? rest : [] }
 })
-
-// One checkbox per person: a name in the list is a ticked box.
-function toggle(names: string[], name: string, on: boolean | 'indeterminate'): string[] {
-  const rest = names.filter((n) => n !== name)
-  return on === true ? [...rest, name] : rest
-}
 
 watch(() => inbox.focusComposer, () => nextTick(() => document.getElementById('body')?.focus()))
 
@@ -439,31 +417,6 @@ function back() {
             @dragleave="dragging = false"
             @drop.prevent="onDrop"
           >
-            <div
-              v-if="localChat && seatList.length"
-              id="seat_row"
-              class="ask-row flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-sm"
-              role="group"
-              aria-labelledby="seat_label"
-            >
-              <span
-                id="seat_label"
-                class="field-label text-muted"
-              >{{ t("inbox.seats.label") }}</span>
-              <span class="ask-choices flex flex-wrap gap-x-4 gap-y-1">
-                <UCheckbox
-                  v-for="s in seatChoices"
-                  :id="'seat_' + s.id"
-                  :key="s.id"
-                  :label="s.askLabel"
-                  :title="t('project.agents.status.' + s.status)"
-                  :model-value="seatAsked.includes(s.id)"
-                  size="sm"
-                  class="choice"
-                  @update:model-value="seatAsked = toggle(seatAsked, s.id, $event)"
-                />
-              </span>
-            </div>
             <ComposerAttachments />
             <p
               v-if="dragging"

@@ -97,7 +97,7 @@ describe('local agents (seats)', () => {
     expect(api.backend.sent.at(-1)).not.toHaveProperty('ask_seats')
   })
 
-  it('asks a local seat only inside a local Claude/Codex chat', async () => {
+  it('has no seat picker in a local Claude/Codex chat and sends without ask_seats', async () => {
     const [chat] = fixture<ChatInfo[]>('chats')
     const api = fakeBackend()
     const local = 'LOCAL_CHAT'
@@ -115,15 +115,13 @@ describe('local agents (seats)', () => {
     await useProjectsStore().refreshAll()
     await settle()
     expect($('#ask_row')).toBeNull()
-    expect($$('#seat_row [role="checkbox"]')).toHaveLength(2)
-    $<HTMLButtonElement>('#seat_seat-b')!.click()
-    await settle()
+    expect($('#seat_row')).toBeNull()
     const inbox = useInboxStore()
-    expect(inbox.seatAskFor(inbox.chat!)).toEqual(['seat-b'])
     inbox.composer = 'посмотри тесты'
     await inbox.submitMessage()
     await settle()
-    expect(api.backend.sent.at(-1)).toMatchObject({ chat_id: localChat, body: 'посмотри тесты', ask: [], ask_seats: ['seat-b'] })
+    expect(api.backend.sent.at(-1)).toMatchObject({ chat_id: localChat, body: 'посмотри тесты', ask: [] })
+    expect(api.backend.sent.at(-1)).not.toHaveProperty('ask_seats')
   })
 
   it('names a local agent as "<node> · <label>" and keeps agents apart', () => {
