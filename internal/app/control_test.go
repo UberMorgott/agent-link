@@ -120,8 +120,10 @@ func TestOriginRoutingAcrossNetworkAndLocalProject(t *testing.T) {
 		if code, body := call(t, srv, http.MethodPost, "/sessions", jsonOf(t, session)); code != http.StatusOK {
 			t.Fatalf("register %s: %d %s", sid, code, body)
 		}
-		code, body := call(t, srv, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
+		// shared: both ask in the folder's project chat (by default each asks in its own).
+		code, body := call(t, srv, http.MethodPost, "/discuss", jsonOf(t, map[string]any{
 			"folder": p.Dir, "provider": node.ProviderCodex, "source": node.ProviderClaude, "session_id": sid, "body": "question of " + sid,
+			"shared": true,
 		}))
 		var ask discussResultAPI
 		if code != http.StatusOK || json.Unmarshal([]byte(body), &ask) != nil {

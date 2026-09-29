@@ -25,17 +25,21 @@ type discussRequest struct {
 	// (node.SendRequest.AgentID); its hooks take the reply while it lives.
 	AgentID   string `json:"agent_id"`
 	AgentType string `json:"agent_type"`
-	// Chat continues a local chat by id; Topic names a persistent chat;
-	// Temporary starts a new temporary chat. At most one of them.
+	// Chat continues a local chat by id; Topic names a chat of the caller
+	// (with Shared, of the project); Temporary starts a new temporary chat.
+	// At most one of them.
 	Chat      string `json:"chat"`
 	Topic     string `json:"topic"`
 	Temporary bool   `json:"temporary"`
+	// Shared: an agent asks in the project's shared chat (the folder's
+	// project chat, or the Topic's persistent chat) instead of its own.
+	Shared bool `json:"shared"`
 }
 
-// discuss posts to this machine's private agent chat for the caller: by
-// default the folder's project chat (a network project bound to the same
-// folder has a separate one), outside any project folder the caller session's
-// temporary chat, else the chat the request names (localchats.go).
+// discuss posts to this machine's private agent chat for the caller: for an
+// agent session its own chat (of the folder's project, or of no project), for
+// a person the folder's project chat (a network project bound to the same
+// folder has a separate one), else the chat the request names (localchats.go).
 func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	var req discussRequest
 	if !decode(w, r, &req) {
@@ -52,7 +56,8 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !filepath.IsAbs(req.Folder) || strings.TrimSpace(req.Body) == "" ||
 		(req.Provider != node.ProviderClaude && req.Provider != node.ProviderCodex) ||
 		(req.Source != "" && req.Source != node.ProviderClaude && req.Source != node.ProviderCodex) ||
-		(req.SessionID == "") != (req.Source == "") || picks > 1 || !settings.ValidAlias(req.Topic) {
+		(req.SessionID == "") != (req.Source == "") || picks > 1 || !settings.ValidAlias(req.Topic) ||
+		(req.Shared && (req.Chat != "" || req.Temporary)) {
 		writeCodedError(w, http.StatusBadRequest, "bad_request")
 		return
 	}

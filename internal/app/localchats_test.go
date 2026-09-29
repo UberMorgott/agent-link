@@ -1,11 +1,15 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -108,9 +112,18 @@ func TestDiscussOutsideProjectFolderUsesSessionChat(t *testing.T) {
 	if second := discussIn(t, h, map[string]any{"folder": home, "session_id": "s2"}); second.Chat == first.Chat {
 		t.Fatal("two sessions share a temporary chat")
 	}
-	named := discussIn(t, h, map[string]any{"folder": home, "topic": "scratch", "session_id": "s1"})
-	if again := discussIn(t, h, map[string]any{"folder": other, "topic": "scratch", "session_id": "s3"}); named.Scope != ChatScopeFolderless ||
-		!named.ExpiresAt.IsZero() || again.Chat != named.Chat {
+	// A topic of an agent is its own; shared names the one of every session.
+	own := discussIn(t, h, map[string]any{"folder": home, "topic": "scratch", "session_id": "s1"})
+	if again := discussIn(t, h, map[string]any{"folder": other, "topic": "Scratch", "session_id": "s1"}); own.Scope != ChatScopeFolderlessTemporary ||
+		again.Chat != own.Chat || own.Chat == first.Chat {
+		t.Fatalf("own folderless topic: %+v again %+v", own, again)
+	}
+	if theirs := discussIn(t, h, map[string]any{"folder": home, "topic": "scratch", "session_id": "s3"}); theirs.Chat == own.Chat {
+		t.Fatal("two sessions share an own topic")
+	}
+	named := discussIn(t, h, map[string]any{"folder": home, "topic": "scratch", "session_id": "s1", "shared": true})
+	if again := discussIn(t, h, map[string]any{"folder": other, "topic": "scratch", "session_id": "s3", "shared": true}); named.Scope != ChatScopeFolderless ||
+		!named.ExpiresAt.IsZero() || again.Chat != named.Chat || named.Chat == own.Chat {
 		t.Fatalf("named folderless chat: %+v again %+v", named, again)
 	}
 	for _, b := range h.app.s.Bindings {
@@ -170,5 +183,126 @@ func TestGCRemovesOnlyEndedIdleTemporaryChats(t *testing.T) {
 	}
 	if h.app.bindingIndex(ended.Project) >= 0 || h.app.projects[ended.Project] != nil {
 		t.Fatal("ended idle temporary chat kept")
+	}
+}
+
+// threadRunner runs seat turns at once and gives each new session its own
+// thread id; resumes are the threads its turns resumed.
+type threadRunner struct {
+	mu      sync.Mutex
+	n       int
+	resumes []string
+}
+
+func (*threadRunner) Launch(context.Context, node.LaunchSpec) error { return nil }
+func (*threadRunner) Direct(string) bool                            { return true }
+func (r *threadRunner) Run(_ context.Context, spec node.LaunchSpec, started func(string)) error {
+	r.mu.Lock()
+	id := spec.ResumeID
+	if id == "" {
+		r.n++
+		id = fmt.Sprintf("%s-thread-%d", spec.Provider, r.n)
+	} else {
+		r.resumes = append(r.resumes, id)
+	}
+	r.mu.Unlock()
+	started(id)
+	return nil
+}
+
+func (r *threadRunner) resumed(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Contains(r.resumes, id)
+}
+
+// waitFor polls fn for up to 10 s (a seat turn waits for the node's 2 s poll).
+func waitLong(t *testing.T, what string, fn func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if fn() {
+			return
+		}
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// seatThread is the thread of the only seat of local chat project pid once
+// its turn ended.
+func seatThread(t *testing.T, h *harness, pid string) string {
+	t.Helper()
+	var id string
+	waitLong(t, "seat thread of "+pid, func() bool {
+		h.app.mu.Lock()
+		c := h.app.projects[pid]
+		h.app.mu.Unlock()
+		if c == nil {
+			return false
+		}
+		seats := c.n.Seats()
+		if len(seats) != 1 || seats[0].SessionID == "" || seats[0].Status == node.SeatRunning || len(seats[0].Pending) > 0 {
+			return false
+		}
+		id = seats[0].SessionID
+		return true
+	})
+	return id
+}
+
+// Q1: an agent session in a project folder asks in its own chat, one per
+// (project, session, topic), and its thread with the asked agent continues
+// there; a person and shared keep the folder's project chat.
+func TestDiscussAgentSessionsOwnTheirChats(t *testing.T) {
+	runner := &threadRunner{}
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = runner })
+	dir := repoDir(t)
+	human := discussIn(t, h, map[string]any{"folder": dir})
+	first := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s1"})
+	if human.Scope != ChatScopeProject || first.Scope != ChatScopeProjectTemporary || first.Project == human.Project {
+		t.Fatalf("own chat: %+v project chat: %+v", first, human)
+	}
+	thread := seatThread(t, h, first.Project)
+	again := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s1"})
+	if again.Project != first.Project || again.Chat != first.Chat || again.Seat != first.Seat {
+		t.Fatalf("second ask left the session's chat: %+v first %+v", again, first)
+	}
+	waitLong(t, "second ask resumes the thread", func() bool { return runner.resumed(thread) })
+	other := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s2"})
+	if other.Project == first.Project || other.Project == human.Project || seatThread(t, h, other.Project) == thread {
+		t.Fatalf("two sessions share a chat or thread: %+v %+v", other, first)
+	}
+	api := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s1", "topic": "api"})
+	db := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s1", "topic": "db"})
+	if api.Project == db.Project || api.Project == first.Project || api.Topic != "api" {
+		t.Fatalf("topics of one session: %+v %+v", api, db)
+	}
+	if again := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s1", "topic": "API"}); again.Project != api.Project {
+		t.Fatalf("topic not continued: %+v", again)
+	}
+	if shared := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s1", "shared": true}); shared.Project != human.Project {
+		t.Fatalf("shared left the project chat: %+v", shared)
+	}
+	h.app.mu.Lock()
+	i := h.app.bindingIndex(first.Project)
+	lc := h.app.s.Bindings[i].Chat
+	if o := lc.Owner; o == nil || o.Session != "s1" || o.Provider != node.ProviderClaude || o.Agent != "" || !lc.Temporary {
+		h.app.mu.Unlock()
+		t.Fatalf("owner of the session's chat: %+v", lc)
+	}
+	// A temporary chat of an older build (no owner) is its creator's.
+	s := h.app.s
+	s.Bindings = slices.Clone(s.Bindings)
+	legacy := *lc
+	legacy.Owner = nil
+	s.Bindings[i].Chat = &legacy
+	h.app.s = s
+	h.app.mu.Unlock()
+	if again := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s1"}); again.Project != first.Project {
+		t.Fatalf("legacy chat of the session not reused: %+v", again)
+	}
+	code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]any{"folder": dir, "provider": node.ProviderCodex,
+		"body": "x", "session_id": "s1", "source": node.ProviderClaude, "shared": true, "temporary": true}), nil)
+	if code != http.StatusBadRequest {
+		t.Fatalf("shared temporary: %d %s", code, raw)
 	}
 }

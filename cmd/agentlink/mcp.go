@@ -75,14 +75,16 @@ type (
 	}
 	mcpDiscuss struct {
 		With    string `json:"with" jsonschema:"local agent to ask: claude or codex"`
-		Body    string `json:"body" jsonschema:"message for the agent in this folder's one project chat"`
+		Body    string `json:"body" jsonschema:"message for the agent, in this session's own chat with it"`
 		Folder  string `json:"folder,omitempty" jsonschema:"project working folder, default current folder"`
 		Async   bool   `json:"async,omitempty" jsonschema:"return message IDs immediately instead of waiting for the agent's reply"`
 		Timeout string `json:"timeout,omitempty" jsonschema:"maximum time to wait for the reply, default 10m, at most 15m"`
 		Chat    string `json:"chat,omitempty" jsonschema:"continue this local chat: the chat id an earlier discuss returned"`
-		Topic   string `json:"topic,omitempty" jsonschema:"named persistent chat: of the folder's project, or of no project outside project folders"`
+		Topic   string `json:"topic,omitempty" jsonschema:"named chat: this session's own thread of that name (with shared: the project's persistent chat of that name)"`
 		// Temporary starts a new chat; later calls pass its id as chat.
-		Temporary bool `json:"temporary,omitempty" jsonschema:"start a new temporary chat, removed a day after its sessions end; pass its id as chat afterwards"`
+		Temporary bool `json:"temporary,omitempty" jsonschema:"start a new temporary chat, removed when this session ends; pass its id as chat afterwards"`
+		// Shared asks in the project's shared chat instead of the session's own.
+		Shared bool `json:"shared,omitempty" jsonschema:"ask in the folder's shared project chat (or the topic's shared chat) instead of this session's own chat"`
 	}
 )
 
@@ -142,13 +144,13 @@ func newMCPServer(cfg config.Config) *mcp.Server {
 		key, _ := mcpAskKey("send", args)
 		return mcpSendMessage(cfg, in, proj(""), key)
 	})
-	addToolArgs(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's private agent chat. Creates or reuses a local project separate from any network project for the same folder (outside project folders a temporary chat of this session; chat, topic or temporary pick another local chat), waits for the exact agent's reply (default 10m), and returns the reply with project/chat IDs. Use async to post without waiting; timed_out returns IDs for later history lookup.", func(in mcpDiscuss, args json.RawMessage) (any, error) {
+	addToolArgs(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's private agent chat. Each session (and each subagent) has its own chat and thread with that agent, reused on every call and closed when the session ends; topic names another own thread, shared the folder's shared project chat, chat an earlier chat by id, temporary a new one. Local only, separate from any network project for the same folder, waits for the exact agent's reply (default 10m), and returns the reply with project/chat IDs. Use async to post without waiting; timed_out returns IDs for later history lookup.", func(in mcpDiscuss, args json.RawMessage) (any, error) {
 		key, _ := mcpAskKey("discuss", args)
 		timeout := in.Timeout
 		if timeout == "" {
 			timeout = "10m"
 		}
-		return discussMessage(cfg, in.With, in.Body, in.Folder, in.Async, timeout, discussPick{chat: in.Chat, topic: in.Topic, temporary: in.Temporary, askKey: key})
+		return discussMessage(cfg, in.With, in.Body, in.Folder, in.Async, timeout, discussPick{chat: in.Chat, topic: in.Topic, temporary: in.Temporary, shared: in.Shared, askKey: key})
 	})
 	addTool(s, "ack", "Mark messages read: their authors get read receipts.", func(in mcpAck) (any, error) {
 		if len(in.IDs) == 0 {

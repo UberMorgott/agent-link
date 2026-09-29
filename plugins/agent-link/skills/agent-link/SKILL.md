@@ -44,19 +44,19 @@ to start it.
   `send {chat: <local chat id>, ask_seats: ["Codex"]}` asks one of them (label or id; `all`).
   Its answer comes back to
   you by itself; a chain of agents alone pauses for a person after a few hops.
-- `discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?}`: ask a local `claude` or `codex` seat in a
-  local project for the current working folder. Reuses or creates that local project and chat,
-  even when the folder also has a network project, and adds the target seat when missing. By
-  default wait up
+- `discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?, shared?}`: ask a local `claude` or `codex` seat in a
+  local chat for the current working folder, separate from any network project for the folder,
+  adding the target seat when missing. By default wait up
   to 10 minutes for that seat's direct reply. Returns project/chat/message/seat IDs and `reply`,
   or `timed_out` after the wait; `async: true` returns IDs immediately. A global, project or seat
   pause returns `queued: true` with IDs; the agent receives the request after resume. Use this
-  for local Claude Code ↔ Codex discussion; the discussion persists until cleared.
-  Other local chats (at most one of): `temporary: true` starts a new temporary chat; `chat: <id>`
-  continues a chat an earlier discuss returned (pass it on every later call); `topic: <name>` a
-  named persistent chat. Outside any project folder (no bound folder, no git repo) the default is
-  a temporary chat of this session, reused on its later calls. Temporary chats are removed a day
-  after their sessions end and nothing is pending (`expires_at`); `scope` names the chat's kind.
+  for local Claude Code ↔ Codex discussion.
+  Each session, and each subagent of it, asks in its **own** chat by default: the same thread of
+  the asked agent on every later call (it remembers the discussion), closed when that session or
+  subagent ends. `topic: <name>` another own thread of that name; `temporary: true` a new chat;
+  `chat: <id>` continues a chat an earlier discuss returned (e.g. one a parent hands to a
+  subagent); `shared: true` the folder's shared project chat (with `topic`, the project's shared
+  chat of that name) that other sessions see too. `scope` names the chat's kind.
 
 Results keep the node API's JSON field names. An MCP error is the API's error: fix the input from
 it (table below), do not retry with guessed ids. There is no `wait` tool: hooks deliver replies.

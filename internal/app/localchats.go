@@ -14,12 +14,14 @@ import (
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
 
-// Local agent chats of discuss (settings.LocalChat). A folder's project chat
-// is the persistent default. Beside it a caller names a topic (a persistent
-// chat of the project, or of no project outside project folders) or starts a
-// temporary chat; a session outside any project folder gets its own temporary
-// chat by default. Each such chat is a local binding of its own: one chat,
-// its own seats, never on the network and never picked by folder routing.
+// Local agent chats of discuss (settings.LocalChat). An agent session asks in
+// its own chat by default (owned: settings.LocalChat.Owner), one per
+// (project, owner, topic), so its thread with the asked agent continues and
+// no other session shares it; a person, or an agent passing shared, asks in
+// the folder's project chat or a topic's persistent chat of the project. A
+// caller may also start a temporary chat. Each such chat is a local binding of
+// its own: one chat, its own seats, never on the network and never picked by
+// folder routing.
 
 // Chat scopes (LocalChatView.Scope).
 const (
@@ -47,6 +49,9 @@ type LocalChatView struct {
 	// ExpiresAt is, for a temporary chat, the earliest time it is removed: it
 	// stays longer while one of its sessions is live or something is pending.
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// Owner is the agent the chat belongs to (settings.LocalChat.OwnerOf);
+	// absent for a shared chat.
+	Owner *settings.LocalChatOwner `json:"owner,omitempty"`
 }
 
 // localChatViewOf is lc's view; nil is a folder's project chat.
@@ -54,7 +59,7 @@ func localChatViewOf(lc *settings.LocalChat) LocalChatView {
 	if lc == nil {
 		return LocalChatView{Scope: ChatScopeProject}
 	}
-	v := LocalChatView{Topic: lc.Topic, Project: lc.Project, Folder: lc.Folder}
+	v := LocalChatView{Topic: lc.Topic, Project: lc.Project, Folder: lc.Folder, Owner: lc.OwnerOf()}
 	switch {
 	case lc.Temporary && lc.Project != "":
 		v.Scope = ChatScopeProjectTemporary
@@ -72,9 +77,9 @@ func localChatViewOf(lc *settings.LocalChat) LocalChatView {
 }
 
 // discussContextLocked picks (or makes) the local context of a discuss
-// request: the chat it names, else its topic's or a new temporary chat, else
-// the folder's project chat, else, outside any project folder, the session's
-// temporary chat.
+// request: the chat it names, else a new temporary chat, else an agent's own
+// chat of its topic (discussOwner), else the topic's shared chat, else the
+// folder's project chat.
 func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir string) (string, error) {
 	if req.Chat != "" {
 		for i, b := range a.s.Bindings {
@@ -103,18 +108,26 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 			return "", err
 		}
 	}
-	if req.Topic == "" && !req.Temporary && !folderless {
+	owner := discussOwner(req)
+	if owner == nil && req.Topic == "" && !req.Temporary && !folderless {
 		return pid, nil
 	}
 	if !req.Temporary {
+		// The routing key: (project, owner, topic) for an agent's own chat,
+		// (project, topic) for a shared one.
 		best := -1
 		for i, b := range a.s.Bindings {
 			lc := b.Chat
-			if lc == nil || lc.Project != pid || a.projects[b.ID] == nil {
+			if lc == nil || lc.Project != pid || a.projects[b.ID] == nil || !strings.EqualFold(lc.Topic, req.Topic) {
 				continue
 			}
-			mine := lc.Topic != "" && strings.EqualFold(lc.Topic, req.Topic) ||
-				req.Topic == "" && lc.Temporary && req.SessionID != "" && len(lc.Sessions) > 0 && lc.Sessions[0] == req.SessionID
+			var mine bool
+			if owner != nil {
+				o := lc.OwnerOf()
+				mine = o != nil && sameOwner(*o, *owner)
+			} else {
+				mine = lc.Topic != "" && lc.Owner == nil
+			}
 			if mine && (best < 0 || lc.LastUsed.After(a.s.Bindings[best].Chat.LastUsed)) {
 				best = i
 			}
@@ -126,7 +139,8 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 	if len(a.s.Bindings)-settings.ProjectCount(a.s.Bindings) >= settings.MaxLocalChats {
 		return "", &settings.Problem{Key: "too_many_projects"}
 	}
-	lc := &settings.LocalChat{Temporary: req.Topic == "", Topic: req.Topic, Project: pid, Folder: dir, LastUsed: time.Now().UTC()}
+	lc := &settings.LocalChat{Temporary: req.Topic == "" || owner != nil, Topic: req.Topic, Owner: owner, Project: pid, Folder: dir,
+		LastUsed: time.Now().UTC()}
 	if pid != "" {
 		lc.Folder = a.bindingDirLocked(pid)
 	}
@@ -138,6 +152,22 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 		name = "Temporary " + filepath.Base(lc.Folder)
 	}
 	return a.addLocalLocked(ctx, "", lc, name)
+}
+
+// discussOwner is the agent a discuss request's own chat belongs to: its
+// session (an agent's call), nil for a person, a seat (asking in its own
+// chat) or a request for the project's shared chat.
+func discussOwner(req discussRequest) *settings.LocalChatOwner {
+	if req.SessionID == "" || req.Seat != "" || req.Shared {
+		return nil
+	}
+	return &settings.LocalChatOwner{Session: req.SessionID, Provider: req.Source}
+}
+
+// sameOwner reports whether a and b are one agent: the same session and
+// subagent.
+func sameOwner(a, b settings.LocalChatOwner) bool {
+	return a.Session == b.Session && a.Agent == b.Agent
 }
 
 // addLocalLocked adds a local binding: the project of folder dir, or local

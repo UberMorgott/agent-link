@@ -155,9 +155,14 @@ type ProjectBinding struct {
 // (ProjectBinding.Chat).
 type LocalChat struct {
 	// Temporary chats are removed once idle (app.gcLocalChats); a chat with a
-	// Topic stays until a person removes it. Exactly one of them is set.
+	// Topic stays until a person removes it. At least one of them is set; both
+	// only for an owned chat (a topic of one agent, removed with it).
 	Temporary bool   `json:"temporary,omitempty"`
 	Topic     string `json:"topic,omitempty"`
+	// Owner is the agent the chat belongs to: discuss routes its calls here
+	// by (Project, Owner, Topic), and the chat retires when it ends. nil for a
+	// shared chat (a person's, or one asked for with shared).
+	Owner *LocalChatOwner `json:"owner,omitempty"`
 	// Project is the local project of the folder it belongs to; "" for a chat
 	// of sessions outside any project folder.
 	Project string `json:"project,omitempty"`
@@ -167,6 +172,40 @@ type LocalChat struct {
 	Sessions []string `json:"sessions,omitempty"`
 	// LastUsed is its last discuss call.
 	LastUsed time.Time `json:"last_used,omitzero"`
+}
+
+// LocalChatOwner is the agent a local chat belongs to: a session of Provider
+// and, for a subagent of it, Agent (its agent_id) and AgentType; Agent "" is
+// the session's main agent.
+type LocalChatOwner struct {
+	Session   string `json:"session"`
+	Agent     string `json:"agent,omitempty"`
+	AgentType string `json:"agent_type,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+}
+
+// valid reports ids of at most 128 printable ASCII characters and no line
+// breaks; Session is required.
+func (o LocalChatOwner) valid() bool {
+	ok := func(s string) bool {
+		return len(s) <= 128 && !strings.ContainsFunc(s, func(r rune) bool { return r < 0x21 || r > 0x7e })
+	}
+	return o.Session != "" && ok(o.Session) && ok(o.Agent) && ok(o.Provider) && len(o.AgentType) <= 128 &&
+		!strings.ContainsAny(o.AgentType, "\r\n")
+}
+
+// OwnerOf is lc's owner: Owner, else for a temporary chat of an older build
+// the session that made it (Sessions[0]); nil for none.
+func (lc *LocalChat) OwnerOf() *LocalChatOwner {
+	switch {
+	case lc == nil:
+		return nil
+	case lc.Owner != nil:
+		return lc.Owner
+	case lc.Temporary && lc.Topic == "" && len(lc.Sessions) > 0 && lc.Sessions[0] != "":
+		return &LocalChatOwner{Session: lc.Sessions[0]}
+	}
+	return nil
 }
 
 // WorkDir is where b's agents work: its folder, or a local chat's folder.
@@ -765,7 +804,8 @@ func validateBindings(bs []ProjectBinding) error {
 	for _, b := range bs {
 		switch {
 		case b.Chat != nil && (b.ScopeOf() != ProjectScopeLocal || b.Dir != "" || !filepath.IsAbs(b.Chat.Folder) ||
-			b.Chat.Temporary == (b.Chat.Topic != "") || !ValidAlias(b.Chat.Topic)):
+			(!b.Chat.Temporary && b.Chat.Topic == "") || (b.Chat.Temporary && b.Chat.Topic != "" && b.Chat.Owner == nil) ||
+			(b.Chat.Owner != nil && !b.Chat.Owner.valid()) || !ValidAlias(b.Chat.Topic)):
 			return problem("project_binding")
 		case !config.ValidProjectID(b.ID) || b.Epoch != config.ProjectEpoch || !config.ValidProjectSecret(b.Secret) || ids[b.ID]:
 			return problem("project_binding")

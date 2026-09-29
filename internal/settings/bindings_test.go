@@ -183,3 +183,39 @@ func TestHandlerWithoutLegacyKeyNeedsNoWorkDir(t *testing.T) {
 		t.Fatalf("handler with a legacy key and no work dir: %v", err)
 	}
 }
+
+// An owned chat may be temporary with a topic; a shared one never is, and an
+// owner needs a session.
+func TestValidateOwnedLocalChats(t *testing.T) {
+	folder := t.TempDir()
+	chat := func(lc LocalChat) error {
+		b := newBinding(t, "")
+		b.Scope, b.Chat = ProjectScopeLocal, &lc
+		lc.Folder = folder
+		return validateBindings([]ProjectBinding{b})
+	}
+	owner := &LocalChatOwner{Session: "s1", Agent: "a1", AgentType: "Explore", Provider: "claude"}
+	for name, c := range map[string]struct {
+		lc LocalChat
+		ok bool
+	}{
+		"owned topic":           {LocalChat{Temporary: true, Topic: "api", Owner: owner}, true},
+		"owned default":         {LocalChat{Temporary: true, Owner: owner}, true},
+		"shared topic":          {LocalChat{Topic: "api"}, true},
+		"temporary topic":       {LocalChat{Temporary: true, Topic: "api"}, false},
+		"neither":               {LocalChat{}, false},
+		"owner without session": {LocalChat{Temporary: true, Owner: &LocalChatOwner{Agent: "a1"}}, false},
+		"owner with a space":    {LocalChat{Temporary: true, Owner: &LocalChatOwner{Session: "s 1"}}, false},
+	} {
+		if err := chat(c.lc); (err == nil) != c.ok {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	legacy := &LocalChat{Temporary: true, Sessions: []string{"s1", "s2"}}
+	if o := legacy.OwnerOf(); o == nil || o.Session != "s1" || o.Agent != "" {
+		t.Fatalf("legacy owner: %+v", o)
+	}
+	if o := (&LocalChat{Topic: "api", Sessions: []string{"s1"}}).OwnerOf(); o != nil {
+		t.Fatalf("shared topic owned: %+v", o)
+	}
+}

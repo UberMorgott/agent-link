@@ -336,6 +336,17 @@ func (a *App) controlReassign(w http.ResponseWriter, r *http.Request) {
 	}
 	m, err := c.n.ReassignTo(body.ID, target, body.Force)
 	mu.Unlock()
+	if err == nil && c.chat != nil {
+		// A local chat of other sessions (an agent's own chat): the target's
+		// hooks read it from now on (sessionContexts).
+		a.mu.Lock()
+		if i := a.bindingIndex(c.id); i >= 0 {
+			if terr := a.touchLocalChatLocked(i, target.SessionID); terr != nil {
+				a.log.Warn("add session to local chat", "project", c.id, "err", terr)
+			}
+		}
+		a.mu.Unlock()
+	}
 	switch {
 	case err == nil:
 		writeJSON(w, m)
