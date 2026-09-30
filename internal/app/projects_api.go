@@ -362,7 +362,9 @@ func (a *App) addProjectLocked(ctx context.Context, b settings.ProjectBinding, n
 		return undo(err)
 	}
 	a.s, a.configured = s, true
-	a.syncHooksLocked()
+	if b.Dir != "" {
+		a.syncHooksLocked() // folder hooks follow folders: a local chat has none
+	}
 	a.reapplyAutonomyLocked() // a local project may follow the changed bindings
 	return nil
 }

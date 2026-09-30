@@ -409,6 +409,7 @@ func (a *App) leaveProjectLocked(pid string) error {
 	if err := quiesce(c); err != nil {
 		return err
 	}
+	dir := a.s.Bindings[i].Dir
 	s := a.s
 	s.Bindings = slices.Delete(slices.Clone(s.Bindings), i, i+1)
 	if len(s.Bindings) == 0 {
@@ -428,7 +429,9 @@ func (a *App) leaveProjectLocked(pid string) error {
 	if err := a.moveToLeft(pid); err != nil {
 		a.log.Warn("move left project data", "project", pid, "err", err)
 	}
-	a.syncHooksLocked()
+	if dir != "" {
+		a.syncHooksLocked() // folder hooks follow folders: a local chat has none
+	}
 	a.reapplyAutonomyLocked() // a local project may follow the changed bindings
 	a.log.Info("project left", "project", pid)
 	return nil
