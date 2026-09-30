@@ -74,7 +74,7 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	var lc *settings.LocalChat
 	if i := a.bindingIndex(pid); i >= 0 {
 		lc = a.s.Bindings[i].Chat
-		if o := lc.OwnerOf(); o != nil && err == nil {
+		if o := chatOwner(lc); o != nil && err == nil {
 			// The asking owner is live now: a short-lived subagent is seen
 			// before it ends, so its chat retires with it (retire.go).
 			a.observeOwnerLocked(pid, *o, a.liveAgentsLocked(), time.Now())

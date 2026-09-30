@@ -56,7 +56,7 @@ type LocalChatView struct {
 	// ExpiresAt is, for a temporary chat, the earliest time it is removed: it
 	// stays longer while one of its sessions is live or something is pending.
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
-	// Owner is the agent the chat belongs to (settings.LocalChat.OwnerOf);
+	// Owner is the agent the chat belongs to (settings.LocalChat.Owner);
 	// absent for a shared chat.
 	Owner *settings.LocalChatOwner `json:"owner,omitempty"`
 
@@ -130,7 +130,7 @@ func localChatViewOf(lc *settings.LocalChat) LocalChatView {
 	if lc == nil {
 		return LocalChatView{Scope: ChatScopeProject}
 	}
-	v := LocalChatView{Topic: lc.Topic, Project: lc.Project, Folder: lc.Folder, Owner: lc.OwnerOf(), Retired: !lc.Retired.IsZero()}
+	v := LocalChatView{Topic: lc.Topic, Project: lc.Project, Folder: lc.Folder, Owner: chatOwner(lc), Retired: !lc.Retired.IsZero()}
 	switch {
 	case lc.Temporary && lc.Project != "":
 		v.Scope = ChatScopeProjectTemporary
@@ -200,7 +200,7 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 			}
 			var mine bool
 			if owner != nil {
-				o := lc.OwnerOf()
+				o := chatOwner(lc)
 				mine = o != nil && sameOwner(*o, *owner)
 			} else {
 				mine = lc.Topic != "" && lc.Owner == nil
@@ -216,8 +216,8 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 	if len(a.s.Bindings)-settings.ProjectCount(a.s.Bindings) >= settings.MaxLocalChats {
 		return "", false, &settings.Problem{Key: "too_many_projects"}
 	}
-	// A temporary chat of no owner says so: its first session is no owner
-	// (settings.LocalChat.OwnerOf).
+	// A temporary chat of no owner says so, for an older build that takes
+	// its first session for one (settings.LocalChat.OwnerOf).
 	lc := &settings.LocalChat{Temporary: req.Topic == "" || owner != nil, Topic: req.Topic, Owner: owner, Project: pid, Folder: dir,
 		LastUsed: time.Now().UTC(), Unowned: owner == nil && req.Topic == ""}
 	if pid != "" {
@@ -569,4 +569,36 @@ func (a *App) dropIfEmpty(pid string) {
 	if drop {
 		a.events.publish("projects", projectTopic(pid), "status", "dashboard")
 	}
+}
+
+// chatOwner is the agent local chat lc belongs to (settings.LocalChat.Owner);
+// nil for a shared chat or none.
+func chatOwner(lc *settings.LocalChat) *settings.LocalChatOwner {
+	if lc == nil {
+		return nil
+	}
+	return lc.Owner
+}
+
+// migrateChatOwners makes the owner of every temporary chat of a build
+// before owners were stored explicit: the session that made it
+// (settings.LocalChat.OwnerOf, which reads Unowned and Sessions[0]). changed
+// reports any.
+func migrateChatOwners(s settings.Settings) (out settings.Settings, changed bool) {
+	for i, b := range s.Bindings {
+		if b.Chat == nil || b.Chat.Owner != nil {
+			continue
+		}
+		o := b.Chat.OwnerOf()
+		if o == nil {
+			continue
+		}
+		if !changed {
+			s.Bindings = slices.Clone(s.Bindings)
+		}
+		lc := *b.Chat
+		lc.Owner, changed = o, true
+		s.Bindings[i].Chat = &lc
+	}
+	return s, changed
 }

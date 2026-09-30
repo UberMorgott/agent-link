@@ -422,12 +422,18 @@ func TestDiscussAgentSessionsOwnTheirChats(t *testing.T) {
 		h.app.mu.Unlock()
 		t.Fatalf("owner of the session's chat: %+v", lc)
 	}
-	// A temporary chat of an older build (no owner) is its creator's.
+	// A temporary chat of an older build (no owner) is its creator's once
+	// the settings are loaded (migrateChatOwners).
 	s := h.app.s
 	s.Bindings = slices.Clone(s.Bindings)
 	legacy := *lc
 	legacy.Owner = nil
 	s.Bindings[i].Chat = &legacy
+	s, migrated := migrateChatOwners(s)
+	if o := s.Bindings[i].Chat.Owner; !migrated || o == nil || o.Session != "s1" || h.app.s.Bindings[i].Chat.Owner == nil {
+		h.app.mu.Unlock()
+		t.Fatalf("migrated owner %+v", o)
+	}
 	h.app.s = s
 	h.app.mu.Unlock()
 	if again := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s1"}); again.Project != first.Project {

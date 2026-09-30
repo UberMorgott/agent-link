@@ -98,7 +98,7 @@ func (a *App) ownerGoneLocked(pid string) bool {
 	if i < 0 {
 		return false
 	}
-	o := a.s.Bindings[i].Chat.OwnerOf()
+	o := chatOwner(a.s.Bindings[i].Chat)
 	if o == nil {
 		return false
 	}
@@ -113,7 +113,7 @@ func (a *App) retireOwnedChats(now time.Time) {
 	live := a.liveAgentsLocked()
 	var due []string
 	for _, b := range a.s.Bindings {
-		o := b.Chat.OwnerOf()
+		o := chatOwner(b.Chat)
 		if o == nil || !b.Chat.Retired.IsZero() {
 			continue
 		}
@@ -137,7 +137,7 @@ func (a *App) retireChat(pid string) {
 	c := a.projects[pid]
 	var owner string
 	if i := a.bindingIndex(pid); i >= 0 {
-		if o := a.s.Bindings[i].Chat.OwnerOf(); o != nil {
+		if o := chatOwner(a.s.Bindings[i].Chat); o != nil {
 			owner = o.Session
 		}
 	}

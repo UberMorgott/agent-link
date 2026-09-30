@@ -182,6 +182,13 @@ func New(path string, log *slog.Logger) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	if m, changed := migrateChatOwners(s); changed && ok {
+		// Unsaved, the next save stores it; the app reads it from memory.
+		if err := settings.Save(path, m); err != nil {
+			log.Warn("store local chat owners", "err", err)
+		}
+		s = m
+	}
 	return &App{
 		path: path, token: newToken(), log: log, s: s, configured: ok,
 		SetAutostart: setAutostart, AutostartState: autostartEnabled,
