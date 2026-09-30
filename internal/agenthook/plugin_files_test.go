@@ -2,8 +2,10 @@ package agenthook
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -77,6 +79,44 @@ func TestPluginHookFilesPerClient(t *testing.T) {
 					if !strings.Contains(line, "${PLUGIN_ROOT}") || !strings.HasSuffix(line, " hook codex") {
 						t.Errorf("codex %s: %q does not run `hook codex` from ${PLUGIN_ROOT}", ev, line)
 					}
+				}
+			}
+		}
+	}
+}
+
+// The plugin's hook files carry the hooks `agentlink hook install` writes
+// (agenthook's events, matchers, timeouts and Claude Code's waiter): a hook
+// added there and not here (PostToolUseFailure was) fails this test.
+func TestPluginHooksMatchInstall(t *testing.T) {
+	for _, c := range []struct{ dir, client string }{{".claude-plugin", Claude}, {".codex-plugin", Codex}} {
+		_, h := manifestHooks(t, c.dir)
+		if got, want := slices.Sorted(maps.Keys(h.Hooks)), slices.Sorted(slices.Values(EventsFor(c.client))); !slices.Equal(got, want) {
+			t.Errorf("%s events %v, want %v", c.client, got, want)
+		}
+		for _, ev := range EventsFor(c.client) {
+			groups := h.Hooks[ev]
+			if len(groups) != 1 {
+				t.Errorf("%s %s: %d groups, want 1", c.client, ev, len(groups))
+				continue
+			}
+			wantMatcher := ""
+			if ev == PreTool || ev == PostTool || ev == PostToolFailure {
+				wantMatcher = "*"
+			}
+			want := Handlers(c.client, "agentlink", ev)
+			if g := groups[0]; g.Matcher != wantMatcher || len(g.Hooks) != len(want) {
+				t.Errorf("%s %s: matcher %q, %d handlers; want %q, %d", c.client, ev, g.Matcher, len(g.Hooks), wantMatcher, len(want))
+				continue
+			}
+			for i, w := range want {
+				got := groups[0].Hooks[i]
+				runs := strings.HasSuffix(got.Command, strings.TrimPrefix(w.Command, "agentlink"))
+				if c.client == Claude {
+					runs = len(got.Args) >= len(w.Args) && slices.Equal(got.Args[len(got.Args)-len(w.Args):], w.Args)
+				}
+				if !runs || got.Type != w.Type || got.Timeout != w.Timeout || got.AsyncRewake != w.AsyncRewake {
+					t.Errorf("%s %s handler %d: %+v, want the arguments, timeout and asyncRewake of %+v", c.client, ev, i, got, w)
 				}
 			}
 		}

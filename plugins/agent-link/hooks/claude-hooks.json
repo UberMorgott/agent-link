@@ -31,6 +31,14 @@
         ]
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "cmd", "args": ["/d", "/c", "${CLAUDE_PLUGIN_ROOT}\\bin\\agentlink.cmd", "hook", "claude"], "timeout": 10 }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
