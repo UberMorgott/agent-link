@@ -150,44 +150,45 @@ func localChatViewOf(lc *settings.LocalChat) LocalChatView {
 // discussContextLocked picks (or makes) the local context of a discuss
 // request: the chat it names, else a new temporary chat, else an agent's own
 // chat of its topic (discussOwner), else the topic's shared chat, else the
-// folder's project chat.
-func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir string) (string, error) {
+// folder's project chat. created reports that pid is a binding this call
+// added (discuss removes it again when the call fails and it stayed empty).
+func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir string) (pid string, created bool, err error) {
 	if req.Chat != "" {
 		for i, b := range a.s.Bindings {
 			if c := a.projects[b.ID]; c != nil && b.ScopeOf() == settings.ProjectScopeLocal && c.n.OwnsChat(req.Chat) {
 				if a.retiring[b.ID] {
-					return "", errUnknownLocalChat // closing: its seats go now
+					return "", false, errUnknownLocalChat // closing: its seats go now
 				}
 				if b.Chat != nil && !b.Chat.Retired.IsZero() {
-					return b.ID, a.adoptRetiredLocked(i, discussOwner(req))
+					return b.ID, false, a.adoptRetiredLocked(i, discussOwner(req))
 				}
-				return b.ID, a.touchLocalChatLocked(i, req.SessionID)
+				return b.ID, false, a.touchLocalChatLocked(i, req.SessionID)
 			}
 		}
-		return "", errUnknownLocalChat
+		return "", false, errUnknownLocalChat
 	}
 	if req.Seat != "" && req.Topic == "" && !req.Temporary {
 		// A seat asks in its own chat, wherever its folder is.
 		for _, b := range a.s.Bindings {
 			if c := a.projects[b.ID]; c != nil && slices.ContainsFunc(c.n.Seats(), func(s node.SeatView) bool { return s.ID == req.Seat }) {
-				return b.ID, nil
+				return b.ID, false, nil
 			}
 		}
 	}
-	pid := a.localProjectOfLocked(dir)
+	pid = a.localProjectOfLocked(dir)
 	folderless := pid == "" && !a.projectFolderLocked(dir) && !inWorkTree(dir)
 	if pid == "" && !folderless {
 		if settings.ProjectCount(a.s.Bindings) >= settings.MaxProjects {
-			return "", &settings.Problem{Key: "too_many_projects"}
+			return "", false, &settings.Problem{Key: "too_many_projects"}
 		}
-		var err error
 		if pid, err = a.addLocalLocked(ctx, dir, nil, filepath.Base(dir)); err != nil {
-			return "", err
+			return "", false, err
 		}
+		created = true
 	}
 	owner := discussOwner(req)
 	if owner == nil && req.Topic == "" && !req.Temporary && !folderless {
-		return pid, nil
+		return pid, created, nil
 	}
 	if !req.Temporary {
 		// The routing key: (project, owner, topic) for an agent's own chat,
@@ -211,11 +212,11 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 			}
 		}
 		if best >= 0 {
-			return a.s.Bindings[best].ID, a.touchLocalChatLocked(best, req.SessionID)
+			return a.s.Bindings[best].ID, false, a.touchLocalChatLocked(best, req.SessionID)
 		}
 	}
 	if len(a.s.Bindings)-settings.ProjectCount(a.s.Bindings) >= settings.MaxLocalChats {
-		return "", &settings.Problem{Key: "too_many_projects"}
+		return "", false, &settings.Problem{Key: "too_many_projects"}
 	}
 	// A temporary chat of no owner says so: its first session is no owner
 	// (settings.LocalChat.OwnerOf).
@@ -231,7 +232,8 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 	if name == "" {
 		name = "Temporary " + filepath.Base(lc.Folder)
 	}
-	return a.addLocalLocked(ctx, "", lc, name)
+	pid, err = a.addLocalLocked(ctx, "", lc, name)
+	return pid, err == nil, err
 }
 
 // discussOwner is the agent a discuss request's own chat belongs to: its
@@ -536,4 +538,31 @@ func (a *App) noteLiveLocked(now time.Time) bool {
 		}
 	}
 	return flipped
+}
+
+// dropIfEmpty removes local binding pid when nothing is in it (no seat, no
+// message, nothing pending, no discuss caller waiting): what a failed discuss
+// created. A concurrent discuss that routed into it meanwhile keeps it.
+func (a *App) dropIfEmpty(pid string) {
+	a.mu.Lock()
+	i := a.bindingIndex(pid)
+	drop := i >= 0 && a.discussWaiters[pid] == 0 && !a.retiring[pid]
+	if drop {
+		c := a.projects[pid]
+		st := localChatState(c, a.s.Bindings[i].Chat)
+		drop = c != nil && st.empty && !st.waiting && !st.running && !st.unread
+	}
+	if drop {
+		if err := a.leaveProjectLocked(pid); err != nil {
+			a.log.Warn("remove empty local binding", "project", pid, "err", err)
+			drop = false
+		} else {
+			a.forgetOwnerLocked(pid)
+			delete(a.chatLive, pid)
+		}
+	}
+	a.mu.Unlock()
+	if drop {
+		a.events.publish("projects", projectTopic(pid), "status", "dashboard")
+	}
 }

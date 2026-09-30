@@ -530,3 +530,25 @@ func TestOwnedEmptyChatCollectedWhileOwnerLive(t *testing.T) {
 		t.Fatalf("empty %v used %v waited in %v", hasBinding(h, empty), hasBinding(h, used.Project), hasBinding(h, waited))
 	}
 }
+
+// A discuss that fails after it made a new chat leaves neither the chat nor
+// a seat behind.
+func TestFailedDiscussLeavesNothing(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &threadRunner{} })
+	dir := repoDir(t)
+	discussIn(t, h, map[string]any{"folder": dir})
+	h.app.mu.Lock()
+	before := len(h.app.s.Bindings)
+	h.app.mu.Unlock()
+	code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]any{"folder": dir, "provider": node.ProviderCodex,
+		"body": "x", "temporary": true, "seat": "seat-00000000"}), nil)
+	if code == http.StatusOK {
+		t.Fatalf("discuss from an unknown seat: %d %s", code, raw)
+	}
+	h.app.mu.Lock()
+	after := len(h.app.s.Bindings)
+	h.app.mu.Unlock()
+	if after != before {
+		t.Fatalf("failed discuss left a binding: %d -> %d (%d %s)", before, after, code, raw)
+	}
+}
