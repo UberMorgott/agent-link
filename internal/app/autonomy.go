@@ -122,45 +122,6 @@ func autonomyViewOf(b settings.ProjectBinding, c *appContext) *AutonomyView {
 	return v
 }
 
-// ContextAutonomy is the autonomy state of one running context (Status): a
-// folder bound to a local and a network project runs two, each with its own
-// mode and budget pause; the global stop halts them all.
-type ContextAutonomy struct {
-	Project string `json:"project"` // LegacyProjectID for the legacy network
-	Scope   string `json:"scope"`   // settings.ProjectScope*, "legacy"
-	Dir     string `json:"dir,omitempty"`
-	Mode    string `json:"mode"`
-	// Halted: the global stop or the project's pause is on.
-	Halted      bool   `json:"halted,omitempty"`
-	Paused      bool   `json:"paused,omitempty"`
-	PauseReason string `json:"pause_reason,omitempty"`
-	// Chat is set for a local chat that is not a folder's project chat.
-	Chat *LocalChatView `json:"local_chat,omitempty"`
-}
-
-// contextAutonomyLocked lists the autonomy of every running context: the
-// legacy network first, then the projects in binding order.
-func (a *App) contextAutonomyLocked() []ContextAutonomy {
-	var out []ContextAutonomy
-	add := func(pid, scope, dir string, n *node.Node) {
-		st := n.AutonomyStatus()
-		out = append(out, ContextAutonomy{Project: pid, Scope: scope, Dir: dir, Mode: st.Mode,
-			Halted: st.Stopped, Paused: st.Paused, PauseReason: st.Reason})
-	}
-	if a.legacy != nil {
-		add(LegacyProjectID, "legacy", a.s.WorkDir, a.legacy.n)
-	}
-	for _, b := range a.s.Bindings {
-		if c := a.projects[b.ID]; c != nil {
-			add(b.ID, b.ScopeOf(), b.Dir, c.n)
-			if b.Chat != nil {
-				out[len(out)-1].Chat = a.localChatViewLocked(b)
-			}
-		}
-	}
-	return out
-}
-
 // autonomyRequest is the autonomy part of POST projects/{pid}/binding
 // (absent: kept). A negative max_auto_depth follows the mode again.
 type autonomyRequest struct {
