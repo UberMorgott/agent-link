@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   ACTIVITY_EXPIRE_MS, CHAT_COLORS, CONCURRENT_MS, activityLines, activityText, agentTree, attemptText, authorTitle, chatName, keepLastKnown, liveJobs, messageTick,
-  presenceLines, projectDot, ticksFor, whoColor, whoName,
+  presenceLines, projectDot, ticksFor, whoColor, whoName, workingLines,
   type ActivityLine,
 } from './chat'
 import { runtime } from './runtime'
@@ -117,6 +117,12 @@ describe('running jobs expire', () => {
     const queued = running(new Date(at - ACTIVITY_EXPIRE_MS * 2).toISOString(), 'queued')
     expect(liveJobs([fresh, quiet, queued], at)).toEqual([fresh, queued])
     expect(activityLines(info([quiet]), [], 'me', [], null, at)).toEqual([])
+  })
+
+  it('says a chat row works only until its job expires at the time given', () => {
+    const job = running(new Date(at - 60_000).toISOString())
+    expect(workingLines(info([job]), 'me', at)).toHaveLength(1)
+    expect(workingLines(info([job]), 'me', at + ACTIVITY_EXPIRE_MS)).toEqual([])
   })
 
   it('times a running line by its last news, not by its request', () => {
