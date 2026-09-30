@@ -3,6 +3,8 @@ package app
 import (
 	"strconv"
 	"unicode/utf16"
+
+	"github.com/UberMorgott/agent-link/internal/humantime"
 )
 
 // Tray menu labels (uiStrings "tray.*"), for the desktop app (cmd/agentlink/app.go).
@@ -31,8 +33,8 @@ const maxTooltip = 127
 func TrayTooltip(s Status, u UpdateStatus) string {
 	t := "agentlink — " + s.Summary()
 	switch {
-	case u.Failed && u.RetryAt != "":
-		t += " · " + msg("tray.update_retry", map[string]string{"time": u.RetryAt})
+	case u.Failed && !u.RetryAt.IsZero():
+		t += " · " + msg("tray.update_retry", map[string]string{"time": humantime.Format(u.RetryAt)})
 	case u.Available && u.Latest != "":
 		t += " · " + msg("tray.update", map[string]string{"version": u.Latest})
 	}

@@ -35,9 +35,8 @@ type UpdateStatus struct {
 	Text    string `json:"text,omitempty"`
 	Failed  bool   `json:"failed,omitempty"`
 	// RetryAt: GitHub rate-limited the last step; it accepts requests again
-	// at this local time ("15:04"), shown as is by the tray and web UI whose
-	// reader is on this machine. Kept for the API; not RFC 3339.
-	RetryAt string `json:"retry_at,omitempty"`
+	// at this moment (RFC 3339 UTC in JSON; readers render it with humantime).
+	RetryAt time.Time `json:"retry_at,omitzero"`
 	// Installing: the newer release is being downloaded and swapped in;
 	// Downloaded bytes of Size (0: unknown) so far.
 	Installing bool  `json:"installing,omitempty"`
@@ -125,7 +124,7 @@ func (a *App) updateStatusLocked(auto bool) UpdateStatus {
 		st.Installing, st.Downloaded, st.Size = true, a.upd.done, max(a.upd.total, 0)
 	}
 	if !a.upd.retryAt.IsZero() {
-		st.RetryAt = a.upd.retryAt.Local().Format("15:04")
+		st.RetryAt = a.upd.retryAt.UTC().Truncate(time.Second)
 	}
 	if !st.Enabled {
 		st.Text, st.Available = msg("update.disabled", nil), false

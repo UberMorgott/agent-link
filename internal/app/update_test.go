@@ -159,20 +159,23 @@ func TestUpdateInstallFailures(t *testing.T) {
 // the automatic updater waits for it rather than the usual hours.
 func TestUpdateRateLimited(t *testing.T) {
 	reset := time.Now().Add(20 * time.Minute)
-	hhmm := reset.Local().Format("15:04")
+	wantAt := reset.UTC().Truncate(time.Second)
 	want := msg("update.error.ratelimit", map[string]string{"time": humantime.Format(reset)})
 	rl := &selfupdate.RateLimitError{Reset: reset}
 
 	u := newUpdHarness(t, nil, false)
 	u.checkErr.set(rl)
-	if st := u.post(t, "update/check", ""); !st.Failed || st.Text != want || st.RetryAt != hhmm {
+	if st := u.post(t, "update/check", ""); !st.Failed || st.Text != want || !st.RetryAt.Equal(wantAt) {
 		t.Fatalf("rate-limited check: %+v", st)
+	}
+	if raw, _ := json.Marshal(u.app.UpdateStatus()); !strings.Contains(string(raw), `"retry_at":"`+wantAt.Format(time.RFC3339)+`"`) {
+		t.Fatalf("retry_at is not RFC 3339 UTC: %s", raw)
 	}
 
 	u = newUpdHarness(t, &fakeRelease{version: "0.5.0"}, true)
 	u.rel.err.set(fmt.Errorf("apply: %w", rl))
 	st := u.post(t, "update/apply", "")
-	if st.Restarting || !st.Failed || st.Text != want || st.RetryAt != hhmm || u.relaunch.Load() != 0 {
+	if st.Restarting || !st.Failed || st.Text != want || !st.RetryAt.Equal(wantAt) || u.relaunch.Load() != 0 {
 		t.Fatalf("rate-limited install: %+v", st)
 	}
 	if d := u.app.nextUpdate(6 * time.Hour); d < time.Until(reset)-time.Second || d > time.Until(reset)+rateLimitJitter {
@@ -180,7 +183,7 @@ func TestUpdateRateLimited(t *testing.T) {
 	}
 	// A later successful check clears the limit.
 	u.rel.err.set(nil)
-	if st := u.post(t, "update/check", ""); st.Failed || st.RetryAt != "" {
+	if st := u.post(t, "update/check", ""); st.Failed || !st.RetryAt.IsZero() {
 		t.Fatalf("check after the limit: %+v", st)
 	}
 	if d := u.app.nextUpdate(6 * time.Hour); d < 5*time.Hour {

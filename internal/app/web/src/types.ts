@@ -384,6 +384,7 @@ export interface UpdateStatus {
   available?: boolean
   auto?: boolean
   restarting?: boolean
+  // GitHub's rate limit ends (RFC 3339 UTC); the reader-local form is in text.
   retry_at?: string
   // An install runs: bytes downloaded of size (absent: unknown) so far.
   installing?: boolean

@@ -6,14 +6,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf16"
 
+	"github.com/UberMorgott/agent-link/internal/humantime"
 	"github.com/UberMorgott/agent-link/internal/selfupdate"
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
 
 func TestTrayTooltip(t *testing.T) {
 	online := Status{Configured: true, Connected: true, Online: 7, Total: 12}
+	retry := time.Now().Add(20 * time.Minute).UTC()
 	cases := []struct {
 		name string
 		s    Status
@@ -23,7 +26,7 @@ func TestTrayTooltip(t *testing.T) {
 		{"members", online, UpdateStatus{}, "agentlink — На связи 7 из 12"},
 		{"update", online, UpdateStatus{Available: true, Latest: "0.6.0"}, "agentlink — На связи 7 из 12 · доступна v0.6.0"},
 		{"checked, none newer", online, UpdateStatus{Latest: "0.5.1"}, "agentlink — На связи 7 из 12"},
-		{"rate limited", online, UpdateStatus{Available: true, Latest: "0.6.0", Failed: true, RetryAt: "15:04"}, "agentlink — На связи 7 из 12 · обновление после 15:04"},
+		{"rate limited", online, UpdateStatus{Available: true, Latest: "0.6.0", Failed: true, RetryAt: retry}, "agentlink — На связи 7 из 12 · обновление после " + humantime.Format(retry)},
 		{"not set up", Status{}, UpdateStatus{}, "agentlink — Не настроено — откройте настройки"},
 	}
 	for _, c := range cases {
