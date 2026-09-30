@@ -1,6 +1,7 @@
 package node
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"net"
@@ -125,7 +126,12 @@ func newer(r, l *Member) bool {
 	case r.ID != l.ID:
 		return r.ID < l.ID
 	default:
-		return strings.Join(r.Addrs, " ") > strings.Join(l.Addrs, " ")
+		// Two records of one version (another member rewrote this one within
+		// the clock's resolution) differ in their addresses or in what the
+		// member set about itself: every node picks the same one, else each
+		// keeps its own and a nickname never arrives.
+		return cmp.Or(strings.Compare(strings.Join(r.Addrs, " "), strings.Join(l.Addrs, " ")), strings.Compare(r.Display, l.Display),
+			strings.Compare(strings.Join(r.Aliases, "\n"), strings.Join(l.Aliases, "\n")), strings.Compare(r.Color, l.Color)) > 0
 	}
 }
 
