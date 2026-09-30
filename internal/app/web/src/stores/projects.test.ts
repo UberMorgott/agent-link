@@ -77,6 +77,18 @@ describe('the projects store', () => {
     expect(calls.filter((c) => c === 'POST projects/' + SITE + '/invite')).toHaveLength(2)
   })
 
+  it('changes a project\'s chat list in one place', () => {
+    const projects = useProjectsStore()
+    const chat = (id: string, title = '') => ({ id, title, participants: [] })
+    projects.chats = { P: [chat('a'), chat('b')] }
+    projects.putChat('P', chat('b', 'new'))
+    expect(projects.chats.P!.map((c) => c.id + c.title)).toEqual(['a', 'bnew'])
+    projects.replaceChat('P', 'a', chat('c'))
+    expect(projects.chats.P!.map((c) => c.id)).toEqual(['c', 'b'])
+    projects.removeChat('P', 'b')
+    expect(projects.chats.P!.map((c) => c.id)).toEqual(['c'])
+  })
+
   it('drops an invite that answers after its dialog closed', async () => {
     let answer: (() => void) | null = null
     fakeBackend((method, path) => {

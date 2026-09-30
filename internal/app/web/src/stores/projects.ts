@@ -280,8 +280,25 @@ export const useProjectsStore = defineStore('projects', () => {
 
   async function createChat(pid: string, participants: string[]) {
     const info = await api<ChatInfo>('POST', projectPath(pid, 'chats'), { participants })
-    chats.value = { ...chats.value, [pid]: [info, ...(chats.value[pid] || []).filter((c) => c.id !== info.id)] }
+    replaceChat(pid, info.id, info)
     return info
+  }
+
+  // --- a project's chat list: this store owns it; the inbox changes it here ---
+
+  // putChat puts a changed chat in its place in the list.
+  function putChat(pid: string, info: ChatInfo) {
+    chats.value = { ...chats.value, [pid]: (chats.value[pid] || []).map((c) => (c.id === info.id ? info : c)) }
+  }
+
+  // removeChat takes a chat out of the list.
+  function removeChat(pid: string, id: string) {
+    chats.value = { ...chats.value, [pid]: (chats.value[pid] || []).filter((c) => c.id !== id) }
+  }
+
+  // replaceChat puts fresh first in the list, in the place of chat old.
+  function replaceChat(pid: string, old: string, fresh: ChatInfo) {
+    chats.value = { ...chats.value, [pid]: [fresh, ...(chats.value[pid] || []).filter((c) => c.id !== old && c.id !== fresh.id)] }
   }
 
   // --- the invite: read once per open dialog, dropped when it closes ---
@@ -390,7 +407,7 @@ export const useProjectsStore = defineStore('projects', () => {
     list, chats, history, refreshHistory, colorOf, displayOf, seats, refreshSeats, seatAction, current, currentProject, hasLegacy, loaded, invite, inviteFor,
     joinStep, joinProject, joinCreated, joinProblem,
     byID, upsert, listSettled, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped,
-    open, landing, create, rename, bind, resumeAutonomy, stopAutonomy, addMember, removeMember, leave, createChat, revealInvite, hideInvite,
+    open, landing, create, rename, bind, resumeAutonomy, stopAutonomy, addMember, removeMember, leave, createChat, putChat, removeChat, replaceChat, revealInvite, hideInvite,
     joinReset, join, joinProgress, joinCancel, dialog, dialogProject, openDialog, closeDialog,
   }
 })

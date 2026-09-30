@@ -330,7 +330,7 @@ export const useInboxStore = defineStore('inbox', () => {
     try {
       const info = await api<ChatInfo>('POST', chatPath(pid, id, 'members'), { add, remove })
       if (openKey() === chatKey(pid, id)) chat.value = info
-      projects.chats = { ...projects.chats, [pid]: (projects.chats[pid] || []).map((c) => (c.id === id ? info : c)) }
+      projects.putChat(pid, info)
       void projects.refreshChats(pid)
     } finally { membersBusy.value = false }
   }
@@ -353,7 +353,7 @@ export const useInboxStore = defineStore('inbox', () => {
       const next = narrow() ? null : rest.find((c) => !c.legacy) || rest[0]
       // Leave the chat before the list changes, so nothing reloads it.
       await selectChat(pid, '', '')
-      projects.chats = { ...projects.chats, [pid]: rest }
+      projects.removeChat(pid, info.id)
       if (next) openChat(pid, next.id)
       else openProject(pid)
       void projects.refreshChats(pid)
@@ -383,7 +383,7 @@ export const useInboxStore = defineStore('inbox', () => {
     try {
       const fresh = await api<ChatInfo>('POST', chatPath(pid, info.id, 'archive'))
       const here = openKey() === chatKey(pid, info.id)
-      projects.chats = { ...projects.chats, [pid]: [fresh, ...(projects.chats[pid] || []).filter((c) => c.id !== info.id && c.id !== fresh.id)] }
+      projects.replaceChat(pid, info.id, fresh)
       if (here) {
         openChat(pid, fresh.id)
         focusComposer.value++
