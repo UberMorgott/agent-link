@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -155,29 +156,14 @@ func TestExistingNetworkSeatDoesNotStartNewTurns(t *testing.T) {
 		t.Fatalf("network project: %d %s", code, raw)
 	}
 	n := h.app.projects[network.ID].n
-	// AddSeat saves a seat record before attempting its setup turn. Its
-	// failed start simulates a pre-existing network seat without changing its
-	// stopped flag or deleting its pending queue.
-	if _, err := n.AddSeat(node.SeatRequest{Provider: node.ProviderCodex}); err == nil {
-		t.Fatal("network context started a seat")
-	}
-	seats := n.Seats()
-	if len(seats) != 1 || seats[0].Stopped {
-		t.Fatalf("old seat record changed: %+v", seats)
-	}
-	chat, err := n.NewProjectChat(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	message, err := n.SendRequest(node.SendRequest{ChatID: chat.ID, Body: "Old queued question", AuthorKind: node.AuthorHuman,
-		AskSeats: []string{seats[0].ID}})
-	if err != nil {
-		t.Fatal(err)
+	// A network project has no seats (the node's DisableSeats rule): adding
+	// one changes nothing and no turn runs.
+	if _, err := n.AddSeat(node.SeatRequest{Provider: node.ProviderCodex}); !errors.Is(err, node.ErrSeatsDisabled) {
+		t.Fatalf("network context added a seat: %v", err)
 	}
 	time.Sleep(2200 * time.Millisecond) // covers one regular seat dispatch tick
-	seats = n.Seats()
-	if len(seats) != 1 || seats[0].Stopped || len(seats[0].Pending) != 1 || seats[0].Pending[0].ID != message.ID {
-		t.Fatalf("network seat dispatched or was mutated: %+v", seats)
+	if seats := n.Seats(); len(seats) != 0 {
+		t.Fatalf("network seats %+v", seats)
 	}
 	runner.mu.Lock()
 	defer runner.mu.Unlock()

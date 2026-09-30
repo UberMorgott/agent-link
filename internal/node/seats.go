@@ -68,6 +68,10 @@ const maxSeats = 8
 // ErrUnknownSeat: no seat with that id or label.
 var ErrUnknownSeat = errors.New("unknown seat")
 
+// ErrSeatsDisabled: the project has no seats (config.DisableSeats: a network
+// project, whose agents are the sessions its members open).
+var ErrSeatsDisabled = errors.New("seats are off in this project")
+
 // ErrSeatLimit: the node has maxSeats seats already.
 var ErrSeatLimit = errors.New("seat limit reached")
 
@@ -354,6 +358,8 @@ func (n *Node) AddSeat(req SeatRequest) (SeatView, error) {
 	switch {
 	case n.cfg.Project == "":
 		return SeatView{}, ErrNotProject
+	case n.cfg.DisableSeats:
+		return SeatView{}, ErrSeatsDisabled
 	case n.NeedsFolder():
 		return SeatView{}, ErrNeedsFolder
 	case req.Provider != ProviderClaude && req.Provider != ProviderCodex:
@@ -394,6 +400,9 @@ func (n *Node) AddSeat(req SeatRequest) (SeatView, error) {
 // without a session gets one: a turn with its introduction (and its pending
 // messages). open shows the session in the desktop app.
 func (n *Node) StartSeat(id string, open bool) (SeatView, error) {
+	if n.cfg.DisableSeats {
+		return SeatView{}, ErrSeatsDisabled
+	}
 	st := n.seats
 	st.mu.Lock()
 	s := st.getLocked(id)
@@ -460,6 +469,7 @@ func (n *Node) StopSeat(id string) (SeatView, error) {
 }
 
 // RemoveSeat stops seat id and forgets it; its session stays the person's.
+// Its messages not answered yet go back to the node's sessions (releaseSeat).
 func (n *Node) RemoveSeat(id string) error {
 	st := n.seats
 	st.mu.Lock()
@@ -471,10 +481,13 @@ func (n *Node) RemoveSeat(id string) error {
 	if cancel := st.run[id]; cancel != nil {
 		cancel()
 	}
+	pend := st.seats[i].Pending
 	st.seats = slices.Delete(st.seats, i, i+1)
 	delete(st.errs, id)
 	delete(st.busy, id)
 	delete(st.deferred, id)
+	delete(st.ran, id)
+	delete(st.pauseLogged, id)
 	for k := range st.marks {
 		if strings.HasPrefix(k, id+"/") {
 			delete(st.marks, k)
@@ -482,8 +495,50 @@ func (n *Node) RemoveSeat(id string) error {
 	}
 	err := st.saveLocked()
 	st.mu.Unlock()
+	n.releaseSeat(id, pend)
 	n.changed("seats")
 	return err
+}
+
+// releaseSeat hands the messages pend of removed seat back to normal routing:
+// a peer's message assigned to it is unread again for the node's sessions,
+// and its leases of the seat go (a running turn ends with no record).
+func (n *Node) releaseSeat(seat string, pend []SeatPending) {
+	back := false
+	for _, p := range pend {
+		ok, err := n.chats.unassign(p.ID, "seat:"+seat)
+		if err != nil {
+			n.log.Warn("return a removed seat's message", "seat", seat, "id", p.ID, "err", err)
+		}
+		back = back || ok
+		if err := n.leases.forget(leaseKey(seat, p.ID)); err != nil {
+			n.log.Warn("save leases", "err", err)
+		}
+	}
+	if len(pend) > 0 {
+		n.log.Info("a removed seat's messages went back to the sessions", "seat", seat, "messages", len(pend))
+		n.changed("leases")
+	}
+	if back {
+		n.changed("messages")
+	}
+}
+
+// dropSeats removes every seat of a project without seats (DisableSeats):
+// seats left from before go, their messages back to the sessions.
+func (n *Node) dropSeats() {
+	st := n.seats
+	st.mu.Lock()
+	var ids []string
+	for _, s := range st.seats {
+		ids = append(ids, s.ID)
+	}
+	st.mu.Unlock()
+	for _, id := range ids {
+		if err := n.RemoveSeat(id); err != nil {
+			n.log.Warn("remove a seat of a project without seats", "seat", id, "err", err)
+		}
+	}
 }
 
 // WaitSeatTurns waits up to d until no turn of a seat runs (RemoveSeat and
@@ -771,7 +826,7 @@ func (n *Node) assignToSeat(m Message, seat string) {
 // and saves them. queued reports whether any seat has it now; err that the
 // save failed (the queue stays in memory and seatsDue saves it again).
 func (n *Node) queueSeats(id string, list []seatTo) (queued bool, err error) {
-	if len(list) == 0 {
+	if len(list) == 0 || n.cfg.DisableSeats {
 		return false, nil
 	}
 	now := time.Now().UTC()

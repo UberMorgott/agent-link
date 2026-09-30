@@ -303,6 +303,9 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		n.log.Warn("delivery leases unreadable; starting over", "err", err)
 	}
 	n.restoreLeases(time.Now())
+	if cfg.DisableSeats {
+		n.dropSeats() // seats left from before the project had none
+	}
 	return n, nil
 }
 

@@ -484,6 +484,25 @@ func (cs *chatStore) reassign(id, sid string, force bool) (chatRecord, error) {
 	return r, err
 }
 
+// unassign takes message id from owner (a seat that is gone): nobody is
+// assigned and an unread message is unread again, for normal routing. It
+// reports whether it changed.
+func (cs *chatStore) unassign(id, owner string) (bool, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	_, changed, err := cs.updateLocked(id, func(r *chatRecord) bool {
+		if r.Assigned != owner {
+			return false
+		}
+		r.Assigned = ""
+		if r.Unread {
+			r.ReadAt = time.Time{}
+		}
+		return true
+	})
+	return changed, err
+}
+
 // claim assigns request id to owner unless someone is assigned already or a
 // session read it before (a read request is the session's to answer). It
 // reports whether owner holds it now, and whether it was unread.
