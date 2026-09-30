@@ -45,7 +45,7 @@ describe('version badge', () => {
     expect($('#version_badge')!.textContent!.trim()).toBe('v0.4.2')
   })
 
-  it('checks on open, lists every newer release and installs it at once', async () => {
+  it('checks on open, lists every newer release and installs it when asked', async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
     const { calls } = await open(async (_method, path) => {
@@ -65,6 +65,10 @@ describe('version badge', () => {
     release()
     await settle()
     expect($('#update_checking')).toBeNull()
+    // Nothing installs before the member asks.
+    expect(calls).not.toContain('POST update/apply')
+    expect($('#update_install')!.textContent).toContain('update.apply')
+    await click('#update_install')
     expect(calls).toContain('POST update/apply')
     expect(sessionStorage.getItem('agentlink.update.reopen')).toBe('1')
     const versions = [...document.querySelectorAll<HTMLElement>('.release-note')].map((e) => e.dataset.version)
@@ -101,6 +105,7 @@ describe('version badge', () => {
     })
     const app = useAppStore()
     await click('#version_badge')
+    await click('#update_install')
     expect(calls).toContain('POST update/apply')
     // Before the first "update" event: an indeterminate bar.
     expect($('#update_restarting')).not.toBeNull()
@@ -141,10 +146,12 @@ describe('version badge', () => {
       return undefined
     })
     await click('#version_badge')
+    await click('#update_install')
     expect($('#update_error')!.textContent).toContain('Приложение не отвечает')
     expect(sessionStorage.getItem('agentlink.update.reopen')).toBeNull()
     fail = false
     await click('#update_retry')
+    await click('#update_install')
     expect(calls.filter((c) => c === 'POST update/apply')).toHaveLength(2)
     expect($('#update_error')).toBeNull()
     expect($('#update_retry')).toBeNull()
