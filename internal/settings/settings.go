@@ -325,6 +325,16 @@ func (b ProjectBinding) LaunchModeOf() string {
 	return "desktop"
 }
 
+// Chat history retention of every context (config.HistoryDays and
+// HistoryKeep): a chat keeps its messages of the last HistoryKeepDays days
+// and, however old, its newest HistoryKeepMessages; a message that still
+// waits for someone (unread, pending, leased, needing a person) is never
+// dropped.
+const (
+	HistoryKeepDays     = 90
+	HistoryKeepMessages = 1000
+)
+
 // Version is the settings file format this build writes. Version 2 added
 // Bindings; a file without a version is version 1.
 const Version = 2

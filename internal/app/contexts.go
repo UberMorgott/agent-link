@@ -122,6 +122,7 @@ func wireWorker(n *node.Node, w *worker.Worker, hasHandler bool) {
 
 // newNodeOf opens a context's node with the app's version and change events.
 func (a *App) newNodeOf(pid string, cfg config.Config, key []byte) (*node.Node, error) {
+	cfg.HistoryDays, cfg.HistoryKeep = settings.HistoryKeepDays, settings.HistoryKeepMessages
 	n, err := node.New(cfg, key, a.log)
 	if err != nil {
 		return nil, err

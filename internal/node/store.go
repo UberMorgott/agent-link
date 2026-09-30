@@ -183,6 +183,13 @@ func (s *store) delivery(peer, id string) string {
 	return ""
 }
 
+// queued reports whether a copy of message id waits in peer's outbox (not
+// ACKed yet), whatever copy was sent before.
+func (s *store) queued(peer, id string) bool {
+	_, err := os.Stat(filepath.Join(s.dir, "outbox", peer, id+".json"))
+	return err == nil
+}
+
 // saveInbound persists m unless its id was already received. It reports
 // whether the message is new.
 func (s *store) saveInbound(m Message) (bool, error) {

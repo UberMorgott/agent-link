@@ -26,12 +26,13 @@ func (n *Node) PutAttachment(r io.Reader, name string) (Attachment, error) {
 // (Attachment.Key), in constant time.
 func (n *Node) AttachmentKeyOK(id, k string) bool { return n.atts.verify(id, k) }
 
-// attachSweepLoop removes orphan blobs (OrphanAge) at start and every
-// attSweepEvery until ctx ends.
+// attachSweepLoop prunes old chat history (pruneHistory) and removes orphan
+// blobs (OrphanAge) at start and every attSweepEvery until ctx ends.
 func (n *Node) attachSweepLoop(ctx context.Context) {
 	t := time.NewTicker(attSweepEvery)
 	defer t.Stop()
 	for {
+		n.pruneHistory(time.Now())
 		if removed, err := n.atts.sweep(OrphanAge); err != nil {
 			n.log.Warn("attachment sweep", "err", err)
 		} else if removed > 0 {

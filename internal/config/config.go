@@ -151,6 +151,12 @@ type Config struct {
 	// DisableSeats holds existing seat messages without starting new turns.
 	// Used by network project contexts after private local chats were added.
 	DisableSeats bool `json:"disable_seats,omitempty"`
+	// HistoryDays and HistoryKeep bound each chat's history (node
+	// pruneHistory): messages older than HistoryDays days go unless they are
+	// among the chat's newest HistoryKeep or still wait for someone.
+	// HistoryDays 0 keeps everything.
+	HistoryDays int `json:"history_days,omitempty"`
+	HistoryKeep int `json:"history_keep,omitempty"`
 }
 
 var namePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_-]{0,63}$`)
