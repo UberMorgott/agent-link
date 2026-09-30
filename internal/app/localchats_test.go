@@ -583,3 +583,25 @@ func TestDiscussAgainWritesNoSettings(t *testing.T) {
 		t.Fatalf("sessions %v", sessions)
 	}
 }
+
+// A local project made for a discuss from a subfolder binds the whole work
+// tree, so the root and its other subfolders share it.
+func TestAutoLocalProjectBindsGitRoot(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &threadRunner{} })
+	root := repoDir(t)
+	sub, other := filepath.Join(root, "a", "b"), filepath.Join(root, "c")
+	for _, d := range []string{sub, other} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := discussIn(t, h, map[string]any{"folder": sub})
+	for _, d := range []string{root, other} {
+		if again := discussIn(t, h, map[string]any{"folder": d}); again.Project != first.Project {
+			t.Fatalf("%s got its own project: %+v first %+v", d, again, first)
+		}
+	}
+	if dir := h.app.Settings().Bindings[0].Dir; dir != root {
+		t.Fatalf("bound %q, want the work tree %q", dir, root)
+	}
+}

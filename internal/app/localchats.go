@@ -174,12 +174,18 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 		}
 	}
 	pid = a.localProjectOfLocked(dir)
-	folderless := pid == "" && !a.projectFolderLocked(dir) && !inWorkTree(dir)
+	root := gitRoot(dir)
+	folderless := pid == "" && !a.projectFolderLocked(dir) && root == ""
 	if pid == "" && !folderless {
+		// A new local project binds the whole work tree, whatever subfolder
+		// asks first; a project folder outside git binds itself.
+		if root == "" {
+			root = dir
+		}
 		if settings.ProjectCount(a.s.Bindings) >= settings.MaxProjects {
 			return "", false, &settings.Problem{Key: "too_many_projects"}
 		}
-		if pid, err = a.addLocalLocked(ctx, dir, nil, filepath.Base(dir)); err != nil {
+		if pid, err = a.addLocalLocked(ctx, root, nil, filepath.Base(root)); err != nil {
 			return "", false, err
 		}
 		created = true
@@ -290,16 +296,16 @@ func (a *App) projectFolderLocked(dir string) bool {
 	return slices.ContainsFunc(a.s.Bindings, func(b settings.ProjectBinding) bool { return b.Dir != "" && within(b.Dir, dir) })
 }
 
-// inWorkTree reports whether dir is inside a git work tree: a project folder
-// even before any project binds it.
-func inWorkTree(dir string) bool {
+// gitRoot is the top folder of the git work tree holding dir (where its .git
+// is), "" outside one: a project folder even before any project binds it.
+func gitRoot(dir string) string {
 	for d := filepath.Clean(dir); ; {
 		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
-			return true
+			return d
 		}
 		up := filepath.Dir(d)
 		if up == d {
-			return false
+			return ""
 		}
 		d = up
 	}
