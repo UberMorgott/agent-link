@@ -15,6 +15,8 @@ import { useProjectsStore } from './projects'
 import type { ChatInfo, ChatMessage, SentMessage } from '@/types'
 
 export const PAGE_SIZE = 200
+// MAX_PAGE: the most messages one request answers (projects_api.go chatMessages).
+export const MAX_PAGE = 1000
 // A toast only announces news: it leaves on its own after
 // MESSAGE_TOAST_TIMEOUT, and the close button drops it right away. Failures
 // keep their own place — the connection banner stays until the problem is gone.
@@ -137,21 +139,36 @@ export const useInboxStore = defineStore('inbox', () => {
 
   // --- loading ---
 
+  // loadChat reads a chat and its newest messages. A reset shows the last
+  // PAGE_SIZE; a refresh re-reads the newest end of what is shown (with room
+  // for what is new, up to the server's MAX_PAGE) and keeps the older part, so
+  // pages loaded with «Показать раньше» stay and the newest never drop.
   async function loadChat(id: string, reset: boolean) {
     const ticket = ++generation
     const pid = project.value
-    const first = messages.value[0]?.seq || 0
-    const query = !reset && first ? '?after=' + (first - 1) + '&limit=1000' : '?limit=' + PAGE_SIZE
+    const shown = reset ? [] : messages.value
+    const limit = Math.min(MAX_PAGE, shown.length + PAGE_SIZE)
     const [info, items] = await Promise.all([
       api<ChatInfo>('GET', chatPath(pid, id)),
-      api<ChatMessage[]>('GET', chatPath(pid, id, 'messages' + query)),
+      api<ChatMessage[]>('GET', chatPath(pid, id, 'messages?limit=' + limit)),
     ])
     if (ticket !== generation || project.value !== pid || selectedChat.value !== id) return
-    if (reset) hasOlder.value = Array.isArray(items) && items.length === PAGE_SIZE
-    messages.value = Array.isArray(items) ? [...items].sort((a, b) => a.seq - b.seq) : []
+    const tail = Array.isArray(items) ? [...items].sort((a, b) => a.seq - b.seq) : []
+    const from = tail[0]?.seq ?? 0
+    const last = shown[shown.length - 1]?.seq || 0
+    // A full answer that starts past the newest shown message left a gap:
+    // show it from scratch, the rest being older.
+    const gap = tail.length === limit && from > last + 1
+    if (reset || gap || !shown.length) {
+      hasOlder.value = tail.length === limit
+      messages.value = tail
+    } else {
+      const first = shown[0]!.seq
+      messages.value = shown.filter((m) => m.seq < from).concat(tail.filter((m) => m.seq >= first))
+    }
     chat.value = info
     markRead(pid, info)
-    intend(reset ? 'reset' : 'auto')
+    intend(reset || gap ? 'reset' : 'auto')
   }
 
   async function loadOlder() {
