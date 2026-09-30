@@ -448,6 +448,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"inbox.agents.doing.command":     "выполняет команду",
 	"inbox.agents.doing.read":        "читает код",
 	"inbox.agents.doing.waiting":     "ждёт ответа",
+	"inbox.agents.doing.subagents":   "ждёт субагентов",
 	"inbox.agents.doing.queued":      "ждёт очереди",
 	"inbox.agents.doing.idle":        "ждёт вопроса",
 	"inbox.agents.doing.paused":      "на паузе",
@@ -457,6 +458,9 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"inbox.agents.subagents.one":     "{n} субагент",
 	"inbox.agents.subagents.few":     "{n} субагента",
 	"inbox.agents.subagents.many":    "{n} субагентов",
+	"inbox.agents.sessions.one":      "{n} сессия",
+	"inbox.agents.sessions.few":      "{n} сессии",
+	"inbox.agents.sessions.many":     "{n} сессий",
 	// An older peer's agents, by provider: «2 агента Codex».
 	"inbox.agents.count.one":      "{n} агент {p}",
 	"inbox.agents.count.few":      "{n} агента {p}",

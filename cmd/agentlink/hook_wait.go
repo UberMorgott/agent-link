@@ -106,16 +106,8 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 				return 2
 			}
 		}
-		// Only an idle session's heartbeat: a busy one's hooks keep it
-		// registered, and the Stop hook that started this waiter may not have
-		// saved its state yet, so "busy" here may be stale and must not undo
-		// the idle it just registered (the node would not wake the session).
-		if time.Since(lastBeat) >= o.heartbeat && !waiterBusy(st, env.clock(), o.busyFor) {
-			req := sessionRequest(client, in.SessionID, folder, true, nil) // a keep-alive: the node keeps the subagents the hooks reported
-			req.Heartbeat = true                                           // keeps the session live, not active (node.Session.LastActive)
-			if hookCall(env.api, http.MethodPost, "/sessions", env.withProject(nil), req, nil, hookHTTPTimeout) == nil {
-				lastBeat = time.Now()
-			}
+		if time.Since(lastBeat) >= o.heartbeat && keepAlive(env, client, in.SessionID, folder, path) {
+			lastBeat = time.Now()
 		}
 		if !waiterBusy(st, env.clock(), o.busyFor) && pendingUnread(env, folder, in.SessionID, &st) {
 			if code, done := wakeWith(client, in.SessionID, folder, path, stderr, env, o.busyFor); done {
@@ -124,6 +116,27 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 		}
 		time.Sleep(o.poll)
 	}
+}
+
+// keepAlive re-registers the session as a keep-alive with the idle state its
+// hooks last told the node (hookState.Idle), read under the session's lock so
+// a Stop hook saving its idle cannot race it. The hooks' last event does not
+// decide: a busy session whose last event was a SubagentStart or
+// SubagentStop is still busy, and a keep-alive that called it idle showed an
+// agent at work as waiting for a question. It reports whether the node took it.
+func keepAlive(env hookEnv, client, sid, folder, path string) bool {
+	unlock, err := lockFile(path + ".lock")
+	if err != nil {
+		return false
+	}
+	defer unlock()
+	st := loadHookState(path)
+	if st.Ended || st.Unbound || st.Registered.IsZero() {
+		return false
+	}
+	req := sessionRequest(client, sid, folder, st.Idle, nil) // a keep-alive: the node keeps the subagents the hooks reported
+	req.Heartbeat = true                                     // keeps the session live, not active (node.Session.LastActive)
+	return hookCall(env.api, http.MethodPost, "/sessions", env.withProject(nil), req, nil, hookHTTPTimeout) == nil
 }
 
 // waiterBusy: the session is in a turn (its last event was not Stop or

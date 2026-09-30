@@ -317,8 +317,10 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	// Claude Code names the subagent an event fires in; the node hears the
 	// live ones at once (a reply for one is not the session's to wake with).
 	agents := client == hookClaude && st.trackAgent(event, in.AgentID, in.AgentType, now)
-	// SubagentStop preserves the parent's idle state if its turn already ended.
-	if !heartbeat(env, &st, client, in.SessionID, folder, event == evSessionStart || agents, (event == evStop || event == evSubagentStop) && st.Idle) {
+	// A subagent's event (SubagentStop, or a background subagent's tool call
+	// after the parent's turn ended) keeps the parent's idle state: only the
+	// main agent's own events begin a turn.
+	if !heartbeat(env, &st, client, in.SessionID, folder, event == evSessionStart || agents, (event == evStop || event == evSubagentStop || in.AgentID != "") && st.Idle) {
 		quiet()
 		return nil
 	}
@@ -341,8 +343,12 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	if event == evSubagentStart || event == evSubagentStop {
 		h.subagent(in.AgentID, in.AgentType, event == evSubagentStop)
 		h.reportCodexAgentState()
-		if client == hookCodex && st.trackKid(event, in.AgentID, now) && !st.Idle {
-			h.tellDoing(cmp.Or(st.Doing, node.AgentThinking))
+		if client == hookCodex && st.trackKid(event, in.AgentID, now) {
+			if st.Idle {
+				h.tellDoing(node.AgentSubagents) // its turn ended: the node shows it waiting for them
+			} else {
+				h.tellDoing(cmp.Or(st.Doing, node.AgentThinking))
+			}
 		}
 		quiet()
 		return nil
@@ -393,6 +399,7 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 			st.Blocks = 0
 			h.idle()
 			heartbeat(env, &st, client, in.SessionID, folder, false, true)
+			h.tellKids()
 			if notice := takeNotice(&st); notice != "" {
 				writeHookJSON(stdout, notice, nil)
 			} else {
@@ -402,6 +409,7 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		case in.StopHookActive && st.Blocks >= hookMaxStopBlocks:
 			h.idle() // the turn ends all the same: its activity too
 			heartbeat(env, &st, client, in.SessionID, folder, false, true)
+			h.tellKids()
 			quiet() // let it end; the waiter, the node's wake or the next event delivers the rest
 			return nil
 		}

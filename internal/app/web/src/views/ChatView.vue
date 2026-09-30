@@ -14,7 +14,7 @@ import {
   activityLines, keepLastKnown, authorLabel, authorName, chatName, chatSessionList, clock, legacyPeerOld, others, preview,
   when, whoColor, type ActivityLine,
 } from '@/lib/chat'
-import { agentDot, agentName, agentStateText, agentTime, countsText, duration, mostActive, olderPeerNote, olderPeerRow } from '@/lib/agents'
+import { activityDot, agentDot, agentTime, countsText, duration, groupAgents, groupStateText, olderPeerNote, olderPeerRow, worstState } from '@/lib/agents'
 import { openProject } from '@/lib/nav'
 import { fmt, t } from '@/lib/runtime'
 import { pastedFiles } from '@/lib/attachments'
@@ -125,6 +125,7 @@ const paused = computed(() => projectStopped.value || globallyStopped.value)
 // computer without one, its seats.
 interface AgentRow {
   key: string; dot: string; name: string; state: string; time?: string; title?: string; sub?: boolean; kind: string; who?: string
+  line?: string // an older peer's chat line: its kind (running, stale, presence…)
   note?: string; noteTitle?: string // an older peer's: update it to see its agents one by one
 }
 const SEAT_STATE: Record<string, string> = {
@@ -137,14 +138,15 @@ const agentRows = computed<AgentRow[]>(() => {
   for (const member of [...agentMembers.value].sort((a, b) => Number(b.self) - Number(a.self))) {
     if (!member.agents) continue
     covered.add(member.name)
-    member.agents.forEach((agent, i) => {
-      const a = paused.value && member.self ? { ...agent, state: 'paused' } : agent
-      const { time, title } = agentTime(a, now.value)
+    // One row per agent: its sessions under one name, by the most active.
+    const agents = paused.value && member.self ? member.agents.map((a) => ({ ...a, state: 'paused' })) : member.agents
+    for (const g of groupAgents(agents, member.name, member.self)) {
+      const { time, title } = agentTime(g.agent, now.value)
       rows.push({
-        key: 'agent\n' + member.key + '\n' + i, kind: 'agent', dot: agentDot(a.state), name: agentName(a, member.name, member.self),
-        state: agentStateText(a), time, title, who: member.self ? undefined : who(member.name),
+        key: 'agent\n' + member.key + '\n' + g.name, kind: 'agent', dot: agentDot(g.agent.state), name: g.name,
+        state: groupStateText(g), time, title, who: member.self ? undefined : who(member.name),
       })
-    })
+    }
   }
   const self = agentMembers.value.find((member) => member.self)
   if (!self?.agents) {
@@ -161,7 +163,7 @@ const agentRows = computed<AgentRow[]>(() => {
     const job = jobs.includes(row)
     for (const line of [row, ...(row.children || [])]) {
       rows.push({
-        key: line.key, kind: 'activity', dot: line.cls, name: line.cls === 'presence' ? line.name : line.who, state: line.text,
+        key: line.key, kind: 'activity', dot: activityDot(line.cls), line: line.cls, name: line.cls === 'presence' ? line.name : line.who, state: line.text,
         time: since(line) || '—', title: sinceTitle(line), sub: line !== row, who: who(line.name),
         note: job && line === row && row.name !== self?.key ? olderPeerNote(row.name) : undefined,
       })
@@ -179,10 +181,11 @@ const agentRows = computed<AgentRow[]>(() => {
   }
   return rows
 })
-// The button counts the agents at work; its dot shows the most active state.
-const agentTotal = computed(() => agentRows.value.filter((row) => !row.sub && (row.dot === 'running' || row.dot === 'waiting')).length)
+// The button counts the agents at work; its dot shows the worst state (grey:
+// an agent with no session open, yellow: one idle, green: all at work).
+const agentTotal = computed(() => agentRows.value.filter((row) => !row.sub && row.dot === 'running').length)
 const agentCount = computed(() => agentRows.value.filter((row) => !row.sub).length)
-const agentsState = computed(() => paused.value ? 'paused' : mostActive(agentRows.value.map((row) => row.dot)))
+const agentsState = computed(() => paused.value ? 'paused' : worstState(agentRows.value.map((row) => row.dot)))
 // A network project where no computer (this one included) has Claude Code or
 // Codex open: messages to agents wait, so say so with the next step. A pause
 // already explains itself.
@@ -456,7 +459,7 @@ function back() {
                             v-for="row in agentRows"
                             :key="row.key"
                             class="agent-row"
-                            :class="[row.dot, { sub: row.sub }]"
+                            :class="[row.dot, row.line, { sub: row.sub }]"
                             :data-kind="row.kind"
                             :style="row.who ? { '--who': row.who } : undefined"
                           >

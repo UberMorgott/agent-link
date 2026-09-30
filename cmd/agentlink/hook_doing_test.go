@@ -36,6 +36,14 @@ func TestHookTellsDoing(t *testing.T) {
 	if want := []string{"edit/0", "thinking/1", "thinking/2", "thinking/1"}; !slices.Equal(c.f.doing, want) {
 		t.Fatalf("codex doing %v, want %v", c.f.doing, want)
 	}
+	// Its turn ends while k2 runs: the node shows it waiting for its
+	// subagents, down to none when k2 stops.
+	c.f.doing = nil
+	c.run(hookCodex, evStop)
+	c.run(hookCodex, evSubagentStop, `,"agent_id":"k2"`)
+	if want := []string{"subagents/1", "subagents/0"}; !slices.Equal(c.f.doing, want) || !c.f.sessions[c.sid].Idle {
+		t.Fatalf("codex idle doing %v, want %v (idle %v)", c.f.doing, want, c.f.sessions[c.sid].Idle)
+	}
 }
 
 // A doing report is one local call on a change: it adds little to the tool

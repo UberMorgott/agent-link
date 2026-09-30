@@ -93,7 +93,7 @@ func (h *hookSession) tellDoing(kind string) {
 	subs := 0
 	if h.client == hookCodex {
 		subs = len(h.st.Kids)
-		if subs > 0 && kind != node.AgentWaiting {
+		if subs > 0 && kind != node.AgentWaiting && kind != node.AgentSubagents {
 			kind = node.AgentThinking
 		}
 	}
@@ -105,6 +105,15 @@ func (h *hookSession) tellDoing(kind string) {
 	var se *statusError
 	if err == nil || errors.As(err, &se) { // refused (an older node): not asked again until it changes
 		h.st.Doing, h.st.DoingSubs = kind, subs
+	}
+}
+
+// tellKids tells the node the live subagents of a Codex session whose turn
+// just ended (its idle registration forgot them): it shows the session waiting
+// for them. Claude's come with its registration (SessionRequest.Agents).
+func (h *hookSession) tellKids() {
+	if h.client == hookCodex && len(h.st.Kids) > 0 {
+		h.tellDoing(node.AgentSubagents)
 	}
 }
 

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { AGENT_STATUS_VERSION, SUBAGENTS, agentDot, agentName, agentStateText, agentTime, counted, countsText, duration, mostActive, olderPeerRow } from '@/lib/agents'
+import { AGENT_STATUS_VERSION, SESSIONS, SUBAGENTS, activityDot, agentDot, agentName, agentStateText, agentTime, counted, countsText, duration, groupAgents, groupStateText, olderPeerRow, worstState } from '@/lib/agents'
 import { runtime } from '@/lib/runtime'
 
 // The real strings (internal/app/strings.go).
@@ -11,6 +11,7 @@ const AGENT_STRINGS: Record<string, string> = {
   'inbox.agents.doing.command': 'выполняет команду',
   'inbox.agents.doing.read': 'читает код',
   'inbox.agents.doing.waiting': 'ждёт ответа',
+  'inbox.agents.doing.subagents': 'ждёт субагентов',
   'inbox.agents.doing.queued': 'ждёт очереди',
   'inbox.agents.doing.idle': 'ждёт вопроса',
   'inbox.agents.doing.paused': 'на паузе',
@@ -20,6 +21,9 @@ const AGENT_STRINGS: Record<string, string> = {
   'inbox.agents.subagents.one': '{n} субагент',
   'inbox.agents.subagents.few': '{n} субагента',
   'inbox.agents.subagents.many': '{n} субагентов',
+  'inbox.agents.sessions.one': '{n} сессия',
+  'inbox.agents.sessions.few': '{n} сессии',
+  'inbox.agents.sessions.many': '{n} сессий',
   'inbox.agents.count.one': '{n} агент {p}',
   'inbox.agents.count.few': '{n} агента {p}',
   'inbox.agents.count.many': '{n} агентов {p}',
@@ -66,14 +70,42 @@ describe('agent rows', () => {
     expect(countsText(undefined)).toBe('Количество неизвестно')
   })
 
-  it('color the dot by state and the button by the most active one', () => {
-    expect(['thinking', 'edit', 'command', 'read', 'waiting', 'idle', 'off', 'paused', 'queued'].map(agentDot))
-      .toEqual(['running', 'running', 'running', 'running', 'waiting', 'idle', 'off', 'paused', 'off'])
-    expect(mostActive(['idle', 'waiting', 'running'])).toBe('working')
-    expect(mostActive(['idle', 'waiting'])).toBe('waiting')
-    expect(mostActive(['off', 'idle'])).toBe('idle')
-    expect(mostActive(['online', 'off'])).toBe('idle')
-    expect(mostActive([])).toBe('none')
+  it('color the dot green at work, yellow idle, grey with no session, and the button by the worst', () => {
+    expect(['thinking', 'edit', 'command', 'read', 'waiting', 'subagents', 'queued', 'idle', 'paused', 'needs_human', 'off', 'stopped'].map(agentDot))
+      .toEqual(['running', 'running', 'running', 'running', 'running', 'running', 'running', 'idle', 'idle', 'idle', 'off', 'off'])
+    expect(['running', 'queued', 'stale', 'waiting', 'presence', 'idle'].map(activityDot))
+      .toEqual(['running', 'running', 'idle', 'idle', 'idle', 'idle'])
+    expect(worstState(['running', 'running'])).toBe('working')
+    expect(worstState(['running', 'idle'])).toBe('idle')
+    expect(worstState(['running', 'idle', 'off'])).toBe('off')
+    expect(worstState([])).toBe('none')
+  })
+
+  it('say an idle agent waits for its subagents', () => {
+    expect(agentStateText({ provider: 'claude', state: 'subagents', subagents: 2 })).toBe('ждёт субагентов · 2')
+    expect(agentDot('subagents')).toBe('running')
+  })
+
+  it('put the sessions of an agent on one row, by the most active of them', () => {
+    const codex = (state: string, since: string, subagents = 0) => ({ provider: 'codex', state, since, subagents })
+    const groups = groupAgents([
+      codex('idle', '2026-09-29T10:00:00Z'),
+      codex('command', '2026-09-29T10:01:00Z', 1),
+      codex('command', '2026-09-29T10:02:00Z', 2),
+      { provider: 'claude', state: 'idle' },
+    ], 'KPECTIK', false)
+    expect(groups.map((g) => [g.name, g.sessions, g.agent.since, g.agent.subagents])).toEqual([
+      ['KPECTIK · Codex', 3, '2026-09-29T10:02:00Z', 3],
+      ['KPECTIK · Claude', 1, undefined, 0],
+    ])
+    expect(groups.map(groupStateText)).toEqual(['выполняет команду · 3 субагента · 3 сессии', 'ждёт вопроса'])
+    // Waiting for subagents beats idle; the main agent at work beats both.
+    expect(groupAgents([codex('idle', ''), codex('subagents', '', 1)], 'x', true)[0]!.agent.state).toBe('subagents')
+    expect(groupAgents([codex('subagents', '', 1), codex('read', '')], 'x', true)[0]!.agent.state).toBe('read')
+    // Seats keep their own rows.
+    expect(groupAgents([{ provider: 'claude', seat: 'Claude', state: 'off' }, { provider: 'claude', seat: 'Claude 2', state: 'idle' }], 'x', true)
+      .map((g) => g.name)).toEqual(['Мой Claude', 'Мой Claude 2'])
+    expect([1, 2, 5].map((n) => counted(SESSIONS, n))).toEqual(['1 сессия', '2 сессии', '5 сессий'])
   })
 
   it('time a state since it began, not a pause or an old turn', () => {
@@ -91,7 +123,7 @@ describe('agent rows', () => {
   it('show an older peer on the line with its counts and what to update', () => {
     const now = Date.parse('2026-09-29T22:37:00Z')
     const on = olderPeerRow({ name: 'KPECTIK', counts: { codex: 3 }, online: true, seen: '2026-09-29T22:34:30Z', app: '0.6.41' }, now)
-    expect(on).toMatchObject({ dot: 'online', state: '3 агента Codex · на связи', time: '2 мин', noteTitle: 'у KPECTIK сейчас agent-link 0.6.41' })
+    expect(on).toMatchObject({ dot: 'idle', state: '3 агента Codex · на связи', time: '2 мин', noteTitle: 'у KPECTIK сейчас agent-link 0.6.41' })
     expect(on.title).toMatch(/^на связи с \d\d:\d\d/)
     expect(on.note).toBe('обновите agent-link у KPECTIK до 0.6.42+, чтобы видеть, что делают агенты')
     expect(AGENT_STATUS_VERSION).toBe('0.6.42')

@@ -224,6 +224,7 @@
   .chat-tool-dot.working { background: var(--app-status-working); animation: act-pulse 1.4s ease-in-out infinite; }
   .chat-tool-dot.paused { background: var(--app-off); }
   .chat-tool-dot.waiting { background: var(--app-status-waiting); }
+  .chat-tool-dot.idle { background: var(--app-off); }
   .chat-tool-count { font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
   /* A thin line under the header while the agents are paused. */
   .chat-pause-banner {
@@ -240,11 +241,10 @@
   }
   .agent-row:hover { background: var(--app-soft); }
   .agent-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-muted); }
+  /* Three dots: green at work (its subagents too), yellow open but idle, grey no session open. */
   .agent-row.running .agent-dot { background: var(--app-status-working); animation: act-pulse 1.4s ease-in-out infinite; }
-  .agent-row.paused .agent-dot, .agent-row.stale .agent-dot { background: var(--app-off); }
-  .agent-row.waiting .agent-dot { background: var(--app-status-waiting); }
-  .agent-row.off .agent-dot, .agent-row.idle .agent-dot { opacity: 0.55; }
-  .agent-row.online .agent-dot { background: var(--app-on); }
+  .agent-row.idle .agent-dot { background: var(--app-off); }
+  .agent-row.off .agent-dot { opacity: 0.55; }
   .agent-note { grid-column: 2 / -1; margin-top: -0.15rem; color: var(--app-muted); font-size: 0.72rem; line-height: 1.3; }
   .agent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--who, var(--app-text)); }
   .agent-row.sub .agent-name { padding-left: 0.75rem; font-weight: 500; }

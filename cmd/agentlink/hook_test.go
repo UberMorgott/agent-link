@@ -1138,18 +1138,15 @@ func TestHookWaitLeavesBusySessionAndEnds(t *testing.T) {
 	env.now = func() time.Time { return c.now }
 	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 200 * time.Millisecond, busyFor: time.Hour, stale: time.Minute}
 	var errw bytes.Buffer
-	// The state still says busy (the Stop hook that started the waiter has not
-	// saved yet) while the node already has it idle: the waiter's heartbeat
-	// must not undo that.
-	idleReq := c.f.sessions[c.sid]
-	idleReq.Idle = true
-	c.f.sessions[c.sid] = idleReq
+	// The waiter's keep-alive tells the node the idle state the hooks last
+	// told it (busy here), under the session's lock: a Stop hook saving its
+	// idle cannot race it.
 	o.heartbeat = 0
 	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &errw, env, o); code != 0 || errw.Len() != 0 || len(c.f.ackedIDs()) != 0 {
 		t.Fatalf("busy: code %d stderr %q acked %v", code, errw.String(), c.f.ackedIDs())
 	}
-	if !c.f.sessions[c.sid].Idle {
-		t.Fatal("a busy waiter's heartbeat reported the idle session busy")
+	if s := c.f.sessions[c.sid]; s.Idle || !s.Heartbeat {
+		t.Fatalf("a busy waiter's keep-alive: %+v", s)
 	}
 	o.heartbeat = time.Hour
 	// One waiter per session.
@@ -1173,6 +1170,40 @@ func TestHookWaitLeavesBusySessionAndEnds(t *testing.T) {
 	start := time.Now()
 	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &errw, env, o); code != 0 || time.Since(start) > time.Second {
 		t.Fatalf("ended: %d after %v", code, time.Since(start))
+	}
+}
+
+// A session that just started a subagent is at work: the waiter's keep-alive
+// must not call it idle (it did while it judged by the last event, so an agent
+// at work showed as waiting for a question). A background subagent's events
+// after the parent's turn ended keep the parent idle.
+func TestHookKeepAliveFollowsTurnNotLastEvent(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evPrompt, `,"prompt":"go"`)
+	c.run(hookClaude, evSubagentStart, `,"agent_id":"a1","agent_type":"general-purpose"`)
+	env := c.env
+	env.now = func() time.Time { return c.now }
+	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: 0, life: 100 * time.Millisecond, busyFor: time.Hour, stale: time.Minute}
+	var errw bytes.Buffer
+	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &errw, env, o); code != 0 {
+		t.Fatalf("waiter: %d %q", code, errw.String())
+	}
+	if s := c.f.sessions[c.sid]; s.Idle || !s.Heartbeat {
+		t.Fatalf("keep-alive of a session at work: %+v", s)
+	}
+	c.run(hookClaude, evStop)
+	if !c.f.sessions[c.sid].Idle {
+		t.Fatal("stop: not idle")
+	}
+	c.now = c.now.Add(2 * hookHeartbeat) // a heartbeat is due at the next event
+	c.run(hookClaude, evPreTool, `,"agent_id":"a1","agent_type":"general-purpose","tool_name":"Read"`)
+	if s := c.f.sessions[c.sid]; !s.Idle || s.Heartbeat || !slices.Contains(s.Agents, "a1") {
+		t.Fatalf("a subagent's tool call made the idle parent busy: %+v", s)
+	}
+	c.run(hookClaude, evPrompt, `,"prompt":"next"`)
+	if c.f.sessions[c.sid].Idle {
+		t.Fatal("the parent's own prompt left it idle")
 	}
 }
 

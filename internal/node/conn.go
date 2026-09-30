@@ -340,7 +340,7 @@ func (n *Node) writeLoop(pc *peerConn) {
 			p := n.presenceForCaps(pc.areas, pc.has(CapAgentCounts))
 			var agents []AgentStatus
 			if pc.has(CapAgentStatus) {
-				agents = n.AgentStatuses("")
+				agents = forPeer(n.AgentStatuses(""), pc.has(CapAgentSubagents))
 			}
 			if told == nil || !slices.Equal(p, told) || !slices.Equal(agents, toldAgents) {
 				if pc.write(frame{Type: framePresence, Presence: p, Agents: agents}) != nil {

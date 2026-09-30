@@ -18,19 +18,24 @@ import (
 // Older peers get the per-provider counts alone (CapAgentCounts).
 const CapAgentStatus = "agent-status-v1"
 
+// CapAgentSubagents: the peer knows AgentSubagents; an older peer gets
+// AgentWaiting for it (forPeer).
+const CapAgentSubagents = "agent-subagents-v1"
+
 // Agent states (AgentStatus.State).
 const (
-	AgentThinking = "thinking"    // in a turn, no tool known to run
-	AgentEditing  = "edit"        // edits files (Edit, Write, apply_patch…)
-	AgentCommand  = "command"     // runs a shell command
-	AgentReading  = "read"        // reads or searches code, or the web
-	AgentWaiting  = "waiting"     // waits for another agent's answer (discuss)
-	AgentQueued   = "queued"      // its turn waits for a free slot
-	AgentIdle     = "idle"        // live, waits for a question (a message wakes it)
-	AgentPaused   = "paused"      // the project's (or every) agent is paused
-	AgentStopped  = "stopped"     // a seat the person stopped
-	AgentOff      = "off"         // a seat with no process: a question starts it
-	AgentHuman    = "needs_human" // a seat whose turns keep failing
+	AgentThinking  = "thinking"    // in a turn, no tool known to run
+	AgentEditing   = "edit"        // edits files (Edit, Write, apply_patch…)
+	AgentCommand   = "command"     // runs a shell command
+	AgentReading   = "read"        // reads or searches code, or the web
+	AgentWaiting   = "waiting"     // waits for another agent's answer (discuss)
+	AgentSubagents = "subagents"   // its turn ended, its subagents still run
+	AgentQueued    = "queued"      // its turn waits for a free slot
+	AgentIdle      = "idle"        // live, waits for a question (a message wakes it)
+	AgentPaused    = "paused"      // the project's (or every) agent is paused
+	AgentStopped   = "stopped"     // a seat the person stopped
+	AgentOff       = "off"         // a seat with no process: a question starts it
+	AgentHuman     = "needs_human" // a seat whose turns keep failing
 )
 
 // maxAgentStatus bounds a peer's AgentStatus list and its fields.
@@ -53,7 +58,7 @@ type AgentStatus struct {
 }
 
 // agentStates are the states a peer may send.
-var agentStates = []string{AgentThinking, AgentEditing, AgentCommand, AgentReading, AgentWaiting, AgentQueued,
+var agentStates = []string{AgentThinking, AgentEditing, AgentCommand, AgentReading, AgentWaiting, AgentSubagents, AgentQueued,
 	AgentIdle, AgentPaused, AgentStopped, AgentOff, AgentHuman}
 
 // busyStates are the states of an agent at work (the popover's count).
@@ -80,9 +85,10 @@ func ToolKind(tool string) string {
 	return AgentThinking
 }
 
-// validDoing reports a state a session's hooks may report (SessionDoing).
+// validDoing reports a state a session's hooks may report (SessionDoing):
+// a busy one, or AgentSubagents for an idle session's subagent count alone.
 func validDoing(s string) bool {
-	return slices.Contains(busyStates, s)
+	return s == AgentSubagents || slices.Contains(busyStates, s)
 }
 
 // agentDoing is what a running agent does, since at, with subs subagents.
@@ -95,7 +101,8 @@ type agentDoing struct {
 // SessionDoingRequest is the body of POST /sessions/{id}/doing: what the
 // session's main agent does now (a busy state: its hooks' tool kind) and how
 // many subagents it runs (a Codex session; Claude's come with its
-// registration, SessionRequest.Agents).
+// registration, SessionRequest.Agents). Doing AgentSubagents reports the
+// subagents alone (a Codex session whose turn ended while they run).
 type SessionDoingRequest struct {
 	Doing     string `json:"doing"`
 	Subagents int    `json:"subagents,omitempty"`
@@ -115,11 +122,15 @@ func (n *Node) SessionDoing(sid string, req SessionDoingRequest) error {
 		r.mu.Unlock()
 		return ErrUnknownSession
 	}
-	changed := s.Doing != req.Doing || s.Subs != req.Subagents
-	if s.Doing != req.Doing {
-		s.DoingAt = now
+	changed := s.Subs != req.Subagents
+	if req.Doing != AgentSubagents {
+		changed = changed || s.Doing != req.Doing
+		if s.Doing != req.Doing {
+			s.DoingAt = now
+		}
+		s.Doing = req.Doing
 	}
-	s.Doing, s.Subs = req.Doing, req.Subagents
+	s.Subs = req.Subagents
 	r.mu.Unlock()
 	if changed {
 		n.presenceChanged()
@@ -167,7 +178,11 @@ func (n *Node) setSeatRan(seat, model, effort string) {
 func sessionAgent(s Session, now time.Time) AgentStatus {
 	a := AgentStatus{Provider: s.Provider, Subagents: max(len(s.liveAgents(now)), s.Subs)}
 	if s.Idle {
+		// Its turn ended; subagents it started still run: it waits for them.
 		a.State, a.Since = AgentIdle, s.activeAt()
+		if a.Subagents > 0 {
+			a.State = AgentSubagents
+		}
 		return a
 	}
 	a.State = cmp.Or(s.Doing, AgentThinking)
@@ -239,6 +254,22 @@ func (n *Node) AgentStatuses(area string) []AgentStatus {
 			a.State = AgentPaused
 		}
 		out = append(out, a.clean())
+	}
+	return out
+}
+
+// forPeer is list as a peer with caps reads it: one without
+// CapAgentSubagents gets AgentWaiting for AgentSubagents (it would drop the
+// whole list over a state it does not know).
+func forPeer(list []AgentStatus, subagents bool) []AgentStatus {
+	if subagents {
+		return list
+	}
+	out := slices.Clone(list)
+	for i := range out {
+		if out[i].State == AgentSubagents {
+			out[i].State = AgentWaiting
+		}
 	}
 	return out
 }

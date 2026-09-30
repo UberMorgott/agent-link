@@ -250,3 +250,40 @@ func TestStreamDoing(t *testing.T) {
 		t.Fatalf("codex: %v", got)
 	}
 }
+
+// An idle session whose subagents still run waits for them (Claude: the
+// subagents of its registration; Codex: the count its hooks tell); a peer
+// without CapAgentSubagents reads it as waiting.
+func TestIdleSessionWaitsForSubagents(t *testing.T) {
+	n := newTestNode(t, "a", testSecret, nil, t.TempDir(), listen(t), nil)
+	folder := t.TempDir()
+	n.SetFolders(folder, nil)
+	for _, req := range []SessionRequest{
+		{SessionID: "claude", Provider: ProviderClaude, Folder: folder, Idle: true, Agents: []string{"a1", "a2"}},
+		{SessionID: "codex", Provider: ProviderCodex, Folder: folder, Idle: true},
+	} {
+		if _, err := n.RegisterSession(req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := n.SessionDoing("codex", SessionDoingRequest{Doing: AgentSubagents, Subagents: 3}); err != nil {
+		t.Fatal(err)
+	}
+	got := n.AgentStatuses("")
+	if len(got) != 2 || got[0].State != AgentSubagents || got[0].Subagents != 2 || got[1].State != AgentSubagents || got[1].Subagents != 3 {
+		t.Fatalf("agents %+v", got)
+	}
+	if old := forPeer(got, false); old[0].State != AgentWaiting || old[0].Subagents != 2 || got[0].State != AgentSubagents {
+		t.Fatalf("older peer %+v, own %+v", old, got)
+	}
+	if !validAgentStatus(got) {
+		t.Fatal("a newer peer's subagents state refused")
+	}
+	// The subagents are done: the session waits for a question again.
+	if err := n.SessionDoing("codex", SessionDoingRequest{Doing: AgentSubagents}); err != nil {
+		t.Fatal(err)
+	}
+	if a := n.AgentStatuses("")[1]; a.State != AgentIdle || a.Subagents != 0 {
+		t.Fatalf("codex after its subagents %+v", a)
+	}
+}

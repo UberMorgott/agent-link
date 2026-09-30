@@ -133,7 +133,7 @@ const (
 )
 
 // Capabilities is the list sent in hello by a legacy node; a project node adds CapProjects.
-var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE, CapChat, CapReceipts, CapPresence, CapAgentCounts, CapAgentStatus, CapChatMembers, CapAttachments}
+var Capabilities = []string{CapCaps, CapHeartbeat, CapActivity, CapJobReattach, CapMembers, CapPAKE, CapChat, CapReceipts, CapPresence, CapAgentCounts, CapAgentStatus, CapAgentSubagents, CapChatMembers, CapAttachments}
 
 // caps is the capability list this node announces.
 func (n *Node) caps() []string {

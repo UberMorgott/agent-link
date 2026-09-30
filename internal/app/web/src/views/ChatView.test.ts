@@ -132,6 +132,7 @@ beforeEach(() => {
     'inbox.agents.doing.edit': 'пишет код', 'inbox.agents.doing.waiting': 'ждёт ответа', 'inbox.agents.doing.off': 'запустится по вопросу',
     'inbox.agents.doing.command': 'выполняет команду', 'inbox.agents.mine': 'Мой {name}',
     'inbox.agents.subagents.one': '{n} субагент', 'inbox.agents.subagents.few': '{n} субагента', 'inbox.agents.subagents.many': '{n} субагентов',
+    'inbox.agents.sessions.one': '{n} сессия', 'inbox.agents.sessions.few': '{n} сессии', 'inbox.agents.sessions.many': '{n} сессий',
     'inbox.agents.count.one': '{n} агент {p}', 'inbox.agents.count.few': '{n} агента {p}', 'inbox.agents.count.many': '{n} агентов {p}',
     'inbox.agents.online': 'на связи', 'inbox.agents.unreachable': 'не на связи', 'inbox.agents.online_title': 'на связи с {at}',
     'inbox.agents.old_peer': 'обновите agent-link у {name} до {v}+, чтобы видеть, что делают агенты',
@@ -177,8 +178,8 @@ describe('the open chat', () => {
     // Icon buttons: no caption text, the label in aria-label and the tooltip.
     expect(text(pause).trim()).toBe('')
     expect(pause.title).toBe('Приостановить агентов')
-    expect(agents.dataset.state).toBe('working')
-    expect(agents.querySelector('.chat-tool-dot')!.className).toContain('working')
+    expect(agents.dataset.state).toBe(agents.querySelector('.chat-tool-dot')!.className.replace('chat-tool-dot', '').trim())
+    expect(['working', 'idle', 'off']).toContain(agents.dataset.state)
     expect(pause.compareDocumentPosition($('#send_button')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     // Not in the header, not floating between the timeline and the composer.
     expect($('#chat_header')).toBeNull()
@@ -395,7 +396,7 @@ describe('the open chat', () => {
     expect(members.map((row) => text(row.querySelector('.agent-name')))).toEqual(['bob', 'карл & sons'])
     expect(text(members[0]!.querySelector('.agent-state'))).toBe('1 агент Claude · 2 агента Codex · на связи')
     expect(text(members[1]!.querySelector('.agent-state'))).toBe('inbox.activity.unknown_count · на связи')
-    expect(members[0]!.className).toContain('online')
+    expect(members[0]!.className).toContain('idle') // on the line, state unknown: yellow
     expect(text(members[0]!.querySelector('.agent-time'))).toBe('—')
     expect(text(members[1]!.querySelector('.agent-note'))).toBe('обновите agent-link у карл & sons до 0.6.42+, чтобы видеть, что делают агенты')
 
@@ -420,6 +421,7 @@ describe('the open chat', () => {
         ] },
         { name: 'KPECTIK', online: true, agent: true, agents: [
           { provider: 'codex', state: 'waiting', subagents: 5, since },
+          { provider: 'codex', state: 'idle', since }, // a second session of the same agent: one row
           { provider: 'codex', seat: 'Codex 2', state: 'idle', since },
         ] },
         { name: 'old', online: true, agent: true, agent_counts: { codex: 2 }, seen: since, app: '0.6.41' }, // an older peer: counts alone
@@ -432,20 +434,31 @@ describe('the open chat', () => {
       'Мой Codex думает · 2 субагента',
       'Мой Claude пишет код · 3 субагента',
       'Мой Claude 2 запустится по вопросу',
-      'KPECTIK · Codex ждёт ответа · 5 субагентов',
+      'KPECTIK · Codex ждёт ответа · 5 субагентов · 2 сессии',
       'KPECTIK · Codex 2 ждёт вопроса',
       'old 2 агента Codex · на связи',
     ])
-    expect(rows.map((row) => row.className.replace('agent-row', '').trim())).toEqual(['running', 'running', 'off', 'waiting', 'idle', 'online'])
+    expect(rows.map((row) => row.className.replace('agent-row', '').trim())).toEqual(['running', 'running', 'off', 'running', 'idle', 'idle'])
     expect(text(rows[0]!.querySelector('.agent-time'))).toBe('1 мин')
     expect(text(rows[5]!.querySelector('.agent-time'))).toBe('1 мин')
     expect(rows[5]!.querySelector('.agent-time')!.getAttribute('title')).toMatch(/^на связи с /)
     expect(text(rows[5]!.querySelector('.agent-note'))).toBe('обновите agent-link у old до 0.6.42+, чтобы видеть, что делают агенты')
     expect(rows.slice(0, 5).every((row) => !row.querySelector('.agent-note'))).toBe(true)
     expect(text(rows[2]!.querySelector('.agent-time'))).toBe('')
-    // The button: 3 at work (waiting counts), its dot the most active state.
+    // The button: 3 at work (waiting counts), its dot the worst state: grey
+    // while an agent has no session open, else yellow while one is idle.
     const toggle = $('#chat_agents_toggle')!
     expect(text(toggle.querySelector('.chat-tool-count'))).toBe('3')
+    expect(toggle.dataset.state).toBe('off')
+    projects.list = (projects.list || []).map((project) => project.id === P ? {
+      ...project, members: project.members!.filter((m) => m.name !== 'old').map((m) => m.self ? { ...m, agents: m.agents!.slice(0, 2) } : m),
+    } : project)
+    await settle()
+    expect(toggle.dataset.state).toBe('idle')
+    projects.list = (projects.list || []).map((project) => project.id === P ? {
+      ...project, members: project.members!.filter((m) => m.self),
+    } : project)
+    await settle()
     expect(toggle.dataset.state).toBe('working')
   })
 
