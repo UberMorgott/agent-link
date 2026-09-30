@@ -360,6 +360,21 @@ claude plugin marketplace add UberMorgott/agent-link
 claude plugin install agent-link@agent-link
 ```
 
+**Codex.** The same folder is a Codex plugin (`.codex-plugin/plugin.json`): it brings the MCP tools
+to interactive Codex sessions. The desktop app installs it at start when this machine has Codex
+and Codex lists no agent-link plugin yet (a disabled one stays disabled), with Codex's own
+commands, touching no other plugin:
+
+```powershell
+codex plugin marketplace add UberMorgott/agent-link   # only when the marketplace is missing
+codex plugin add agent-link@agent-link
+```
+
+A failed install is shown under the working folder in the settings. Codex runs a plugin's hooks
+only after you trust them: open Codex once and pick «Trust all and continue» (or `/hooks`), then
+restart agentlink. Until then the folder hooks keep delivering; once the plugin's hooks are
+trusted the app removes its Codex folder hooks, so no hook runs twice.
+
 **Updating the plugin.** Claude Code refreshes a third-party marketplace only when its auto-update
 is on (off by default), so the installed skill, hooks and `.mcp.json` stay at the commit of the
 install (`~/.claude/plugins/known_marketplaces.json` shows `lastUpdated`). The desktop app checks

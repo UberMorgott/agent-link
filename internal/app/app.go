@@ -125,6 +125,8 @@ type App struct {
 	hookClient  string            // agent of the last hook sync, "both", or "" for none
 	hookClients []string          // providers with folder hooks after the last sync
 	hookStates  map[string]string // clean folder -> Hook* state of the last sync
+	// codexPluginErr is why the last install of the Codex plugin failed.
+	codexPluginErr string
 	// owners is what was seen of each owned local chat's owner (retire.go).
 	owners map[string]ownerWatch
 	// retiring are the owned chats whose seats go now (retireChat).

@@ -31,6 +31,7 @@ const agentShown = reactive<Record<string, string>>({ claude: '', codex: '' })
 const workDirKey = ref("settings.work_dir.current")
 const workDirHooks = ref('')
 const hooksCodex = ref(false)
+const codexPlugin = ref('')
 const advancedOpen = ref(false)
 const picking = ref(false)
 const pickingAgent = reactive<Record<string, boolean>>({ claude: false, codex: false })
@@ -278,6 +279,15 @@ async function showHooks() {
   workDirHooks.value = hookText(h.client, h.work_dir)
   for (const r of rows.value) r.hooks = hookText(h.client, projects[r.area.trim()])
   hooksCodex.value = (h.clients || [h.client]).includes('codex') && [h.work_dir, ...Object.values(projects)].includes('ok')
+  const key = pluginKeys[h.codex_plugin || '']
+  codexPlugin.value = key ? fmt(key, { err: h.codex_plugin_error || '' }) : ''
+}
+
+// pluginKeys: the line of each state of the Codex plugin (HookStatus.codex_plugin).
+const pluginKeys: Record<string, string> = {
+  on: "settings.hooks.plugin_on",
+  untrusted: "settings.hooks.plugin_untrusted",
+  error: "settings.hooks.plugin_error",
 }
 
 // --- updates: own buttons and switch, saved by their own requests ---
@@ -505,6 +515,13 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
             class="hint"
           >
             {{ t("settings.hooks.codex") }}
+          </p>
+          <p
+            v-if="codexPlugin"
+            id="codex_plugin"
+            class="hint"
+          >
+            {{ codexPlugin }}
           </p>
           <p class="hint">
             {{ t("settings.work_dir.hint") }}

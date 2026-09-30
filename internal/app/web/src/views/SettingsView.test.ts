@@ -46,6 +46,19 @@ describe('settings', () => {
     expect($('#work_dir_hooks')!.textContent!.trim()).toBe('Хуки: Оба агента ✓')
   })
 
+  it('shows the state of the Codex plugin with its install error', async () => {
+    runtime.strings = { 'settings.hooks.plugin_error': 'Плагин не установлен: {err}' }
+    await openSettings({ node: 'n' }, (body) => ({ saved: true, settings: body }), true, { client: '', codex_plugin: 'error', codex_plugin_error: 'no network' })
+    await settle()
+    expect($('#codex_plugin')!.textContent!.trim()).toBe('Плагин не установлен: no network')
+  })
+
+  it('shows no Codex plugin line without a plugin state', async () => {
+    await openSettings({ node: 'n' }, (body) => ({ saved: true, settings: body }), true, { client: '' })
+    await settle()
+    expect($('#codex_plugin')).toBeNull()
+  })
+
   it('render saved projects as rows and save a row only when it is complete and unique', async () => {
     const { sent } = await openSettings({ node: 'n', areas: ['site'], projects: { site: { dir: 'E:\\site' } } }, (body) => ({ saved: true, settings: body }))
     const rows = () => $$('#projects > li')

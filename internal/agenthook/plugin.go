@@ -2,6 +2,8 @@ package agenthook
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,25 +42,56 @@ func configDir(env, name string) string {
 	return filepath.Join(home, name)
 }
 
-// codexPluginEnabled: Codex's home (CODEX_HOME, else ~/.codex) turns a plugin
-// on in config.toml ([plugins."agent-link@<marketplace>"] enabled = true) and
-// installs it under plugins/cache/<marketplace>/agent-link.
-func codexPluginEnabled() bool {
-	home := configDir("CODEX_HOME", ".codex")
+// codexConfig is what agentlink reads of Codex's config.toml: the plugins
+// ([plugins."name@marketplace"] enabled), the marketplaces and the hook trust
+// ([hooks.state."<source>:<event>:<i>:<j>"] trusted_hash).
+type codexConfig struct {
+	Plugins map[string]struct {
+		Enabled bool `toml:"enabled"`
+	} `toml:"plugins"`
+	Marketplaces map[string]struct{} `toml:"marketplaces"`
+	Hooks        struct {
+		State map[string]struct {
+			TrustedHash string `toml:"trusted_hash"`
+		} `toml:"state"`
+	} `toml:"hooks"`
+}
+
+// readCodexConfig reads config.toml in Codex's home (CODEX_HOME, else
+// ~/.codex); a missing file is an empty config, false when there is no home
+// or the file does not parse.
+func readCodexConfig() (home string, cfg codexConfig, ok bool) {
+	home = configDir("CODEX_HOME", ".codex")
 	if home == "" {
-		return false
+		return "", cfg, false
 	}
-	var cfg struct {
-		Plugins map[string]struct {
-			Enabled bool `toml:"enabled"`
-		} `toml:"plugins"`
+	_, err := toml.DecodeFile(filepath.Join(home, "config.toml"), &cfg)
+	return home, cfg, err == nil || errors.Is(err, fs.ErrNotExist)
+}
+
+// hooksTrusted reports whether the person trusted a hook of plugin id: Codex
+// runs a plugin's hooks only after review (keys "<id>:<hooks file>:...").
+func (c codexConfig) hooksTrusted(id string) bool {
+	for key, s := range c.Hooks.State {
+		if strings.HasPrefix(key, id+":") && s.TrustedHash != "" {
+			return true
+		}
 	}
-	if _, err := toml.DecodeFile(filepath.Join(home, "config.toml"), &cfg); err != nil {
+	return false
+}
+
+// codexPluginEnabled: Codex turns a plugin on in config.toml
+// ([plugins."agent-link@<marketplace>"] enabled = true), installs it under
+// plugins/cache/<marketplace>/agent-link and runs its hooks only once the
+// person trusted them; until then the folder hooks deliver.
+func codexPluginEnabled() bool {
+	home, cfg, ok := readCodexConfig()
+	if !ok {
 		return false
 	}
 	for id, p := range cfg.Plugins {
 		name, market, _ := strings.Cut(id, "@")
-		if p.Enabled && name == PluginName && market != "" && IsDir(filepath.Join(home, "plugins", "cache", market, name)) {
+		if p.Enabled && name == PluginName && market != "" && IsDir(filepath.Join(home, "plugins", "cache", market, name)) && cfg.hooksTrusted(id) {
 			return true
 		}
 	}

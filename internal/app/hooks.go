@@ -15,7 +15,6 @@ import (
 	"slices"
 
 	"github.com/UberMorgott/agent-link/internal/agenthook"
-	"github.com/UberMorgott/agent-link/internal/settings"
 	"github.com/UberMorgott/agent-link/internal/worker"
 )
 
@@ -34,7 +33,18 @@ type HookStatus struct {
 	Clients  []string          `json:"clients,omitempty"`
 	WorkDir  string            `json:"work_dir,omitempty"`
 	Projects map[string]string `json:"projects,omitempty"`
+	// CodexPlugin is the agent-link plugin in Codex: Plugin* ("" when Codex
+	// has none and none was tried); CodexPluginError why the install failed.
+	CodexPlugin      string `json:"codex_plugin,omitempty"`
+	CodexPluginError string `json:"codex_plugin_error,omitempty"`
 }
+
+// States of the Codex plugin.
+const (
+	PluginOn        = "on"        // enabled, its hooks trusted: it delivers
+	PluginUntrusted = "untrusted" // enabled, its hooks await the person's review
+	PluginError     = "error"     // the install failed
+)
 
 // installedHook is a folder this app put the hook of client into; the list is
 // kept so a changed folder or agent takes the old entries out again.
@@ -56,12 +66,7 @@ func (a *App) syncHooksLocked() {
 	}
 	var clients []string
 	for _, provider := range []string{worker.HandlerClaude, worker.HandlerCodex} {
-		available := a.s.Handler == provider || a.s.ProgramPath(provider) != ""
-		if !available && a.Agents.LookPath != nil {
-			_, source := a.Agents.Resolve(provider, "")
-			available = source != "" && source != settings.AgentMissing
-		}
-		if available && !agenthook.PluginEnabled(provider) {
+		if _, available := a.agentProgram(a.s, provider); available && !agenthook.PluginEnabled(provider) {
 			clients = append(clients, provider)
 		}
 	}
@@ -149,6 +154,14 @@ func (a *App) HookStatus() HookStatus {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	st := HookStatus{Client: a.hookClient, Clients: slices.Clone(a.hookClients)}
+	switch {
+	case a.codexPluginErr != "":
+		st.CodexPlugin, st.CodexPluginError = PluginError, a.codexPluginErr
+	case agenthook.PluginEnabled(agenthook.Codex):
+		st.CodexPlugin = PluginOn
+	case agenthook.CheckPlugin(agenthook.Codex).ID != "":
+		st.CodexPlugin = PluginUntrusted
+	}
 	if st.Client == "" {
 		return st
 	}

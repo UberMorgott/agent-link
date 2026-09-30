@@ -406,6 +406,8 @@ export interface HookStatus {
   clients?: string[]
   work_dir?: string
   projects?: Record<string, string>
+  codex_plugin?: string
+  codex_plugin_error?: string
 }
 
 export interface SaveResult {

@@ -47,3 +47,54 @@ func RefreshPlugin(ctx context.Context, client, program string, run Runner) (Plu
 	}
 	return CheckPlugin(client), nil
 }
+
+// Marketplace is the marketplace this repository publishes the plugin in
+// (.claude-plugin/marketplace.json) and MarketplaceSource where Codex gets it.
+const (
+	Marketplace       = "agent-link"
+	MarketplaceSource = "UberMorgott/agent-link"
+)
+
+// CodexInstallCommands are Codex's own commands that install and enable the
+// plugin (program first): the marketplace is added unless configured. nil
+// when Codex already lists an agent-link plugin in any marketplace, enabled
+// or not: a disabled one is the person's choice and stays so.
+func CodexInstallCommands() [][]string {
+	_, cfg, ok := readCodexConfig()
+	if !ok {
+		return nil
+	}
+	for id := range cfg.Plugins {
+		if name, _, _ := strings.Cut(id, "@"); name == PluginName {
+			return nil
+		}
+	}
+	var cmds [][]string
+	if _, ok := cfg.Marketplaces[Marketplace]; !ok {
+		cmds = append(cmds, []string{"codex", "plugin", "marketplace", "add", MarketplaceSource})
+	}
+	return append(cmds, []string{"codex", "plugin", "add", PluginName + "@" + Marketplace})
+}
+
+// InstallCodexPlugin installs and enables the agent-link plugin in Codex with
+// its own commands (CodexInstallCommands) run through program (the resolved
+// codex executable); it touches no other plugin and never the plugin cache.
+// It returns whether it ran anything.
+func InstallCodexPlugin(ctx context.Context, program string, run Runner) (bool, error) {
+	cmds := CodexInstallCommands()
+	if len(cmds) == 0 {
+		return false, nil
+	}
+	if program == "" {
+		return false, errors.New(Codex + " not found")
+	}
+	for _, cmd := range cmds {
+		cctx, cancel := context.WithTimeout(ctx, refreshTimeout)
+		out, err := run(cctx, program, cmd[1:]...)
+		cancel()
+		if err != nil {
+			return true, fmt.Errorf("%s: %w: %s", strings.Join(cmd, " "), err, strings.TrimSpace(string(out)))
+		}
+	}
+	return true, nil
+}

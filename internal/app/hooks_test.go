@@ -113,6 +113,7 @@ func TestFolderHooksFollowSettings(t *testing.T) {
 func TestNoFolderHooksWithPlugin(t *testing.T) {
 	cfg := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	t.Setenv("CODEX_HOME", t.TempDir())
 	setPlugin := func(on bool) {
 		t.Helper()
 		settings := `{"enabledPlugins":{"agent-link@agent-link":false}}`

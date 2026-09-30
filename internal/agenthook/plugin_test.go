@@ -54,15 +54,18 @@ func TestPluginEnabled(t *testing.T) {
 }
 
 // Codex's plugin state: config.toml's [plugins."name@marketplace"] enabled
-// and the installed copy under plugins/cache/<marketplace>/<name>.
+// and the installed copy under plugins/cache/<marketplace>/<name>, whose
+// hooks count only once the person trusted them ([hooks.state."<id>:..."]).
 func TestCodexPluginEnabled(t *testing.T) {
-	const cfg = "model = \"x\"\n[hooks.state.'C:\\a\\hooks.json:stop:0:0']\ntrusted_hash = \"sha256:1\"\n\n[plugins.\"agent-link@mkt\"]\nenabled = %s\n"
+	const cfg = "model = \"x\"\n[hooks.state.'C:\\a\\hooks.json:stop:0:0']\ntrusted_hash = \"sha256:1\"\n\n[hooks.state.\"agent-link@mkt:hooks/codex-hooks.json:session_start:0:0\"]\ntrusted_hash = \"sha256:2\"\n\n[plugins.\"agent-link@mkt\"]\nenabled = %s\n"
+	const untrusted = "[hooks.state.'C:\\a\\hooks.json:stop:0:0']\ntrusted_hash = \"sha256:1\"\n[hooks.state.\"agent-link@other:hooks/codex-hooks.json:stop:0:0\"]\ntrusted_hash = \"sha256:3\"\n[plugins.\"agent-link@mkt\"]\nenabled = true\n"
 	for name, tc := range map[string]struct {
 		config    string
 		installed bool
 		want      bool
 	}{
 		"enabled":       {fmt.Sprintf(cfg, "true"), true, true},
+		"untrusted":     {untrusted, true, false},
 		"disabled":      {fmt.Sprintf(cfg, "false"), true, false},
 		"not installed": {fmt.Sprintf(cfg, "true"), false, false},
 		"not listed":    {"[plugins.\"other@mkt\"]\nenabled = true\n", true, false},
