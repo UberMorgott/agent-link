@@ -74,20 +74,25 @@ func (a *App) removeMember(name string) error {
 			addrs = m.Addrs
 		}
 	}
-	if err := a.n.RemoveMember(name); err != nil {
-		return err
-	}
-	s := a.s
+	// As removeBindingMember: the settings are saved first, so a failed save
+	// leaves the member in place and a failed removal puts them back.
+	old, s := a.s, a.s
 	s.Peers = slices.DeleteFunc(slices.Clone(s.Peers), func(p config.Peer) bool {
 		return p.Name == name || slices.Contains(addrs, p.Addr)
 	})
 	if len(s.Peers) == len(a.s.Peers) {
-		return nil
+		return a.n.RemoveMember(name)
 	}
 	if len(s.Peers) == 0 {
 		s.Peers = nil
 	}
 	if err := settings.Save(a.path, s); err != nil {
+		return err
+	}
+	if err := a.n.RemoveMember(name); err != nil {
+		if rerr := settings.Save(a.path, old); rerr != nil {
+			return errors.Join(err, rerr)
+		}
 		return err
 	}
 	a.s = s
@@ -103,28 +108,14 @@ func (a *App) memberAction(do func(req node.MemberRequest) error) http.HandlerFu
 			return
 		}
 		if err := do(req); err != nil {
-			writeError(w, http.StatusBadRequest, memberError(err))
+			if status, code, ok := memberError(err); ok {
+				writeCodedError(w, status, code)
+			} else {
+				a.failed(w, "member", err)
+			}
 			return
 		}
 		writeJSON(w, a.Status())
-	}
-}
-
-func memberError(err error) string {
-	var p *settings.Problem
-	switch {
-	case errors.As(err, &p):
-		return msg("error."+p.Key, nil)
-	case errors.Is(err, ErrNotConfigured):
-		return msg("error.not_configured", nil)
-	case errors.Is(err, ErrNotRunning):
-		return msg("error.not_running", nil)
-	case errors.Is(err, node.ErrSelf):
-		return msg("error.remove_self", nil)
-	case errors.Is(err, node.ErrUnknownPeer):
-		return msg("error.unknown_member", nil)
-	default:
-		return msg("error.save", nil)
 	}
 }
 

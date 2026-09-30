@@ -61,8 +61,7 @@ func TestStopAll(t *testing.T) {
 }
 
 // A folder bound to a network and a local project runs two contexts: the
-// global stop halts both, and the status and project views report each
-// scope's state.
+// global stop halts both, and each project's view reports its state.
 func TestStopAllBothScopes(t *testing.T) {
 	h := projectsHarness(t, "alice", "")
 	dir := t.TempDir()
@@ -71,23 +70,24 @@ func TestStopAllBothScopes(t *testing.T) {
 		t.Fatalf("create: %d %s", code, raw)
 	}
 	local := localProjectForTest(t, h, "Local", dir)
-	scopes := func(st Status) map[string]ContextAutonomy {
-		out := map[string]ContextAutonomy{}
-		for _, c := range st.Autonomy {
-			out[c.Scope] = c
+	halted := func() map[string]bool {
+		t.Helper()
+		var list []ProjectView
+		if code, raw := h.api(t, http.MethodGet, "projects", nil, &list); code != http.StatusOK || len(list) != 2 {
+			t.Fatalf("projects: %d %s", code, raw)
+		}
+		out := map[string]bool{}
+		for _, v := range list {
+			out[v.ID] = v.Autonomy != nil && v.Autonomy.Halted
 		}
 		return out
 	}
-	if got := scopes(h.app.Status()); len(got) != 2 || got[settings.ProjectScopeNetwork].Project != network.ID ||
-		got[settings.ProjectScopeLocal].Project != local.ID || got[settings.ProjectScopeLocal].Halted || got[settings.ProjectScopeNetwork].Halted {
-		t.Fatalf("status before the stop: %+v", h.app.Status().Autonomy)
+	if got := halted(); got[network.ID] || got[local.ID] {
+		t.Fatalf("halted before the stop: %v", got)
 	}
 	var st Status
 	if code, raw := h.api(t, http.MethodPost, "autonomy/stop", map[string]any{"on": true}, &st); code != http.StatusOK || !st.StopAll {
 		t.Fatalf("stop: %d %s", code, raw)
-	}
-	if got := scopes(st); !got[settings.ProjectScopeLocal].Halted || !got[settings.ProjectScopeNetwork].Halted {
-		t.Fatalf("stop did not halt both scopes: %+v", st.Autonomy)
 	}
 	var list []ProjectView
 	if code, raw := h.api(t, http.MethodGet, "projects", nil, &list); code != http.StatusOK || len(list) != 2 {
@@ -106,8 +106,8 @@ func TestStopAllBothScopes(t *testing.T) {
 	if code, raw := h.api(t, http.MethodPost, "autonomy/stop", map[string]any{"on": false}, &st); code != http.StatusOK {
 		t.Fatalf("start: %d %s", code, raw)
 	}
-	if got := scopes(st); got[settings.ProjectScopeLocal].Halted || got[settings.ProjectScopeNetwork].Halted {
-		t.Fatalf("still halted: %+v", st.Autonomy)
+	if got := halted(); got[network.ID] || got[local.ID] {
+		t.Fatalf("still halted: %v", got)
 	}
 }
 

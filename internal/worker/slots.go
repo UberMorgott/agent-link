@@ -42,14 +42,6 @@ func (s *Slots) Open() {
 	}
 }
 
-// SetCapacity changes the number of slots (at least one).
-func (s *Slots) SetCapacity(n int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cap = max(n, 1)
-	s.changedLocked()
-}
-
 // InUse is the number of slots taken now.
 func (s *Slots) InUse() int {
 	s.mu.Lock()

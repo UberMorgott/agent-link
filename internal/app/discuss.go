@@ -69,12 +69,12 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	pid, err := a.discussContextLocked(r.Context(), req, dir)
+	pid, created, err := a.discussContextLocked(r.Context(), req, dir)
 	c := a.projects[pid]
 	var lc *settings.LocalChat
 	if i := a.bindingIndex(pid); i >= 0 {
 		lc = a.s.Bindings[i].Chat
-		if o := lc.OwnerOf(); o != nil && err == nil {
+		if o := chatOwner(lc); o != nil && err == nil {
 			// The asking owner is live now: a short-lived subagent is seen
 			// before it ends, so its chat retires with it (retire.go).
 			a.observeOwnerLocked(pid, *o, a.liveAgentsLocked(), time.Now())
@@ -86,16 +86,34 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		if created {
+			a.dropIfEmpty(pid) // the project it made, when its chat hit the cap
+		}
 		a.failed(w, "discuss project", err)
 		return
 	}
+	// A failed call leaves nothing half made: no seat it added, and no
+	// binding it created that stayed empty.
+	var seat string
+	added := false
+	fail := func(respond func()) {
+		if added {
+			if err := c.n.RemoveSeat(seat); err != nil && !errors.Is(err, node.ErrUnknownSeat) {
+				a.log.Warn("discuss: remove the new seat", "seat", seat, "err", err)
+			}
+		}
+		if created {
+			a.dropIfEmpty(pid)
+		}
+		respond()
+	}
 	if c == nil {
-		writeCodedError(w, http.StatusInternalServerError, "not_found")
+		fail(func() { writeCodedError(w, http.StatusServiceUnavailable, "not_running") })
 		return
 	}
 	chat, err := c.n.NewProjectChat(nil)
 	if err != nil {
-		a.failed(w, "discuss chat", err)
+		fail(func() { a.failed(w, "discuss chat", err) })
 		return
 	}
 	// An external interactive session keeps its folder hook in the network
@@ -105,47 +123,53 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	// seats use their explicit project selector in hooks.
 	send := node.SendRequest{ChatID: chat.ID, Body: req.Body, Folder: dir, SessionID: req.SessionID, AgentID: req.AgentID,
 		AgentType: req.AgentType, Seat: req.Seat, AuthorKind: authorKind(req.SessionID, req.Seat)}
-	// Serialize the check and addition across concurrent discuss requests.
+	// Serialize the check and addition across concurrent discuss requests of
+	// the binding (its node's seats), not the whole app.
 	// The seat is never the caller's own, nor one waiting upstream in the
 	// caller's chain (DiscussSeat): another seat of the provider is added.
-	a.mu.Lock()
-	seat, err := c.n.DiscussSeat(req.Provider, chat.ID, send)
+	mu := a.discussLock(pid)
+	mu.Lock()
+	seat, err = c.n.DiscussSeat(req.Provider, chat.ID, send)
 	if err != nil {
-		a.mu.Unlock()
-		a.failed(w, "discuss agent", err)
+		mu.Unlock()
+		fail(func() { a.failed(w, "discuss agent", err) })
 		return
 	}
-	added := false
 	if seat == "" {
 		// The new seat starts only after the message is queued for it, so its
 		// first turn (with the introduction) carries the message.
 		view, addErr := c.n.AddSeat(node.SeatRequest{Provider: req.Provider, Defer: true}) //nolint:contextcheck // the seat turn outlives the request and runs under the node's own context
 		if addErr != nil {
-			a.mu.Unlock()
+			mu.Unlock()
+
 			if errors.Is(addErr, node.ErrSeatLimit) {
 				// Every seat of the provider is the caller or waits in its chain.
-				writeCodedError(w, http.StatusConflict, "discuss_no_seat")
+				fail(func() { writeCodedError(w, http.StatusConflict, "discuss_no_seat") })
 				return
 			}
-			a.failed(w, "discuss agent", addErr)
+			fail(func() { a.failed(w, "discuss agent", addErr) })
 			return
 		}
 		seat, added = view.ID, true
 	}
-	a.mu.Unlock()
+	mu.Unlock()
+
 	send.AskSeats = []string{seat}
 	message, err := c.n.SendRequest(send)
+	if err != nil {
+		fail(func() { a.failed(w, "discuss message", err) })
+		return
+	}
 	if added {
 		if _, startErr := c.n.StartSeat(seat, false); startErr != nil { //nolint:contextcheck // the seat turn outlives the request and runs under the node's own context
 			a.log.Warn("start discuss seat", "seat", seat, "err", startErr)
 		}
 	}
-	if err != nil {
-		a.failed(w, "discuss message", err)
-		return
-	}
 	a.changed(pid)
 	view := localChatViewOf(lc)
+	if lc != nil && lc.Temporary {
+		view.ExpiresAt = time.Now().UTC().Add(TempChatIdle) // counted from this message
+	}
 	writeJSON(w, struct {
 		Project string `json:"project"`
 		Chat    string `json:"chat"`

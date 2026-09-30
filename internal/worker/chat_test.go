@@ -492,7 +492,7 @@ func TestChatLeftToSessions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := w.ChatsOnly(ask(chats, id1, "peer", "q")); err != nil {
+		if err := w.Accept(ask(chats, id1, "peer", "q")); err != nil {
 			t.Fatal(err)
 		}
 		if all := rec.filter(func(node.Message) bool { return true }); len(all) != 0 || chats.claims != 0 {
@@ -500,7 +500,7 @@ func TestChatLeftToSessions(t *testing.T) {
 		}
 		deep := ask(chats, id2, "peer", "again")
 		deep.AutoDepth = node.MaxAutoDepth + 1
-		if err := w.ChatsOnly(deep); err != nil {
+		if err := w.Accept(deep); err != nil {
 			t.Fatal(err)
 		}
 		if all := rec.filter(func(node.Message) bool { return true }); len(all) != 0 || chats.claims != 0 {

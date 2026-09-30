@@ -101,6 +101,9 @@ type App struct {
 	// ownerLocks serialize, per session id (ownerLock), its registration and
 	// the removal of its owned chats' seats (retireChat).
 	ownerLocks [64]sync.Mutex
+	// discussLocks serialize, per local binding (discussLock), a discuss
+	// call's choice or addition of the seat it asks.
+	discussLocks [64]sync.Mutex
 	// turns caps the seat turns of every context that run at once
 	// (node.MaxParallelTurns); the rest wait in line.
 	turns *node.TurnGate
@@ -129,6 +132,10 @@ type App struct {
 	// discussWaiters counts, per local binding, the discuss callers waiting
 	// for a reply right now (discussReply): such a chat is live.
 	discussWaiters map[string]int
+	// chatLive is the live state of each local binding checkLive last saw.
+	chatLive map[string]liveMark
+	// liveCheck: a checkLive is pending (liveChanged).
+	liveCheck atomic.Bool
 }
 
 // Status is a snapshot for the tray and the web UI.
@@ -160,9 +167,7 @@ type Status struct {
 	Warning string `json:"warning,omitempty"`
 	// StopAll: the emergency stop of every project's agents is on (SetStopAll).
 	StopAll bool `json:"stop_all,omitempty"`
-	// Autonomy is the autonomy state of every running context, local and
-	// network scopes alike.
-	Autonomy []ContextAutonomy `json:"autonomy,omitempty"`
+
 	// ChatColor and Nickname: how this member shows itself (SetProfile); ""
 	// for the color derived from its name and for no nickname.
 	ChatColor string `json:"chat_color,omitempty"`
@@ -177,6 +182,13 @@ func New(path string, log *slog.Logger) (*App, error) {
 	s, ok, err := settings.Load(path)
 	if err != nil {
 		return nil, err
+	}
+	if m, changed := migrateChatOwners(s); changed && ok {
+		// Unsaved, the next save stores it; the app reads it from memory.
+		if err := settings.Save(path, m); err != nil {
+			log.Warn("store local chat owners", "err", err)
+		}
+		s = m
 	}
 	return &App{
 		path: path, token: newToken(), log: log, s: s, configured: ok,
@@ -254,7 +266,6 @@ func (a *App) Status() Status {
 		Configured: a.configured, Running: a.n != nil || len(a.projects) > 0,
 		Node: a.s.Node, Handler: a.s.Handler,
 		Listen: a.listen, ZeroTier: a.zeroTier, StopAll: a.s.StopAll, ChatColor: a.s.ChatColor, Nickname: a.s.Nickname,
-		Autonomy: a.contextAutonomyLocked(),
 	}
 	for _, p := range a.s.Peers {
 		if st.Peer == "" {

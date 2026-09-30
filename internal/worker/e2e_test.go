@@ -297,8 +297,6 @@ func TestChatQuestionReachesTheOtherSide(t *testing.T) {
 			}
 			if handler {
 				b.n.SetInboundHook(w.Accept)
-			} else {
-				b.n.SetInboundHook(w.ChatsOnly)
 			}
 			a.serve(t)
 			b.serve(t)

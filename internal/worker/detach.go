@@ -60,7 +60,7 @@ type proc struct {
 	code  int           // exit code once done; -1 when unknown
 }
 
-// errCancelled marks a run stopped by Cancel.
+// errCancelled marks a run stopped because its request was answered on this node (Answered).
 var errCancelled = errors.New("cancelled")
 
 // ErrCancelled is the failure text of a cancelled job.
@@ -168,14 +168,26 @@ func (w *Worker) launch(ctx context.Context, j *Job, c Command, dir string, spec
 		}
 	}()
 	w.mu.Lock()
+	prev := j.Proc
 	j.Proc = &rec
 	err = w.save(j)
+	if err != nil {
+		j.Proc = prev
+	}
 	w.mu.Unlock()
 	if err != nil {
-		w.log.Error("save job", "id", id, "err", err)
-	} else {
-		w.changed()
+		// A run the disk does not know of would run again after a restart:
+		// stop it, the job fails.
+		if kerr := killTree(context.WithoutCancel(ctx), rec.PID); kerr != nil {
+			w.log.Warn("kill agent", "id", id, "pid", rec.PID, "err", kerr)
+		}
+		select {
+		case <-p.done:
+		case <-time.After(10 * time.Second):
+		}
+		return nil, fmt.Errorf("record agent run: %w", err)
 	}
+	w.changed()
 	w.log.Info("agent launched", "id", id, "pid", rec.PID, "attempt", attempt, "resume", rec.Resumed, "continued", rec.Continued)
 	return p, nil
 }
@@ -244,11 +256,17 @@ func (w *Worker) handleDetached(ctx context.Context, j *Job, reattach bool) {
 	}
 	w.log.Info("agent died mid-run", "id", id, "pid", rec.PID, "resume", resume, "session", session)
 	w.mu.Lock()
+	prevAttempts, prevStarted := j.Attempts, j.StartedAt
 	j.Attempts, j.StartedAt = j.Attempts+1, time.Now().UTC()
 	err := w.save(j)
+	if err != nil {
+		j.Attempts, j.StartedAt = prevAttempts, prevStarted
+	}
 	w.mu.Unlock()
 	if err != nil {
-		w.log.Error("save job", "id", id, "err", err)
+		// Without the new attempt on disk the run must not start; failing the
+		// job frees its chat (finish retries the save of the failure).
+		w.finish(j, node.JobFailed, "", fmt.Sprintf("handler failed: record attempt: %v", err))
 		return
 	}
 	w.changed()
@@ -439,30 +457,6 @@ func (w *Worker) conclude(j *Job, rec Proc, s *stream, code int) {
 	default:
 		w.finish(j, node.JobCompleted, body, "")
 	}
-}
-
-// Cancel stops job id: a queued job fails at once, a running detached agent
-// has its process tree killed and the job fails. It reports whether the job
-// was queued or running.
-func (w *Worker) Cancel(id string) bool {
-	w.mu.Lock()
-	j, ok := w.jobs[id]
-	if !ok || j.terminal() {
-		w.mu.Unlock()
-		return false
-	}
-	if ch, running := w.live[id]; running {
-		delete(w.live, id)
-		close(ch)
-		w.mu.Unlock()
-		return true
-	}
-	queued := j.Status == node.JobQueued
-	w.mu.Unlock()
-	if queued {
-		w.finish(j, node.JobFailed, "", ErrCancelled)
-	}
-	return queued
 }
 
 // Answered stops job id because this node answered its request another way

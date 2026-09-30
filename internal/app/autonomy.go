@@ -122,49 +122,6 @@ func autonomyViewOf(b settings.ProjectBinding, c *appContext) *AutonomyView {
 	return v
 }
 
-// ContextAutonomy is the autonomy state of one running context (Status): a
-// folder bound to a local and a network project runs two, each with its own
-// mode and budget pause; the global stop halts them all.
-type ContextAutonomy struct {
-	Project string `json:"project"` // LegacyProjectID for the legacy network
-	Scope   string `json:"scope"`   // settings.ProjectScope*, "legacy"
-	Dir     string `json:"dir,omitempty"`
-	Mode    string `json:"mode"`
-	// Halted: the global stop or the project's pause is on.
-	Halted      bool   `json:"halted,omitempty"`
-	Paused      bool   `json:"paused,omitempty"`
-	PauseReason string `json:"pause_reason,omitempty"`
-	// Chat is set for a local chat that is not a folder's project chat.
-	Chat *LocalChatView `json:"local_chat,omitempty"`
-}
-
-// contextAutonomyLocked lists the autonomy of every running context: the
-// legacy network first, then the projects in binding order.
-func (a *App) contextAutonomyLocked() []ContextAutonomy {
-	var out []ContextAutonomy
-	add := func(pid, scope, dir string, n *node.Node) {
-		st := n.AutonomyStatus()
-		out = append(out, ContextAutonomy{Project: pid, Scope: scope, Dir: dir, Mode: st.Mode,
-			Halted: st.Stopped, Paused: st.Paused, PauseReason: st.Reason})
-	}
-	if a.legacy != nil {
-		add(LegacyProjectID, "legacy", a.s.WorkDir, a.legacy.n)
-	}
-	var live map[string]map[string]bool
-	for _, b := range a.s.Bindings {
-		if c := a.projects[b.ID]; c != nil {
-			add(b.ID, b.ScopeOf(), b.Dir, c.n)
-			if b.Chat != nil {
-				if live == nil {
-					live = a.liveAgentsLocked()
-				}
-				out[len(out)-1].Chat = a.localChatViewLocked(b, live)
-			}
-		}
-	}
-	return out
-}
-
 // autonomyRequest is the autonomy part of POST projects/{pid}/binding
 // (absent: kept). A negative max_auto_depth follows the mode again.
 type autonomyRequest struct {
@@ -178,17 +135,11 @@ func (r autonomyRequest) empty() bool {
 	return r.Autonomy == nil && r.MaxAutoDepth == nil && r.TurnsPerHour == nil && r.MaxRunMinutes == nil
 }
 
-// setAutonomyLocked saves a project's autonomy and applies it to its running
-// node; the legacy network has none (bad_request), an invalid value is
-// autonomy.
-func (a *App) setAutonomyLocked(pid string, req autonomyRequest) error {
-	i := a.bindingIndex(pid)
-	if i < 0 {
-		return &settings.Problem{Key: "bad_request"}
-	}
-	// A local project that follows its network project starts from what it
-	// follows: the owner's edit overrides from there.
-	b := a.effectiveBindingLocked(a.s.Bindings[i])
+// withAutonomyRequestLocked is binding b with req's autonomy: a local project
+// that follows its network project starts from what it follows, and the
+// owner's edit overrides from there.
+func (a *App) withAutonomyRequestLocked(b settings.ProjectBinding, req autonomyRequest) settings.ProjectBinding {
+	b = a.effectiveBindingLocked(b)
 	if req.Autonomy != nil {
 		b.Autonomy = *req.Autonomy
 		if b.Autonomy == "" {
@@ -207,17 +158,7 @@ func (a *App) setAutonomyLocked(pid string, req autonomyRequest) error {
 	if req.MaxRunMinutes != nil {
 		b.MaxRunMinutes = *req.MaxRunMinutes
 	}
-	s := a.s
-	s.Bindings = slices.Clone(s.Bindings)
-	s.Bindings[i] = b
-	if err := settings.Save(a.path, s); err != nil {
-		return err
-	}
-	a.s = s
-	a.reapplyAutonomyLocked() // this project, and the local ones that follow it
-	a.log.Info("project autonomy", "project", pid, "mode", b.AutonomyOf(), "max_auto_depth", b.MaxAutoDepthOf(),
-		"turns_per_hour", b.TurnsPerHourOf(), "max_run_minutes", b.MaxRunMinutesOf())
-	return nil
+	return b
 }
 
 // resumeAutonomy ends a budget pause of a project: POST projects/{pid}/autonomy/resume.

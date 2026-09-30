@@ -105,12 +105,6 @@ func TestSharedSlotsOpenAfterReattach(t *testing.T) {
 		t.Fatal("acquired a full pool")
 	}
 	hold()
-	slots.SetCapacity(0) // at least one
-	if release, ok := slots.Acquire(context.Background()); !ok {
-		t.Fatal("capacity below one")
-	} else {
-		release()
-	}
 }
 
 // Reattach holds a slot for a detached job left running and Run releases the

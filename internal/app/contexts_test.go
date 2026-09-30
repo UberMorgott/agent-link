@@ -155,8 +155,8 @@ func TestLeaveProject(t *testing.T) {
 	if err := c.w.Accept(node.Message{ID: "fedcba9876543210fedcba9876543210", From: "bob", To: "alice", Body: "more", CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("intake closed after a refused leave: %v", err)
 	}
-	c.w.Cancel("0123456789abcdef0123456789abcdef")
-	c.w.Cancel("fedcba9876543210fedcba9876543210")
+	c.w.Answered("0123456789abcdef0123456789abcdef")
+	c.w.Answered("fedcba9876543210fedcba9876543210")
 	eventuallyApp(t, "worker idle", func() bool { return !c.w.Busy() })
 
 	if err := a.LeaveProject(b.ID); err != nil {
@@ -302,5 +302,39 @@ func TestKeptProjectData(t *testing.T) {
 	left, _ := filepath.Glob(filepath.Join(a.projectsRoot(), ".left", b.ID+"-*", "marker"))
 	if len(left) != 1 {
 		t.Fatalf(".left holds %v", left)
+	}
+}
+
+// A folder change whose context cannot start in the new folder puts back
+// the old folder, its agent sessions and its running context.
+func TestSetProjectDirRollsBack(t *testing.T) {
+	b := newBinding(t, "")
+	a := startApp(t, settings.Settings{Bindings: []settings.ProjectBinding{b}})
+	session := filepath.Join(a.projectDir(b.ID), "sessions", "chat.json")
+	// A worker (only a project with a folder has one) cannot read this job.
+	bad := filepath.Join(a.projectDir(b.ID), "jobs", "bad.json")
+	for _, f := range []string{session, bad} {
+		if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.mu.Lock()
+	err := a.setProjectDirLocked(b.ID, t.TempDir())
+	c, dir := a.projects[b.ID], a.s.Bindings[0].Dir
+	a.mu.Unlock()
+	if err == nil {
+		t.Fatal("folder change with a context that cannot start succeeded")
+	}
+	if c == nil || !c.n.NeedsFolder() || dir != "" {
+		t.Fatalf("old folder not restored: dir %q context %+v", dir, c)
+	}
+	if s, _, _ := settings.Load(a.path); s.Bindings[0].Dir != "" {
+		t.Fatalf("saved dir %q", s.Bindings[0].Dir)
+	}
+	if _, err := os.Stat(session); err != nil {
+		t.Fatalf("agent sessions of the old folder not restored: %v", err)
 	}
 }

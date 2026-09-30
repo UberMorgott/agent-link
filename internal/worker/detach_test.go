@@ -2,10 +2,13 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,20 +166,6 @@ func TestDetachedIdleTimeoutKills(t *testing.T) {
 	accept(t, w, msg(id1, "stall"))
 	p := agentPID(t, w, id1)
 	if got := rec.wait(t, 1)[0]; !strings.HasPrefix(got.Body, "agentlink: "+ErrIdle) {
-		t.Fatalf("reply = %+v", got)
-	}
-	eventually(t, "agent killed", func() bool { return !alive(p) })
-}
-
-// Cancel kills a running detached agent and fails the job.
-func TestCancelKillsDetachedAgent(t *testing.T) {
-	rec := newRecorder()
-	w := detachedWorker(t, fakeAgent(t, "sleep"), rec, t.TempDir(), Options{})
-	start(t, w)
-	accept(t, w, msg(id1, "x"))
-	p := agentPID(t, w, id1)
-	eventually(t, "watched", func() bool { return w.Cancel(id1) })
-	if got := rec.wait(t, 1)[0]; got.Body != "agentlink: "+ErrCancelled || got.JobStatus != node.JobFailed {
 		t.Fatalf("reply = %+v", got)
 	}
 	eventually(t, "agent killed", func() bool { return !alive(p) })
@@ -379,6 +368,136 @@ func TestDeadAgentWithoutSessionStartsOver(t *testing.T) {
 		t.Fatalf("reply = %+v", got)
 	}
 	if j, _ := w2.Job(id1); j.Attempts != 2 {
+		t.Fatalf("job = %+v", j)
+	}
+}
+
+// failSave makes w's job saves fail while fail(j) holds.
+func failSave(w *Worker, fail func(j *Job) bool) {
+	save := w.saveJob
+	w.saveJob = func(j *Job) error {
+		if fail(j) {
+			return errors.New("disk full")
+		}
+		return save(j)
+	}
+}
+
+// storedJob reads job id from w's job store.
+func storedJob(t *testing.T, w *Worker, id string) Job {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(w.jobsDir, id+".json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var j Job
+	if err := json.Unmarshal(data, &j); err != nil {
+		t.Fatal(err)
+	}
+	return j
+}
+
+// A job whose end cannot be saved sends no reply (a restart would run it
+// again and answer twice); once the save succeeds the reply goes out, without
+// a restart.
+func TestReplyWaitsForSavedEnd(t *testing.T) {
+	rec := newRecorder()
+	run := func(context.Context, string, string, func(string)) (string, error) { return "done", nil }
+	w, err := New(run, rec.send, t.TempDir(), t.TempDir(), Options{RetryEvery: 20 * time.Millisecond}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var broken atomic.Bool
+	broken.Store(true)
+	failSave(w, func(j *Job) bool { return j.terminal() && broken.Load() })
+	start(t, w)
+	accept(t, w, msg(id1, "q"))
+	eventually(t, "end not saved", func() bool { j, _ := w.Job(id1); return j.unsaved })
+	rec.quiet(t)
+	if j := storedJob(t, w, id1); j.Status != node.JobRunning {
+		t.Fatalf("stored = %+v", j)
+	}
+	broken.Store(false)
+	if got := rec.wait(t, 1)[0]; got.Body != "done" || got.JobStatus != node.JobCompleted {
+		t.Fatalf("reply = %+v", got)
+	}
+	eventually(t, "replied stored", func() bool { return storedJob(t, w, id1).Replied })
+}
+
+// A final reply whose send failed is sent again without a restart.
+func TestFailedReplyIsRetried(t *testing.T) {
+	rec := newRecorder()
+	var failed atomic.Bool
+	send := func(m node.Message) (node.Message, error) {
+		if m.Kind == "" && failed.CompareAndSwap(false, true) {
+			return node.Message{}, errors.New("outbox unavailable")
+		}
+		return rec.send(m)
+	}
+	run := func(context.Context, string, string, func(string)) (string, error) { return "done", nil }
+	w, err := New(run, send, t.TempDir(), t.TempDir(), Options{RetryEvery: 20 * time.Millisecond}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start(t, w)
+	accept(t, w, msg(id1, "q"))
+	if got := rec.wait(t, 1)[0]; got.Body != "done" || !failed.Load() {
+		t.Fatalf("reply = %+v, failed once = %v", got, failed.Load())
+	}
+	eventually(t, "replied", func() bool { j, _ := w.Job(id1); return j.Replied })
+}
+
+// A launched agent whose run cannot be recorded is killed and the job fails:
+// after a restart nothing would know of it and it would run twice.
+func TestUnrecordedLaunchIsKilled(t *testing.T) {
+	rec := newRecorder()
+	w := detachedWorker(t, fakeAgent(t, "sleep"), rec, t.TempDir(), Options{})
+	var mu sync.Mutex
+	var launched *Proc
+	failSave(w, func(j *Job) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if j.Proc == nil || launched != nil {
+			return false
+		}
+		p := *j.Proc
+		launched = &p
+		return true
+	})
+	start(t, w)
+	accept(t, w, msg(id1, "q"))
+	got := rec.wait(t, 1)[0]
+	if got.JobStatus != node.JobFailed || !strings.Contains(got.Body, "record agent run") {
+		t.Fatalf("reply = %+v", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if launched == nil || alive(*launched) {
+		t.Fatalf("agent %+v not killed", launched)
+	}
+}
+
+// A dead agent whose recovery attempt cannot be saved fails its job instead
+// of leaving it running with nothing watching it.
+func TestUnsavedRecoveryFailsJob(t *testing.T) {
+	rec := newRecorder()
+	state := t.TempDir()
+	w1 := detachedWorker(t, fakeAgent(t, "sleep"), rec, state, Options{})
+	stop := start(t, w1)
+	accept(t, w1, msg(id1, "q"))
+	p := agentPID(t, w1, id1)
+	stop()
+	if err := killTree(t.Context(), p.PID); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "agent dead", func() bool { return !alive(p) })
+	w2 := detachedWorker(t, fakeAgent(t, "echo"), rec, state, Options{})
+	failSave(w2, func(j *Job) bool { return j.Status == node.JobRunning && j.Attempts == 2 })
+	start(t, w2)
+	if got := rec.wait(t, 1)[0]; got.JobStatus != node.JobFailed || !strings.Contains(got.Body, "record attempt") {
+		t.Fatalf("reply = %+v", got)
+	}
+	if j, _ := w2.Job(id1); j.Status != node.JobFailed || j.Attempts != 1 {
 		t.Fatalf("job = %+v", j)
 	}
 }

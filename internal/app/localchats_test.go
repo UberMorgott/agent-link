@@ -153,10 +153,10 @@ func chatViewOf(t *testing.T, h *harness, pid string) LocalChatView {
 	return LocalChatView{}
 }
 
-// A temporary chat is live while its owner's session is open, a caller waits
-// for a reply or a turn runs; an unread reply after the owner ended does not
-// keep it live (it is for a person, not the sidebar). Its owner is the stored
-// one (settings.LocalChat.Owner).
+// A temporary chat is live only while a caller waits for a reply or a turn
+// runs: its owner's open session does not make it live, nor does an unread
+// reply (it is for a person, not the sidebar). Not live, it says since when.
+// Its owner is the stored one (settings.LocalChat.Owner).
 func TestLocalChatLiveFollowsOwnerWaitersAndTurns(t *testing.T) {
 	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
 	dir := repoDir(t)
@@ -175,8 +175,8 @@ func TestLocalChatLiveFollowsOwnerWaitersAndTurns(t *testing.T) {
 	if code, raw := h.do(t, http.MethodPost, "/sessions", jsonOf(t, owner), nil); code != http.StatusOK {
 		t.Fatalf("register session: %d %s", code, raw)
 	}
-	if v := chatViewOf(t, h, chat.Project); !v.Live || v.Waiting || v.Owner == nil || v.Owner.Session != "owner-1" {
-		t.Fatalf("owner live: %+v owner %+v", v, v.Owner)
+	if v := chatViewOf(t, h, chat.Project); v.Live || v.LiveEndedAt.IsZero() || v.Owner == nil || v.Owner.Session != "owner-1" {
+		t.Fatalf("idle chat of a live owner: %+v owner %+v", v, v.Owner)
 	}
 	if code, raw := h.do(t, http.MethodDelete, "/sessions/owner-1", "", nil); code != http.StatusNoContent {
 		t.Fatalf("end session: %d %s", code, raw)
@@ -185,13 +185,28 @@ func TestLocalChatLiveFollowsOwnerWaitersAndTurns(t *testing.T) {
 		t.Fatalf("owner ended, still live: %+v", v)
 	}
 
+	h.app.checkLive(time.Now())
 	h.app.discussWaiting(chat.Project, 1)
-	if v := chatViewOf(t, h, chat.Project); !v.Live || !v.Waiting {
+	if v := chatViewOf(t, h, chat.Project); !v.Live || !v.Waiting || !v.LiveEndedAt.IsZero() {
 		t.Fatalf("caller waits: %+v", v)
 	}
 	h.app.discussWaiting(chat.Project, -1)
-	if v := chatViewOf(t, h, chat.Project); v.Live || v.Waiting {
-		t.Fatalf("wait ended: %+v", v)
+	liveMarked := func(live bool) bool {
+		h.app.mu.Lock()
+		defer h.app.mu.Unlock()
+		m, ok := h.app.chatLive[chat.Project]
+		return ok && m.live == live && m.endedAt.IsZero() == live
+	}
+	eventuallyApp(t, "the wait's end noted", func() bool { return liveMarked(false) })
+	// A flip seen by checkLive is dated (and published).
+	h.app.mu.Lock()
+	h.app.chatLive[chat.Project] = liveMark{live: true}
+	ended := time.Now().Add(time.Minute)
+	flipped := h.app.noteLiveLocked(ended)
+	v = *h.app.localChatViewLocked(h.app.s.Bindings[h.app.bindingIndex(chat.Project)])
+	h.app.mu.Unlock()
+	if !flipped || v.Live || v.Waiting || !v.LiveEndedAt.Equal(ended.UTC()) {
+		t.Fatalf("wait ended: flipped %v, %+v", flipped, v)
 	}
 
 	if _, err := n.SendRequest(node.SendRequest{ChatID: chat.Chat, ReplyTo: chat.ID, Body: "answer",
@@ -200,6 +215,10 @@ func TestLocalChatLiveFollowsOwnerWaitersAndTurns(t *testing.T) {
 	}
 	if v := chatViewOf(t, h, chat.Project); v.Live {
 		t.Fatalf("unread reply of an ended owner keeps the chat live: %+v", v)
+	}
+	// It expires counted from its last message, as the GC counts.
+	if v := chatViewOf(t, h, chat.Project); !v.ExpiresAt.Equal(v.LastActive.Add(TempChatIdle)) {
+		t.Fatalf("expires %v, last active %v", v.ExpiresAt, v.LastActive)
 	}
 }
 
@@ -403,12 +422,18 @@ func TestDiscussAgentSessionsOwnTheirChats(t *testing.T) {
 		h.app.mu.Unlock()
 		t.Fatalf("owner of the session's chat: %+v", lc)
 	}
-	// A temporary chat of an older build (no owner) is its creator's.
+	// A temporary chat of an older build (no owner) is its creator's once
+	// the settings are loaded (migrateChatOwners).
 	s := h.app.s
 	s.Bindings = slices.Clone(s.Bindings)
 	legacy := *lc
 	legacy.Owner = nil
 	s.Bindings[i].Chat = &legacy
+	s, migrated := migrateChatOwners(s)
+	if o := s.Bindings[i].Chat.Owner; !migrated || o == nil || o.Session != "s1" || h.app.s.Bindings[i].Chat.Owner == nil {
+		h.app.mu.Unlock()
+		t.Fatalf("migrated owner %+v", o)
+	}
 	h.app.s = s
 	h.app.mu.Unlock()
 	if again := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s1"}); again.Project != first.Project {
@@ -462,5 +487,121 @@ func TestDiscussSubagentsOwnTheirThreads(t *testing.T) {
 		"body": "x", "session_id": "s1", "source": node.ProviderClaude, "agent_id": "bad id"}), nil)
 	if code != http.StatusBadRequest {
 		t.Fatalf("invalid agent id: %d %s", code, raw)
+	}
+}
+
+// removeSeats removes every seat of local chat pid: nothing is pending for one.
+func removeSeats(t *testing.T, h *harness, pid string) *node.Node {
+	t.Helper()
+	n := h.app.projects[pid].n
+	for _, s := range n.Seats() {
+		if err := n.RemoveSeat(s.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return n
+}
+
+// An owned chat with no seat and no message goes EmptyChatGrace after its
+// last use although its owner lives; one with a message stays, and so does
+// an empty one a discuss caller waits in.
+func TestOwnedEmptyChatCollectedWhileOwnerLive(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &threadRunner{} })
+	dir := repoDir(t)
+	discussIn(t, h, map[string]any{"folder": dir})
+	registerSession(t, h, "s1", dir, "agent-a")
+	used := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s1"})
+	seatThread(t, h, used.Project)
+	removeSeats(t, h, used.Project)
+	var empty, waited string
+	h.app.mu.Lock()
+	for _, agent := range []string{"agent-a", "agent-b"} {
+		pid, err := h.app.addLocalLocked(t.Context(), "", &settings.LocalChat{Temporary: true, Folder: dir, LastUsed: time.Now().UTC(),
+			Owner: &settings.LocalChatOwner{Session: "s1", Agent: agent}}, "empty")
+		if err != nil {
+			h.app.mu.Unlock()
+			t.Fatal(err)
+		}
+		empty, waited = waited, pid
+	}
+	h.app.mu.Unlock()
+	h.app.discussWaiting(waited, 1)
+	defer h.app.discussWaiting(waited, -1)
+	h.app.gcLocalChats(time.Now())
+	if !hasBinding(h, empty) {
+		t.Fatal("empty chat removed within its grace")
+	}
+	h.app.gcLocalChats(time.Now().Add(EmptyChatGrace + time.Second))
+	if hasBinding(h, empty) || !hasBinding(h, used.Project) || !hasBinding(h, waited) {
+		t.Fatalf("empty %v used %v waited in %v", hasBinding(h, empty), hasBinding(h, used.Project), hasBinding(h, waited))
+	}
+}
+
+// A discuss that fails after it made a new chat leaves neither the chat nor
+// a seat behind.
+func TestFailedDiscussLeavesNothing(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &threadRunner{} })
+	dir := repoDir(t)
+	discussIn(t, h, map[string]any{"folder": dir})
+	h.app.mu.Lock()
+	before := len(h.app.s.Bindings)
+	h.app.mu.Unlock()
+	code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]any{"folder": dir, "provider": node.ProviderCodex,
+		"body": "x", "temporary": true, "seat": "seat-00000000"}), nil)
+	if code == http.StatusOK {
+		t.Fatalf("discuss from an unknown seat: %d %s", code, raw)
+	}
+	h.app.mu.Lock()
+	after := len(h.app.s.Bindings)
+	h.app.mu.Unlock()
+	if after != before {
+		t.Fatalf("failed discuss left a binding: %d -> %d (%d %s)", before, after, code, raw)
+	}
+}
+
+// Asking again in one's own chat writes no settings: its activity is its
+// messages. Only a new session using it is recorded.
+func TestDiscussAgainWritesNoSettings(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &threadRunner{} })
+	dir := repoDir(t)
+	first := discussIn(t, h, map[string]any{"folder": dir, "temporary": true, "session_id": "s1"})
+	before, err := os.ReadFile(h.app.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		discussIn(t, h, map[string]any{"folder": dir, "chat": first.Chat, "session_id": "s1"})
+	}
+	if after, _ := os.ReadFile(h.app.path); string(after) != string(before) {
+		t.Fatal("a repeated discuss rewrote the settings")
+	}
+	discussIn(t, h, map[string]any{"folder": dir, "chat": first.Chat, "session_id": "s2"})
+	h.app.mu.Lock()
+	sessions := h.app.s.Bindings[h.app.bindingIndex(first.Project)].Chat.Sessions
+	h.app.mu.Unlock()
+	if !slices.Equal(sessions, []string{"s1", "s2"}) {
+		t.Fatalf("sessions %v", sessions)
+	}
+}
+
+// A local project made for a discuss from a subfolder binds the whole work
+// tree, so the root and its other subfolders share it.
+func TestAutoLocalProjectBindsGitRoot(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &threadRunner{} })
+	root := repoDir(t)
+	sub, other := filepath.Join(root, "a", "b"), filepath.Join(root, "c")
+	for _, d := range []string{sub, other} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := discussIn(t, h, map[string]any{"folder": sub})
+	for _, d := range []string{root, other} {
+		if again := discussIn(t, h, map[string]any{"folder": d}); again.Project != first.Project {
+			t.Fatalf("%s got its own project: %+v first %+v", d, again, first)
+		}
+	}
+	if dir := h.app.Settings().Bindings[0].Dir; dir != root {
+		t.Fatalf("bound %q, want the work tree %q", dir, root)
 	}
 }

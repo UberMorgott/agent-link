@@ -58,25 +58,25 @@ func (a *App) projectRoutes(api *http.ServeMux) {
 	}))
 	api.HandleFunc("POST "+p+"/{pid}/chats/{id}/members", a.projectChat(chatMembers))
 	api.HandleFunc("POST "+p+"/{pid}/send", a.projectSend)
-	api.HandleFunc("GET "+p+"/{pid}/seats", a.projectSeats(func(n *node.Node, _ *http.Request) (any, error) { return n.Seats(), nil }))
-	api.HandleFunc("POST "+p+"/{pid}/seats", a.projectSeats(func(n *node.Node, r *http.Request) (any, error) {
+	api.HandleFunc("GET "+p+"/{pid}/seats", a.projectSeats(true, func(n *node.Node, _ *http.Request) (any, error) { return n.Seats(), nil }))
+	api.HandleFunc("POST "+p+"/{pid}/seats", a.projectSeats(false, func(n *node.Node, r *http.Request) (any, error) {
 		var req node.SeatRequest
 		if err := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxBody)).Decode(&req); err != nil {
 			return nil, node.ErrBadRequest
 		}
 		return n.AddSeat(req)
 	}))
-	api.HandleFunc("POST "+p+"/{pid}/seats/{sid}/start", a.projectSeats(func(n *node.Node, r *http.Request) (any, error) {
+	api.HandleFunc("POST "+p+"/{pid}/seats/{sid}/start", a.projectSeats(false, func(n *node.Node, r *http.Request) (any, error) {
 		var req struct {
 			Open bool `json:"open"`
 		}
 		_ = json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxBody)).Decode(&req) // an empty body is fine
 		return n.StartSeat(r.PathValue("sid"), req.Open)
 	}))
-	api.HandleFunc("POST "+p+"/{pid}/seats/{sid}/stop", a.projectSeats(func(n *node.Node, r *http.Request) (any, error) {
+	api.HandleFunc("POST "+p+"/{pid}/seats/{sid}/stop", a.projectSeats(true, func(n *node.Node, r *http.Request) (any, error) {
 		return n.StopSeat(r.PathValue("sid"))
 	}))
-	api.HandleFunc("POST "+p+"/{pid}/seats/{sid}/remove", a.projectSeats(func(n *node.Node, r *http.Request) (any, error) {
+	api.HandleFunc("POST "+p+"/{pid}/seats/{sid}/remove", a.projectSeats(true, func(n *node.Node, r *http.Request) (any, error) {
 		if err := n.RemoveSeat(r.PathValue("sid")); err != nil {
 			return nil, err
 		}
@@ -87,18 +87,17 @@ func (a *App) projectRoutes(api *http.ServeMux) {
 // projectSeats serves the local agents (seats) of project pid: 404 not_found
 // for an unknown project or seat, 400 bad_request for a request the node
 // refuses (no folder, a bad provider or label), 409 seats_local_only to add or
-// start one in a network project.
-func (a *App) projectSeats(do func(n *node.Node, r *http.Request) (any, error)) http.HandlerFunc {
+// start one in a network project. Seats belong to local chats: a network
+// project's agents are the sessions its members open in the project folder;
+// there only the calls of anyNetwork (listing, and stopping or removing seats
+// left from before) are served.
+func (a *App) projectSeats(anyNetwork bool, do func(n *node.Node, r *http.Request) (any, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		n, ok := a.contextNode(w, r.PathValue("pid"))
 		if !ok {
 			return
 		}
-		// Seats belong to local chats: a network project's agents are the
-		// sessions its members open in the project folder. Seats left from
-		// before can still be stopped and removed.
-		if !a.localProject(r.PathValue("pid")) && r.Method == http.MethodPost &&
-			!strings.HasSuffix(r.URL.Path, "/stop") && !strings.HasSuffix(r.URL.Path, "/remove") {
+		if !anyNetwork && !a.localProject(r.PathValue("pid")) {
 			writeCodedError(w, http.StatusConflict, "seats_local_only")
 			return
 		}
@@ -157,11 +156,9 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 			Autonomy: autonomyViewOf(a.effectiveBindingLocked(b), c)}
 		switch {
 		case b.Chat != nil:
-			v.Chat = a.localChatViewLocked(b, a.liveAgentsLocked())
+			v.Chat = a.localChatViewLocked(b)
 		case b.ScopeOf() == settings.ProjectScopeLocal:
-			var act LocalActivityView
-			act.Live, act.Waiting, act.LastActive = a.localChatLiveLocked(b, nil)
-			v.Activity = &act
+			v.Activity = a.localActivityLocked(b)
 		}
 		if c != nil {
 			v.Name = c.n.ProjectMeta().Name
@@ -268,23 +265,60 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-// failed answers err: a settings problem with its own code, else a logged
-// internal error.
+// failed answers err with its code (errorCode); an error with none is
+// logged and answered 500 internal.
 func (a *App) failed(w http.ResponseWriter, what string, err error) {
+	status, code := errorCode(err)
+	if status == http.StatusInternalServerError {
+		a.log.Error(what, "err", err)
+	}
+	writeCodedError(w, status, code)
+}
+
+// errorCode is the one map of app and node errors to an API status and code.
+func errorCode(err error) (status int, code string) {
 	var p *settings.Problem
 	switch {
 	case errors.As(err, &p) && p.Key == "too_many_projects":
-		writeCodedError(w, http.StatusConflict, p.Key)
+		return http.StatusConflict, p.Key
 	case errors.As(err, &p):
-		writeCodedError(w, http.StatusBadRequest, p.Key)
+		return http.StatusBadRequest, p.Key
 	case errors.Is(err, worker.ErrBusy):
-		writeCodedError(w, http.StatusConflict, "project_busy")
+		return http.StatusConflict, "project_busy"
 	case errors.Is(err, ErrUnknownProject):
-		writeCodedError(w, http.StatusNotFound, "not_found")
-	default:
-		a.log.Error(what, "err", err)
-		writeCodedError(w, http.StatusInternalServerError, "internal")
+		return http.StatusNotFound, "not_found"
+	case errors.Is(err, ErrNotConfigured):
+		return http.StatusBadRequest, "not_configured"
+	case errors.Is(err, ErrNotRunning):
+		return http.StatusServiceUnavailable, "not_running"
+	case errors.Is(err, node.ErrUnknownChat):
+		return http.StatusNotFound, "unknown_chat"
+	case errors.Is(err, node.ErrChatClosed):
+		return http.StatusConflict, "chat_closed"
+	case errors.Is(err, node.ErrLegacyChat):
+		return http.StatusConflict, "chat_legacy"
+	case errors.Is(err, node.ErrEmptyBody):
+		return http.StatusBadRequest, "empty_body"
+	case errors.Is(err, node.ErrBadParticipants), errors.Is(err, node.ErrUnknownPeer), errors.Is(err, node.ErrNoChatSupport):
+		return http.StatusBadRequest, "chat_participants"
+	case errors.Is(err, node.ErrBadRequest), errors.Is(err, node.ErrNotProject):
+		return http.StatusBadRequest, "bad_request"
+	case errors.Is(err, node.ErrNotChatOwner):
+		return http.StatusForbidden, "chat_owner"
 	}
+	return http.StatusInternalServerError, "internal"
+}
+
+// memberError is the code of a member removal's own errors: removing
+// oneself, or a member no one knows; ok is false for any other error.
+func memberError(err error) (status int, code string, ok bool) {
+	switch {
+	case errors.Is(err, node.ErrSelf):
+		return http.StatusBadRequest, "remove_self", true
+	case errors.Is(err, node.ErrUnknownPeer):
+		return http.StatusNotFound, "unknown_member", true
+	}
+	return 0, "", false
 }
 
 // checkDir validates a folder to bind ("" = none): an absolute existing
@@ -333,29 +367,40 @@ func (a *App) addProjectLocked(ctx context.Context, b settings.ProjectBinding, n
 	if err := a.moveToLeft(b.ID); err != nil {
 		return err
 	}
+	// Any failure from here leaves no data directory without a binding.
+	started := false
+	undo := func(err error) error {
+		if started {
+			a.stopContextLocked(a.projects[b.ID])
+		}
+		if lerr := a.moveToLeft(b.ID); lerr != nil {
+			a.log.Warn("move data of a project not added", "project", b.ID, "err", lerr)
+		}
+		return err
+	}
 	c, err := a.newProjectContext(b)
 	if err != nil {
-		return err
+		return undo(err)
 	}
 	if name != "" {
 		if _, err := c.n.Rename(name); err != nil {
-			return err
+			return undo(err)
 		}
 	}
 	// The context runs before the binding is saved: a binding whose context
 	// cannot run (the Hub refuses it) is never kept, since every view of it
 	// would stay "connecting" and every call 404 until a restart.
 	if err := a.startContextLocked(c, nil); err != nil { //nolint:contextcheck // the context outlives the request: it runs under the Hub's own
-		return err
+		return undo(err)
 	}
-	// A failed save leaves the new data directory unbound; a later join of
-	// the project moves it to .left.
+	started = true
 	if err := settings.Save(a.path, s); err != nil {
-		a.stopContextLocked(c)
-		return err
+		return undo(err)
 	}
 	a.s, a.configured = s, true
-	a.syncHooksLocked()
+	if b.Dir != "" {
+		a.syncHooksLocked() // folder hooks follow folders: a local chat has none
+	}
 	a.reapplyAutonomyLocked() // a local project may follow the changed bindings
 	return nil
 }
@@ -560,7 +605,7 @@ func (a *App) renameProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c == nil {
-		a.failed(w, "rename project", errors.New("project is not running"))
+		a.failed(w, "rename project", ErrNotRunning)
 		return
 	}
 	if _, err := c.n.Rename(name); err != nil {
@@ -571,106 +616,120 @@ func (a *App) renameProject(w http.ResponseWriter, r *http.Request) {
 	a.writeView(w, pid)
 }
 
+// bindRequest is the body of POST projects/{pid}/binding (absent: kept; "":
+// cleared).
+type bindRequest struct {
+	Alias      *string `json:"alias"`
+	Dir        *string `json:"dir"`
+	LaunchMode *string `json:"launch_mode"`
+	autonomyRequest
+}
+
 // bindProject changes this member's alias, folder, autonomy and launch mode
-// of a project (absent: kept; "": cleared). A folder change needs an idle worker
-// (project_busy).
+// of a project. A folder change needs an idle worker (project_busy).
 func (a *App) bindProject(w http.ResponseWriter, r *http.Request) {
 	pid := r.PathValue("pid")
-	var req struct {
-		Alias      *string `json:"alias"`
-		Dir        *string `json:"dir"`
-		LaunchMode *string `json:"launch_mode"`
-		autonomyRequest
-	}
+	var req bindRequest
 	if !decode(w, r, &req) {
 		return
 	}
 	a.mu.Lock()
-	err := a.bindLocked(pid, req.Alias, req.Dir) //nolint:contextcheck // a folder change restarts the context under the Hub's context
-	if err == nil && !req.empty() {
-		err = a.setAutonomyLocked(pid, req.autonomyRequest)
-	}
-	if err == nil && req.LaunchMode != nil {
-		err = a.setLaunchModeLocked(pid, *req.LaunchMode)
-	}
+	changed, err := a.bindLocked(pid, req) //nolint:contextcheck // a folder change restarts the context under the Hub's context
 	a.mu.Unlock()
+	if changed {
+		a.changed(pid, "settings", "status")
+	}
 	if err != nil {
 		a.failed(w, "bind project", err)
 		return
 	}
-	a.changed(pid, "settings", "status")
 	a.writeView(w, pid)
 }
 
-func (a *App) bindLocked(pid string, alias, dir *string) error {
+// bindLocked checks the whole request before it changes anything, then
+// applies it: the folder first (it restarts the context and may be refused),
+// then the alias, autonomy and launch mode in one save. changed reports that
+// something was saved, also when a later step failed.
+func (a *App) bindLocked(pid string, req bindRequest) (changed bool, err error) {
 	if _, ok := a.projectViewLocked(pid); !ok {
-		return ErrUnknownProject
+		return false, ErrUnknownProject
 	}
 	legacy := pid == LegacyProjectID
-	if alias != nil {
-		*alias = strings.TrimSpace(*alias)
-		if !settings.ValidAlias(*alias) || (legacy && *alias != "") {
-			return &settings.Problem{Key: "alias"}
+	if req.Alias != nil {
+		*req.Alias = strings.TrimSpace(*req.Alias)
+		if !settings.ValidAlias(*req.Alias) || (legacy && *req.Alias != "") {
+			return false, &settings.Problem{Key: "alias"}
 		}
 	}
-	if dir != nil {
-		*dir = filepathClean(strings.TrimSpace(*dir))
+	if legacy && (!req.empty() || req.LaunchMode != nil) ||
+		req.LaunchMode != nil && *req.LaunchMode != node.LaunchDesktop && *req.LaunchMode != node.LaunchTerminal {
+		return false, &settings.Problem{Key: "bad_request"}
+	}
+	old := a.s.WorkDir
+	if req.Dir != nil {
+		*req.Dir = filepathClean(strings.TrimSpace(*req.Dir))
 		scope := settings.ProjectScopeNetwork
 		if !legacy {
-			scope = a.s.Bindings[a.bindingIndex(pid)].ScopeOf()
+			b := a.s.Bindings[a.bindingIndex(pid)]
+			scope, old = b.ScopeOf(), b.Dir
 		}
-		if err := a.checkDirLocked(pid, *dir, scope); err != nil {
-			return err
-		}
-		old := a.s.WorkDir
-		if !legacy {
-			old = a.s.Bindings[a.bindingIndex(pid)].Dir
-		}
-		if *dir != old {
-			if err := a.setProjectDirLocked(pid, *dir); err != nil {
-				return err
-			}
+		if err := a.checkDirLocked(pid, *req.Dir, scope); err != nil {
+			return false, err
 		}
 	}
-	if alias == nil || legacy {
-		return nil
+	if !legacy {
+		if _, _, err := a.bindingEditsLocked(pid, req); err != nil {
+			return false, err
+		}
 	}
-	i := a.bindingIndex(pid)
-	if a.s.Bindings[i].Alias == *alias {
-		return nil
+	if req.Dir != nil && *req.Dir != old {
+		if err := a.setProjectDirLocked(pid, *req.Dir); err != nil {
+			return false, err
+		}
+		changed = true
 	}
-	s := a.s
-	s.Bindings = slices.Clone(s.Bindings)
-	s.Bindings[i].Alias = *alias
+	if legacy {
+		return changed, nil
+	}
+	s, edited, err := a.bindingEditsLocked(pid, req)
+	if err != nil || !edited {
+		return changed, err
+	}
 	if err := settings.Save(a.path, s); err != nil {
-		return err
+		return changed, err
 	}
 	a.s = s
-	return nil
+	a.reapplyAutonomyLocked() // this project, and the local ones that follow it
+	b := s.Bindings[a.bindingIndex(pid)]
+	if c := a.projects[pid]; c != nil {
+		c.n.SetLaunchMode(b.LaunchModeOf())
+	}
+	a.log.Info("project binding", "project", pid, "alias", b.Alias, "launch_mode", b.LaunchModeOf(), "autonomy", b.AutonomyOf(),
+		"max_auto_depth", b.MaxAutoDepthOf(), "turns_per_hour", b.TurnsPerHourOf(), "max_run_minutes", b.MaxRunMinutesOf())
+	return true, nil
 }
 
-// setLaunchModeLocked sets where a project opens sessions ("desktop" or
-// "terminal") and applies it to its running node; the legacy network and
-// other modes are bad_request.
-func (a *App) setLaunchModeLocked(pid, mode string) error {
+// bindingEditsLocked is the settings with req's alias, autonomy and launch
+// mode applied to binding pid, validated; edited reports any change.
+func (a *App) bindingEditsLocked(pid string, req bindRequest) (s settings.Settings, edited bool, err error) {
 	i := a.bindingIndex(pid)
-	if i < 0 || (mode != node.LaunchDesktop && mode != node.LaunchTerminal) {
-		return &settings.Problem{Key: "bad_request"}
-	}
-	if a.s.Bindings[i].LaunchModeOf() == mode {
-		return nil
-	}
-	s := a.s
+	s = a.s
 	s.Bindings = slices.Clone(s.Bindings)
-	s.Bindings[i].LaunchMode = mode
-	if err := settings.Save(a.path, s); err != nil {
-		return err
+	b := s.Bindings[i]
+	if req.Alias != nil && b.Alias != *req.Alias {
+		b.Alias, edited = *req.Alias, true
 	}
-	a.s = s
-	if c := a.projects[pid]; c != nil {
-		c.n.SetLaunchMode(mode)
+	if !req.empty() {
+		b, edited = a.withAutonomyRequestLocked(b, req.autonomyRequest), true
 	}
-	return nil
+	if req.LaunchMode != nil && b.LaunchModeOf() != *req.LaunchMode {
+		b.LaunchMode, edited = *req.LaunchMode, true
+	}
+	s.Bindings[i] = b
+	if edited {
+		err = s.Validate()
+	}
+	return s, edited, err
 }
 
 // revealInvite answers the invite of a project, the only way its secret
@@ -679,19 +738,22 @@ func (a *App) revealInvite(w http.ResponseWriter, r *http.Request) {
 	pid := r.PathValue("pid")
 	a.mu.Lock()
 	_, known := a.projectViewLocked(pid)
-	s := a.s
+	code := a.s.Code
+	var b settings.ProjectBinding
+	if i := a.bindingIndex(pid); i >= 0 {
+		b = a.s.Bindings[i]
+	}
 	a.mu.Unlock()
 	switch {
 	case !known:
 		writeCodedError(w, http.StatusNotFound, "not_found")
-	case pid != LegacyProjectID && s.Bindings[slices.IndexFunc(s.Bindings, func(b settings.ProjectBinding) bool { return b.ID == pid })].ScopeOf() == settings.ProjectScopeLocal:
-		writeCodedError(w, http.StatusNotFound, "not_found")
-	case pid == LegacyProjectID && s.Code == "":
+	case pid == LegacyProjectID && code == "":
 		writeCodedError(w, http.StatusConflict, "legacy_invite_unavailable")
 	case pid == LegacyProjectID:
-		writeJSON(w, InviteView{Invite: s.Code})
+		writeJSON(w, InviteView{Invite: code})
+	case b.ScopeOf() == settings.ProjectScopeLocal:
+		writeCodedError(w, http.StatusNotFound, "not_found")
 	default:
-		b := s.Bindings[slices.IndexFunc(s.Bindings, func(b settings.ProjectBinding) bool { return b.ID == pid })]
 		writeJSON(w, InviteView{Invite: config.FormatInvite(b.ID, b.Epoch, b.Secret)})
 	}
 }
@@ -783,14 +845,11 @@ func (a *App) removeProjectMember(w http.ResponseWriter, r *http.Request) {
 	default:
 		err = a.removeBindingMember(pid, name)
 	}
-	switch {
-	case errors.Is(err, node.ErrSelf):
-		writeCodedError(w, http.StatusBadRequest, "remove_self")
+	if status, code, ok := memberError(err); ok {
+		writeCodedError(w, status, code)
 		return
-	case errors.Is(err, node.ErrUnknownPeer):
-		writeCodedError(w, http.StatusNotFound, "unknown_member")
-		return
-	case err != nil:
+	}
+	if err != nil {
 		a.failed(w, "remove member", err)
 		return
 	}
@@ -903,7 +962,7 @@ func (a *App) newProjectChat(w http.ResponseWriter, r *http.Request) {
 		info, err = n.NewProjectChat(req.Participants)
 	}
 	if err != nil {
-		a.chatFailed(w, err)
+		a.failed(w, "chat request", err)
 		return
 	}
 	writeJSON(w, ChatInfoView{ChatInfo: info, Project: pid})
@@ -924,7 +983,7 @@ func (a *App) projectChat(do func(n *node.Node, r *http.Request, id string) (any
 		}
 		v, err := do(n, r, id)
 		if err != nil {
-			a.chatFailed(w, err)
+			a.failed(w, "chat request", err)
 			return
 		}
 		if info, ok := v.(node.ChatInfo); ok {
@@ -993,32 +1052,9 @@ func (a *App) projectSend(w http.ResponseWriter, r *http.Request) {
 		AuthorKind: node.AuthorHuman, Attachments: req.Attachments, AskSeats: req.AskSeats})
 	if err != nil {
 		if !attachmentFailed(w, err) {
-			a.chatFailed(w, err)
+			a.failed(w, "chat request", err)
 		}
 		return
 	}
 	writeJSON(w, m)
-}
-
-// chatFailed answers a node chat error with its code.
-func (a *App) chatFailed(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, node.ErrUnknownChat):
-		writeCodedError(w, http.StatusNotFound, "unknown_chat")
-	case errors.Is(err, node.ErrChatClosed):
-		writeCodedError(w, http.StatusConflict, "chat_closed")
-	case errors.Is(err, node.ErrLegacyChat):
-		writeCodedError(w, http.StatusConflict, "chat_legacy")
-	case errors.Is(err, node.ErrEmptyBody):
-		writeCodedError(w, http.StatusBadRequest, "empty_body")
-	case errors.Is(err, node.ErrBadParticipants), errors.Is(err, node.ErrUnknownPeer), errors.Is(err, node.ErrNoChatSupport):
-		writeCodedError(w, http.StatusBadRequest, "chat_participants")
-	case errors.Is(err, node.ErrBadRequest), errors.Is(err, node.ErrNotProject):
-		writeCodedError(w, http.StatusBadRequest, "bad_request")
-	case errors.Is(err, node.ErrNotChatOwner):
-		writeCodedError(w, http.StatusForbidden, "chat_owner")
-	default:
-		a.log.Error("chat request", "err", err)
-		writeCodedError(w, http.StatusInternalServerError, "internal")
-	}
 }

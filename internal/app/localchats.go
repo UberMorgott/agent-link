@@ -31,12 +31,19 @@ const (
 	ChatScopeFolderlessTemporary = "folderless_temporary"
 )
 
-// TempChatIdle is how long a temporary chat stays after its last activity
-// once none of its sessions is live and nothing in it is pending.
-const TempChatIdle = 24 * time.Hour
-
-// localChatGCEvery is how often temporary chats are collected.
-const localChatGCEvery = 10 * time.Minute
+const (
+	// TempChatIdle is how long a temporary chat stays after its last activity
+	// once none of its sessions is live and nothing in it is pending.
+	TempChatIdle = 24 * time.Hour
+	// EmptyChatGrace is how long a temporary chat with no seat and no message
+	// stays after its last use, even while its owner lives: nothing in it
+	// is worth keeping.
+	EmptyChatGrace = 2 * time.Minute
+	// ChatLiveGrace is how long a local chat stays shown after it stopped
+	// being live (LocalChatView.LiveEndedAt); the project list is told again
+	// when it lapses.
+	ChatLiveGrace = 60 * time.Second
+)
 
 var errUnknownLocalChat = errors.New("unknown local chat")
 
@@ -49,7 +56,7 @@ type LocalChatView struct {
 	// ExpiresAt is, for a temporary chat, the earliest time it is removed: it
 	// stays longer while one of its sessions is live or something is pending.
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
-	// Owner is the agent the chat belongs to (settings.LocalChat.OwnerOf);
+	// Owner is the agent the chat belongs to (settings.LocalChat.Owner);
 	// absent for a shared chat.
 	Owner *settings.LocalChatOwner `json:"owner,omitempty"`
 
@@ -58,6 +65,9 @@ type LocalChatView struct {
 
 	// Live: the chat is in use (localChatLiveLocked); a retired one never is.
 	Live bool `json:"live"`
+	// LiveEndedAt is when it stopped being live (absent while live): the page
+	// keeps it shown for ChatLiveGrace from then.
+	LiveEndedAt time.Time `json:"live_ended_at,omitzero"`
 	// Retired: its owner ended and only an unread reply holds it (retire.go);
 	// hidden from the sidebar, the dashboard's needs_human shows the reply.
 	Retired bool `json:"retired,omitempty"`
@@ -72,20 +82,31 @@ type LocalChatView struct {
 // (localChatLiveLocked: a caller waits, a turn or job runs) and its last
 // message or use (ProjectView.Activity).
 type LocalActivityView struct {
-	Live       bool      `json:"live"`
-	Waiting    bool      `json:"waiting,omitempty"`
-	LastActive time.Time `json:"last_active,omitzero"`
+	Live        bool      `json:"live"`
+	LiveEndedAt time.Time `json:"live_ended_at,omitzero"` // as in LocalChatView
+	Waiting     bool      `json:"waiting,omitempty"`
+	LastActive  time.Time `json:"last_active,omitzero"`
 }
 
 // localChatViewLocked is the view of the local chat of binding b with its
-// live state now (live: liveAgentsLocked); nil for a folder's project binding.
-func (a *App) localChatViewLocked(b settings.ProjectBinding, live map[string]map[string]bool) *LocalChatView {
+// live state now; nil for a folder's project binding.
+func (a *App) localChatViewLocked(b settings.ProjectBinding) *LocalChatView {
 	if b.Chat == nil {
 		return nil
 	}
 	v := localChatViewOf(b.Chat)
-	v.Live, v.Waiting, v.LastActive = a.localChatLiveLocked(b, live)
+	st := a.localChatLiveLocked(b)
+	v.Live, v.LiveEndedAt, v.Waiting, v.LastActive = st.live, st.endedAt, st.waiting, st.last
+	if b.Chat.Temporary {
+		v.ExpiresAt = st.last.Add(TempChatIdle)
+	}
 	return &v
+}
+
+// localActivityLocked is the activity of a folder's local project chat.
+func (a *App) localActivityLocked(b settings.ProjectBinding) *LocalActivityView {
+	st := a.localChatLiveLocked(b)
+	return &LocalActivityView{Live: st.live, LiveEndedAt: st.endedAt, Waiting: st.waiting, LastActive: st.last}
 }
 
 // discussWaiting counts a discuss caller starting (+1) or ending (-1) its
@@ -101,6 +122,7 @@ func (a *App) discussWaiting(pid string, delta int) {
 	}
 	a.mu.Unlock()
 	a.changed(pid)
+	a.liveChanged()
 }
 
 // localChatViewOf is lc's view; nil is a folder's project chat.
@@ -108,7 +130,7 @@ func localChatViewOf(lc *settings.LocalChat) LocalChatView {
 	if lc == nil {
 		return LocalChatView{Scope: ChatScopeProject}
 	}
-	v := LocalChatView{Topic: lc.Topic, Project: lc.Project, Folder: lc.Folder, Owner: lc.OwnerOf(), Retired: !lc.Retired.IsZero()}
+	v := LocalChatView{Topic: lc.Topic, Project: lc.Project, Folder: lc.Folder, Owner: chatOwner(lc), Retired: !lc.Retired.IsZero()}
 	switch {
 	case lc.Temporary && lc.Project != "":
 		v.Scope = ChatScopeProjectTemporary
@@ -119,53 +141,58 @@ func localChatViewOf(lc *settings.LocalChat) LocalChatView {
 	default:
 		v.Scope = ChatScopeFolderless
 	}
-	if lc.Temporary {
-		v.ExpiresAt = lc.LastUsed.Add(TempChatIdle)
-	}
 	return v
+
 }
 
 // discussContextLocked picks (or makes) the local context of a discuss
 // request: the chat it names, else a new temporary chat, else an agent's own
 // chat of its topic (discussOwner), else the topic's shared chat, else the
-// folder's project chat.
-func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir string) (string, error) {
+// folder's project chat. created reports that pid is a binding this call
+// added (discuss removes it again when the call fails and it stayed empty).
+func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir string) (pid string, created bool, err error) {
 	if req.Chat != "" {
 		for i, b := range a.s.Bindings {
 			if c := a.projects[b.ID]; c != nil && b.ScopeOf() == settings.ProjectScopeLocal && c.n.OwnsChat(req.Chat) {
 				if a.retiring[b.ID] {
-					return "", errUnknownLocalChat // closing: its seats go now
+					return "", false, errUnknownLocalChat // closing: its seats go now
 				}
 				if b.Chat != nil && !b.Chat.Retired.IsZero() {
-					return b.ID, a.adoptRetiredLocked(i, discussOwner(req))
+					return b.ID, false, a.adoptRetiredLocked(i, discussOwner(req))
 				}
-				return b.ID, a.touchLocalChatLocked(i, req.SessionID)
+				return b.ID, false, a.touchLocalChatLocked(i, req.SessionID)
 			}
 		}
-		return "", errUnknownLocalChat
+		return "", false, errUnknownLocalChat
 	}
 	if req.Seat != "" && req.Topic == "" && !req.Temporary {
 		// A seat asks in its own chat, wherever its folder is.
 		for _, b := range a.s.Bindings {
 			if c := a.projects[b.ID]; c != nil && slices.ContainsFunc(c.n.Seats(), func(s node.SeatView) bool { return s.ID == req.Seat }) {
-				return b.ID, nil
+				return b.ID, false, nil
 			}
 		}
 	}
-	pid := a.localProjectOfLocked(dir)
-	folderless := pid == "" && !a.projectFolderLocked(dir) && !inWorkTree(dir)
+	pid = a.localProjectOfLocked(dir)
+	root := gitRoot(dir)
+	folderless := pid == "" && !a.projectFolderLocked(dir) && root == ""
 	if pid == "" && !folderless {
+		// A new local project binds the whole work tree, whatever subfolder
+		// asks first; a project folder outside git binds itself.
+		if root == "" {
+			root = dir
+		}
 		if err := settings.CanAddBinding(a.s.Bindings, false); err != nil {
-			return "", err
+			return "", false, err
 		}
-		var err error
-		if pid, err = a.addLocalLocked(ctx, dir, nil, filepath.Base(dir)); err != nil {
-			return "", err
+		if pid, err = a.addLocalLocked(ctx, root, nil, filepath.Base(root)); err != nil {
+			return "", false, err
 		}
+		created = true
 	}
 	owner := discussOwner(req)
 	if owner == nil && req.Topic == "" && !req.Temporary && !folderless {
-		return pid, nil
+		return pid, created, nil
 	}
 	if !req.Temporary {
 		// The routing key: (project, owner, topic) for an agent's own chat,
@@ -179,7 +206,7 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 			}
 			var mine bool
 			if owner != nil {
-				o := lc.OwnerOf()
+				o := chatOwner(lc)
 				mine = o != nil && sameOwner(*o, *owner)
 			} else {
 				mine = lc.Topic != "" && lc.Owner == nil
@@ -189,14 +216,14 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 			}
 		}
 		if best >= 0 {
-			return a.s.Bindings[best].ID, a.touchLocalChatLocked(best, req.SessionID)
+			return a.s.Bindings[best].ID, false, a.touchLocalChatLocked(best, req.SessionID)
 		}
 	}
 	if err := settings.CanAddBinding(a.s.Bindings, true); err != nil {
-		return "", err
+		return pid, created, err
 	}
-	// A temporary chat of no owner says so: its first session is no owner
-	// (settings.LocalChat.OwnerOf).
+	// A temporary chat of no owner says so, for an older build that takes
+	// its first session for one (settings.LocalChat.OwnerOf).
 	lc := &settings.LocalChat{Temporary: req.Topic == "" || owner != nil, Topic: req.Topic, Owner: owner, Project: pid, Folder: dir,
 		LastUsed: time.Now().UTC(), Unowned: owner == nil && req.Topic == ""}
 	if pid != "" {
@@ -209,7 +236,8 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 	if name == "" {
 		name = "Temporary " + filepath.Base(lc.Folder)
 	}
-	return a.addLocalLocked(ctx, "", lc, name)
+	pid, err = a.addLocalLocked(ctx, "", lc, name)
+	return pid, err == nil, err
 }
 
 // discussOwner is the agent a discuss request's own chat belongs to: its
@@ -268,31 +296,37 @@ func (a *App) projectFolderLocked(dir string) bool {
 	return slices.ContainsFunc(a.s.Bindings, func(b settings.ProjectBinding) bool { return b.Dir != "" && within(b.Dir, dir) })
 }
 
-// inWorkTree reports whether dir is inside a git work tree: a project folder
-// even before any project binds it.
-func inWorkTree(dir string) bool {
+// gitRoot is the top folder of the git work tree holding dir (where its .git
+// is), "" outside one: a project folder even before any project binds it.
+func gitRoot(dir string) string {
 	for d := filepath.Clean(dir); ; {
 		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
-			return true
+			return d
 		}
 		up := filepath.Dir(d)
 		if up == d {
-			return false
+			return ""
 		}
 		d = up
 	}
 }
 
-// touchLocalChatLocked records a use of the local chat of binding i by
-// session ("" none); a folder's project binding is left as it is.
+// maxChatSessions bounds LocalChat.Sessions: the first (the creator) and the
+// latest ones are kept.
+const maxChatSessions = 16
+
+// touchLocalChatLocked records a new session ("" none) using the local chat
+// of binding i; a folder's project binding is left as it is. A known session
+// writes nothing: the chat's activity is its messages (localChatState).
 func (a *App) touchLocalChatLocked(i int, session string) error {
-	if a.s.Bindings[i].Chat == nil {
+	if a.s.Bindings[i].Chat == nil || session == "" || slices.Contains(a.s.Bindings[i].Chat.Sessions, session) {
 		return nil
 	}
 	lc := *a.s.Bindings[i].Chat
 	lc.LastUsed = time.Now().UTC()
-	if session != "" && !slices.Contains(lc.Sessions, session) {
-		lc.Sessions = append(slices.Clone(lc.Sessions), session)
+	lc.Sessions = append(slices.Clone(lc.Sessions), session)
+	if len(lc.Sessions) > maxChatSessions {
+		lc.Sessions = slices.Delete(lc.Sessions, 1, len(lc.Sessions)-maxChatSessions+1)
 	}
 	s := a.s
 	s.Bindings = slices.Clone(s.Bindings)
@@ -332,104 +366,245 @@ func (a *App) adoptRetiredLocked(i int, owner *settings.LocalChatOwner) error {
 	return nil
 }
 
-// gcLoop collects idle temporary chats and retires the chats of ended owners
-// (retireOwnedChats) until ctx ends.
+// gcLoop retires the chats of ended owners (retireOwnedChats), collects
+// idle and empty local chats (gcLocalChats) and tells the project list of
+// chats whose live state changed unseen (checkLive), every retireEvery and
+// once at start, until ctx ends.
 func (a *App) gcLoop(ctx context.Context) {
-	t := time.NewTicker(localChatGCEvery)
+	t := time.NewTicker(retireEvery)
 	defer t.Stop()
-	r := time.NewTicker(retireEvery)
-	defer r.Stop()
 	for {
-		a.gcLocalChats(time.Now())
-		for gc := false; !gc; {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				gc = true
-			case <-r.C:
-				a.retireOwnedChats(time.Now())
-			}
+		now := time.Now()
+		a.retireOwnedChats(now)
+		a.gcLocalChats(now)
+		a.checkLive(now)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
 		}
 	}
 }
 
-// gcLocalChats removes every temporary chat none of whose sessions is live,
-// with nothing pending (a seat's queue or turn, an unread message, a running
-// job) and no activity for TempChatIdle, and every retired chat with nothing
-// pending. Its data goes to .left, as a leave's.
-// An unread reply whose session ended (ChatInfo.NeedsHuman) keeps the chat
-// until a person reads it or reassigns it: it is never dropped unseen.
+// gcLocalChats removes, with nothing pending in it (a seat's queue or turn,
+// an unread message, a running job, a discuss caller waiting):
+//   - every retired chat: it stayed for an unread reply alone (retire.go);
+//   - every temporary chat with no seat and no message EmptyChatGrace after
+//     its last use, even while its owner lives (a discuss that failed, or
+//     one whose seats went);
+//   - every temporary chat none of whose sessions is live after TempChatIdle
+//     without activity.
+//
+// Its data goes to .left, as a leave's. An unread reply whose session ended
+// (ChatInfo.NeedsHuman) keeps the chat until a person reads it or reassigns
+// it: it is never dropped unseen.
 func (a *App) gcLocalChats(now time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	live := a.liveAgentsLocked()
+	var live map[string]map[string]bool
 	var drop []string
 	for _, b := range a.s.Bindings {
-		if b.Chat == nil {
+		lc := b.Chat
+		if lc == nil || !lc.Temporary && lc.Retired.IsZero() || a.retiring[b.ID] || a.discussWaiters[b.ID] > 0 {
 			continue
 		}
-		// A retired chat (its owner ended) goes as soon as nothing in it is
-		// pending: it stayed for an unread reply alone (retire.go).
-		retired := !b.Chat.Retired.IsZero()
-		if !retired && (!b.Chat.Temporary || slices.ContainsFunc(b.Chat.Sessions, func(s string) bool { _, ok := live[s]; return ok })) {
+		c := a.projects[b.ID]
+		st := localChatState(c, lc)
+		if st.waiting || st.running || st.unread {
 			continue
 		}
-		if last, busy := localChatActivity(a.projects[b.ID], b.Chat); !busy && (retired || now.Sub(last) >= TempChatIdle) {
-			drop = append(drop, b.ID)
+		switch {
+		case !lc.Retired.IsZero():
+		case c != nil && st.empty && now.Sub(st.last) >= EmptyChatGrace:
+		case now.Sub(st.last) >= TempChatIdle:
+			if live == nil {
+				live = a.liveAgentsLocked()
+			}
+			if slices.ContainsFunc(lc.Sessions, func(s string) bool { _, ok := live[s]; return ok }) {
+				continue
+			}
+		default:
+			continue
 		}
+		drop = append(drop, b.ID)
 	}
 	for _, pid := range drop {
 		if err := a.leaveProjectLocked(pid); err != nil {
-			a.log.Warn("remove temporary chat", "project", pid, "err", err)
+			a.log.Warn("remove local chat", "project", pid, "err", err)
 			continue
 		}
 		a.forgetOwnerLocked(pid)
-		a.log.Info("temporary chat removed", "project", pid)
+		delete(a.chatLive, pid)
+		a.log.Info("local chat removed", "project", pid)
 		go a.events.publish("projects", projectTopic(pid), "status", "dashboard")
 	}
 }
 
-// localChatActivity is the last activity of local chat lc run by c (nil: not
-// running) and whether something in it is pending.
-func localChatActivity(c *appContext, lc *settings.LocalChat) (last time.Time, busy bool) {
-	last, waiting, running := localChatState(c, lc)
-	return last, waiting || running || localChatUnread(c)
+// chatState is what a local chat's context shows now (localChatState).
+type chatState struct {
+	last time.Time // its last message or use
+	// waiting: an asked seat's turn runs or is queued.
+	waiting bool
+	// running: other work runs in it (an active chat, a job).
+	running bool
+	unread  bool // an unread message
+	empty   bool // no seat and no message
 }
 
-// localChatState is the last activity of local chat lc run by c (nil: not
-// running), whether an asked seat's turn runs or is queued (waiting) and
-// whether other work runs in it (an active chat, a job). An unreadable chat
-// list counts as running: never collect or hide what cannot be read. lc is
-// nil for a folder's project chat.
-func localChatState(c *appContext, lc *settings.LocalChat) (last time.Time, waiting, running bool) {
+// localChatState is the state of local chat lc run by c (nil: not running;
+// nothing is known of it). An unreadable chat list counts as running and
+// unread: never collect or hide what cannot be read. lc is nil for a
+// folder's project chat.
+func localChatState(c *appContext, lc *settings.LocalChat) chatState {
+	var st chatState
 	if lc != nil {
-		last = lc.LastUsed
+		st.last = lc.LastUsed
 	}
 	if c == nil {
-		return last, false, false
+		return st
 	}
-	for _, s := range c.n.Seats() {
-		waiting = waiting || len(s.Pending) > 0 || s.Status == node.SeatRunning || s.TurnQueued
+	seats := c.n.Seats()
+	for _, s := range seats {
+		st.waiting = st.waiting || len(s.Pending) > 0 || s.Status == node.SeatRunning || s.TurnQueued
 	}
 	chats, err := c.n.Chats(false, false)
 	if err != nil {
-		return last, waiting, true
+		st.running, st.unread = true, true
+		return st
 	}
+	st.empty = len(seats) == 0
 	for _, ci := range chats {
-		if ci.LastAt.After(last) {
-			last = ci.LastAt
+		if ci.LastAt.After(st.last) {
+			st.last = ci.LastAt
 		}
-		running = running || ci.Active
+		st.running = st.running || ci.Active
+		st.unread = st.unread || ci.Unread > 0
+		st.empty = st.empty && ci.Count == 0
 	}
-	return last, waiting, running || (c.w != nil && c.w.Busy())
+	st.running = st.running || c.w != nil && c.w.Busy()
+	return st
 }
 
-// localChatUnread reports whether a chat run by c has an unread message.
-func localChatUnread(c *appContext) bool {
-	if c == nil {
-		return false
+// liveMark is the live state of a local binding last seen by checkLive.
+type liveMark struct {
+	live    bool
+	endedAt time.Time // when it was seen to stop being live
+}
+
+// liveChanged asks for a checkLive soon (a node's seats, chats or jobs
+// changed); calls while one is pending share it.
+func (a *App) liveChanged() {
+	if a.liveCheck.CompareAndSwap(false, true) {
+		go func() {
+			a.liveCheck.Store(false)
+			a.checkLive(time.Now())
+		}()
 	}
-	chats, err := c.n.Chats(false, false)
-	return err != nil || slices.ContainsFunc(chats, func(ci node.ChatInfo) bool { return ci.Unread > 0 })
+}
+
+// checkLive notes the live state of every local binding and tells the
+// project list when one changed: a chat stopping to be live records when
+// (LiveEndedAt), and the list is told again once its ChatLiveGrace lapsed.
+func (a *App) checkLive(now time.Time) {
+	a.mu.Lock()
+	flipped := a.noteLiveLocked(now)
+	a.mu.Unlock()
+	if flipped {
+		a.events.publish("projects")
+	}
+}
+
+// noteLiveLocked is checkLive's note of every local binding; it reports
+// whether one changed.
+func (a *App) noteLiveLocked(now time.Time) bool {
+	flipped := false
+	seen := map[string]bool{}
+	for _, b := range a.s.Bindings {
+		if b.ScopeOf() != settings.ProjectScopeLocal {
+			continue
+		}
+		seen[b.ID] = true
+		live := a.localChatLiveLocked(b).live
+		m, known := a.chatLive[b.ID]
+		switch {
+		case !known:
+		case m.live && !live:
+			m.endedAt = now.UTC()
+			time.AfterFunc(ChatLiveGrace, func() { a.events.publish("projects") })
+			flipped = true
+		case !m.live && live:
+			m.endedAt = time.Time{}
+			flipped = true
+		}
+		m.live = live
+		if a.chatLive == nil {
+			a.chatLive = map[string]liveMark{}
+		}
+		a.chatLive[b.ID] = m
+	}
+	for pid := range a.chatLive {
+		if !seen[pid] {
+			delete(a.chatLive, pid)
+		}
+	}
+	return flipped
+}
+
+// dropIfEmpty removes local binding pid when nothing is in it (no seat, no
+// message, nothing pending, no discuss caller waiting): what a failed discuss
+// created. A concurrent discuss that routed into it meanwhile keeps it.
+func (a *App) dropIfEmpty(pid string) {
+	a.mu.Lock()
+	i := a.bindingIndex(pid)
+	drop := i >= 0 && a.discussWaiters[pid] == 0 && !a.retiring[pid]
+	if drop {
+		c := a.projects[pid]
+		st := localChatState(c, a.s.Bindings[i].Chat)
+		drop = c != nil && st.empty && !st.waiting && !st.running && !st.unread
+	}
+	if drop {
+		if err := a.leaveProjectLocked(pid); err != nil {
+			a.log.Warn("remove empty local binding", "project", pid, "err", err)
+			drop = false
+		} else {
+			a.forgetOwnerLocked(pid)
+			delete(a.chatLive, pid)
+		}
+	}
+	a.mu.Unlock()
+	if drop {
+		a.events.publish("projects", projectTopic(pid), "status", "dashboard")
+	}
+}
+
+// chatOwner is the agent local chat lc belongs to (settings.LocalChat.Owner);
+// nil for a shared chat or none.
+func chatOwner(lc *settings.LocalChat) *settings.LocalChatOwner {
+	if lc == nil {
+		return nil
+	}
+	return lc.Owner
+}
+
+// migrateChatOwners makes the owner of every temporary chat of a build
+// before owners were stored explicit: the session that made it
+// (settings.LocalChat.OwnerOf, which reads Unowned and Sessions[0]). changed
+// reports any.
+func migrateChatOwners(s settings.Settings) (out settings.Settings, changed bool) {
+	for i, b := range s.Bindings {
+		if b.Chat == nil || b.Chat.Owner != nil {
+			continue
+		}
+		o := b.Chat.OwnerOf()
+		if o == nil {
+			continue
+		}
+		if !changed {
+			s.Bindings = slices.Clone(s.Bindings)
+		}
+		lc := *b.Chat
+		lc.Owner, changed = o, true
+		s.Bindings[i].Chat = &lc
+	}
+	return s, changed
 }
