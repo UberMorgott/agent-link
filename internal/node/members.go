@@ -191,7 +191,7 @@ func listenAddrs(addr net.Addr) ([]string, int) {
 	}
 	ifs, _ := net.Interfaces()
 	slices.SortStableFunc(ifs, func(a, b net.Interface) int {
-		za, zb := strings.Contains(strings.ToLower(a.Name), "zerotier"), strings.Contains(strings.ToLower(b.Name), "zerotier")
+		za, zb := config.IsZeroTier(a.Name), config.IsZeroTier(b.Name)
 		switch {
 		case za == zb:
 			return 0

@@ -3,7 +3,6 @@ package settings
 import (
 	"net"
 	"strconv"
-	"strings"
 
 	"github.com/UberMorgott/agent-link/internal/config"
 )
@@ -40,7 +39,7 @@ func SystemIfaces() []Iface {
 func ZeroTierIP(ifaces []Iface) (net.IP, bool) {
 	var v6 net.IP
 	for _, i := range ifaces {
-		if !i.Up || !strings.Contains(strings.ToLower(i.Name), "zerotier") {
+		if !i.Up || !config.IsZeroTier(i.Name) {
 			continue
 		}
 		for _, ip := range i.Addrs {

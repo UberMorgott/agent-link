@@ -441,7 +441,7 @@ func zeroTierNets() []*net.IPNet {
 	ifs, _ := net.Interfaces()
 	var out []*net.IPNet
 	for _, ifi := range ifs {
-		if ifi.Flags&net.FlagUp == 0 || !strings.Contains(strings.ToLower(ifi.Name), "zerotier") {
+		if ifi.Flags&net.FlagUp == 0 || !config.IsZeroTier(ifi.Name) {
 			continue
 		}
 		as, _ := ifi.Addrs()
