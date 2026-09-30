@@ -19,6 +19,11 @@ package main
 // (a lock file); it also keeps the idle session registered (heartbeats) and
 // ends when the session ends (SessionEnd, or its parent process is gone) or
 // before the entry's timeout.
+//
+// An update of the executable does not end or wake it: exit 2 costs the idle
+// model a turn, so it is kept for real messages. The old waiter keeps polling
+// the node (old and new versions talk over the same API; the updater parks
+// the locked old file), and the session's next Stop starts the new one.
 
 import (
 	"crypto/rand"
@@ -44,8 +49,6 @@ type waitOpts struct {
 
 	// alive reports whether the session (its agent process) still runs.
 	alive func() bool
-	// replaced reports whether a newer executable occupies this process's launch path.
-	replaced func() bool
 }
 
 // defaultWaitOpts: the session's process is the client's agent among the
@@ -58,8 +61,7 @@ func defaultWaitOpts(client string) waitOpts {
 		life:      agenthook.WaitTimeout*time.Second - 2*time.Minute,
 		busyFor:   10 * time.Minute,
 
-		alive:    agentAlive(agentPID(client)),
-		replaced: executableReplaced(),
+		alive: agentAlive(agentPID(client)),
 	}
 }
 
@@ -102,18 +104,6 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 		if o.alive != nil && !o.alive() {
 			_ = hookCall(env.api, http.MethodDelete, "/sessions/"+url.PathEscape(in.SessionID), env.withProject(nil), nil, nil, hookHTTPTimeout)
 			return 0
-		}
-		if o.replaced != nil && o.replaced() {
-			// Stop can launch this waiter before it saves idle state. Wait for
-			// that state, instead of exiting silently and stranding an idle
-			// session. An actual running turn also gets its own next Stop.
-			if !waiterBusy(st, env.clock(), o.busyFor) {
-				// Claude's asyncRewake treats exit 2 plus stderr as a new turn;
-				// its next Stop launches the current executable. No unread message
-				// is claimed here, so ordinary delivery remains intact.
-				_, _ = io.WriteString(stderr, "AgentLink was updated. Finish this turn so the Stop hook starts the updated message waiter.\n")
-				return 2
-			}
 		}
 		if time.Since(lastBeat) >= o.heartbeat && keepAlive(env, client, in.SessionID, folder, path) {
 			lastBeat = time.Now()

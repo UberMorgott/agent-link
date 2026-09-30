@@ -973,61 +973,63 @@ func TestHookWaitWakesIdleSession(t *testing.T) {
 	}
 }
 
-func TestHookWaitRearmsAfterExecutableReplacement(t *testing.T) {
+// An update swaps the executable under a running waiter (renamed aside, a new
+// file at its path). The idle session is not woken for it: no exit 2, nothing
+// on stderr; the old waiter still delivers messages, and so does the one the
+// next Stop starts.
+func TestHookWaitUpdateDoesNotWakeIdleSession(t *testing.T) {
 	c := newHookCase(t)
 	c.run(hookClaude, evSessionStart)
-	c.run(hookClaude, evStop)
-	c.f.add(chatMsg("c1", "KPECTIK", "agent", "after update", true))
-	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: time.Second, busyFor: time.Hour, replaced: func() bool { return true }}
-	var stderr bytes.Buffer
-	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, o); code != 2 {
-		t.Fatalf("updated waiter: code %d stderr %q", code, stderr.String())
+	c.run(hookClaude, evStop) // idle now
+	waitOptsNow := func() waitOpts {
+		o := defaultWaitOpts(hookClaude) // what a real waiter checks, the executable included
+		o.poll, o.heartbeat, o.life, o.busyFor, o.alive = 10*time.Millisecond, time.Hour, 200*time.Millisecond, time.Hour, nil
+		return o
 	}
-	if !strings.Contains(stderr.String(), "updated") || !strings.Contains(stderr.String(), "Stop") {
-		t.Fatalf("rearm instruction missing: %q", stderr.String())
-	}
-	if len(c.f.ackedIDs()) != 0 || len(c.f.token("m1")) != 0 {
-		t.Fatalf("replacement acknowledged or claimed messages: %v", c.f.ackedIDs())
-	}
-	// The old process releases the per-session lock before Claude's next Stop.
-	o.replaced = func() bool { return false }
-	stderr.Reset()
-	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, o); code != 2 || !strings.Contains(stderr.String(), "after update") {
-		t.Fatalf("new waiter: code %d stderr %q", code, stderr.String())
-	}
-}
+	oldWaiter := waitOptsNow()
 
-func TestHookWaitExecutableReplacementDoesNotWakeBusySession(t *testing.T) {
-	c := newHookCase(t)
-	c.run(hookClaude, evSessionStart)
-	c.run(hookClaude, evPreTool, `,"tool_name":"Read"`)
-	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 50 * time.Millisecond, busyFor: time.Hour, replaced: func() bool { return true }}
-	var stderr bytes.Buffer
-	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, o); code != 0 || stderr.Len() != 0 {
-		t.Fatalf("busy waiter was rewoken: code %d stderr %q", code, stderr.String())
-	}
-}
-
-func TestHookWaitReplacementWaitsForStopState(t *testing.T) {
-	c := newHookCase(t)
-	c.run(hookClaude, evSessionStart)
-	c.run(hookClaude, evPreTool, `,"tool_name":"Read"`)
-	path := hookStatePath(c.env.dir, hookClaude, c.sid)
-	updated := make(chan error, 1)
-	go func() {
-		time.Sleep(40 * time.Millisecond)
-		st := loadHookState(path)
-		st.LastEvent, st.LastEventAt = evStop, c.now
-		updated <- saveHookState(path, st)
-	}()
-	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: time.Second, busyFor: time.Hour, replaced: func() bool { return true }}
-	var stderr bytes.Buffer
-	code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, o)
-	if err := <-updated; err != nil {
+	self, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if code != 2 || !strings.Contains(stderr.String(), "updated") {
-		t.Fatalf("did not rearm after Stop state: code %d stderr %q", code, stderr.String())
+	parked := self + ".old-update-test"
+	if err := os.Rename(self, parked); err != nil {
+		t.Skipf("cannot swap the test executable: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(self)
+		if err := os.Rename(parked, self); err != nil {
+			t.Errorf("restore test executable: %v", err)
+		}
+	})
+	if err := os.WriteFile(self, []byte("new release"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, oldWaiter); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("update woke the idle session: code %d stderr %q", code, stderr.String())
+	}
+	// The old waiter still delivers a message that arrives after the update.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		c.f.add(chatMsg("c1", "KPECTIK", "agent", "after update", true))
+	}()
+	oldWaiter.life = 5 * time.Second
+	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, oldWaiter); code != 2 || !strings.Contains(stderr.String(), "after update") {
+		t.Fatalf("old waiter after update: code %d stderr %q", code, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "updated") {
+		t.Fatalf("model-facing update notice: %q", stderr.String())
+	}
+	// The waiter the next Stop starts (the new executable) delivers too.
+	c.run(hookClaude, evStop)
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "next stop", true))
+	stderr.Reset()
+	newWaiter := waitOptsNow()
+	newWaiter.life = 5 * time.Second
+	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, newWaiter); code != 2 || !strings.Contains(stderr.String(), "next stop") {
+		t.Fatalf("new waiter: code %d stderr %q", code, stderr.String())
 	}
 }
 

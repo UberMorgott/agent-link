@@ -30,9 +30,8 @@ func TestFileReplaced(t *testing.T) {
 	}
 }
 
-// One swap is one "updated" rewake per session: the waiter the next Stop
-// starts from the new file sees no replacement, and only a further swap (the
-// next release) is seen again.
+// A process sees a swap of the file it started from, while one started from
+// the new file does not, until a further swap (the next release).
 func TestFileReplacedOncePerSwap(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "agentlink.exe")
 	swap := func(data string) {
@@ -47,19 +46,19 @@ func TestFileReplacedOncePerSwap(t *testing.T) {
 	if err := os.WriteFile(path, []byte("v1"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	oldWaiter := fileReplaced(path)
+	oldProc := fileReplaced(path)
 	swap("v2")
-	if !oldWaiter() {
-		t.Fatal("the waiter of the replaced executable missed the swap")
+	if !oldProc() {
+		t.Fatal("the process of the replaced executable missed the swap")
 	}
-	newWaiter := fileReplaced(path)
+	newProc := fileReplaced(path)
 	for range 3 {
-		if newWaiter() {
-			t.Fatal("the waiter started after the swap saw it again")
+		if newProc() {
+			t.Fatal("the process started after the swap saw it again")
 		}
 	}
 	swap("v3")
-	if !newWaiter() {
+	if !newProc() {
 		t.Fatal("the next swap was missed")
 	}
 }

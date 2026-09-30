@@ -2,17 +2,9 @@ package main
 
 import "os"
 
-// executableReplaced reports when a newer executable occupies the path this
-// process started from. A missing path during the update's rename is not a
-// replacement: only a different file at that path retires this process.
-func executableReplaced() func() bool {
-	path, err := os.Executable()
-	if err != nil {
-		return func() bool { return false }
-	}
-	return fileReplaced(path)
-}
-
+// fileReplaced reports when a newer file occupies path, the one it saw at the
+// call (freshExecutable). A missing path during the update's rename is not a
+// replacement: only a different file at that path is.
 func fileReplaced(path string) func() bool {
 	started, err := os.Stat(path)
 	if err != nil {

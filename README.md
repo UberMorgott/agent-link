@@ -216,9 +216,9 @@ renamed to a hidden `.agentlink.exe.old` and the new one takes its place; a fail
 one back. The app then starts the new executable
 (with `-restarted`, which waits up to 30 s for the API address) and quits the normal way, never
 the kill path: running agent jobs stay up and the new app reattaches to them. A Claude Code
-background message waiter from the old version wakes its session to rearm on the new version;
-an old stdio MCP server exits after its current tool call completes. Restart an open Claude
-Code or Codex session if its MCP tools do not reconnect. The next start deletes the `.old`
+background message waiter from the old version keeps waiting (it never wakes an idle session
+for the update) and the session's next Stop starts the new one; an old stdio MCP server keeps
+serving and runs each tool call in the new executable. The next start deletes the `.old`
 file after the old processes exit, and an `agentlink-tray.exe` left next to it by an older release
 (0.4.x shipped the tray app separately); an autostart entry that still starts
 `agentlink-tray.exe` is pointed at `agentlink.exe`. 0.4.x apps cannot update to this layout by
