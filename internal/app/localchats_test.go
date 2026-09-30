@@ -552,3 +552,28 @@ func TestFailedDiscussLeavesNothing(t *testing.T) {
 		t.Fatalf("failed discuss left a binding: %d -> %d (%d %s)", before, after, code, raw)
 	}
 }
+
+// Asking again in one's own chat writes no settings: its activity is its
+// messages. Only a new session using it is recorded.
+func TestDiscussAgainWritesNoSettings(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &threadRunner{} })
+	dir := repoDir(t)
+	first := discussIn(t, h, map[string]any{"folder": dir, "temporary": true, "session_id": "s1"})
+	before, err := os.ReadFile(h.app.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		discussIn(t, h, map[string]any{"folder": dir, "chat": first.Chat, "session_id": "s1"})
+	}
+	if after, _ := os.ReadFile(h.app.path); string(after) != string(before) {
+		t.Fatal("a repeated discuss rewrote the settings")
+	}
+	discussIn(t, h, map[string]any{"folder": dir, "chat": first.Chat, "session_id": "s2"})
+	h.app.mu.Lock()
+	sessions := h.app.s.Bindings[h.app.bindingIndex(first.Project)].Chat.Sessions
+	h.app.mu.Unlock()
+	if !slices.Equal(sessions, []string{"s1", "s2"}) {
+		t.Fatalf("sessions %v", sessions)
+	}
+}

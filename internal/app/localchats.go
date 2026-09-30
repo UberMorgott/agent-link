@@ -141,10 +141,8 @@ func localChatViewOf(lc *settings.LocalChat) LocalChatView {
 	default:
 		v.Scope = ChatScopeFolderless
 	}
-	if lc.Temporary {
-		v.ExpiresAt = lc.LastUsed.Add(TempChatIdle)
-	}
 	return v
+
 }
 
 // discussContextLocked picks (or makes) the local context of a discuss
@@ -307,16 +305,22 @@ func inWorkTree(dir string) bool {
 	}
 }
 
-// touchLocalChatLocked records a use of the local chat of binding i by
-// session ("" none); a folder's project binding is left as it is.
+// maxChatSessions bounds LocalChat.Sessions: the first (the creator) and the
+// latest ones are kept.
+const maxChatSessions = 16
+
+// touchLocalChatLocked records a new session ("" none) using the local chat
+// of binding i; a folder's project binding is left as it is. A known session
+// writes nothing: the chat's activity is its messages (localChatState).
 func (a *App) touchLocalChatLocked(i int, session string) error {
-	if a.s.Bindings[i].Chat == nil {
+	if a.s.Bindings[i].Chat == nil || session == "" || slices.Contains(a.s.Bindings[i].Chat.Sessions, session) {
 		return nil
 	}
 	lc := *a.s.Bindings[i].Chat
 	lc.LastUsed = time.Now().UTC()
-	if session != "" && !slices.Contains(lc.Sessions, session) {
-		lc.Sessions = append(slices.Clone(lc.Sessions), session)
+	lc.Sessions = append(slices.Clone(lc.Sessions), session)
+	if len(lc.Sessions) > maxChatSessions {
+		lc.Sessions = slices.Delete(lc.Sessions, 1, len(lc.Sessions)-maxChatSessions+1)
 	}
 	s := a.s
 	s.Bindings = slices.Clone(s.Bindings)

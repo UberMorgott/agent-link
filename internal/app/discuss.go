@@ -160,6 +160,9 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	}
 	a.changed(pid)
 	view := localChatViewOf(lc)
+	if lc != nil && lc.Temporary {
+		view.ExpiresAt = time.Now().UTC().Add(TempChatIdle) // counted from this message
+	}
 	writeJSON(w, struct {
 		Project string `json:"project"`
 		Chat    string `json:"chat"`
