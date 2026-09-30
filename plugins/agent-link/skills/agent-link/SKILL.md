@@ -12,8 +12,8 @@ API (`$AGENTLINK_API`, else the app's settings, default `127.0.0.1:7520`). No `-
 or secret is needed. Full reference: `docs/agent-usage.md` in the agent-link repository.
 
 Prefer the MCP tools of the `agentlink` server (the agent-link plugin, or `agentlink mcp`
-registered by hand). Use the CLI only when the tools are missing: `agentlink` on `PATH` (the
-plugin puts its launcher there for the Bash tool), else the `agentlink.exe` the hooks run.
+registered by hand). Use the CLI only when the tools are missing: `agentlink` if it is on `PATH`,
+else the absolute path the SessionStart hook names (the `agentlink.exe` the hooks run).
 `agentlink version` checks it. A connection error means the app is not running: ask the user
 to start it.
 

@@ -177,7 +177,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		bodyFile := fs.String("body-file", "", "read message text from this file (UTF-8 or UTF-16 with BOM; - reads stdin); same as --prompt-file")
 		folder := fs.String("folder", "", "project working folder (default: current folder)")
 		async := fs.Bool("async", false, "return after posting instead of waiting for the answer")
-		timeout := fs.String("timeout", "10m", "maximum time to wait for the answer (up to 15m)")
+		timeout := fs.String("timeout", discussTimeout, "maximum time to wait for the answer (up to "+discussMaxWait.String()+")")
 		chat := fs.String("chat", "", "continue this local chat (id from an earlier discuss)")
 		topic := fs.String("topic", "", "named chat: this session's own thread of that name (with --shared the project's persistent chat)")
 		temporary := fs.Bool("temporary", false, "start a new temporary chat (removed when its session ends)")
@@ -493,6 +493,13 @@ type discussPick struct {
 	bodyFile          string // as sendArgs.bodyFile
 }
 
+// A discuss waits discussTimeout for its answer by default ("" asks for it),
+// at most discussMaxWait.
+const (
+	discussTimeout = "10m"
+	discussMaxWait = 15 * time.Minute
+)
+
 func discussMessage(ctx context.Context, cfg config.Config, provider, body, folder string, async bool, timeout string, pick discussPick) (discussResult, error) {
 	if provider != node.ProviderClaude && provider != node.ProviderCodex {
 		return discussResult{}, errors.New("--with must be claude or codex")
@@ -500,9 +507,9 @@ func discussMessage(ctx context.Context, cfg config.Config, provider, body, fold
 	if strings.TrimSpace(body) == "" {
 		return discussResult{}, errors.New("--body is required")
 	}
-	d, err := parseTimeout(timeout)
-	if err != nil || d <= 0 || d > 15*time.Minute {
-		return discussResult{}, errors.New("--timeout must be greater than 0 and at most 15m")
+	d, err := parseTimeout(cmp.Or(timeout, discussTimeout))
+	if err != nil || d <= 0 || d > discussMaxWait {
+		return discussResult{}, errors.New("--timeout must be greater than 0 and at most " + discussMaxWait.String())
 	}
 	dir := folder
 	if dir == "" {

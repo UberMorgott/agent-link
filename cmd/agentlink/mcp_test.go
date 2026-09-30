@@ -28,7 +28,7 @@ func mcpClient(t *testing.T, api string) *mcp.ClientSession {
 	t.Helper()
 	ctx := context.Background()
 	st, ct := mcp.NewInMemoryTransports()
-	ss, err := newMCPServer(config.Config{API: api}).Connect(ctx, st, nil)
+	ss, err := newMCPTools(config.Config{API: api}, nil).s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,6 +207,7 @@ func TestMCPToolsMatchCLIRequests(t *testing.T) {
 		{[]string{"chat", "list", "--archive", "--legacy", "--project", "P1"}, "chats", map[string]any{"archive": true, "legacy": true, "project": "P1"}},
 		{[]string{"chat", "history", "--chat", "c1", "--before", "9", "--after", "3"}, "history", map[string]any{"chat": "c1", "before_seq": 9, "after_seq": 3}},
 		{[]string{"chat", "history", "--chat", "c1"}, "history", map[string]any{"chat": "c1"}},
+		{[]string{"chat", "history", "--chat", "c1", "--project", "p2"}, "history", map[string]any{"chat": "c1", "project": "p2"}},
 		{[]string{"chat", "ack", "--chat", "c1", "--ids", "m1,m2", "--project", "P1"}, "ack", map[string]any{"chat": "c1", "ids": []string{"m1", "m2"}, "project": "P1"}},
 	} {
 		f.reqs = nil

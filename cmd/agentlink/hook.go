@@ -56,7 +56,6 @@ import (
 	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/fileutil"
 	"github.com/UberMorgott/agent-link/internal/node"
-	"github.com/UberMorgott/agent-link/internal/settings"
 )
 
 // Hook clients.
@@ -268,12 +267,11 @@ func defaultHookEnv() (hookEnv, error) {
 	if err != nil {
 		return hookEnv{}, err
 	}
-	p, err := settings.DefaultPath()
+	dir, err := hookStateDir()
 	if err != nil {
 		return hookEnv{}, err
 	}
-	return hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks"), project: strings.TrimSpace(os.Getenv("AGENTLINK_PROJECT_ID")),
-		exe: cliPath(filepath.Dir(p))}, nil
+	return hookEnv{api: cfg.API, dir: dir, project: strings.TrimSpace(os.Getenv(envProjectID)), exe: cliPath(filepath.Dir(dir))}, nil
 }
 
 // hookRun handles one hook event: it reads the input, keeps the session
@@ -426,7 +424,8 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	}
 	text := withNotes(notes, b.text)
 	if event == evSessionStart && env.exe != "" {
-		// The plugin puts agentlink on PATH only for its MCP and hook commands.
+		// agentlink need not be on the agent's own PATH (a plugin's launcher is not):
+		// name the executable the CLI commands run.
 		text = strings.TrimSpace(text + "\n\n" + cliHint(env.exe))
 	}
 	notice := joinNotice(takeNotice(&st), b.notice)

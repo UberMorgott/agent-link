@@ -51,6 +51,7 @@ type (
 	}
 	mcpHistory struct {
 		Chat      string `json:"chat" jsonschema:"chat id"`
+		Project   string `json:"project,omitempty" jsonschema:"project id (or legacy); default: $AGENTLINK_PROJECT_ID, else the chat's project"`
 		Limit     int    `json:"limit,omitempty" jsonschema:"maximum messages (default 50)"`
 		BeforeSeq uint64 `json:"before_seq,omitempty" jsonschema:"only messages before this seq"`
 		AfterSeq  uint64 `json:"after_seq,omitempty" jsonschema:"only messages after this seq, oldest first"`
@@ -130,9 +131,6 @@ type mcpTools struct {
 	fresh func() string
 }
 
-// newMCPServer builds the agentlink MCP server on the local API of cfg.
-func newMCPServer(cfg config.Config) *mcp.Server { return newMCPTools(cfg, nil).s }
-
 // newMCPTools builds the agentlink MCP server on the local API of cfg, its
 // calls going to the fresh executable once there is one.
 func newMCPTools(cfg config.Config, fresh func() string) *mcpTools {
@@ -158,7 +156,7 @@ func newMCPTools(cfg config.Config, fresh func() string) *mcpTools {
 		if in.Chat == "" {
 			return nil, errors.New("chat is required")
 		}
-		return history(ctx, cfg, in.Chat, limit(in.Limit), in.BeforeSeq, in.AfterSeq, proj(""))
+		return history(ctx, cfg, in.Chat, limit(in.Limit), in.BeforeSeq, in.AfterSeq, proj(in.Project))
 	})
 	addTool(s, "unread", "Unread messages for this node, oldest first; next is the cursor of the next page. Does not mark them read.", func(ctx context.Context, in mcpUnread) (any, error) {
 		session, _ := agentSession()
@@ -170,11 +168,7 @@ func newMCPTools(cfg config.Config, fresh func() string) *mcpTools {
 	})
 	addToolArgs(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's private agent chat. Each session (and each subagent) has its own chat and thread with that agent, reused on every call and closed when the session ends; topic names another own thread, shared the folder's shared project chat, chat an earlier chat by id, temporary a new one. Local only, separate from any network project for the same folder, waits for the exact agent's reply (default 10m), and returns the reply compactly: chat, id (the question), reply (its text), reply_id, from, model and effort the agent ran with (full: the whole reply message and project). Use async to post without waiting; timed_out returns IDs for later history lookup; held with hold_reason seat_failed, seat_error and retry_at when the agent cannot answer (e.g. its usage limit), the question staying pending for it.", func(ctx context.Context, in mcpDiscuss, args json.RawMessage) (any, error) {
 		key, _ := mcpAskKey("discuss", args)
-		timeout := in.Timeout
-		if timeout == "" {
-			timeout = "10m"
-		}
-		r, err := discussMessage(ctx, cfg, in.With, in.Body, in.Folder, in.Async, timeout, discussPick{chat: in.Chat, topic: in.Topic, temporary: in.Temporary, shared: in.Shared, askKey: key})
+		r, err := discussMessage(ctx, cfg, in.With, in.Body, in.Folder, in.Async, in.Timeout, discussPick{chat: in.Chat, topic: in.Topic, temporary: in.Temporary, shared: in.Shared, askKey: key})
 		if err != nil {
 			return r, err
 		}
