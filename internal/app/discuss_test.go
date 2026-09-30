@@ -52,6 +52,38 @@ func TestDiscussReusesFolderProjectAndChat(t *testing.T) {
 	}
 }
 
+// Regression (v0.6.63): a local project auto-created for a worktree that was
+// later removed made every settings save invalid ("dir"), so each discuss
+// from any folder failed with 400 dir.
+func TestDiscussSurvivesRemovedProjectFolder(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
+	call := func(folder string) (int, string) {
+		t.Helper()
+		return h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
+			"folder": folder, "provider": node.ProviderCodex, "body": "Second opinion, please",
+		}), nil)
+	}
+	gone := repoDir(t)
+	if code, raw := call(gone); code != http.StatusOK {
+		t.Fatalf("first discuss: %d %s", code, raw)
+	}
+	h.app.mu.Lock()
+	moved := false
+	for i, b := range h.app.s.Bindings {
+		if b.Dir == gone {
+			h.app.s.Bindings[i].Dir = filepath.Join(gone, "removed-worktree") // never created: gone from disk
+			moved = true
+		}
+	}
+	h.app.mu.Unlock()
+	if !moved {
+		t.Fatal("no local project was bound to the first folder")
+	}
+	if code, raw := call(repoDir(t)); code != http.StatusOK {
+		t.Fatalf("discuss beside a project whose folder is gone: %d %s", code, raw)
+	}
+}
+
 // A discuss that adds a seat queues its message before the seat's first turn:
 // the introduction turn carries the message and does not tell the agent to
 // end the turn without answering.

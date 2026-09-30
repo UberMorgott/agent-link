@@ -126,7 +126,7 @@ func TestValidateBindings(t *testing.T) {
 		"long alias":    {func(bs []ProjectBinding) []ProjectBinding { bs[0].Alias = strings.Repeat("я", 65); return bs }, "alias"},
 		"control alias": {func(bs []ProjectBinding) []ProjectBinding { bs[0].Alias = "a\x07b"; return bs }, "alias"},
 		"relative dir":  {func(bs []ProjectBinding) []ProjectBinding { bs[0].Dir = "rel"; return bs }, "dir"},
-		"missing dir":   {func(bs []ProjectBinding) []ProjectBinding { bs[0].Dir = filepath.Join(dirB, "absent"); return bs }, "dir"},
+		"missing dir":   {func(bs []ProjectBinding) []ProjectBinding { bs[0].Dir = filepath.Join(dirB, "absent"); return bs }, ""}, // gone from disk stays valid
 		"duplicate dir": {func(bs []ProjectBinding) []ProjectBinding { bs[2].Dir = dirA; return bs }, "dir_taken"},
 		"case-fold dir": {func(bs []ProjectBinding) []ProjectBinding { bs[2].Dir = dupDir; return bs }, "dir_taken"},
 		"bad peer":      {func(bs []ProjectBinding) []ProjectBinding { bs[0].Peers = []string{"10.0.0.1:70000"}; return bs }, "addr"},

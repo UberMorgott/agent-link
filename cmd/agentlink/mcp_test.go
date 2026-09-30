@@ -602,3 +602,16 @@ func TestMCPDiscussCompact(t *testing.T) {
 		t.Fatalf("timed out: %s", text)
 	}
 }
+
+// An MCP tool error shows the API's human message, never only its code.
+func TestAPIErrorTextShowsMessage(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"error":"Укажите полный путь к существующей папке или оставьте поле пустым.","code":"dir"}`: "Укажите полный путь к существующей папке или оставьте поле пустым. (dir)",
+		`{"error":"chat is required"}`: "chat is required",
+		`plain text`:                   "plain text",
+	} {
+		if got := apiErrorText(body); got != want {
+			t.Errorf("apiErrorText(%s) = %q, want %q", body, got, want)
+		}
+	}
+}

@@ -863,7 +863,10 @@ func validateBindings(bs []ProjectBinding) error {
 		if b.Dir == "" {
 			continue
 		}
-		if st, err := os.Stat(b.Dir); !filepath.IsAbs(b.Dir) || err != nil || !st.IsDir() {
+		// Only the form: a bound folder may be gone from disk (a removed
+		// worktree), and that must not make every later save invalid. A
+		// folder is checked to exist where it is bound (app checkDirLocked).
+		if !filepath.IsAbs(b.Dir) {
 			return problem("dir")
 		}
 		key := b.ScopeOf() + ":" + DirKey(b.Dir)

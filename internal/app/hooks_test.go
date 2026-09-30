@@ -24,6 +24,7 @@ func TestFolderHooksFollowSettings(t *testing.T) {
 	}
 	exe := filepath.Join(root, "bin", "agentlink.exe") // never run: only written into the hook entries
 	agent := fakeAgentFile(t)
+	isolateAgentHomes(t) // the machine's own agent-link plugins would take the folder hooks
 	h := newHarness(t, func(a *App) { a.HookExe, a.Agents, a.s.Code = exe, settings.Finder{}, "" })
 	apply := func(handler, workDir string) {
 		t.Helper()
@@ -189,8 +190,15 @@ func TestNoFolderHooksWithoutExe(t *testing.T) {
 	}
 }
 
-func TestBothConfiguredAgentsGetFolderHooks(t *testing.T) {
+// isolateAgentHomes points Claude Code's and Codex's homes at empty folders,
+// so no plugin installed on the machine running the tests is seen.
+func isolateAgentHomes(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+}
+
+func TestBothConfiguredAgentsGetFolderHooks(t *testing.T) {
+	isolateAgentHomes(t)
 	work := t.TempDir()
 	project := t.TempDir()
 	exe := filepath.Join(t.TempDir(), "agentlink.exe")

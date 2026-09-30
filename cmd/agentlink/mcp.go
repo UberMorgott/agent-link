@@ -301,7 +301,7 @@ func runMCPCall(ctx context.Context, cfg config.Config, tool string, in io.Reade
 func mcpText(v any, err error) (string, error) {
 	if err != nil {
 		if ae, ok := errors.AsType[*apiError](err); ok && ae.msg != "" {
-			err = errors.New(ae.msg) // the API's message, verbatim
+			err = errors.New(apiErrorText(ae.msg))
 		}
 		return "", err
 	}
@@ -313,6 +313,22 @@ func mcpText(v any, err error) (string, error) {
 		data = []byte("[]") // an empty list
 	}
 	return string(data), nil
+}
+
+// apiErrorText is the human text of an API error body: its message with the
+// code after it for {error, code}, else the body verbatim.
+func apiErrorText(body string) string {
+	var e struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if json.Unmarshal([]byte(body), &e) != nil || strings.TrimSpace(e.Error) == "" {
+		return body
+	}
+	if e.Code == "" {
+		return e.Error
+	}
+	return e.Error + " (" + e.Code + ")"
 }
 
 // mcpSendMessage validates the routing mode and sends.
