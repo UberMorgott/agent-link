@@ -477,11 +477,14 @@ func resume(c *appContext) {
 // setProjectDirLocked binds project pid (or the legacy network's working
 // folder) to dir: the worker must have no unfinished jobs (worker.ErrBusy),
 // the settings are saved, the context restarts in the new folder and the
-// worker's agent sessions of the old folder are deleted, so the next request
-// starts a fresh one there. dir must be validated by the caller.
+// worker's agent sessions of the old folder are dropped, so the next request
+// starts a fresh one there. When the context cannot start in the new folder
+// everything is put back as it was (the old folder, its sessions, its
+// running context). dir must be validated by the caller.
 func (a *App) setProjectDirLocked(pid, dir string) error {
 	var c *appContext
-	s := a.s
+	old, s := a.s, a.s
+	stateDir := a.dataRoot()
 	if pid == LegacyProjectID {
 		c = a.legacy
 		s.WorkDir = dir
@@ -493,6 +496,7 @@ func (a *App) setProjectDirLocked(pid, dir string) error {
 		c = a.projects[pid]
 		s.Bindings = slices.Clone(s.Bindings)
 		s.Bindings[i].Dir = dir
+		stateDir = a.projectDir(pid)
 	}
 	if err := quiesce(c); err != nil {
 		return err
@@ -502,29 +506,54 @@ func (a *App) setProjectDirLocked(pid, dir string) error {
 		return err
 	}
 	a.s = s
-	a.syncHooksLocked()
-	a.reapplyAutonomyLocked() // a local project may follow the changed bindings
-	stateDir := a.dataRoot()
-	if pid != LegacyProjectID {
-		stateDir = a.projectDir(pid)
-	}
 	if c != nil {
 		a.stopContextLocked(c)
 	}
-	sessions, _ := filepath.Glob(filepath.Join(stateDir, "sessions", "*.json"))
-	for _, f := range sessions {
-		if err := os.Remove(f); err != nil {
-			a.log.Warn("remove agent session of the old folder", "file", f, "err", err)
+	// The old folder's agent sessions are set aside until the new context runs.
+	sessions := filepath.Join(stateDir, "sessions")
+	aside := sessions + ".old-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := os.Rename(sessions, aside); err != nil && !errors.Is(err, os.ErrNotExist) {
+		a.log.Warn("set aside agent sessions of the old folder", "dir", sessions, "err", err)
+	}
+	err := a.startContextOfLocked(pid)
+	if err != nil {
+		a.log.Warn("project did not start in its new folder; the old one is kept", "project", pid, "dir", dir, "err", err)
+		a.s = old
+		if serr := settings.Save(a.path, old); serr != nil {
+			a.log.Error("restore the old folder", "project", pid, "err", serr)
 		}
+		_ = os.RemoveAll(sessions)
+		if rerr := os.Rename(aside, sessions); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+			a.log.Warn("restore agent sessions of the old folder", "dir", sessions, "err", rerr)
+		}
+		if rerr := a.startContextOfLocked(pid); rerr != nil {
+			a.log.Error("restart project in its old folder", "project", pid, "err", rerr)
+		}
+		return err
 	}
-	if a.hub == nil {
+	if err := os.RemoveAll(aside); err != nil {
+		a.log.Warn("remove agent sessions of the old folder", "dir", aside, "err", err)
+	}
+	a.syncHooksLocked()
+	a.reapplyAutonomyLocked() // a local project may follow the changed bindings
+	return nil
+}
+
+// startContextOfLocked starts the context of project pid (or the legacy
+// network) as the settings bind it now; nothing while the Hub is down.
+func (a *App) startContextOfLocked(pid string) error {
+	switch {
+	case a.hub == nil:
 		return nil
-	}
-	if pid == LegacyProjectID {
+	case pid == LegacyProjectID:
 		if key := a.s.Key(); key != nil {
 			return a.startContextLocked(a.newLegacyContext(key))
 		}
 		return nil
 	}
-	return a.startContextLocked(a.newProjectContext(a.s.Bindings[a.bindingIndex(pid)]))
+	i := a.bindingIndex(pid)
+	if i < 0 {
+		return ErrUnknownProject
+	}
+	return a.startContextLocked(a.newProjectContext(a.s.Bindings[i]))
 }
