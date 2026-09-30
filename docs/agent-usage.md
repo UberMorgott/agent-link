@@ -128,7 +128,12 @@ duration up to 15 minutes. Timeout returns the IDs with `timed_out: true` and CL
 `--async` returns IDs immediately. During a global, project or seat pause it returns
 `queued: true` promptly; the request stays in the local chat for delivery after resume. When the
 seat's turns fail and it does not retry within the wait (e.g. a usage limit) it returns promptly
-with `held: true`, `hold_reason: seat_failed`, `seat_error` and `retry_at`; the request stays pending for it. The MCP
+with `held: true`, `hold_reason: seat_failed`, `seat_error` and `retry_at`; the request stays pending for it.
+The seat's reply is its turn's final answer: in a turn the node runs, the node posts the agent's
+final message (Claude's result, Codex's final agent message) as the reply to each message that
+asked it, unless the agent already replied to it with `send --reply-to` in that turn. A turn that
+ends with neither is a failed turn (`seat_error`: the agent's turn ended without a reply), never
+a silent acknowledgement: the request stays pending and the turn is retried. The MCP
 `discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?, shared?, full?}` tool has the same
 behavior, compact by default (`full: true`: the whole result). A reply's `agent.model` and
 `agent.effort` (compact: `model`, `effort`) name what the seat's turn ran with, as its agent

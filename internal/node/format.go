@@ -22,7 +22,12 @@ const (
 
 // FormatUnread is one message for the model: who wrote it, where, the text
 // and what to do with it.
-func FormatUnread(m UnreadMessage) string {
+func FormatUnread(m UnreadMessage) string { return formatUnread(m, false) }
+
+// formatUnread is FormatUnread; auto for a seat's turn run by the node, which
+// posts the turn's final answer as the reply to a message that asks it
+// (answerSeatAsks): the agent answers in plain text, no agentlink send.
+func formatUnread(m UnreadMessage, auto bool) string {
 	var b strings.Builder
 	at := m.CreatedAt.Local().Format("2006-01-02 15:04")
 	from := AuthorName(m.Message)
@@ -49,6 +54,9 @@ func FormatUnread(m UnreadMessage) string {
 		b.WriteString("Это уже обрабатывает агент-обработчик этого узла — не отвечайте.\n")
 	case m.Paused:
 		b.WriteString("К сведению, ответ не требуется.\n")
+	case m.AsksYou && auto:
+		b.WriteString("Просит ответа от вас. Ответ — ваше итоговое сообщение в этом ходе: agent-link сам отправит его в чат ответом на это сообщение. " +
+			"Для ответа agentlink send не запускайте (иначе ответ уйдёт дважды); send — только чтобы спросить другого агента.\n")
 	case m.AsksYou:
 		fmt.Fprintf(&b, "Просит ответа от вас. Ответить: %s\n", reply)
 	default:
@@ -77,11 +85,17 @@ func FitUnread(msgs []UnreadMessage) int {
 // the hooks deliver them; rest more unread stay for its hooks. It carries
 // the wake's token (WakeMarker), by which the hooks know the prompt.
 func WakePrompt(msgs []UnreadMessage, rest int, folder, token string) string {
+	return wakePrompt(msgs, rest, folder, token, false)
+}
+
+// wakePrompt is WakePrompt; auto for a seat's turn run by the node
+// (formatUnread).
+func wakePrompt(msgs []UnreadMessage, rest int, folder, token string, auto bool) string {
 	var t strings.Builder
 	fmt.Fprintf(&t, "agent-link: новые сообщения (%d). Вся переписка остаётся в истории чата. %s\n", len(msgs), WakeMarker(token))
 	for _, m := range msgs {
 		t.WriteString("\n")
-		t.WriteString(FormatUnread(m))
+		t.WriteString(formatUnread(m, auto))
 	}
 	if rest > 0 {
 		fmt.Fprintf(&t, "\nЕщё %d непрочитанных: agentlink chat unread --folder %q\n", rest, folder)

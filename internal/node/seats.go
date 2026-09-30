@@ -600,7 +600,10 @@ func (n *Node) SeatAsk(seat, id string, deadline time.Time) SeatAskState {
 	if !s.needsHuman() {
 		out.RetryAt = s.RetryAt
 	}
-	out.Stuck = failed || s.needsHuman() || s.RetryAt.After(deadline) || usageLimited(out.Error)
+	// A turn that gave no reply (ErrNoReply) is told at once: its retry may
+	// give none either.
+	out.Stuck = failed || s.needsHuman() || s.RetryAt.After(deadline) || usageLimited(out.Error) ||
+		strings.Contains(out.Error, ErrNoReply.Error())
 	return out
 }
 
@@ -1332,12 +1335,17 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 		if prompt.Len() > 0 {
 			prompt.WriteString("\n\n")
 		}
-		prompt.WriteString(WakePrompt(msgs, ready-len(msgs), folder, randomHex(8)))
+		prompt.WriteString(wakePrompt(msgs, ready-len(msgs), folder, randomHex(8), true))
 	}
+	// The turn's final answer (reported: its launcher reads one) is the reply
+	// to the messages that ask the seat (answerSeatAsks).
+	var answer string
+	reported := false
 	spec := LaunchSpec{Provider: seat.Provider, Folder: folder, ResumeID: seat.SessionID, Prompt: prompt.String(),
 		Seat: seat.ID, NoOpen: !open, Env: n.seatEnv(seat, chat),
-		Doing: func(kind string, subs int) { n.setSeatDoing(seat.ID, kind, subs) },
-		Ran:   func(model, effort string) { n.setSeatRan(seat.ID, model, effort) }}
+		Doing:  func(kind string, subs int) { n.setSeatDoing(seat.ID, kind, subs) },
+		Ran:    func(model, effort string) { n.setSeatRan(seat.ID, model, effort) },
+		Answer: func(text string) { answer, reported = text, true }}
 	n.log.Info("running a seat's turn", "seat", seat.ID, "provider", seat.Provider, "resume", seat.SessionID, "messages", len(msgs))
 	err := dl.Run(ctx, spec, func(id string) {
 		n.bindSeat(seat.ID, id)
@@ -1355,17 +1363,86 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 	if err != nil {
 		n.log.Warn("a seat's turn failed", "seat", seat.ID, "err", err)
 	}
-	if err == nil && len(msgs) > 0 {
+	answered := msgs
+	var missing []string
+	if err == nil && reported {
+		// A message that asked the seat is done only with a reply to it: the
+		// seat's own (agentlink send) or its final answer, posted here.
+		missing = n.answerSeatAsks(seat.ID, msgs, answer)
+		answered = slices.DeleteFunc(slices.Clone(msgs), func(m UnreadMessage) bool { return slices.Contains(missing, m.ID) })
+		if len(missing) > 0 {
+			err = fmt.Errorf("%w (%d of its messages)", ErrNoReply, len(missing))
+			n.log.Warn("a seat's turn ended without a reply", "seat", seat.ID, "messages", missing)
+		}
+	}
+	if (err == nil || len(missing) > 0) && len(answered) > 0 {
 		// Acknowledged under the turn's claim: no hook takes them in between.
-		done := n.seatAck("", seat.ID, ids(msgs))
+		done := n.seatAck("", seat.ID, ids(answered))
 		if err := n.leases.ack(seat.ID, nil, done, time.Now()); err != nil {
 			n.log.Warn("save leases", "err", err)
 		}
 		n.changed("messages")
-	} else if len(msgs) > 0 {
+	}
+	switch {
+	case len(missing) > 0:
+		n.revokeLeases(owner, missing, "seat_no_reply", false)
+	case err != nil && len(msgs) > 0:
 		n.revokeLeases(owner, ids(msgs), "seat_turn_failed", false)
 	}
 	n.endTurn(seat.ID, msgs, err, stopped)
+}
+
+// ErrNoReply: a seat's turn succeeded but gave no reply to a message that
+// asked it (no agentlink send reply, no final answer): the message stays
+// pending, the turn counts as failed (seatRetry) and a discuss waiting for it
+// learns why (SeatAsk).
+var ErrNoReply = errors.New("the agent's turn ended without a reply")
+
+// answerSeatAsks posts answer, the final answer of seat's turn, as the seat's
+// reply to each of msgs that asked it and has no reply of the seat yet (one it
+// sent itself in the turn is kept: no second copy). It returns the ids of the
+// asks left without a reply (no answer, or the post failed).
+func (n *Node) answerSeatAsks(seat string, msgs []UnreadMessage, answer string) (missing []string) {
+	answer = strings.TrimSpace(answer)
+	for _, m := range msgs {
+		if !m.AsksYou || m.Kind != "" || n.seatReplied(m.ChatID, seat, m.ID) {
+			continue
+		}
+		if answer == "" {
+			missing = append(missing, m.ID)
+			continue
+		}
+		sent, err := n.SendRequest(SendRequest{ChatID: m.ChatID, ReplyTo: m.ID, Body: answer, AuthorKind: AuthorAgent, Seat: seat})
+		if sent.ID == "" {
+			n.log.Warn("post a seat's answer", "seat", seat, "id", m.ID, "err", err)
+			missing = append(missing, m.ID)
+			continue
+		}
+		if err != nil {
+			n.log.Warn("post a seat's answer", "seat", seat, "id", m.ID, "reply", sent.ID, "err", err)
+		}
+		n.log.Info("posted a seat's final answer as its reply", "seat", seat, "id", m.ID, "reply", sent.ID)
+	}
+	return missing
+}
+
+// seatReplied reports whether seat of this node replied to message id in chat
+// (the reply a discuss waits for).
+func (n *Node) seatReplied(chat, seat, id string) bool {
+	s, ok := n.chats.snapshot(chat)
+	if !ok {
+		return false
+	}
+	for _, rec := range slices.Backward(s.msgs) {
+		r := rec.Message
+		if r.ID == id {
+			return false
+		}
+		if r.Kind == "" && r.ReplyTo == id && r.From == n.cfg.Node && r.Agent != nil && r.Agent.Seat == seat {
+			return true
+		}
+	}
+	return false
 }
 
 // setHandling records msgs as the messages the node's running turn of seat
@@ -1493,8 +1570,9 @@ func (n *Node) seatIntro(seat Seat, chat string, setup bool) string {
 	intro := fmt.Sprintf("agent-link: вы — агент «%s» (%s) в разговоре проекта «%s» на машине %s, чат %s. "+
 		"Другие локальные агенты этого разговора: %s. Сообщения вам приходят сами. "+
 		"Спросить другого агента: agentlink send --chat %s --ask-seat <имя> --body-file <файл с текстом> "+
-		"(список агентов: agentlink seats). Ответить на сообщение: agentlink send --chat %s --reply-to <id> --body-file <файл с текстом> "+
-		ReplyTextNote+". "+
+		"(список агентов: agentlink seats) "+ReplyTextNote+". "+
+		"Ответ на сообщение, которое просит ответа от вас, — ваше итоговое сообщение хода: agent-link сам отправит его ответом, agentlink send для этого не нужен; "+
+		"только когда у сообщения указана команда ответа (agentlink send --chat %s --reply-to <id> --body-file <файл>), ответьте ею. "+
 		"Никогда не пишите в чат по своей инициативе (ни приветствий, ни представлений): только ответ на сообщение, "+
 		"которое просит ответа от вас, или вопрос, без которого эту работу не сделать. Ответ на ваш вопрос придёт сам.",
 		seat.Label, ProviderName(seat.Provider), name, n.cfg.Node, chat, with, chat, chat)

@@ -78,7 +78,7 @@ func TestReadClaudeStream(t *testing.T) {
 	var ran []string
 	in = `{"type":"system","subtype":"hook_started","session_id":"s-3"}` + "\n" +
 		`{"type":"system","subtype":"init","session_id":"s-3","model":"claude-opus-5-5[1m]"}` + "\n" + `{"type":"result","subtype":"success","session_id":"s-3"}` + "\n"
-	if _, err := readClaudeStream(strings.NewReader(in), func(string) {}, nil, func(m, e string) { ran = append(ran, m+"/"+e) }); err != nil ||
+	if _, err := readClaudeStream(strings.NewReader(in), func(string) {}, nil, func(m, e string) { ran = append(ran, m+"/"+e) }, nil); err != nil ||
 		!slices.Equal(ran, []string{"claude-opus-5-5[1m]/"}) {
 		t.Fatalf("model: %v %v", err, ran)
 	}

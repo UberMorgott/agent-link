@@ -232,7 +232,7 @@ func TestStreamDoing(t *testing.T) {
 		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1"}]}}`,
 		`{"type":"result","subtype":"success","session_id":"s-1"}`,
 	}, "\n")
-	id, err := readClaudeStream(strings.NewReader(in), func(string) {}, tell, nil)
+	id, err := readClaudeStream(strings.NewReader(in), func(string) {}, tell, nil, nil)
 	if err != nil || id != "s-1" || !slices.Equal(got, []string{"thinking/1", "edit/1", "thinking/1", "thinking/0"}) {
 		t.Fatalf("claude: %q %v %v", id, err, got)
 	}

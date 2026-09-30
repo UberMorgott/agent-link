@@ -774,11 +774,13 @@ func TestSeatSetupTurnPostsNothing(t *testing.T) {
 	if answer.Agent == nil || answer.Agent.Model != "gpt-6.1-sol" || answer.Agent.Effort != "medium" {
 		t.Fatalf("reply agent %+v", answer.Agent)
 	}
-	// Seats never get told to put a reply's text on a command line.
-	for _, p := range []string{setupPrompt, askPrompt} {
-		if strings.Contains(p, "--body \"") || !strings.Contains(p, "--body-file") {
-			t.Fatalf("prompt tells to reply by --body: %q", p)
-		}
+	// Seats never get told to put a reply's text on a command line; a turn run
+	// by the node answers in its final message (answerSeatAsks).
+	if strings.Contains(setupPrompt, "--body \"") || !strings.Contains(setupPrompt, "--body-file") {
+		t.Fatalf("setup prompt tells to reply by --body: %q", setupPrompt)
+	}
+	if strings.Contains(askPrompt, "--body \"") || !strings.Contains(askPrompt, "agent-link сам отправит его в чат ответом") {
+		t.Fatalf("ask prompt: %q", askPrompt)
 	}
 }
 

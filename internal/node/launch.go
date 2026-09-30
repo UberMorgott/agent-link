@@ -108,6 +108,11 @@ type LaunchSpec struct {
 	// Ran, when set, hears the model and reasoning effort a direct turn runs
 	// with, once its agent reports them (effort empty: not reported).
 	Ran func(model, effort string)
+	// Answer, when set, gets the final answer of a direct turn that succeeded
+	// (Claude's result text, Codex's final agent message; "" when it gave
+	// none). A seat's turn posts it as the reply to the messages that asked
+	// it (answerSeatAsks).
+	Answer func(text string)
 }
 
 // SessionLauncher opens a visible agent session.

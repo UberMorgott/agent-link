@@ -159,7 +159,7 @@ func runClaude(ctx context.Context, bin string, spec LaunchSpec, started func(st
 	if err := cmd.Start(); err != nil {
 		return "", err
 	}
-	id, serr := readClaudeStream(out, started, spec.Doing, spec.Ran)
+	id, serr := readClaudeStream(out, started, spec.Doing, spec.Ran, spec.Answer)
 	_, _ = io.Copy(io.Discard, out)
 	werr := cmd.Wait()
 	if serr != nil {
@@ -184,7 +184,7 @@ func killTreeOnCancel(ctx context.Context, cmd *exec.Cmd) {
 // stream-json` until the result: started gets the session id at the first
 // event naming it. It returns the session id and the turn's error.
 func ReadClaudeStream(r io.Reader, started func(string)) (string, error) {
-	return readClaudeStream(r, started, nil, nil)
+	return readClaudeStream(r, started, nil, nil, nil)
 }
 
 // claudeDoing follows what a Claude stream's main agent does (its tool calls
@@ -232,8 +232,9 @@ func (d *claudeDoing) event(typ, parent string, message json.RawMessage) {
 }
 
 // ran, when set, gets the model the stream's init event names (Claude does not
-// report its reasoning effort there).
-func readClaudeStream(r io.Reader, started func(string), doing func(string, int), ran func(string, string)) (string, error) {
+// report its reasoning effort there); answer, when set, the text of a
+// successful result (the turn's final answer).
+func readClaudeStream(r io.Reader, started func(string), doing func(string, int), ran func(string, string), answer func(string)) (string, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	id := ""
@@ -265,6 +266,9 @@ func readClaudeStream(r io.Reader, started func(string), doing func(string, int)
 		if ev.Type == "result" {
 			if ev.IsError {
 				return id, fmt.Errorf("claude: %s: %s", ev.Subtype, trimMsg(ev.Result))
+			}
+			if answer != nil {
+				answer(ev.Result)
 			}
 			return id, nil
 		}
@@ -553,6 +557,7 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 	started(tid)
 	seenStarted := false
 	doing := ""
+	var answer codexAnswer
 	for {
 		m, err := notification()
 		if err != nil {
@@ -573,6 +578,9 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 		}
 		if m.Method == "item/started" || m.Method == "item/completed" {
 			codexDoing(spec.Doing, m.Method, m.Params, &doing)
+			if m.Method == "item/completed" {
+				answer.item(m.Params, tid, tr.Turn.ID)
+			}
 			continue
 		}
 		if m.Method != "turn/completed" {
@@ -600,11 +608,47 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 		}
 		switch done.Turn.Status {
 		case "completed": // the only success
+			if spec.Answer != nil {
+				spec.Answer(answer.text)
+			}
 			return tid, nil
 		case "interrupted":
 			return tid, fmt.Errorf("codex turn: %w: %s", ErrTurnInterrupted, trimMsg(msg))
 		}
 		return tid, fmt.Errorf("codex turn %s: %s", done.Turn.Status, trimMsg(msg))
+	}
+}
+
+// codexAnswer is the final answer of a Codex turn from its completed
+// agentMessage items: the latest with phase final_answer, else the latest
+// without a phase (a model that does not report it); commentary (progress
+// narration) never is.
+type codexAnswer struct {
+	text  string
+	final bool
+}
+
+// item takes an item/completed notification of turn turn of thread tid.
+func (a *codexAnswer) item(params json.RawMessage, tid, turn string) {
+	var p struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
+		Item     struct {
+			Type  string  `json:"type"`
+			Text  string  `json:"text"`
+			Phase *string `json:"phase"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(params, &p) != nil || p.Item.Type != "agentMessage" ||
+		(p.ThreadID != "" && p.ThreadID != tid) || (turn != "" && p.TurnID != "" && p.TurnID != turn) {
+		return
+	}
+	switch {
+	case p.Item.Phase != nil && *p.Item.Phase == "final_answer":
+		a.text, a.final = p.Item.Text, true
+	case p.Item.Phase != nil: // commentary (or a phase unknown here): not an answer
+	case !a.final:
+		a.text = p.Item.Text
 	}
 }
 
