@@ -1,7 +1,12 @@
 package agenthook
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -120,5 +125,60 @@ func TestPluginHooksMatchInstall(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// codexManifest is the Codex plugin manifest, whose version Codex keys its
+// plugin cache on.
+const codexManifest = ".codex-plugin/plugin.json"
+
+// pluginHash is the content of the plugin (every file but the Codex manifest,
+// line endings as LF so every checkout agrees): the first 12 hex digits of
+// its sha256 over the sorted paths and contents.
+func pluginHash(t *testing.T) string {
+	t.Helper()
+	sum := sha256.New()
+	var paths []string
+	err := filepath.WalkDir(pluginDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(pluginDir, path)
+		if rel = filepath.ToSlash(rel); err == nil && rel != codexManifest {
+			paths = append(paths, rel)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(paths)
+	for _, rel := range paths {
+		data, err := os.ReadFile(filepath.Join(pluginDir, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+		_, _ = fmt.Fprintf(sum, "%s\x00%d\x00", rel, len(data))
+		_, _ = sum.Write(data)
+	}
+	return hex.EncodeToString(sum.Sum(nil))[:12]
+}
+
+// Codex serves a plugin from its cache until the manifest's version changes:
+// the version's build part is the hash of the plugin's content, so a change
+// of any plugin file fails this test until the version names it (it once
+// stayed stale for two releases when it was bumped by hand).
+func TestCodexPluginVersionTracksContent(t *testing.T) {
+	var m struct {
+		Version string `json:"version"`
+	}
+	data, err := os.ReadFile(filepath.Join(pluginDir, filepath.FromSlash(codexManifest)))
+	if err != nil || json.Unmarshal(data, &m) != nil {
+		t.Fatalf("%s: %v", codexManifest, err)
+	}
+	base, build, _ := strings.Cut(m.Version, "+codex.")
+	if want := pluginHash(t); build != want {
+		t.Fatalf(`plugins/agent-link changed: set "version": %q in plugins/agent-link/%s so Codex reloads the plugin`, base+"+codex."+want, codexManifest)
 	}
 }
