@@ -63,7 +63,7 @@ func (n *Node) dropClaims(owner string, ids []string) {
 	r := n.sess
 	r.claimMu.Lock()
 	for id, c := range r.claims {
-		if c.session == owner && !c.ackOnly && (ids == nil || slices.Contains(ids, id)) {
+		if c.owner == owner && c.kind != holdAck && (ids == nil || slices.Contains(ids, id)) {
 			delete(r.claims, id)
 		}
 	}
@@ -219,7 +219,7 @@ func (n *Node) releaseHold(session string, ids []string, now time.Time) {
 	r := n.sess
 	r.claimMu.Lock()
 	for _, id := range ids {
-		if c, ok := r.claims[id]; ok && c.ackOnly && c.session == session {
+		if c, ok := r.claims[id]; ok && c.kind == holdAck && c.owner == session {
 			delete(r.claims, id)
 		}
 	}
@@ -253,12 +253,12 @@ func (n *Node) restoreLeases(now time.Time) {
 			st := n.seats
 			st.mu.Lock()
 			if _, ok := st.marks[seatKey(l.Seat, l.ID)]; !ok {
-				st.marks[seatKey(l.Seat, l.ID)] = seatMark{at: l.At, wake: true, token: l.Token}
+				st.marks[seatKey(l.Seat, l.ID)] = hold{kind: holdWake, token: l.Token, at: l.At}
 			}
 			st.mu.Unlock()
 		default:
 			if _, ok := r.claims[l.ID]; !ok {
-				r.claims[l.ID] = sessionClaim{session: l.Owner, at: l.At, wake: true, token: l.Token}
+				r.claims[l.ID] = hold{owner: l.Owner, kind: holdWake, token: l.Token, at: l.At}
 			}
 		}
 	}

@@ -335,7 +335,7 @@ func TestChatAffinityKeepsNewRootsWithTheChatsSession(t *testing.T) {
 	// The owner took the root but never acknowledged it: after claimTTL the
 	// claim lapses; the root still goes to the chat's session, not the stray.
 	a.sess.claimMu.Lock()
-	a.sess.claims[root.ID] = sessionClaim{session: "s-owner", at: time.Now().Add(-2 * claimTTL)}
+	a.sess.claims[root.ID] = hold{owner: "s-owner", at: time.Now().Add(-2 * claimTTL)}
 	a.sess.claimMu.Unlock()
 	if g, _ := a.Claim(ClaimRequest{IDs: []string{root.ID}, SessionID: "s-stray"}); len(g) != 0 {
 		t.Fatalf("a lapsed claim went to the stray: %v", g)

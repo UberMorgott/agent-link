@@ -40,40 +40,6 @@ import (
 // longer holds its chats (routeOf), though its waiter keeps it live.
 const AffinityLapse = 30 * time.Minute
 
-// sessionClaim is one session's claim of an unread message (Claim), or, with
-// wake, the node's for the prompt that woke the session with it (wakeClaim).
-type sessionClaim struct {
-	session string
-	at      time.Time
-	wake    bool
-	// token (a wake only) is the one the wake prompt carries (WakeMarker): the
-	// hooks acknowledge the message only at a prompt that carries it.
-	token string
-	// launch: the node's for the first turn of a desktop launch (launchClaim);
-	// session is then launchOwner(area), no registered session.
-	launch bool
-	// ackOnly: the messages a desktop launch's session took whose ack is
-	// pending (holdForAck); held until acknowledged, delivered to nobody.
-	ackOnly bool
-}
-
-// held reports whether the claim still holds for a live session: claimTTL,
-// or inboxWakeGrace for a wake (then the session's waiter takes over); a
-// launch claim holds for launchHold, no session being live yet.
-func (c sessionClaim) held(live map[string]bool) bool {
-	if c.ackOnly {
-		return true
-	}
-	if c.launch {
-		return time.Since(c.at) < launchHold
-	}
-	ttl := claimTTL
-	if c.wake {
-		ttl = inboxWakeGrace
-	}
-	return live[c.session] && time.Since(c.at) < ttl
-}
-
 // launchOwner is the claim owner of a desktop launch in area: never a session
 // id (validSessionID refuses a space).
 func launchOwner(area string) string { return "launch " + area }
@@ -100,7 +66,7 @@ func (n *Node) launchClaim(area string, msgs []UnreadMessage) []UnreadMessage {
 	var out []UnreadMessage
 	for _, m := range msgs {
 		if slices.Contains(granted, m.ID) {
-			r.claims[m.ID] = sessionClaim{session: owner, at: time.Now(), launch: true}
+			r.claims[m.ID] = hold{owner: owner, kind: holdLaunch, at: time.Now()}
 			out = append(out, m)
 		}
 	}
@@ -133,7 +99,7 @@ func (n *Node) launchHeld() map[string]bool {
 	defer r.claimMu.Unlock()
 	out := map[string]bool{}
 	for id, c := range r.claims {
-		if (c.launch || c.ackOnly) && c.held(nil) {
+		if (c.kind == holdLaunch || c.kind == holdAck) && c.held(nil) {
 			out[id] = true
 		}
 	}
@@ -187,7 +153,7 @@ func (n *Node) routeOf(id string, rec *chatRecord, live map[string]bool) string 
 		return q
 	}
 	if c, ok := n.sess.claims[id]; ok && c.held(live) {
-		return c.session
+		return c.owner
 	}
 	if rec == nil {
 		return ""
@@ -444,7 +410,7 @@ func (n *Node) claimLocked(session string, want []string, via, token string, liv
 		if n.seatHas(id) {
 			continue // another seat's (seatsForIncoming): not for this session
 		}
-		if c, ok := r.claims[id]; ok && c.ackOnly {
+		if c, ok := r.claims[id]; ok && c.kind == holdAck {
 			continue // taken by a launched session, its ack pending: nobody's to deliver
 		}
 		var to string
@@ -467,7 +433,7 @@ func (n *Node) claimLocked(session string, want []string, via, token string, liv
 		if _, woke := n.wokeWith(id, session, live); woke {
 			continue // the wake prompt has it: not delivered again
 		}
-		if c, ok := r.claims[id]; wake && ok && !c.wake && c.held(live) {
+		if c, ok := r.claims[id]; wake && ok && !c.wake() && c.held(live) {
 			continue // a hook is delivering it: waking with it too delivers it twice
 		}
 		if n.leases.blocked(id, session, via, now) {
@@ -478,7 +444,11 @@ func (n *Node) claimLocked(session string, want []string, via, token string, liv
 		} else if !took {
 			continue
 		}
-		r.claims[id] = sessionClaim{session: session, at: now, wake: wake, token: token}
+		kind := holdHook
+		if wake {
+			kind = holdWake
+		}
+		r.claims[id] = hold{owner: session, kind: kind, token: token, at: now}
 		granted = append(granted, id)
 	}
 	return granted
@@ -513,7 +483,7 @@ func (n *Node) unclaim(session string, ids []string) {
 	r.claimMu.Lock()
 	defer r.claimMu.Unlock()
 	for _, id := range ids {
-		if c, ok := r.claims[id]; ok && c.session == session {
+		if c, ok := r.claims[id]; ok && c.owner == session {
 			delete(r.claims, id)
 		}
 	}
@@ -523,7 +493,7 @@ func (n *Node) unclaim(session string, ids []string) {
 // token of that wake.
 func (n *Node) wokeWith(id, session string, live map[string]bool) (string, bool) {
 	c, ok := n.sess.claims[id]
-	if ok && c.wake && c.session == session && c.held(live) {
+	if ok && c.wake() && c.owner == session && c.held(live) {
 		return c.token, true
 	}
 	return "", false

@@ -7,9 +7,9 @@ import "time"
 //
 //   - the lease (lease.go, leases.json) is the durable record of one message
 //     for one recipient: its owner, state, attempts and failures;
-//   - a hold is the runtime exclusion while an owner delivers it: a session's
-//     claim (routing.go) or a seat's mark (seats.go), held for the hold times
-//     below.
+//   - a hold (hold.go) is the runtime exclusion while an owner delivers it:
+//     a session's claim (routing.go) or a seat's mark (seats.go), of one type
+//     and one rule (hold.holds) over the hold times below.
 //
 // Budgets per message (the lease): maxLeaseAttempts automatic leases with a
 // leaseBackoff between them, then failed (needs_human); maxOwnerFails per

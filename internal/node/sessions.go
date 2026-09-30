@@ -169,7 +169,7 @@ type sessionRegistry struct {
 	// an unread message id to the session that took it for delivery (Claim).
 	// Taken before mu and the chat store's lock, never inside them.
 	claimMu sync.Mutex
-	claims  map[string]sessionClaim
+	claims  map[string]hold
 
 	// inbox is each live Claude session's inbox address (memory only, never
 	// persisted or sent); recent is the last session seen per area, kept in
@@ -211,7 +211,7 @@ type PinSessionRequest struct {
 
 func openSessions(dir string) (*sessionRegistry, error) {
 	r := &sessionRegistry{path: filepath.Join(dir, "sessions.json"), sessions: map[string]*Session{}, last: map[string]ActivityState{},
-		on: map[string]map[string]string{}, claims: map[string]sessionClaim{}, inbox: map[string]inboxAddr{},
+		on: map[string]map[string]string{}, claims: map[string]hold{}, inbox: map[string]inboxAddr{},
 		recent: map[string]LastSession{}, recentPath: filepath.Join(dir, "last_sessions.json"),
 		pins: map[string]PinnedSession{}, pinsPath: filepath.Join(dir, "pinned_sessions.json")}
 	var list []Session

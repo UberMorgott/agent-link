@@ -205,7 +205,7 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable, e
 	// all acknowledges it instead of delivering it twice.
 	add := func(um UnreadMessage) {
 		if session != "" {
-			if c, ok := n.sess.claims[um.ID]; ok && c.wake && c.session == session && c.token != "" {
+			if c, ok := n.sess.claims[um.ID]; ok && c.wake() && c.owner == session && c.token != "" {
 				w := um
 				w.WakeToken = c.token
 				woken = append(woken, w)

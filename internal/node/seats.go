@@ -139,8 +139,9 @@ type seatStore struct {
 	quiet    map[string]bool
 	deferred map[string]bool
 	// marks: per seat and message (seatKey), a hook's claim, the node's wake
-	// of the seat's session with it (claimLocked) or the node's turn of it.
-	marks map[string]seatMark
+	// of the seat's session with it (claimLocked) or the node's turn of it
+	// (hold, no owner: the key names the seat).
+	marks map[string]hold
 	// handling: per seat, the messages the node's running turn of it handles:
 	// the base of the chain of its messages without a reply (seatTurnBase).
 	handling map[string][]Message
@@ -160,18 +161,11 @@ type seatStore struct {
 	bad []string
 }
 
-type seatMark struct {
-	at    time.Time
-	wake  bool
-	turn  bool
-	token string
-}
-
 func seatKey(seat, id string) string { return seat + "/" + id }
 
 func openSeats(dir string) (*seatStore, error) {
 	st := &seatStore{path: filepath.Join(dir, "seats.json"), run: map[string]context.CancelFunc{}, queued: map[string]bool{}, errs: map[string]string{},
-		busy: map[string]bool{}, quiet: map[string]bool{}, deferred: map[string]bool{}, marks: map[string]seatMark{}, pauseLogged: map[string]bool{},
+		busy: map[string]bool{}, quiet: map[string]bool{}, deferred: map[string]bool{}, marks: map[string]hold{}, pauseLogged: map[string]bool{},
 		handling: map[string][]Message{}, gated: map[string]bool{}, lent: map[string]bool{}, doing: map[string]agentDoing{}, ran: map[string]AgentRef{}}
 	if _, err := readRecord(st.path, &st.seats, &st.bad); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -924,9 +918,9 @@ func (st *seatStore) held(seat, id string) (token string, woke, turn bool) {
 	m, ok := st.marks[seatKey(seat, id)]
 	switch {
 	case !ok:
-	case m.turn:
+	case m.kind == holdTurn:
 		return "", false, true
-	case m.wake && time.Since(m.at) < inboxWakeGrace:
+	case m.wake() && m.holds(time.Now(), true):
 		return m.token, true, false
 	}
 	return "", false, false
@@ -952,17 +946,17 @@ func (n *Node) seatClaim(session, id string, wake bool, token string) (handled, 
 		return true, false
 	}
 	k := seatKey(s.ID, id)
-	if m, ok := st.marks[k]; ok {
-		switch {
-		case m.turn:
-			return true, false // the node's turn of the seat has it
-		case m.wake && time.Since(m.at) < inboxWakeGrace:
-			return true, false // the wake prompt has it
-		case wake && !m.wake && time.Since(m.at) < claimTTL:
-			return true, false // a hook is delivering it
-		}
+	// The node's turn or a wake prompt has it, or a hook is delivering it
+	// (then a wake does not take it too).
+	now := time.Now()
+	if m, ok := st.marks[k]; ok && m.holds(now, true) && (m.kind != holdHook || wake) {
+		return true, false
 	}
-	st.marks[k] = seatMark{at: time.Now(), wake: wake, token: token}
+	kind := holdHook
+	if wake {
+		kind = holdWake
+	}
+	st.marks[k] = hold{kind: kind, token: token, at: now}
 	return true, true
 }
 
@@ -1000,7 +994,7 @@ func (n *Node) seatUnclaim(session string, ids []string) {
 	defer st.mu.Unlock()
 	if s := st.bySessionLocked(session); s != nil {
 		for _, id := range ids {
-			if k := seatKey(s.ID, id); !st.marks[k].turn {
+			if k := seatKey(s.ID, id); st.marks[k].kind != holdTurn {
 				delete(st.marks, k)
 			}
 		}
@@ -1397,10 +1391,10 @@ func (n *Node) claimTurn(ctx context.Context, seat string, msgs []UnreadMessage,
 			continue
 		}
 		k := seatKey(seat, m.ID)
-		if mk, held := st.marks[k]; held && (mk.turn || (mk.wake && now.Sub(mk.at) < inboxWakeGrace) || (!mk.wake && now.Sub(mk.at) < claimTTL)) {
+		if mk, held := st.marks[k]; held && mk.holds(now, true) {
 			continue
 		}
-		st.marks[k] = seatMark{at: now, turn: true}
+		st.marks[k] = hold{kind: holdTurn, at: now}
 		out = append(out, m)
 	}
 	if intro && len(out) == 0 {
@@ -1416,7 +1410,7 @@ func (n *Node) endTurn(seat string, msgs []UnreadMessage, err error, stopped boo
 	st := n.seats
 	st.mu.Lock()
 	for _, m := range msgs {
-		if k := seatKey(seat, m.ID); st.marks[k].turn {
+		if k := seatKey(seat, m.ID); st.marks[k].kind == holdTurn {
 			delete(st.marks, k)
 		}
 	}
@@ -1484,7 +1478,7 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 		st := n.seats
 		st.mu.Lock()
 		for _, m := range refused {
-			if k := seatKey(seat.ID, m.ID); st.marks[k].turn {
+			if k := seatKey(seat.ID, m.ID); st.marks[k].kind == holdTurn {
 				delete(st.marks, k)
 			}
 		}
@@ -1683,7 +1677,7 @@ func (n *Node) endTurnClaims(seat string, msgs []UnreadMessage) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	for _, m := range msgs {
-		if k := seatKey(seat, m.ID); st.marks[k].turn {
+		if k := seatKey(seat, m.ID); st.marks[k].kind == holdTurn {
 			delete(st.marks, k)
 		}
 	}

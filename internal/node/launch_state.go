@@ -74,7 +74,7 @@ func (n *Node) loadLaunchState() error {
 	r.claimMu.Lock()
 	for _, j := range st.Acks {
 		for _, id := range j.IDs {
-			r.claims[id] = sessionClaim{session: j.Session, at: j.At, ackOnly: true}
+			r.claims[id] = hold{owner: j.Session, kind: holdAck, at: j.At}
 		}
 	}
 	r.claimMu.Unlock()
@@ -127,7 +127,7 @@ func (n *Node) holdForAck(area string, ids []string, session string, now time.Ti
 	r := n.sess
 	r.claimMu.Lock()
 	for _, id := range ids {
-		r.claims[id] = sessionClaim{session: session, at: now, ackOnly: true}
+		r.claims[id] = hold{owner: session, kind: holdAck, at: now}
 	}
 	r.claimMu.Unlock()
 	d := n.deliv

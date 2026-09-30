@@ -16,10 +16,11 @@ const (
 	pinTurn   = "turn"
 )
 
+var pinKinds = map[string]holdKind{pinHook: holdHook, pinWake: holdWake, pinLaunch: holdLaunch, pinAck: holdAck, pinTurn: holdTurn}
+
 // pinClaim is a session claim of kind, age old.
-func pinClaim(kind, session string, age time.Duration) sessionClaim {
-	return sessionClaim{session: session, at: time.Now().Add(-age), wake: kind == pinWake, launch: kind == pinLaunch,
-		ackOnly: kind == pinAck, token: "tok"}
+func pinClaim(kind, session string, age time.Duration) hold {
+	return hold{owner: session, kind: pinKinds[kind], token: "tok", at: time.Now().Add(-age)}
 }
 
 // pinMark sets (or with pinNone drops) the hold of message id for seat.
@@ -32,7 +33,7 @@ func pinMark(a *testNode, seat, id, kind string, age time.Duration) {
 		delete(st.marks, k)
 		return
 	}
-	st.marks[k] = seatMark{at: time.Now().Add(-age), wake: kind == pinWake, turn: kind == pinTurn, token: "tok"}
+	st.marks[k] = hold{kind: pinKinds[kind], token: "tok", at: time.Now().Add(-age)}
 }
 
 // A session's claim holds by kind: a hook's for claimTTL and a wake's for
