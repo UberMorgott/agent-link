@@ -121,6 +121,7 @@ watch(() => [projects.list, pid.value] as const, ([list, id]) => {
           @click="inbox.startChat(pid)"
         />
         <UButton
+          v-if="view?.scope !== 'local'"
           id="project_invite"
           :label="t('project.invite')"
           :icon="icon('invite')"

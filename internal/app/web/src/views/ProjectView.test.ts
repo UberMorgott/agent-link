@@ -31,7 +31,14 @@ describe('a project page', () => {
     expect(empty.querySelector('h1')!.textContent).toContain('project.empty')
     expect($('#project_state')!.textContent).toContain('project.state.needs_folder')
     expect($('#project_start_chat')).not.toBeNull()
+    expect($('#project_invite')).not.toBeNull()
     expect($('#project_chats')).toBeNull()
+    // A local chat has nobody to invite: no button, and the dialog never opens.
+    projects.upsert({ ...projects.byID(JOINING)!, scope: 'local' })
+    await settle()
+    expect($('#project_invite')).toBeNull()
+    projects.openDialog('invite', JOINING)
+    expect(projects.dialog).toBe('')
     const page = document.body.textContent || ''
     for (const gone of ['inbox.h1', 'inbox.list.label', 'inbox.select', 'inbox.select_hint', 'inbox.list.empty', 'nav.inbox', 'inbox.new.title']) {
       expect(page).not.toContain(gone)

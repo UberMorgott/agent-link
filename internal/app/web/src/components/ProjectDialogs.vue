@@ -27,8 +27,8 @@ const busy = ref(false)
 
 function openFor(kind: ProjectDialog) {
   return computed({
-    get: () => projects.dialog === kind && !!view.value &&
-      (view.value.scope !== 'local' || (kind !== 'members' && kind !== 'invite')),
+    // projects.openDialog refuses what a project has none of.
+    get: () => projects.dialog === kind && !!view.value,
     set: (open: boolean) => { if (!open) projects.closeDialog() },
   })
 }

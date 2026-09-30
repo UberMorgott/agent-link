@@ -350,7 +350,11 @@ export const useProjectsStore = defineStore('projects', () => {
 
   // --- the project dialogs (ProjectDialogs.vue): one open at a time ---
 
+  // NETWORK_ONLY: dialogs a local chat has none of (it has no other members).
+  const NETWORK_ONLY: ProjectDialog[] = ['members', 'invite']
+
   function openDialog(kind: ProjectDialog, pid: string) {
+    if (NETWORK_ONLY.includes(kind) && byID(pid)?.scope === 'local') return
     hideInvite()
     dialogProject.value = pid
     dialog.value = kind
