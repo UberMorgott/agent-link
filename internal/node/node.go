@@ -204,6 +204,10 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	st.body = func(id string) (Message, bool) {
+		r, ok := chats.message(id)
+		return r.Message, ok
+	}
 	members, err := st.loadMembers()
 	if err != nil {
 		return nil, err

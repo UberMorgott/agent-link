@@ -21,6 +21,11 @@ import (
 //	inbox/<id>.json          inbound record (message + delivered flag)
 //	outbox/<peer>/<id>.json  queued until the peer ACKs
 //	sent/<peer>/<id>.json    ACKed by the peer
+//
+// A chat message's body is kept once, in the chat store (chat_store.go): its
+// inbox record and sent copy keep only its identity (slimMessage), the id
+// dedup and delivery evidence, and are read with the chat store's body.
+//
 //	dropped/<peer>-<id>/     a project member's queue for a node id that is gone (never sent)
 //	areas.json               last areas each peer announced
 //	members.json             the membership table, tombstones included
@@ -29,6 +34,9 @@ import (
 type store struct {
 	dir string
 	bad []string // corrupt files moved aside at open (readRecord)
+
+	// body is a chat message's stored copy in the chat store (nil: none).
+	body func(id string) (Message, bool)
 
 	mu      sync.Mutex
 	inbox   map[string]*inboxRecord
@@ -43,6 +51,35 @@ type inboxRecord struct {
 	// sessions like chatRecord does; chat messages are tracked there.
 	Unread bool      `json:"unread,omitempty"`
 	ReadAt time.Time `json:"read_at,omitzero"`
+	// Slim: Message is a chat message's identity alone (slimMessage), its
+	// body in the chat store.
+	Slim bool `json:"slim,omitempty"`
+}
+
+// chatBody reports whether m is a chat message whose body the chat store
+// keeps (not a status update: those are kept here only).
+func chatBody(m Message) bool { return m.ChatID != "" && m.Kind == "" }
+
+// slimMessage is m without its content: what the inbox and sent copies of a
+// chat message keep (dedup, delivery evidence, the fields recent folds by).
+func slimMessage(m Message) Message {
+	return Message{ID: m.ID, From: m.From, To: m.To, ChatID: m.ChatID, Kind: m.Kind, ReplyTo: m.ReplyTo,
+		JobStatus: m.JobStatus, CreatedAt: m.CreatedAt}
+}
+
+// full is m with its body from the chat store when it is a chat message's
+// copy (to keeps the copy's recipient); ok is false for a slim copy whose
+// chat record is gone.
+func (s *store) full(m Message, slim bool) (Message, bool) {
+	if !chatBody(m) || s.body == nil {
+		return m, true
+	}
+	b, ok := s.body(m.ID)
+	if !ok {
+		return m, !slim && m.Body != ""
+	}
+	b.To = m.To
+	return b, true
 }
 
 func openStore(dir string) (*store, error) {
@@ -105,7 +142,8 @@ func (s *store) pending(peer string) ([]Message, error) {
 	return readMessages(filepath.Join(s.dir, "outbox", peer))
 }
 
-// ack moves a queued message to sent. Unknown ids are ignored.
+// ack moves a queued message to sent: a chat message the chat store has
+// leaves its identity there alone (slimMessage). Unknown ids are ignored.
 func (s *store) ack(peer, id string) error {
 	if !validID(id) {
 		return nil
@@ -114,7 +152,20 @@ func (s *store) ack(peer, id string) error {
 	if err := os.MkdirAll(sentDir, 0o700); err != nil {
 		return err
 	}
-	err := os.Rename(filepath.Join(s.dir, "outbox", peer, id+".json"), filepath.Join(sentDir, id+".json"))
+	src, dst := filepath.Join(s.dir, "outbox", peer, id+".json"), filepath.Join(sentDir, id+".json")
+	var m Message
+	if err := readJSON(src, &m); err == nil && chatBody(m) && s.body != nil {
+		if _, ok := s.body(id); ok {
+			if err := writeJSON(dst, slimMessage(m)); err != nil {
+				return err
+			}
+			if err := os.Remove(src); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			return nil
+		}
+	}
+	err := os.Rename(src, dst)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
@@ -135,13 +186,21 @@ func (s *store) delivery(peer, id string) string {
 // saveInbound persists m unless its id was already received. It reports
 // whether the message is new.
 func (s *store) saveInbound(m Message) (bool, error) {
+	// A chat message the chat store has keeps its identity here alone.
+	slim := false
+	if chatBody(m) && s.body != nil {
+		_, slim = s.body(m.ID)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.inbox[m.ID]; ok {
 		return false, nil
 	}
 	// Status updates are never handed to wait: they only refine the inbox view.
-	r := &inboxRecord{Message: m, Delivered: m.Kind == KindStatus, ReceivedAt: time.Now().UTC(), Unread: m.Kind == "" && m.ChatID == ""}
+	r := &inboxRecord{Message: m, Delivered: m.Kind == KindStatus, ReceivedAt: time.Now().UTC(), Unread: m.Kind == "" && m.ChatID == "", Slim: slim}
+	if slim {
+		r.Message = slimMessage(m)
+	}
 	if err := writeJSON(s.inboxPath(m.ID), r); err != nil {
 		return false, err
 	}
@@ -219,7 +278,9 @@ func (s *store) claimUndelivered(chat string) ([]Message, error) {
 			r.Delivered = false
 			return out, err
 		}
-		out = append(out, r.Message)
+		if m, ok := s.full(r.Message, r.Slim); ok {
+			out = append(out, m)
+		}
 	}
 	return out, nil
 }
@@ -239,8 +300,11 @@ func (s *store) recent(limit int, chats bool) ([]Entry, error) {
 	byRequest := map[string]*progress{}
 	s.mu.Lock()
 	for _, r := range s.inbox {
-		m := r.Message
-		if m.ChatID != "" && !chats { // chats have their own history (chatStore)
+		if r.Message.ChatID != "" && !chats { // chats have their own history (chatStore)
+			continue
+		}
+		m, ok := s.full(r.Message, r.Slim)
+		if !ok {
 			continue
 		}
 		if m.ReplyTo != "" {
@@ -257,8 +321,8 @@ func (s *store) recent(limit int, chats bool) ([]Entry, error) {
 			if m.Kind == KindStatus {
 				slot = &p.status
 			}
-			if better(*slot, &r.Message) {
-				*slot = &r.Message
+			if better(*slot, &m) {
+				*slot = &m
 			}
 		}
 		if m.Kind == KindStatus {
@@ -293,6 +357,10 @@ func (s *store) recent(limit int, chats bool) ([]Entry, error) {
 			}
 			for _, m := range msgs {
 				if m.ChatID != "" && (!chats || m.Kind == KindChatOpen || m.Kind == KindChatClose || m.Kind == KindChatMembers || m.Kind == KindReceipt) {
+					continue
+				}
+				m, ok := s.full(m, false)
+				if !ok {
 					continue
 				}
 				if m.ReplyTo != "" {
