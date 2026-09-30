@@ -20,7 +20,22 @@ func projectPair(t *testing.T, p testProject) (a, b *testNode) {
 	a.start(t)
 	b.start(t)
 	eventually(t, "a<->b connected", func() bool { return a.Connected("b") && b.Connected("a") })
+	// A session is up before its peer's join is applied (noteSession): wait for
+	// it, or the join lands in whatever chat the test starts next.
+	eventually(t, "a and b applied each other's join", func() bool { return joinApplied(a, b) && joinApplied(b, a) })
 	return a, b
+}
+
+// joinApplied reports whether n holds peer's member record with its node id.
+// It takes n.ensureMu like the join does, so the join's chat change
+// (addJoinedLocked) is done too.
+func joinApplied(n, peer *testNode) bool {
+	n.ensureMu.Lock()
+	defer n.ensureMu.Unlock()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	m := n.members[peer.cfg.Node]
+	return m != nil && !m.Removed && m.ID == peer.ID()
 }
 
 // Equal names in two projects get different keyed chats, pinned to the node
