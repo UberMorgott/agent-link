@@ -286,15 +286,20 @@ export const useProjectsStore = defineStore('projects', () => {
 
   // --- the invite: read once per open dialog, dropped when it closes ---
 
+  // inviteTicket: hideInvite moves it on, so an answer asked for before is dropped.
+  let inviteTicket = 0
   async function revealInvite(pid: string): Promise<string> {
     if (inviteFor.value === pid && invite.value) return invite.value
+    const ticket = inviteTicket
     const view = await api<InviteView>('POST', projectPath(pid, 'invite'))
+    if (ticket !== inviteTicket) return ''
     inviteFor.value = pid
     invite.value = view.invite || ''
     return invite.value
   }
 
   function hideInvite() {
+    inviteTicket++
     invite.value = ''
     inviteFor.value = ''
   }

@@ -77,6 +77,24 @@ describe('the projects store', () => {
     expect(calls.filter((c) => c === 'POST projects/' + SITE + '/invite')).toHaveLength(2)
   })
 
+  it('drops an invite that answers after its dialog closed', async () => {
+    let answer: (() => void) | null = null
+    fakeBackend((method, path) => {
+      if (method === 'POST' && path.endsWith('/invite')) return new Promise((resolve) => { answer = () => resolve({ invite: 'LATE' }) })
+      return undefined
+    })
+    const projects = useProjectsStore()
+    await projects.refreshList()
+    projects.openDialog('invite', SITE)
+    const shown = projects.revealInvite(SITE)
+    await Promise.resolve()
+    projects.closeDialog()
+    answer!()
+    expect(await shown).toBe('')
+    expect(projects.invite).toBe('')
+    expect(projects.inviteFor).toBe('')
+  })
+
   it('joins: waits for the shared name, then a folder; cancel leaves only a project it created', async () => {
     const { backend, calls } = fakeBackend()
     backend.projects = backend.projects.filter((p) => p.id !== JOINING)
