@@ -542,6 +542,13 @@ func (s Settings) Normalize() Settings {
 			if b.Dir != "" {
 				b.Dir = filepath.Clean(b.Dir)
 			}
+			if b.Chat != nil { // a copy: the caller's binding stays as it was
+				lc := *b.Chat
+				if lc.Folder = strings.TrimSpace(lc.Folder); lc.Folder != "" {
+					lc.Folder = filepath.Clean(lc.Folder)
+				}
+				b.Chat = &lc
+			}
 			bs[i] = b
 		}
 		s.Bindings = bs

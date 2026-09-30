@@ -249,3 +249,20 @@ func TestCanAddBinding(t *testing.T) {
 		t.Fatal("MaxBindings")
 	}
 }
+
+// Normalize cleans a local chat's folder like a project's directory, on a
+// copy of the chat.
+func TestNormalizeCleansChatFolder(t *testing.T) {
+	dir := t.TempDir()
+	b := newBinding(t, "")
+	b.Scope = ProjectScopeLocal
+	b.Chat = &LocalChat{Folder: " " + dir + string(filepath.Separator) + "." + string(filepath.Separator) + " ", Topic: "x"}
+	orig := b.Chat.Folder
+	got := (Settings{Node: "alice", Bindings: []ProjectBinding{b}}).Normalize()
+	if f := got.Bindings[0].Chat.Folder; f != filepath.Clean(dir) {
+		t.Fatalf("folder %q, want %q", f, filepath.Clean(dir))
+	}
+	if b.Chat.Folder != orig {
+		t.Fatal("Normalize changed the caller's chat")
+	}
+}
