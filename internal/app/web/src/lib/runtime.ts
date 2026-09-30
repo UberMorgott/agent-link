@@ -34,6 +34,4 @@ export function fmt(key: string, vars: Record<string, string | number>): string 
 // The page actions a test replaces.
 export const browser = {
   reload: () => location.reload(),
-  confirm: (text: string) => window.confirm(text),
-  alert: (text: string) => window.alert(text),
 }

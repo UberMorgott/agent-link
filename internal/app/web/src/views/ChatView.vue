@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UChatPrompt from '@nuxt/ui/components/ChatPrompt.vue'
@@ -9,6 +9,7 @@ import AttachButton from '@/components/AttachButton.vue'
 import ChatTimeline from '@/components/ChatTimeline.vue'
 import ComposerAttachments from '@/components/ComposerAttachments.vue'
 import { isNarrow } from '@/layout/composables/layout'
+import { useClock } from '@/lib/clock'
 import { icon } from '@/lib/icons'
 import {
   activityLines, keepLastKnown, authorLabel, authorName, chatName, chatSessionList, clock, legacyPeerOld, others, preview,
@@ -69,11 +70,9 @@ const title = computed(() => {
 
 // --- live activity, one line per running or queued job ---
 
-const now = ref(Date.now())
-let ticker: ReturnType<typeof setInterval> | undefined
 // The elapsed timers advance locally, once a second; they never ask the app for anything.
-onMounted(() => { ticker = setInterval(() => { now.value = Date.now() }, 1000) })
-onBeforeUnmount(() => clearInterval(ticker))
+const clockNow = useClock()
+const now = computed(() => clockNow.value.getTime())
 
 // lastKnown: each connected member's last running line, kept (plain, not
 // reactive) so its row stays as idle after the job is gone.
@@ -137,14 +136,14 @@ const agentRows = computed<AgentRow[]>(() => {
   const who = (name: string) => whoColor(name, projects.colorOf(pid.value, name))
   for (const member of [...agentMembers.value].sort((a, b) => Number(b.self) - Number(a.self))) {
     if (!member.agents) continue
-    covered.add(member.name)
+    covered.add(member.key)
     // One row per agent: its sessions under one name, by the most active.
     const agents = paused.value && member.self ? member.agents.map((a) => ({ ...a, state: 'paused' })) : member.agents
     for (const g of groupAgents(agents, member.name, member.self)) {
       const { time, title } = agentTime(g.agent, now.value)
       rows.push({
         key: 'agent\n' + member.key + '\n' + g.name, kind: 'agent', dot: agentDot(g.agent.state), name: g.name,
-        state: groupStateText(g), time, title, who: member.self ? undefined : who(member.name),
+        state: groupStateText(g), time, title, who: member.self ? undefined : who(member.key),
       })
     }
   }
@@ -172,12 +171,12 @@ const agentRows = computed<AgentRow[]>(() => {
   // A member already on a job line, or this computer by its seats, is not listed again.
   const listed = new Set(jobs.map((row) => row.name))
   for (const member of agentMembers.value) {
-    if (covered.has(member.name) || (member.self && seatList.value.length) || listed.has(member.name)) continue
+    if (covered.has(member.key) || (member.self && seatList.value.length) || listed.has(member.key)) continue
     if (member.self) {
-      rows.push({ key: 'member\n' + member.name, kind: 'member', dot: paused.value ? 'paused' : 'idle', name: member.name, state: countsText(member.counts) })
+      rows.push({ key: 'member\n' + member.key, kind: 'member', dot: paused.value ? 'paused' : 'idle', name: member.name, state: countsText(member.counts) })
       continue
     }
-    rows.push({ key: 'member\n' + member.name, kind: 'member', name: member.name, who: who(member.name), ...olderPeerRow(member, now.value) })
+    rows.push({ key: 'member\n' + member.key, kind: 'member', name: member.name, who: who(member.key), ...olderPeerRow(member, now.value) })
   }
   return rows
 })
@@ -412,7 +411,6 @@ function back() {
                   :aria-label="t('inbox.agents.title')"
                 >
                   <UPopover
-                    v-if="inProject || agentRows.length"
                     v-model:open="agentsOpen"
                     :content="{ side: 'top', align: 'end', sideOffset: 8, collisionPadding: 8 }"
                   >

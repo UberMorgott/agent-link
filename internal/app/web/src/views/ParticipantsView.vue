@@ -4,7 +4,8 @@ import UButton from '@nuxt/ui/components/Button.vue'
 import UInput from '@nuxt/ui/components/Input.vue'
 import { api } from '@/lib/api'
 import { navigate } from '@/lib/nav'
-import { browser, fmt, t } from '@/lib/runtime'
+import { confirmAction } from '@/lib/confirm'
+import { fmt, t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
 import type { ParticipantView, Status } from '@/types'
 
@@ -51,7 +52,7 @@ async function addParticipant() {
 
 async function removeParticipant(name: string, index: number) {
   if (removing.value.includes(name)) return
-  if (!browser.confirm(fmt("participants.confirm", { name }))) return
+  if (!(await confirmAction(fmt("participants.confirm", { name }), t("participants.remove")))) return
   removing.value = [...removing.value, name]
   try {
     app.status = await api<Status>('POST', 'members/remove', { name })

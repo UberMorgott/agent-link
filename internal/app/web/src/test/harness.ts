@@ -87,3 +87,16 @@ export async function mountApp(path: string) {
 export async function settle() {
   for (let i = 0; i < 5; i++) await flushPromises()
 }
+
+// answerConfirm answers the question lib/confirm.ts put on screen (ok: the
+// action's button, else «Отмена») and returns the question's text.
+export async function answerConfirm(ok: boolean): Promise<string> {
+  await settle()
+  const dialogs = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]')).filter((d) => d.querySelector('#confirm_ok'))
+  const dialog = dialogs.at(-1)
+  if (!dialog) throw new Error('no confirmation on screen')
+  const text = dialog.textContent || ''
+  dialog.querySelector<HTMLButtonElement>(ok ? '#confirm_ok' : '#confirm_cancel')!.click()
+  await settle()
+  return text
+}

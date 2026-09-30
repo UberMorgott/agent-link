@@ -7,8 +7,9 @@ import AutonomySettings from '@/components/AutonomySettings.vue'
 import { pickFolder } from '@/lib/folders'
 import { icon } from '@/lib/icons'
 import { navigate, openChat, openProject } from '@/lib/nav'
-import { authorName, when } from '@/lib/chat'
-import { browser, fmt, t } from '@/lib/runtime'
+import { authorName, projectTitle, when } from '@/lib/chat'
+import { confirmAction } from '@/lib/confirm'
+import { fmt, t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore, type ProjectDialog } from '@/stores/projects'
@@ -21,14 +22,20 @@ const inbox = useInboxStore()
 const app = useAppStore()
 
 const view = computed(() => projects.byID(projects.dialogProject))
-const name = computed(() => view.value?.display || t("projects.connecting"))
+const name = computed(() => projectTitle(view.value))
+// result: the dialog's one line of news; failed colours it as an error.
 const result = ref('')
+const failed = ref(false)
+function say(text: string, error = false) {
+  result.value = text
+  failed.value = error
+}
 const busy = ref(false)
 
 function openFor(kind: ProjectDialog) {
   return computed({
-    get: () => projects.dialog === kind && !!view.value &&
-      (view.value.scope !== 'local' || (kind !== 'members' && kind !== 'invite')),
+    // projects.openDialog refuses what a project has none of.
+    get: () => projects.dialog === kind && !!view.value,
     set: (open: boolean) => { if (!open) projects.closeDialog() },
   })
 }
@@ -45,7 +52,7 @@ const dir = ref('')
 const alias = ref('')
 const shown = ref(false)
 watch(() => [projects.dialog, projects.dialogProject] as const, () => {
-  result.value = ''
+  say('')
   busy.value = false
   shown.value = false
   addr.value = ''
@@ -57,11 +64,11 @@ watch(() => [projects.dialog, projects.dialogProject] as const, () => {
 async function run(action: () => Promise<unknown>) {
   if (busy.value) return
   busy.value = true
-  result.value = ''
+  say('')
   try {
     await action()
   } catch (error) {
-    result.value = (error as Error).message
+    say((error as Error).message, true)
   } finally {
     busy.value = false
   }
@@ -101,21 +108,21 @@ function chatMembers(name: string, add: boolean) {
 }
 
 // removeMember removes a member from the whole project, after a confirmation.
-function removeMember(name: string) {
-  if (!browser.confirm(fmt("project.members.remove_confirm", { name }))) return
+async function removeMember(name: string) {
+  if (!(await confirmAction(fmt("project.members.remove_confirm", { name }), t("project.members.remove")))) return
   return run(async () => {
     await projects.removeMember(projects.dialogProject, name)
-    result.value = fmt("project.members.removed", { name })
+    say(fmt("project.members.removed", { name }))
   })
 }
 
 function addMember() {
   const value = addr.value.trim()
-  if (!value) { result.value = t("participants.add.empty"); return }
+  if (!value) { say(t("participants.add.empty"), true); return }
   return run(async () => {
     await projects.addMember(projects.dialogProject, value)
     addr.value = ''
-    result.value = fmt("participants.add.added", { addr: value })
+    say(fmt("participants.add.added", { addr: value }))
   })
 }
 
@@ -135,12 +142,12 @@ async function copyInvite() {
     const text = await projects.revealInvite(projects.dialogProject)
     try {
       await navigator.clipboard.writeText(text)
-      result.value = t("project.invite.copied")
+      say(t("project.invite.copied"))
     } catch {
       shown.value = true
       await nextTick()
       document.querySelector<HTMLInputElement>('#invite_value')?.select()
-      result.value = t("project.invite.copy_manual")
+      say(t("project.invite.copy_manual"))
     }
   })
 }
@@ -159,7 +166,7 @@ function saveName() {
 async function pick() {
   const r = await pickFolder(dir.value)
   if (r.path) dir.value = r.path
-  else result.value = r.message || ''
+  else say(r.message || '')
 }
 
 function saveFolder() {
@@ -190,8 +197,8 @@ const seatRows = computed(() => (projects.seats[projects.dialogProject] || []).m
 function seat(action: 'add' | 'start' | 'stop' | 'remove', arg: string) {
   return run(() => projects.seatAction(projects.dialogProject, action, arg))
 }
-function removeSeat(id: string, label: string) {
-  if (!browser.confirm(fmt("project.agents.remove_confirm", { name: label }))) return
+async function removeSeat(id: string, label: string) {
+  if (!(await confirmAction(fmt("project.agents.remove_confirm", { name: label }), t("project.agents.remove")))) return
   return seat('remove', id)
 }
 
@@ -316,6 +323,7 @@ function leave() {
         </form>
         <p
           class="dialog-result text-sm"
+          :class="{ 'text-error': failed }"
           role="status"
         >
           {{ result }}
@@ -427,6 +435,7 @@ function leave() {
         </span>
         <p
           class="dialog-result text-sm"
+          :class="{ 'text-error': failed }"
           role="status"
         >
           {{ result }}
@@ -473,6 +482,7 @@ function leave() {
         </ul>
         <p
           class="dialog-result text-sm"
+          :class="{ 'text-error': failed }"
           role="status"
         >
           {{ result }}
@@ -521,6 +531,7 @@ function leave() {
         </span>
         <p
           class="dialog-result text-sm"
+          :class="{ 'text-error': failed }"
           role="status"
         >
           {{ result }}
@@ -552,7 +563,8 @@ function leave() {
           maxlength="80"
         />
         <p
-          class="dialog-result text-sm text-error"
+          class="dialog-result text-sm"
+          :class="{ 'text-error': failed }"
           role="status"
         >
           {{ result }}
@@ -629,7 +641,8 @@ function leave() {
           </p>
         </template>
         <p
-          class="dialog-result text-sm text-error"
+          class="dialog-result text-sm"
+          :class="{ 'text-error': failed }"
           role="status"
         >
           {{ result }}
@@ -664,7 +677,8 @@ function leave() {
         {{ view?.legacy ? t("project.leave.text_legacy") : fmt("project.delete.text", { name }) }}
       </p>
       <p
-        class="dialog-result mt-2 text-sm text-error"
+        class="dialog-result mt-2 text-sm"
+        :class="{ 'text-error': failed }"
         role="status"
       >
         {{ result }}

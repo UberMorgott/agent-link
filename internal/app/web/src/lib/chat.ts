@@ -31,14 +31,14 @@ export function genitiveName(name: string, self: string): string { return name =
 // A person and their agent write from the same node; author_kind tells them
 // apart. A message of an old peer has no kind and counts as the person's.
 export function isAgent(m: ChatMessage): boolean { return m.author_kind === 'agent' || m.author_kind === 'worker' }
-export function agentName(name: string, self: string): string {
+export function agentAuthorName(name: string, self: string): string {
   return name === self ? t("inbox.author.own_agent") : fmt("inbox.author.agent", { name })
 }
 // A local agent (seat) names itself: "Morgott · Codex".
 export function providerName(p: string | undefined): string { return p === 'codex' ? 'Codex' : p === 'claude' ? 'Claude' : p || '' }
 export function authorLabel(m: ChatMessage, self: string): string {
   if (m.agent && (m.agent.label || m.agent.provider)) return m.from + ' · ' + (m.agent.label || providerName(m.agent.provider))
-  return isAgent(m) ? agentName(m.from, self) : authorName(m.from, self)
+  return isAgent(m) ? agentAuthorName(m.from, self) : authorName(m.from, self)
 }
 
 // authorTitle heads a message: the author's nickname or name (yours too), with
@@ -68,6 +68,14 @@ export function whoColor(name: string, own = ''): string { return 'var(--who-' +
 // --- the project's dot: how many computers have an agent session open ---
 
 export interface ProjectDot { cls: 'none' | 'one' | 'many'; label: string }
+
+// projectTitle is how a project is named on screen: its display name; a
+// project without one yet is connecting, or says what keeps it from working.
+export function projectTitle(p: ProjectView | null | undefined): string {
+  if (p?.display) return p.display
+  if (p?.problem) return t('project.problem.' + p.problem)
+  return t('projects.connecting')
+}
 
 // projectDot: grey with no agent session open anywhere in the project, yellow
 // with one computer, green with two or more different computers (this one
@@ -153,9 +161,9 @@ export function liveJobs(jobs: Job[] | undefined, now: number): Job[] {
 export const CONCURRENT_MS = 2 * 60 * 1000
 
 export interface SubAgent { key: string; label: string; job: Job }
-// AgentGroup: one session of a member: its latest main job (none when only its
+// SessionGroup: one session of a member: its latest main job (none when only its
 // subagents were heard of), its subagents (latest job each) and its last news.
-export interface AgentGroup { session: string; job?: Job; subs: SubAgent[]; at: number }
+export interface SessionGroup { session: string; job?: Job; subs: SubAgent[]; at: number }
 
 function jobTime(job: Job): number {
   const at = Date.parse(job.heard_at || job.updated_at || '')
@@ -167,9 +175,9 @@ function newer(old: Job | undefined, job: Job): boolean { return !old || jobTime
 // collapse into one main agent, a subagent (role "subagent") nests under its
 // parent session by agent id. A job without a role is a main agent's. The
 // latest session always shows; another only while it is concurrently active.
-export function agentTree(jobs: Job[] | undefined, now: number): AgentGroup[] {
+export function agentTree(jobs: Job[] | undefined, now: number): SessionGroup[] {
   const live = liveJobs(jobs, now)
-  const groups = new Map<string, AgentGroup>()
+  const groups = new Map<string, SessionGroup>()
   const group = (session: string) => {
     let g = groups.get(session)
     if (!g) groups.set(session, g = { session, subs: [], at: 0 })
@@ -198,7 +206,7 @@ export function agentTree(jobs: Job[] | undefined, now: number): AgentGroup[] {
   return all.filter((g, i) => i === 0 || concurrent(g, now))
 }
 
-function concurrent(g: AgentGroup, now: number): boolean {
+function concurrent(g: SessionGroup, now: number): boolean {
   if (g.job?.job_status === 'queued') return true
   if (g.job?.stale && !g.subs.length) return false
   return !g.at || now - g.at < CONCURRENT_MS
@@ -206,16 +214,17 @@ function concurrent(g: AgentGroup, now: number): boolean {
 
 // groupAgent names a main agent: with its session when the member shows more
 // than one, and with its label when its hook gives one.
-function groupAgent(name: string, self: string, g: AgentGroup, several: boolean): string {
+function groupAgent(name: string, self: string, g: SessionGroup, several: boolean): string {
   const notes = [several ? g.session : '', g.job?.activity_info?.label || ''].filter(Boolean)
-  return agentName(name, self) + (notes.length ? ' (' + notes.join(', ') + ')' : '')
+  return agentAuthorName(name, self) + (notes.length ? ' (' + notes.join(', ') + ')' : '')
 }
-function groupText(g: AgentGroup): string { return g.job ? activityText(g.job) : t("inbox.activity.working") }
+function groupText(g: SessionGroup): string { return g.job ? activityText(g.job) : t("inbox.activity.working") }
 
-export function workingLines(chat: ChatInfo, self: string): string[] {
+// workingLines: what a chat's agents do at now; a job expired by then is gone.
+export function workingLines(chat: ChatInfo, self: string, now: number): string[] {
   const out: string[] = []
   for (const m of chat.members || []) {
-    const groups = agentTree(m.jobs, Date.now())
+    const groups = agentTree(m.jobs, now)
     for (const g of groups) out.push(groupAgent(m.name, self, g, groups.length > 1) + ' ' + groupText(g))
   }
   return out
@@ -426,7 +435,7 @@ export function activityLines(info: ChatInfo | null, messages: ChatMessage[], se
     }
   }
   const waiting = waitingLine(info, messages, self, sessions, settings, now)
-  if (waiting) rows.push({ key: '\nwaiting', cls: 'waiting', name: waiting.name, who: agentName(waiting.name, self), text: waiting.text, since: waiting.since })
+  if (waiting) rows.push({ key: '\nwaiting', cls: 'waiting', name: waiting.name, who: agentAuthorName(waiting.name, self), text: waiting.text, since: waiting.since })
   for (const line of presenceLines(info, messages, now)) {
     rows.push({ key: '\npresence\n' + line.name, cls: 'presence', name: line.name, who: line.name + ':', text: line.text, since: '' })
   }

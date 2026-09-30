@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { AGENT_STATUS_VERSION, SESSIONS, SUBAGENTS, activityDot, agentDot, agentName, agentStateText, agentTime, counted, countsText, duration, groupAgents, groupStateText, olderPeerRow, worstState } from '@/lib/agents'
 import { runtime } from '@/lib/runtime'
+import { readFileSync } from 'node:fs'
 
 // The real strings (internal/app/strings.go).
 const AGENT_STRINGS: Record<string, string> = {
@@ -131,5 +132,16 @@ describe('agent rows', () => {
     expect(off).toMatchObject({ dot: 'off', state: '1 агент Claude · не на связи', time: '3 ч назад', noteTitle: '' })
     expect(off.title).toMatch(/^последний раз на связи в /)
     expect(olderPeerRow({ name: 'x', online: true }, now)).toMatchObject({ state: 'Количество неизвестно · на связи', time: '—', title: '' })
+  })
+})
+
+describe('agent dot colours', () => {
+  const styles = readFileSync('src/assets/styles.css', 'utf8') // vitest runs in internal/app/web
+  // Yellow for idle (its own token), amber only for a pause: the two never look alike.
+  it('paints idle yellow and paused amber, in the rows and on the button', () => {
+    expect(styles).toContain('.agent-row.idle .agent-dot { background: var(--app-dot-one); }')
+    expect(styles).toContain('.agent-row.paused .agent-dot { background: var(--app-off); }')
+    expect(styles).toContain('.chat-tool-dot.idle { background: var(--app-dot-one); }')
+    expect(styles).toContain('.chat-tool-dot.paused { background: var(--app-off); }')
   })
 })

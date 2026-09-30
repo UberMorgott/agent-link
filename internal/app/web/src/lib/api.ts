@@ -3,7 +3,7 @@ import { browser, runtime, t } from './runtime'
 export const TOKEN_HEADER = 'X-Agentlink-Token'
 export const VERSION_HEADER = 'X-Agentlink-Version'
 
-// The state slices the page keeps; a GET of one of them is shared while it runs.
+// The state slices the page keeps (stores/app.ts).
 export const CORE_SLICES = ['status', 'dashboard', 'participants', 'update', 'settings', 'sessions'] as const
 export type CoreSlice = (typeof CORE_SLICES)[number]
 
@@ -27,8 +27,6 @@ export function chatPath(pid: string, chat: string, rest = ''): string {
   return projectPath(pid, 'chats/' + encodeURIComponent(chat) + (rest ? '/' + rest : ''))
 }
 
-const inFlight = new Map<string, Promise<unknown>>()
-
 // reloadOnNewVersion reloads the page when the app answering is another build,
 // as after a self-update: the old page cannot use the new app's token. A
 // reconnect to the same build keeps the page.
@@ -39,7 +37,7 @@ export function reloadOnNewVersion(resp: Pick<Response, 'headers'> | undefined):
   return true
 }
 
-async function apiRequest<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
   const opts: RequestInit & { headers: Record<string, string> } = { method, headers: { [TOKEN_HEADER]: runtime.token } }
   if (body instanceof Blob) {
     // A file goes as it is: the raw body (uploadFile).
@@ -72,15 +70,3 @@ async function apiRequest<T>(method: string, path: string, body?: unknown): Prom
   return data as T
 }
 
-export function api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
-  const key = method === 'GET' && body === undefined && (CORE_SLICES as readonly string[]).includes(path) ? path : ''
-  if (key && inFlight.has(key)) return inFlight.get(key) as Promise<T>
-  const request = apiRequest<T>(method, path, body)
-  if (key) {
-    inFlight.set(key, request)
-    request.finally(() => {
-      if (inFlight.get(key) === request) inFlight.delete(key)
-    }).catch(() => {})
-  }
-  return request
-}

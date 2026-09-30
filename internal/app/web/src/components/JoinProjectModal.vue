@@ -185,6 +185,14 @@ function cancel() {
           aria-hidden="true"
         />{{ t("project.join.connecting") }}
       </p>
+      <p
+        v-else-if="step === 'error'"
+        id="join_error"
+        class="text-sm text-error"
+        role="alert"
+      >
+        {{ t("project.problem." + projects.joinProblem) }}
+      </p>
       <form
         v-else
         id="join_folder"
@@ -265,7 +273,7 @@ function cancel() {
         @click="wait"
       />
       <UButton
-        v-else
+        v-else-if="step === 'folder'"
         id="join_done"
         type="submit"
         form="join_folder"

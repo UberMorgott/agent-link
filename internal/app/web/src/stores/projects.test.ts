@@ -77,6 +77,36 @@ describe('the projects store', () => {
     expect(calls.filter((c) => c === 'POST projects/' + SITE + '/invite')).toHaveLength(2)
   })
 
+  it('changes a project\'s chat list in one place', () => {
+    const projects = useProjectsStore()
+    const chat = (id: string, title = '') => ({ id, title, participants: [] })
+    projects.chats = { P: [chat('a'), chat('b')] }
+    projects.putChat('P', chat('b', 'new'))
+    expect(projects.chats.P!.map((c) => c.id + c.title)).toEqual(['a', 'bnew'])
+    projects.replaceChat('P', 'a', chat('c'))
+    expect(projects.chats.P!.map((c) => c.id)).toEqual(['c', 'b'])
+    projects.removeChat('P', 'b')
+    expect(projects.chats.P!.map((c) => c.id)).toEqual(['c'])
+  })
+
+  it('drops an invite that answers after its dialog closed', async () => {
+    let answer: (() => void) | null = null
+    fakeBackend((method, path) => {
+      if (method === 'POST' && path.endsWith('/invite')) return new Promise((resolve) => { answer = () => resolve({ invite: 'LATE' }) })
+      return undefined
+    })
+    const projects = useProjectsStore()
+    await projects.refreshList()
+    projects.openDialog('invite', SITE)
+    const shown = projects.revealInvite(SITE)
+    await Promise.resolve()
+    projects.closeDialog()
+    answer!()
+    expect(await shown).toBe('')
+    expect(projects.invite).toBe('')
+    expect(projects.inviteFor).toBe('')
+  })
+
   it('joins: waits for the shared name, then a folder; cancel leaves only a project it created', async () => {
     const { backend, calls } = fakeBackend()
     backend.projects = backend.projects.filter((p) => p.id !== JOINING)
@@ -101,6 +131,31 @@ describe('the projects store', () => {
     await projects.joinCancel()
     expect(calls.filter((c) => c.endsWith('/leave'))).toHaveLength(1)
     expect(projects.byID(SITE)).not.toBeNull()
+  })
+
+  it('joins: a project that fails before its name, or leaves the list, ends the wait with why', async () => {
+    const { backend, calls } = fakeBackend()
+    backend.projects = backend.projects.filter((p) => p.id !== JOINING)
+    const projects = useProjectsStore()
+    await projects.refreshList()
+    await projects.join('ALP1.NEW', '')
+    const joined = projects.byID(JOINING)!
+    projects.upsert({ ...joined, state: 'error', problem: 'auth', name: '', display: '' })
+    await nextTick()
+    expect(projects.joinStep).toBe('error')
+    expect(projects.joinProblem).toBe('auth')
+    await projects.joinCancel()
+    expect(calls).toContain('POST projects/' + JOINING + '/leave')
+
+    await projects.join('ALP1.NEW', '')
+    expect(projects.joinStep).toBe('connecting')
+    projects.list = (projects.list || []).filter((p) => p.id !== JOINING)
+    await nextTick()
+    expect(projects.joinStep).toBe('error')
+    expect(projects.joinProblem).toBe('unknown_project')
+    const leaves = calls.filter((c) => c.endsWith('/leave')).length
+    await projects.joinCancel()
+    expect(calls.filter((c) => c.endsWith('/leave'))).toHaveLength(leaves)
   })
 
   it('remembers the last project for /inbox and opens the next one after leaving', async () => {

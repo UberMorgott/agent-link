@@ -1,13 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import UIcon from '@nuxt/ui/components/Icon.vue'
-import { isUnread, when } from '@/lib/chat'
+import { when } from '@/lib/chat'
 import { icon } from '@/lib/icons'
-import { chatLabel, groupLocalChats } from '@/lib/localChats'
+import { chatLabel, groupLocalChats, liveState, useGraceClock } from '@/lib/localChats'
 import { t } from '@/lib/runtime'
-import { chatKey, useInboxStore } from '@/stores/inbox'
+import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore } from '@/stores/projects'
-import type { ProjectView } from '@/types'
 
 // «Мои нейросети»: the local Claude Code <-> Codex chats, a read-only viewer.
 // The agents talk among themselves; a person opens a chat to read it and
@@ -31,34 +30,21 @@ watch(projectIDs, async (ids) => {
   pending.value = false
 }, { immediate: true })
 
-const now = ref(Date.now())
-let ticker: ReturnType<typeof setInterval> | undefined
 onMounted(() => {
   if (!projects.list) void projects.refreshList().catch((error: Error) => { loadError.value = error.message })
-  ticker = setInterval(() => { now.value = Date.now() }, 15_000)
 })
-onUnmounted(() => clearInterval(ticker))
 
-function unread(pid: string): number {
-  return (projects.chats[pid] || []).filter((c) => isUnread(c, inbox.openKey() === chatKey(pid, c.id), inbox.readOf(pid, c.id))).length
-}
-
-function liveOf(p: ProjectView): '' | 'live' | 'waiting' {
-  const state = p.local_chat || p.activity
-  if (!state?.live) return ''
-  return state.waiting ? 'waiting' : 'live'
-}
-
-const groups = computed(() => groupLocalChats(projects.list || [], now.value, projects.lastLive, (p) => unread(p.id) > 0)
+const now = useGraceClock(() => projects.list || [])
+const groups = computed(() => groupLocalChats(projects.list || [], now.value, (p) => inbox.unreadCount(p.id) > 0)
   .map((g) => ({
     key: g.key,
     name: g.name,
     rows: g.items.map((p) => ({
       p,
       label: !p.local_chat ? t('local_chat.project_chat') : chatLabel(p),
-      live: liveOf(p),
+      live: liveState(p),
       last: (p.local_chat || p.activity)?.last_active || '',
-      unread: unread(p.id),
+      unread: inbox.unreadCount(p.id),
       seats: projects.seats[p.id] || [],
     })),
   })))

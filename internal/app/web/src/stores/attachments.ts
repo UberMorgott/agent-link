@@ -13,7 +13,6 @@ export interface Pending {
   size: number
   project: string
   attachment?: Attachment // set once uploaded
-  error?: string
 }
 
 // The composer's files of the open chat: pasted, dropped or picked, shown as
@@ -23,7 +22,7 @@ export const useAttachmentsStore = defineStore('attachments', () => {
   const error = ref('')
   let next = 0
 
-  const uploading = computed(() => items.value.some((p) => !p.attachment && !p.error))
+  const uploading = computed(() => items.value.some((p) => !p.attachment))
   // What a send carries: the uploaded files, id and name.
   const ready = computed(() => items.value.filter((p) => p.attachment).map((p) => ({ id: p.attachment!.id, name: p.attachment!.name })))
 
@@ -70,10 +69,15 @@ export const useAttachmentsStore = defineStore('attachments', () => {
     items.value = items.value.filter((p) => p.key !== key)
   }
 
+  // removeKeys drops the chips a sent message carried.
+  function removeKeys(keys: number[]) {
+    items.value = items.value.filter((p) => !keys.includes(p.key))
+  }
+
   function clear() {
     items.value = []
     error.value = ''
   }
 
-  return { items, error, uploading, ready, add, remove, clear }
+  return { items, error, uploading, ready, add, remove, removeKeys, clear }
 })

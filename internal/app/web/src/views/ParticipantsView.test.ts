@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
-import { browser, runtime } from '@/lib/runtime'
-import { fakeApi, mountApp, settle } from '@/test/harness'
+import { describe, expect, it } from 'vitest'
+import { runtime } from '@/lib/runtime'
+import { answerConfirm, fakeApi, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
 import type { ParticipantView } from '@/types'
 
@@ -66,15 +66,12 @@ describe('participants', () => {
     expect($('#participant_add')!.hasAttribute('aria-busy')).toBe(false)
     expect(api.calls).toEqual(['POST members/add', 'GET participants', 'GET dashboard'])
 
-    const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(false)
     $$<HTMLButtonElement>('.participant-remove')[0]!.click()
-    await settle()
-    expect(confirm).toHaveBeenCalledWith('participants.confirm')
+    expect(await answerConfirm(false)).toContain('participants.confirm')
     expect(api.calls).toHaveLength(3)
-    confirm.mockReturnValue(true)
     const remove = $$<HTMLButtonElement>('.participant-remove')[0]!
     remove.click()
-    await settle()
+    await answerConfirm(true)
     expect(remove.disabled).toBe(true)
     expect($$('.participant-card')[0]!.getAttribute('aria-busy')).toBe('true')
     release()

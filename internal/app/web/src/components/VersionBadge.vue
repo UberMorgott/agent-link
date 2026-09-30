@@ -11,7 +11,7 @@ import type { Changelog, UpdateStatus } from '@/types'
 
 // The build version next to the logo. It opens the update popup: a fresh
 // check and the notes of every newer release (else of this one). A newer
-// release installs at once, with the download's progress; the restarted app
+// release installs when asked («Обновить до …»), with the download's progress; the restarted app
 // reloads the page (reloadOnNewVersion), which opens the popup again on the
 // new version's notes. GitHub is asked by the app, never by the page.
 
@@ -74,11 +74,7 @@ async function show() {
     .catch((e: Error) => { changelog.value = { current: current.value, newer: false, releases: [], text: e.message, failed: true } })
   await Promise.all([check, notes])
   checking.value = false
-  if (busy) {
-    if (upd.value.installing || upd.value.restarting) setReopen(true)
-  } else if (upd.value.available && !failure.value) {
-    await install()
-  }
+  if (busy && (upd.value.installing || upd.value.restarting)) setReopen(true)
 }
 
 // install runs the download (its progress comes with the "update" events)
@@ -101,6 +97,8 @@ async function install() {
 
 const failed = computed(() => !!failure.value || (!!upd.value.failed && !checking.value))
 const canRetry = computed(() => failed.value && !checking.value && !applying.value && !upd.value.busy)
+// A newer release waits for the member's word.
+const canInstall = computed(() => !!upd.value.available && !failed.value && !checking.value && !applying.value && !upd.value.busy)
 
 onMounted(() => {
   if (takeReopen()) void show()
@@ -217,13 +215,20 @@ onMounted(() => {
       </div>
     </template>
     <template
-      v-if="canRetry"
+      v-if="canRetry || canInstall"
       #footer
     >
       <UButton
+        v-if="canRetry"
         id="update_retry"
         :label="t('update.retry')"
         @click="show"
+      />
+      <UButton
+        v-else
+        id="update_install"
+        :label="fmt('update.apply', { version: upd.latest || '' })"
+        @click="install"
       />
     </template>
   </UModal>

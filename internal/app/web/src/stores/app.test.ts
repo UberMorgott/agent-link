@@ -28,6 +28,7 @@ function eventStream(headers: Record<string, string> = {}, status = 200) {
   }
 }
 
+const drain = async () => { for (let i = 0; i < 10; i++) await flushPromises() }
 const change = (topics: string[]) => 'event: change\ndata: ' + JSON.stringify({ revision: 1, topics }) + '\n\n'
 
 beforeEach(() => setActivePinia(createPinia()))
@@ -110,6 +111,37 @@ describe('reactive push', () => {
     await flushPromises()
     expect(app.banner).toBe('dashboard down')
     expect(app.status).toEqual({ configured: false })
+  })
+
+  it('clears a failed project refresh once every project or the list answers', async () => {
+    const stream = eventStream()
+    const failing = new Set(['/ui/api/projects/X', '/ui/api/projects/X/chats'])
+    let list = [{ id: 'X', display: 'X', legacy: false }]
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/ui/api/events') return stream.response
+      if (failing.has(url)) return new Response('{"error":"x down"}', { status: 500 })
+      if (url === '/ui/api/projects') return new Response(JSON.stringify(list), { status: 200 })
+      return new Response('[]', { status: 200 })
+    }))
+    const app = useAppStore()
+    void app.connectEvents()
+    await drain()
+    stream.send(change(['project:X']))
+    await drain()
+    expect(app.banner).toBe('x down')
+    failing.clear()
+    stream.send(change(['all']))
+    await drain()
+    expect(app.banner).toBe('')
+
+    failing.add('/ui/api/projects/X')
+    stream.send(change(['project:X']))
+    await drain()
+    expect(app.banner).toBe('x down')
+    list = []
+    stream.send(change(['projects']))
+    await drain()
+    expect(app.banner).toBe('')
   })
 
   it('reconnects with a doubling delay', async () => {

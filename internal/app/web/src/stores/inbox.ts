@@ -5,16 +5,19 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef, watch } from 'vue'
 import { api, chatPath, projectPath } from '@/lib/api'
-import { authorLabel, others, preview } from '@/lib/chat'
+import { authorLabel, isUnread, legacyPeerOld, others, preview } from '@/lib/chat'
 import { currentRoute, openChat, openProject } from '@/lib/nav'
-import { browser, fmt, t } from '@/lib/runtime'
-import { NARROW_QUERY } from '@/layout/composables/layout'
+import { confirmAction } from '@/lib/confirm'
+import { fmt, t } from '@/lib/runtime'
+import { isNarrow } from '@/layout/composables/layout'
 import { useAppStore } from './app'
 import { useAttachmentsStore } from './attachments'
 import { useProjectsStore } from './projects'
 import type { ChatInfo, ChatMessage, SentMessage } from '@/types'
 
 export const PAGE_SIZE = 200
+// MAX_PAGE: the most messages one request answers (projects_api.go chatMessages).
+export const MAX_PAGE = 1000
 // A toast only announces news: it leaves on its own after
 // MESSAGE_TOAST_TIMEOUT, and the close button drops it right away. Failures
 // keep their own place — the connection banner stays until the problem is gone.
@@ -45,7 +48,6 @@ function storageSet(key: string, value: string) {
 
 // chatKey names one chat across projects: drafts and read cursors use it.
 export function chatKey(project: string, chat: string) { return project + ':' + chat }
-function narrow() { return typeof matchMedia === 'function' && matchMedia(NARROW_QUERY).matches }
 
 export const useInboxStore = defineStore('inbox', () => {
   const app = useAppStore()
@@ -110,8 +112,15 @@ export const useInboxStore = defineStore('inbox', () => {
     loadReads()
     if (!readsNode) return
     let next: Record<string, number> | null = null
+    // A project gone from the list (a temporary local chat that ended, one
+    // left) takes its cursors with it.
+    if (projects.list) {
+      const known = new Set(projects.list.map((p) => p.id))
+      const kept = Object.fromEntries(Object.entries(reads.value).filter(([key]) => known.has(key.slice(0, key.indexOf(':')))))
+      if (Object.keys(kept).length !== Object.keys(reads.value).length) next = kept
+    }
     for (const [pid, list] of Object.entries(projects.chats)) {
-      if (Object.hasOwn(reads.value, pid + ':')) continue
+      if (Object.hasOwn(next ?? reads.value, pid + ':')) continue
       next ??= { ...reads.value }
       next[pid + ':'] = 0
       for (const c of list) next[chatKey(pid, c.id)] = c.last_seq || 0
@@ -126,6 +135,10 @@ export const useInboxStore = defineStore('inbox', () => {
   }
   // readOf is the read cursor of a chat.
   function readOf(pid: string, id: string): number { return reads.value[chatKey(pid, id)] || 0 }
+  // unreadCount is how many of a project's chats have news for this member.
+  function unreadCount(pid: string): number {
+    return (projects.chats[pid] || []).filter((c) => isUnread(c, openKey() === chatKey(pid, c.id), readOf(pid, c.id))).length
+  }
 
   // Legacy two-person chats still ask their only peer by default. Project
   // chat messages are ordinary messages to the group.
@@ -137,21 +150,36 @@ export const useInboxStore = defineStore('inbox', () => {
 
   // --- loading ---
 
+  // loadChat reads a chat and its newest messages. A reset shows the last
+  // PAGE_SIZE; a refresh re-reads the newest end of what is shown (with room
+  // for what is new, up to the server's MAX_PAGE) and keeps the older part, so
+  // pages loaded with «Показать раньше» stay and the newest never drop.
   async function loadChat(id: string, reset: boolean) {
     const ticket = ++generation
     const pid = project.value
-    const first = messages.value[0]?.seq || 0
-    const query = !reset && first ? '?after=' + (first - 1) + '&limit=1000' : '?limit=' + PAGE_SIZE
+    const shown = reset ? [] : messages.value
+    const limit = Math.min(MAX_PAGE, shown.length + PAGE_SIZE)
     const [info, items] = await Promise.all([
       api<ChatInfo>('GET', chatPath(pid, id)),
-      api<ChatMessage[]>('GET', chatPath(pid, id, 'messages' + query)),
+      api<ChatMessage[]>('GET', chatPath(pid, id, 'messages?limit=' + limit)),
     ])
     if (ticket !== generation || project.value !== pid || selectedChat.value !== id) return
-    if (reset) hasOlder.value = Array.isArray(items) && items.length === PAGE_SIZE
-    messages.value = Array.isArray(items) ? [...items].sort((a, b) => a.seq - b.seq) : []
+    const tail = Array.isArray(items) ? [...items].sort((a, b) => a.seq - b.seq) : []
+    const from = tail[0]?.seq ?? 0
+    const last = shown[shown.length - 1]?.seq || 0
+    // A full answer that starts past the newest shown message left a gap:
+    // show it from scratch, the rest being older.
+    const gap = tail.length === limit && from > last + 1
+    if (reset || gap || !shown.length) {
+      hasOlder.value = tail.length === limit
+      messages.value = tail
+    } else {
+      const first = shown[0]!.seq
+      messages.value = shown.filter((m) => m.seq < from).concat(tail.filter((m) => m.seq >= first))
+    }
     chat.value = info
     markRead(pid, info)
-    intend(reset ? 'reset' : 'auto')
+    intend(reset || gap ? 'reset' : 'auto')
   }
 
   async function loadOlder() {
@@ -223,18 +251,26 @@ export const useInboxStore = defineStore('inbox', () => {
     const pid = project.value
     const id = info.id
     const key = chatKey(pid, id)
+    // What goes out; whatever is typed or added while it is on its way stays.
+    const files = useAttachmentsStore()
+    const sentBody = composer.value
+    const sentReply = replyTo.value
+    const sentFiles = files.items.filter((p) => p.attachment).map((p) => p.key)
     sending.value = true
     sendResult.value = ''
     try {
-      const body: Record<string, unknown> = { chat_id: id, body: composer.value, ask: messageAsk(info) }
-      if (replyTo.value) body.reply_to = replyTo.value.id
-      const files = useAttachmentsStore()
-      if (files.uploading) return // the send button waits for the uploads
+      const body: Record<string, unknown> = { chat_id: id, body: sentBody, ask: messageAsk(info) }
+      if (sentReply) body.reply_to = sentReply.id
       if (files.ready.length) body.attachments = files.ready
       const sent = await api<SentMessage>('POST', projectPath(pid, 'send'), body)
-      drafts.value = { ...drafts.value, [key]: '' }
       const here = openKey() === key
-      if (here) { composer.value = ''; setReply(null); files.clear() }
+      if (here) {
+        if (composer.value === sentBody) composer.value = ''
+        if (replyTo.value === sentReply) setReply(null)
+        files.removeKeys(sentFiles)
+      }
+      const draft = here ? composer.value : drafts.value[key] || ''
+      drafts.value = { ...drafts.value, [key]: draft === sentBody ? '' : draft }
       // A legacy chat continues elsewhere: in a real chat, or in the plain
       // message's own legacy chat.
       const next = info.legacy ? sent.chat_id || 'legacy-' + sent.id + '-' + info.peer : sent.chat_id || id
@@ -247,7 +283,6 @@ export const useInboxStore = defineStore('inbox', () => {
     } catch (error) { sendResult.value = (error as Error).message }
     finally { sending.value = false }
   }
-
   // --- a project's one chat ---
 
   // activeChat is a project's one active chat, if it has one.
@@ -301,13 +336,13 @@ export const useInboxStore = defineStore('inbox', () => {
     try {
       const info = await api<ChatInfo>('POST', chatPath(pid, id, 'members'), { add, remove })
       if (openKey() === chatKey(pid, id)) chat.value = info
-      projects.chats = { ...projects.chats, [pid]: (projects.chats[pid] || []).map((c) => (c.id === id ? info : c)) }
+      projects.putChat(pid, info)
       void projects.refreshChats(pid)
     } finally { membersBusy.value = false }
   }
 
-  function confirmRemove(pid: string, id: string, name: string) {
-    if (!browser.confirm(fmt("inbox.members.remove_confirm", { name }))) return
+  async function confirmRemove(pid: string, id: string, name: string) {
+    if (!(await confirmAction(fmt("inbox.members.remove_confirm", { name }), t("inbox.members.remove")))) return
     return setMembers(pid, id, [], [name])
   }
 
@@ -321,10 +356,10 @@ export const useInboxStore = defineStore('inbox', () => {
     try {
       await api('POST', chatPath(pid, info.id, 'close'))
       const rest = (projects.chats[pid] || []).filter((c) => c.id !== info.id)
-      const next = narrow() ? null : rest.find((c) => !c.legacy) || rest[0]
+      const next = isNarrow.value ? null : rest.find((c) => !c.legacy) || rest[0]
       // Leave the chat before the list changes, so nothing reloads it.
       await selectChat(pid, '', '')
-      projects.chats = { ...projects.chats, [pid]: rest }
+      projects.removeChat(pid, info.id)
       if (next) openChat(pid, next.id)
       else openProject(pid)
       void projects.refreshChats(pid)
@@ -334,10 +369,10 @@ export const useInboxStore = defineStore('inbox', () => {
     } finally { closing.value = false }
   }
 
-  function confirmClose() {
+  async function confirmClose() {
     const info = chat.value
-    const key = !info?.legacy ? "inbox.close.confirm" : legacyPeerOldOf(info) ? "inbox.close.confirm_old" : "inbox.close.confirm_legacy"
-    if (!browser.confirm(t(key))) return
+    const key = !info?.legacy ? "inbox.close.confirm" : legacyPeerOld(info) ? "inbox.close.confirm_old" : "inbox.close.confirm_legacy"
+    if (!(await confirmAction(t(key), t(info?.legacy ? "inbox.close.legacy" : "inbox.close")))) return
     return closeChat()
   }
 
@@ -354,7 +389,7 @@ export const useInboxStore = defineStore('inbox', () => {
     try {
       const fresh = await api<ChatInfo>('POST', chatPath(pid, info.id, 'archive'))
       const here = openKey() === chatKey(pid, info.id)
-      projects.chats = { ...projects.chats, [pid]: [fresh, ...(projects.chats[pid] || []).filter((c) => c.id !== info.id && c.id !== fresh.id)] }
+      projects.replaceChat(pid, info.id, fresh)
       if (here) {
         openChat(pid, fresh.id)
         focusComposer.value++
@@ -363,13 +398,9 @@ export const useInboxStore = defineStore('inbox', () => {
     } finally { closing.value = false }
   }
 
-  function confirmClear(pid: string) {
-    if (!browser.confirm(t("inbox.clear.confirm"))) return
+  async function confirmClear(pid: string) {
+    if (!(await confirmAction(t("inbox.clear.confirm"), t("inbox.clear")))) return
     return clearChat(pid)
-  }
-
-  function legacyPeerOldOf(info: ChatInfo) {
-    return (info.members || []).some((m) => !m.self && m.connected && !m.compatible)
   }
 
   // --- notifications: a toast for a new incoming message in any chat ---
@@ -450,6 +481,6 @@ export const useInboxStore = defineStore('inbox', () => {
     project, selectedChat, selectedMessage, chat, messages, hasOlder, scrollIntent, drafts, composer, replyTo, sendResult,
     subtitleError, sending, closing, focusComposer, reads, toasts, starting, startResult,
     loadChat, loadOlder, saveDraft, setReply, selectChat, canSend, submitMessage,
-    startChat, openPeer, activeChat, openActive, closeChat, confirmClose, clearChat, confirmClear, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, openKey,
+    startChat, openPeer, activeChat, openActive, closeChat, confirmClose, clearChat, confirmClear, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, unreadCount, openKey,
   }
 })

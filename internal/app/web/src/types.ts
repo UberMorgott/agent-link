@@ -245,7 +245,7 @@ export interface MemberInfo {
 export interface ProjectView {
   id: string // project id or "legacy"
   legacy: boolean
-  scope?: 'local' | 'network' // absent on older nodes: network
+  scope?: 'local' | 'network' // absent for the legacy network (projects.go)
   name: string // shared name; "" while connecting
   alias: string
   display: string // alias || name || ""
@@ -266,16 +266,19 @@ export interface ProjectView {
   launch_mode?: 'desktop' | 'terminal'
   // local_chat: set for a local chat that is not a folder's project chat.
   local_chat?: LocalChatView
-  // activity: for a folder's local project chat, whether it is in use now
-  // and when it was last used; absent on older apps.
+  // activity: for a folder's local project chat, whether its agents are at
+  // work now and when that last ended.
   activity?: LocalActivityView
 }
 
 // LocalActivityView (internal/app/localchats.go): a local project chat's use.
+// live: a caller waits or a turn runs (or is queued); live_ended_at: when it
+// last stopped being live (absent while live, or never live).
 export interface LocalActivityView {
   live: boolean
   waiting?: boolean
   last_active?: string
+  live_ended_at?: string
 }
 
 export type LocalChatScope = 'project' | 'project_temporary' | 'folderless' | 'folderless_temporary'
@@ -289,8 +292,8 @@ export interface LocalChatOwner {
 }
 
 // LocalChatView (internal/app/localchats.go): a local Claude/Codex chat.
-// live: someone is in it now (its owner or another session of it is open, a
-// caller waits, a turn runs or is queued); absent on older apps. retired: its
+// live: a caller waits or a turn runs or is queued; live_ended_at: when it last
+// stopped being live (absent while live, or never live). retired: its
 // owner ended and only an unread reply holds it (never live, never listed in
 // the sidebar). project: the folder's local project ("" none).
 export interface LocalChatView {
@@ -300,10 +303,11 @@ export interface LocalChatView {
   folder?: string
   expires_at?: string
   owner?: LocalChatOwner
-  live?: boolean
+  live: boolean
   retired?: boolean
   waiting?: boolean
   last_active?: string
+  live_ended_at?: string
 }
 
 export type AutonomyMode = 'off' | 'asked' | 'full'

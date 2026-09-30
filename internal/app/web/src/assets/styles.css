@@ -149,7 +149,6 @@
   .project-dot { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-muted); opacity: 0.55; }
   .project-dot.on, .project-dot.many { background: var(--app-dot-many); opacity: 1; }
   .project-dot.one { background: var(--app-dot-one); opacity: 1; }
-  .project-dot.off { background: var(--app-off); opacity: 1; }
   .project-unread {
     flex: none; min-width: 1.2rem; padding: 0 0.35rem; border-radius: 999px; text-align: center;
     background: var(--app-unread); color: var(--ui-bg); font-size: 0.7rem; font-weight: 600; line-height: 1.2rem;
@@ -223,8 +222,7 @@
   .chat-tool-dot.none { background: transparent; box-shadow: inset 0 0 0 1.5px var(--app-muted), 0 0 0 2px var(--app-bg); }
   .chat-tool-dot.working { background: var(--app-status-working); animation: act-pulse 1.4s ease-in-out infinite; }
   .chat-tool-dot.paused { background: var(--app-off); }
-  .chat-tool-dot.waiting { background: var(--app-status-waiting); }
-  .chat-tool-dot.idle { background: var(--app-off); }
+  .chat-tool-dot.idle { background: var(--app-dot-one); }
   .chat-tool-count { font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
   /* A thin line under the header while the agents are paused. */
   .chat-pause-banner {
@@ -243,7 +241,8 @@
   .agent-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-muted); }
   /* Three dots: green at work (its subagents too), yellow open but idle, grey no session open. */
   .agent-row.running .agent-dot { background: var(--app-status-working); animation: act-pulse 1.4s ease-in-out infinite; }
-  .agent-row.idle .agent-dot { background: var(--app-off); }
+  .agent-row.idle .agent-dot { background: var(--app-dot-one); }
+  .agent-row.paused .agent-dot { background: var(--app-off); }
   .agent-row.off .agent-dot { opacity: 0.55; }
   .agent-note { grid-column: 2 / -1; margin-top: -0.15rem; color: var(--app-muted); font-size: 0.72rem; line-height: 1.3; }
   .agent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--who, var(--app-text)); }

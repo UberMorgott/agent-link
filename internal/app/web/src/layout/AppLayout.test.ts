@@ -75,6 +75,11 @@ describe('the application shell', () => {
     expect(tree.map((li) => li.dataset.project)).toEqual([JOINING, SITE, 'legacy'])
     expect(tree[0]!.textContent).toContain('projects.connecting')
     expect(tree[1]!.querySelector('.project-name')!.textContent).toBe('Мой сайт')
+    // A project that failed before it had a name says why, not «Подключение…».
+    const projects = useProjectsStore()
+    projects.upsert({ ...projects.byID(JOINING)!, state: 'error', problem: 'auth' })
+    await settle()
+    expect($('#project_tree > li[data-project="' + JOINING + '"] .project-name')!.textContent).toBe('project.problem.auth')
     // Two computers (alice and bob) have an agent open in the site: green.
     expect(tree[1]!.querySelector('.project-dot')!.className).toContain('many')
     expect(tree[1]!.querySelector('.project-dot')!.getAttribute('title')).toContain('projects.dot.many')

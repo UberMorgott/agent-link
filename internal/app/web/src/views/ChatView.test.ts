@@ -1,7 +1,7 @@
 import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { browser, runtime } from '@/lib/runtime'
-import { fakeApi, mountApp, settle } from '@/test/harness'
+import { runtime } from '@/lib/runtime'
+import { answerConfirm, fakeApi, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore } from '@/stores/projects'
@@ -286,7 +286,7 @@ describe('the open chat', () => {
   })
 
   it('renders ticks, authors, members, whom to ask and live activity', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
     const { api, inbox } = await openInbox()
     await inbox.selectChat(P, group, 'm204')
     await settle()
@@ -352,12 +352,12 @@ describe('the open chat', () => {
     expect(rows[1]!.className).toContain('stale')
     expect(text(rows[1]!)).toContain('inbox.activity.stale')
     const before = api.calls.length
-    vi.spyOn(Date, 'now').mockReturnValue(base + 246000)
+    vi.setSystemTime(base + 246000 - 1000) // the clock ticks to it
     vi.advanceTimersByTime(1000)
     await nextTick()
     // A running line's time is how long ago its agent was last heard of.
     expect(text(agentRows('activity')[0]!.querySelector('.agent-time'))).toBe('5 с назад')
-    vi.spyOn(Date, 'now').mockReturnValue(base + 306000)
+    vi.setSystemTime(base + 306000 - 1000) // the clock ticks to it
     vi.advanceTimersByTime(1000)
     await nextTick()
     expect(text(agentRows('activity')[0]!.querySelector('.agent-time'))).toBe('1 мин назад')
@@ -462,6 +462,24 @@ describe('the open chat', () => {
     expect(toggle.dataset.state).toBe('working')
   })
 
+  it('lists a member with a nickname once, its job lines covered by its agents', async () => {
+    const { projects, inbox } = await openInbox()
+    await inbox.selectChat(P, group, '')
+    const since = new Date(Date.now() - 65000).toISOString()
+    projects.list = (projects.list || []).map((project) => project.id === P ? {
+      ...project,
+      members: [
+        { name: 'local', self: true, online: true },
+        { name: 'bob', display: 'Боб', online: true, agent: true, agents: [{ provider: 'codex', state: 'thinking', since }] },
+      ],
+    } : project)
+    await settle()
+    await openAgents()
+    const bob = agentRows().filter((row) => /bob|Боб/.test(text(row)))
+    expect(bob).toHaveLength(1)
+    expect(bob[0]!.dataset.kind).toBe('agent')
+  })
+
   it('says in one line when no agent is known', async () => {
     const { inbox } = await openInbox()
     await inbox.selectChat(P, 'c3', '')
@@ -562,6 +580,17 @@ describe('the open chat', () => {
     await settle()
     expect(api.calls.filter((c) => c === 'POST projects/PROJ/send')).toHaveLength(1)
     expect($('#inbox_result')).toBeNull()
+    // Text typed while a message is on its way stays in the composer.
+    inbox.composer = 'one'
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle()
+    inbox.composer = 'one and more'
+    releaseSend!()
+    await settle()
+    expect(sent.at(-1)).toMatchObject({ body: 'one' })
+    expect(inbox.composer).toBe('one and more')
+    inbox.composer = ''
+    await settle()
     const again = $<HTMLTextAreaElement>('#body')!
     again.value = 'more'
     again.dispatchEvent(new Event('input'))
@@ -696,10 +725,10 @@ describe('the chat list and the ways into a chat', () => {
     await settle()
     projects.chats = { [P]: [chats.c4!.info] }
     await settle()
-    const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(true)
-    await inbox.confirmClear(P)
+    const cleared = inbox.confirmClear(P)
+    expect(await answerConfirm(true)).toContain('inbox.clear.confirm')
+    await cleared
     await settle()
-    expect(confirm).toHaveBeenCalledWith('inbox.clear.confirm')
     expect(projects.chats[P]!.some((c) => c.id === 'c4')).toBe(false)
     expect($('[data-chat="c4"]')).toBeNull()
     expect(router.currentRoute.value.params.chat).toBe('c6')
