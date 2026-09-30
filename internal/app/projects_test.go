@@ -32,7 +32,7 @@ var contractErrors = map[string]int{
 	"project_needs_folder": http.StatusConflict, "folder_not_in_project": http.StatusConflict, "seats_local_only": http.StatusConflict,
 	"not_found": http.StatusNotFound, "unknown_chat": http.StatusNotFound, "chat_owner": http.StatusForbidden,
 	"remove_self": http.StatusBadRequest, "unknown_member": http.StatusNotFound, "autonomy": http.StatusBadRequest,
-	"internal": http.StatusInternalServerError,
+	"not_running": http.StatusServiceUnavailable, "not_configured": http.StatusBadRequest, "internal": http.StatusInternalServerError,
 }
 
 // contractValues builds every DTO from a fixed state.

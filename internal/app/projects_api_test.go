@@ -558,3 +558,17 @@ func TestBindProjectAllOrNothing(t *testing.T) {
 		t.Fatalf("valid change: %d %s", code, raw)
 	}
 }
+
+// Renaming a project whose context is not running answers 503 not_running,
+// the code every project call uses for it (errorCode), not 500.
+func TestRenameStoppedProject(t *testing.T) {
+	h := projectsHarness(t, "alice", "")
+	var p ProjectView
+	if code, raw := h.api(t, http.MethodPost, "projects", map[string]any{"name": "Сайт"}, &p); code != http.StatusOK {
+		t.Fatalf("create: %d %s", code, raw)
+	}
+	h.app.mu.Lock()
+	h.app.stopContextLocked(h.app.projects[p.ID])
+	h.app.mu.Unlock()
+	h.wantError(t, http.MethodPost, "projects/"+p.ID+"/name", map[string]any{"name": "Новый"}, http.StatusServiceUnavailable, "not_running")
+}
