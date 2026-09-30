@@ -18,6 +18,19 @@ $Version = $Version.TrimStart('v')
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "version $Version is not X.Y.Z" }
 $root = Split-Path $PSScriptRoot -Parent
 $dist = Join-Path $root 'dist'
+$tag = "v$Version"
+
+# A published release is built from its tag's commit, nothing else: a clean
+# tree (untracked files aside) whose HEAD is the tag.
+if ($Publish) {
+    $changed = git -C $root status --porcelain --untracked-files=no
+    if ($LASTEXITCODE) { throw "git status failed in $root" }
+    if ($changed) { throw "the working tree of $root has changes; a release is built from its tag only:`n$($changed -join "`n")" }
+    $tagged = git -C $root rev-parse --verify --quiet "$tag^{commit}"
+    if (-not $tagged) { throw "tag $tag does not exist: tag the release commit first" }
+    $head = git -C $root rev-parse HEAD
+    if ($head -ne $tagged) { throw "HEAD $head is not $tag ($tagged): check out the tagged commit" }
+}
 if (-not (Get-Command upx -ErrorAction SilentlyContinue)) { throw 'upx is not on PATH (winget install upx.upx)' }
 New-Item -ItemType Directory -Force $dist | Out-Null
 
@@ -34,13 +47,19 @@ New-Item -ItemType Directory -Force $work | Out-Null
 . (Join-Path $PSScriptRoot 'swap.ps1')
 
 try {
-    $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+    # The target is set for this build only; the caller's own values return.
+    $goEnv = @{ GOOS = 'windows'; GOARCH = 'amd64'; CGO_ENABLED = '0' }
+    $saved = @{}
+    foreach ($k in $goEnv.Keys) {
+        $saved[$k] = [Environment]::GetEnvironmentVariable($k)
+        [Environment]::SetEnvironmentVariable($k, $goEnv[$k])
+    }
     try {
         go build -C $root -trimpath -ldflags "-s -w $ldVersion" -o $built ./cmd/agentlink
         if ($LASTEXITCODE) { throw 'go build failed for ./cmd/agentlink (windows/amd64)' }
     }
     finally {
-        $env:GOOS = $null; $env:GOARCH = $null; $env:CGO_ENABLED = $null
+        foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
     }
     $stripped = (Get-Item $built).Length
     upx --best --lzma -q $built | Out-Null
@@ -63,14 +82,13 @@ finally {
 }
 $assets = @($exe)
 if ($Publish) {
-    $tag = "v$Version"
     gh release view $tag --repo UberMorgott/agent-link *> $null
     if ($LASTEXITCODE -eq 0) {
         gh release upload $tag @assets --clobber --repo UberMorgott/agent-link
     } else {
         $notes = Join-Path $dist 'notes.md'
-        & (Join-Path $PSScriptRoot 'release-notes.ps1') -Tag $tag | Set-Content -Encoding utf8NoBOM $notes
-        gh release create $tag @assets --repo UberMorgott/agent-link --title $tag --notes-file $notes
+        & (Join-Path $PSScriptRoot 'release-notes.ps1') -Tag $tag -Root $root | Set-Content -Encoding utf8NoBOM $notes
+        gh release create $tag @assets --repo UberMorgott/agent-link --title $tag --notes-file $notes --verify-tag
     }
     if ($LASTEXITCODE) { throw "gh release failed for $tag" }
 }

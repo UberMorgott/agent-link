@@ -3,21 +3,23 @@
 # each bullet the commit subject without its "type(scope):" prefix, and the
 # compare link. Commits land on main without pull requests, so GitHub's
 # generated notes would hold only the link.
-# .github/workflows/release.yml runs this on a pushed v* tag; it needs the
-# full history and tags (actions/checkout with fetch-depth: 0).
+# scripts/release.ps1 -Publish runs it for a new release; it needs the full
+# history and tags of the repository at -Root (default: this script's
+# repository), wherever it is started from.
 param(
     [Parameter(Mandatory)][string]$Tag,
-    [string]$Repo = 'UberMorgott/agent-link'
+    [string]$Repo = 'UberMorgott/agent-link',
+    [string]$Root = (Split-Path $PSScriptRoot -Parent)
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 # The previous tag is the nearest v* tag reachable from the tag's parent;
 # the first release has none and lists the whole history.
-$prev = git describe --tags --abbrev=0 --match 'v*' "$Tag^" 2>$null
+$prev = git -C $Root describe --tags --abbrev=0 --match 'v*' "$Tag^" 2>$null
 if ($LASTEXITCODE) { $prev = $null }
 $range = $prev ? "$prev..$Tag" : $Tag
-$subjects = @(git log $range --no-merges --pretty=%s)
+$subjects = @(git -C $Root log $range --no-merges --pretty=%s)
 if ($LASTEXITCODE) { throw "git log $range failed" }
 
 $sections = [ordered]@{ feat = 'Новое'; fix = 'Исправления'; perf = 'Производительность' }
