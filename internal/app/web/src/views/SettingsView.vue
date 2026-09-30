@@ -109,7 +109,6 @@ async function saveSettings(note?: string): Promise<void> {
     if (projects.valid && edits === started) settled = started
     if (r.settings) app.settings = r.settings
     if (r.status) app.status = r.status
-    if (r.dashboard) app.dashboard = r.dashboard
     if (r.settings && effectiveAPI(r.settings) !== previousAPI) browser.reload()
   } catch (e) {
     result.value = (e as Error).message

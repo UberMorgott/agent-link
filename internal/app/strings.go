@@ -88,7 +88,6 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"theme.aspect.unread.hint":  "Счётчики и метки новых сообщений",
 	"theme.aspect.focus":        "Выделение и фокус",
 	"theme.aspect.focus.hint":   "Выделенный текст и рамка фокуса",
-	"page.title.dashboard":      "agentlink — обзор",
 	"page.title.agents":         "agentlink — агенты",
 	"page.title.participants":   "agentlink — участники",
 	"page.title.settings":       "agentlink — настройки",
@@ -239,15 +238,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"settings.saving":          "Сохраняю…",
 	"settings.saved":           "Сохранено.",
 
-	// Dashboard and participants routes.
-	"dashboard.h1":                 "Обзор",
-	"dashboard.summary":            "На связи: {online} из {total}; сообщений: {messages}.",
-	"dashboard.online":             "Участники",
-	"dashboard.messages":           "Сообщения",
-	"dashboard.active":             "Активные запросы",
-	"dashboard.handler":            "Обработчик",
-	"dashboard.recent":             "Последние разговоры",
-	"dashboard.recent.empty":       "Пока нет разговоров.",
+	// Participants route.
 	"connection.reload":            "Обновить страницу",
 	"participants.h1":              "Участники",
 	"participants.empty":           "Пока нет участников.",

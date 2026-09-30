@@ -4,8 +4,10 @@ export const TOKEN_HEADER = 'X-Agentlink-Token'
 export const VERSION_HEADER = 'X-Agentlink-Version'
 
 // The state slices the page keeps (stores/app.ts).
-export const CORE_SLICES = ['status', 'dashboard', 'participants', 'update', 'settings', 'sessions'] as const
+// The participants list is read only while its page is open (watchParticipants).
+export const CORE_SLICES = ['status', 'update', 'settings', 'sessions'] as const
 export type CoreSlice = (typeof CORE_SLICES)[number]
+export type Slice = CoreSlice | 'participants'
 
 export class ApiError extends Error {
   status?: number

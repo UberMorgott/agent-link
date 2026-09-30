@@ -11,7 +11,7 @@ const $$ = <T extends Element = HTMLElement>(sel: string) => Array.from(document
 const CHAT = '7b8b965ad4bca0e41ab51de7b31363a1'
 const PATHS: Record<string, string> = {
   // A project with its chat goes on to the chat; one without shows its page.
-  dashboard: '/dashboard', welcome: '/welcome', project: '/p/' + JOINING, chat: '/p/' + SITE + '/c/' + CHAT,
+  welcome: '/welcome', project: '/p/' + JOINING, chat: '/p/' + SITE + '/c/' + CHAT,
   participants: '/participants', settings: '/settings',
 }
 
@@ -22,7 +22,6 @@ async function open(path: string) {
   app.status = { configured: true, connected: true, zerotier: true, node: 'alice', online: 1, total: 2 }
   app.settings = { node: 'alice' }
   app.update = { current: 'dev', enabled: true }
-  app.dashboard = { status: { online: 1, total: 2, handler: 'claude' }, total_messages: 5, active_requests: 1, recent: [] }
   app.participants = [{ name: 'bob', online: true }]
   await useProjectsStore().refreshAll()
   await settle()
@@ -94,7 +93,7 @@ describe('the application shell', () => {
   })
 
   it('picks the theme, accent and background in the account menu', async () => {
-    await open('/dashboard')
+    await open('/welcome')
     expect($('#theme_panel')).toBeNull()
     expect($('#theme_config')).toBeNull()
     $<HTMLButtonElement>('#user_chip')!.click()
@@ -126,7 +125,7 @@ describe('the application shell', () => {
   })
 
   it('colours each aspect from the palette, warns on poor contrast and resets', async () => {
-    await open('/dashboard')
+    await open('/welcome')
     $<HTMLButtonElement>('#user_chip')!.click()
     await settle()
     $<HTMLButtonElement>('#theme_mode [data-mode="light"]')!.click()
@@ -190,15 +189,10 @@ describe('the application shell', () => {
     expect(router.currentRoute.value.name).toBe('welcome')
   })
 
-  it('shows the dashboard cards and recent conversations', async () => {
-    await open('/dashboard')
-    expect($$('#dashboard_cards article')).toHaveLength(4)
-    expect($('#dashboard_cards')!.textContent).toContain('settings.handler.claude')
-    expect($('#dashboard_recent')!.textContent).toContain('dashboard.recent.empty')
-    useAppStore().dashboard = { status: {}, recent: [{ peer: 'bob', preview: 'hello' }] }
-    await settle()
-    expect($('#dashboard_recent')!.textContent).toContain('bob')
-    expect($('#dashboard_recent')!.textContent).toContain('hello')
+  it('sends the removed overview page to the inbox', async () => {
+    const { router } = await open('/dashboard')
+    expect(router.currentRoute.value.name).not.toBe('dashboard')
+    expect($$('[data-view]').map((v) => v.dataset.view)).not.toContain('dashboard')
   })
 
   it('gives participants their own controls and none to settings', async () => {

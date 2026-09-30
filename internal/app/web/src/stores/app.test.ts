@@ -2,7 +2,7 @@ import { flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { browser, runtime } from '@/lib/runtime'
-import { parseSSERecord, projectsForTopics, slicesForTopics, statusLine, useAppStore } from './app'
+import { parseSSERecord, participantsStale, projectsForTopics, slicesForTopics, statusLine, useAppStore } from './app'
 
 // eventStream is a response whose body yields the pushed chunks, one read each.
 function eventStream(headers: Record<string, string> = {}, status = 200) {
@@ -41,9 +41,11 @@ describe('event parsing', () => {
   })
 
   it('maps topics onto the slices they make stale', () => {
-    expect(slicesForTopics(['all']).sort()).toEqual(['dashboard', 'participants', 'sessions', 'settings', 'status', 'update'])
-    expect(slicesForTopics(['peer']).sort()).toEqual(['dashboard', 'participants', 'status'])
-    expect(slicesForTopics(['messages']).sort()).toEqual(['dashboard', 'participants'])
+    expect(slicesForTopics(['all']).sort()).toEqual(['sessions', 'settings', 'status', 'update'])
+    expect(slicesForTopics(['peer']).sort()).toEqual(['status'])
+    expect(slicesForTopics(['messages'])).toEqual([])
+    for (const topic of ['all', 'participants', 'peer', 'members', 'messages', 'worker']) expect(participantsStale([topic]), topic).toBe(true)
+    expect(participantsStale(['projects', 'settings'])).toBe(false)
     expect(slicesForTopics(['project:legacy'])).toEqual(['sessions'])
   })
 
@@ -83,13 +85,42 @@ describe('reactive push', () => {
     stream.send(change(['all']))
     await flushPromises()
     const initial = calls.slice(1).map((c) => c.url).sort()
-    expect(initial).toEqual(['dashboard', 'participants', 'projects', 'sessions', 'settings', 'status', 'update'].map((n) => '/ui/api/' + n).sort())
+    expect(initial).toEqual(['projects', 'sessions', 'settings', 'status', 'update'].map((n) => '/ui/api/' + n).sort())
     calls.length = 0
     stream.send(change(['projects']))
     await flushPromises()
     expect(calls.map((c) => c.url)).toEqual(['/ui/api/projects'])
     // Nothing reads data on a timer.
     expect(timer).not.toHaveBeenCalled()
+  })
+
+  it('reads the participants only while their page watches them', async () => {
+    const stream = eventStream()
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/ui/api/events') return stream.response
+      calls.push(url)
+      return new Response('[]', { status: 200 })
+    }))
+    const app = useAppStore()
+    void app.connectEvents()
+    await flushPromises()
+    stream.send(change(['messages']))
+    await flushPromises()
+    expect(calls).toEqual([])
+    const stop = app.watchParticipants()
+    await flushPromises()
+    expect(calls).toEqual(['/ui/api/participants'])
+    stream.send(change(['messages']))
+    await flushPromises()
+    expect(calls).toEqual(['/ui/api/participants', '/ui/api/participants'])
+    stop()
+    stop()
+    calls.length = 0
+    stream.send(change(['peer']))
+    await flushPromises()
+    expect(calls).toContain('/ui/api/status')
+    expect(calls).not.toContain('/ui/api/participants')
   })
 
   it('keeps a failure on screen until every failing request recovers', async () => {
@@ -104,12 +135,12 @@ describe('reactive push', () => {
     await flushPromises()
     stream.send(change(['all']))
     await flushPromises()
-    pending.get('/ui/api/dashboard')!(new Response('{"error":"dashboard down"}', { status: 500 }))
+    pending.get('/ui/api/update')!(new Response('{"error":"update down"}', { status: 500 }))
     await flushPromises()
-    expect(app.banner).toBe('dashboard down')
+    expect(app.banner).toBe('update down')
     pending.get('/ui/api/status')!(new Response('{"configured":false}', { status: 200 }))
     await flushPromises()
-    expect(app.banner).toBe('dashboard down')
+    expect(app.banner).toBe('update down')
     expect(app.status).toEqual({ configured: false })
   })
 

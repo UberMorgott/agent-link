@@ -391,7 +391,7 @@ func (a *App) moveToLeft(pid string) error {
 func (a *App) LeaveProject(pid string) error {
 	err := a.leaveProject(pid)
 	if err == nil {
-		a.events.publish("projects", projectTopic(pid), "status", "settings", "dashboard", "participants")
+		a.events.publish("projects", projectTopic(pid), "status", "settings", "participants")
 	}
 	return err
 }

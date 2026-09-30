@@ -185,12 +185,13 @@ Autostart is the `agentlink` value under `HKCU\Software\Microsoft\Windows\Curren
 it: an entry switched off in Task Manager (`...\Explorer\StartupApproved\Run`) counts as off, and
 turning it on again clears that mark.
 
-The tray icon: a left click opens the dashboard, and another click activates the existing
-dashboard tab in the same browser profile when the browser permits it. A right click shows a
+The tray icon: a left click opens the app's chats (/ui/inbox), and another click activates the
+existing app tab as it is, without reloading it, in the same browser profile when the browser
+permits it. A right click shows a
 fixed menu — «Запускать вместе с Windows», «Открыть в браузере», «Выход». Members, messages and
 updates live on the web pages; the tooltip carries the state and a newer version. Browsers decide
 whether a tab opened by the operating system may close itself: when they refuse, the small launcher
-tab may remain open, but the named dashboard is still reused instead of creating another one.
+tab may remain open, but the named app tab is still reused instead of creating another one.
 
 ### Updates
 

@@ -188,7 +188,7 @@ func (a *App) retireChat(pid string) {
 		a.log.Info("retire chat: its owner is back; kept", "project", pid)
 		return
 	}
-	defer func() { go a.events.publish("projects", projectTopic(pid), "status", "dashboard") }()
+	defer func() { go a.events.publish("projects", projectTopic(pid), "status") }()
 	if c != nil && localChatState(c, nil).unread {
 		lc := *a.s.Bindings[i].Chat
 		lc.Retired = time.Now().UTC()
@@ -224,7 +224,7 @@ type liveState struct {
 // caller waits for a reply (App.discussWaiters), a seat's turn runs or is
 // queued, or other work runs in it. Its owner's session being open does not
 // make it live (that only keeps it from retiring), nor does an unread reply:
-// it is for a person (the dashboard's needs_human), and a retired chat stays
+// it is for a person (its needs_human mark), and a retired chat stays
 // hidden only for it. Not live, endedAt is when it was last seen to stop
 // (checkLive), else its last activity.
 func (a *App) localChatLiveLocked(b settings.ProjectBinding) liveState {

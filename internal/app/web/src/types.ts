@@ -25,13 +25,6 @@ export interface Status {
   nickname?: string // this member's nickname ("" = its name)
 }
 
-export interface DashboardSummary {
-  status?: Status
-  total_messages?: number
-  active_requests?: number
-  recent?: { peer?: string; preview?: string }[]
-}
-
 export interface ParticipantView {
   name: string
   online?: boolean
@@ -421,5 +414,4 @@ export interface SaveResult {
   found?: string
   settings?: AppSettings
   status?: Status
-  dashboard?: DashboardSummary
 }

@@ -134,9 +134,9 @@ func TestAPITokenGuard(t *testing.T) {
 	}
 }
 
-func TestDashboardAPIsRequireToken(t *testing.T) {
+func TestParticipantsAPIRequiresToken(t *testing.T) {
 	h := newHarness(t)
-	for _, path := range []string{"/ui/api/dashboard", "/ui/api/participants"} {
+	for _, path := range []string{"/ui/api/participants"} {
 		if code, _ := h.do(t, http.MethodGet, path, "", nil); code != http.StatusForbidden {
 			t.Errorf("%s: %d, want 403", path, code)
 		}
@@ -207,15 +207,14 @@ func TestSaveReturnsSanitizedNormalizedReactiveSlices(t *testing.T) {
 		t.Fatalf("save: %d %s", code, raw)
 	}
 	var got struct {
-		Saved     bool               `json:"saved"`
-		Settings  *settings.Settings `json:"settings"`
-		Status    *Status            `json:"status"`
-		Dashboard *DashboardSummary  `json:"dashboard"`
+		Saved    bool               `json:"saved"`
+		Settings *settings.Settings `json:"settings"`
+		Status   *Status            `json:"status"`
 	}
 	if err := json.Unmarshal([]byte(raw), &got); err != nil {
 		t.Fatal(err)
 	}
-	if !got.Saved || got.Settings == nil || got.Status == nil || got.Dashboard == nil {
+	if !got.Saved || got.Settings == nil || got.Status == nil || strings.Contains(raw, `"dashboard"`) {
 		t.Fatalf("reactive slices missing: %+v", got)
 	}
 	if got.Settings.Node != "alice" || got.Settings.API != "127.0.0.1:7599" {
@@ -224,8 +223,8 @@ func TestSaveReturnsSanitizedNormalizedReactiveSlices(t *testing.T) {
 	if got.Settings.Secret != "" || len(got.Settings.HandlerCommand) != 0 || strings.Contains(raw, "private-agent") || strings.Contains(raw, strings.Repeat("s", 32)) {
 		t.Fatalf("private settings leaked: %s", raw)
 	}
-	if got.Status.Node != "alice" || got.Dashboard.Status.Node != "alice" {
-		t.Fatalf("status/dashboard do not describe saved state: status=%+v dashboard=%+v", got.Status, got.Dashboard)
+	if got.Status.Node != "alice" {
+		t.Fatalf("status does not describe saved state: %+v", got.Status)
 	}
 }
 

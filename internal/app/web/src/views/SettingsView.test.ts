@@ -96,7 +96,7 @@ describe('settings', () => {
   it('save by themselves, apply the answer and reload only for another API address', async () => {
     let answer: SaveResult = {
       saved: true, settings: { node: 'saved', api: '127.0.0.1:7520', areas: ['dev'] },
-      status: { configured: true, node: 'saved' }, dashboard: { total_messages: 7 },
+      status: { configured: true, node: 'saved' },
     }
     const { api, sent } = await openSettings({ node: 'old', api: '127.0.0.1:7520', areas: [] }, () => answer)
     const reload = vi.spyOn(browser, 'reload').mockImplementation(() => {})
@@ -111,7 +111,6 @@ describe('settings', () => {
     expect(api.calls.filter((c) => c.startsWith('GET ') && c !== 'GET hooks' && !c.startsWith('GET projects'))).toEqual([])
     expect(app.settings?.node).toBe('saved')
     expect(app.status?.node).toBe('saved')
-    expect(app.dashboard?.total_messages).toBe(7)
     expect(reload).not.toHaveBeenCalled()
 
     answer = { saved: true }

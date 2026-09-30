@@ -1,4 +1,4 @@
 // The public launcher page: no token, no dictionary, only this script.
-import { launchDashboard } from './lib/dashboardWindow'
+import { launchApp } from './lib/appWindow'
 
-launchDashboard()
+launchApp()

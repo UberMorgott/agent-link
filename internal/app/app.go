@@ -245,7 +245,7 @@ func (a *App) Start(ctx context.Context) error {
 	a.syncHooksLocked()
 	a.mu.Unlock()
 	a.gcOnce.Do(func() { go a.gcLoop(ctx) })
-	a.events.publish("status", "dashboard", "participants")
+	a.events.publish("status", "participants")
 	return err
 }
 
@@ -255,7 +255,7 @@ func (a *App) Stop() {
 	a.stopLocked()
 	a.mu.Unlock()
 	a.saves.Wait()
-	a.events.publish("status", "dashboard", "participants")
+	a.events.publish("status", "participants")
 }
 
 // Status returns the current state.
@@ -358,7 +358,7 @@ func (a *App) Apply(ctx context.Context, s settings.Settings) (found settings.Fo
 	// The settings are durable even when the restarted node reports a start
 	// error, so every browser must refresh its saved values and status.
 	if err == nil || errors.Is(err, ErrNotStarted) {
-		a.events.publish("settings", "status", "dashboard", "participants", "update")
+		a.events.publish("settings", "status", "participants", "update")
 	}
 	return found, err
 }

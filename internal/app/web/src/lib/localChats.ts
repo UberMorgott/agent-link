@@ -42,7 +42,7 @@ function graceEnd(p: ProjectView): number {
 // chatVisible: a local chat (a folder's project chat, a topic, a temporary
 // chat) shows while live and for HIDE_GRACE_MS after, else only while keep
 // holds it (its unread messages, the chat on screen). A retired chat never
-// shows (the dashboard's needs_human shows its reply).
+// shows (its reply shows as needs_human).
 export function chatVisible(p: ProjectView, now: number, keep?: (p: ProjectView) => boolean): boolean {
   if (p.local_chat?.retired) return false
   if (liveState(p) || keep?.(p)) return true

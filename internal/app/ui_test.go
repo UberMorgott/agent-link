@@ -156,30 +156,33 @@ func TestUISourcesCarryNoEnglishText(t *testing.T) {
 
 var assetRef = regexp.MustCompile(`(?:src|href)="(/ui/assets/[^"]+)"`)
 
-// TestPagesServeShell: the root redirects to the dashboard, every route serves
-// the one application shell with the token, the dictionary, the version and a
-// CSP nonce filled in, and the shell's scripts and styles are served.
+// TestPagesServeShell: the root and the removed overview page redirect to the
+// inbox, every route serves the one application shell with the token, the
+// dictionary, the version and a CSP nonce filled in, and the shell's scripts
+// and styles are served.
 func TestPagesServeShell(t *testing.T) {
 	h := newHarness(t, func(a *App) { a.Version = "0.7.1" })
 	client := *h.srv.Client()
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, h.srv.URL+"/", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := resp.Body.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/ui/dashboard" {
-		t.Fatalf("root redirect: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	for _, path := range []string{"/", "/ui/dashboard"} {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, h.srv.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/ui/inbox" {
+			t.Fatalf("%s redirect: %d %q", path, resp.StatusCode, resp.Header.Get("Location"))
+		}
 	}
 	nonceMeta := regexp.MustCompile(`<meta name="agentlink-nonce" content="([A-Za-z0-9+/=]{16,})">`)
 	nonces := map[string]bool{}
-	for _, path := range []string{"/ui/dashboard", "/ui/inbox", "/ui/participants", "/ui/settings"} {
+	for _, path := range []string{"/ui/inbox", "/ui/agents", "/ui/participants", "/ui/settings"} {
 		code, header, body := h.get(t, path)
 		if code != http.StatusOK || !strings.Contains(body, `<div id="app">`) {
 			t.Fatalf("%s: %d", path, code)
@@ -212,7 +215,7 @@ func TestPagesServeShell(t *testing.T) {
 	if len(nonces) != 4 {
 		t.Fatalf("every page load needs its own nonce: %d distinct of 4", len(nonces))
 	}
-	_, _, body := h.get(t, "/ui/dashboard")
+	_, _, body := h.get(t, "/ui/inbox")
 	assets := assetRef.FindAllStringSubmatch(body, -1)
 	if len(assets) < 2 {
 		t.Fatalf("shell references %d assets, want its script and stylesheet", len(assets))
@@ -273,32 +276,6 @@ func TestDistIsTheOnlyEmbeddedTree(t *testing.T) {
 		if _, err := webFS.ReadFile(name); err != nil {
 			t.Errorf("%s missing from the embedded UI: %v", name, err)
 		}
-	}
-}
-
-// TestDashboardRefreshReflectsNodeChanges verifies that a stable dashboard
-// route and token receive fresh node counts on the next API request.
-func TestDashboardRefreshReflectsNodeChanges(t *testing.T) {
-	h := newHarness(t)
-	read := func() DashboardSummary {
-		code, body := h.do(t, http.MethodGet, "/ui/api/dashboard", "", h.tokenHdr())
-		var summary DashboardSummary
-		if err := json.Unmarshal([]byte(body), &summary); err != nil || code != http.StatusOK {
-			t.Fatalf("dashboard: %d %s err=%v", code, body, err)
-		}
-		return summary
-	}
-	before := read()
-	if code, body := h.do(t, http.MethodPost, "/ui/api/settings", validJSON(t), h.tokenHdr()); code != http.StatusOK {
-		t.Fatalf("save: %d %s", code, body)
-	}
-	// Plain history (the dashboard counts it): the composer writes into chats.
-	if _, err := h.app.node().Send("bob", "проверь обновление", ""); err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	after := read()
-	if before.Status.Total == after.Status.Total || before.TotalMessages == after.TotalMessages {
-		t.Fatalf("dashboard did not refresh counts: before=%+v after=%+v", before, after)
 	}
 }
 
@@ -364,19 +341,12 @@ func TestSessionsEndpoint(t *testing.T) {
 	}
 }
 
-func TestDashboardAPIsServeStoppedNodeDefaults(t *testing.T) {
+func TestParticipantsAPIServesStoppedNodeDefaults(t *testing.T) {
 	h := newHarness(t)
-	code, body := h.do(t, http.MethodGet, "/ui/api/dashboard", "", h.tokenHdr())
-	var dashboard DashboardSummary
-	if err := json.Unmarshal([]byte(body), &dashboard); err != nil || code != http.StatusOK ||
-		dashboard.SentMessages != 0 || dashboard.ReceivedMessages != 0 || dashboard.TotalMessages != 0 ||
-		dashboard.ActiveRequests != 0 || len(dashboard.Recent) != 0 || dashboard.Status.Running {
-		t.Fatalf("dashboard: %d %s err=%v", code, body, err)
+	if code, _ := h.do(t, http.MethodGet, "/ui/api/dashboard", "", h.tokenHdr()); code != http.StatusNotFound {
+		t.Fatalf("removed dashboard API: %d, want 404", code)
 	}
-	if !strings.Contains(body, `"recent":[]`) {
-		t.Fatalf("dashboard recent is not an array: %s", body)
-	}
-	code, body = h.do(t, http.MethodGet, "/ui/api/participants", "", h.tokenHdr())
+	code, body := h.do(t, http.MethodGet, "/ui/api/participants", "", h.tokenHdr())
 	var participants []ParticipantView
 	if err := json.Unmarshal([]byte(body), &participants); err != nil || code != http.StatusOK || len(participants) != 0 {
 		t.Fatalf("participants: %d %s err=%v", code, body, err)

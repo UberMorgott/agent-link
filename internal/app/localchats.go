@@ -69,7 +69,7 @@ type LocalChatView struct {
 	// keeps it shown for ChatLiveGrace from then.
 	LiveEndedAt time.Time `json:"live_ended_at,omitzero"`
 	// Retired: its owner ended and only an unread reply holds it (retire.go);
-	// hidden from the sidebar, the dashboard's needs_human shows the reply.
+	// hidden from the sidebar, its reply shows as needs_human.
 	Retired bool `json:"retired,omitempty"`
 	// Waiting: a discuss caller waits for a reply, or an asked agent's turn
 	// runs or is queued (SeatView.TurnQueued).
@@ -436,7 +436,7 @@ func (a *App) gcLocalChats(now time.Time) {
 		a.forgetOwnerLocked(pid)
 		delete(a.chatLive, pid)
 		a.log.Info("local chat removed", "project", pid)
-		go a.events.publish("projects", projectTopic(pid), "status", "dashboard")
+		go a.events.publish("projects", projectTopic(pid), "status")
 	}
 }
 
@@ -587,7 +587,7 @@ func (a *App) dropIfEmpty(pid string) {
 	}
 	a.mu.Unlock()
 	if drop {
-		a.events.publish("projects", projectTopic(pid), "status", "dashboard")
+		a.events.publish("projects", projectTopic(pid), "status")
 	}
 }
 

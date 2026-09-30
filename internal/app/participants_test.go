@@ -42,7 +42,7 @@ func TestBuildParticipantsCountsRealMessagesOnly(t *testing.T) {
 	}
 }
 
-func TestBuildParticipantsCarriesLatestDirectionBeyondDashboardRecentLimit(t *testing.T) {
+func TestBuildParticipantsCarriesLatestDirectionOfEveryMember(t *testing.T) {
 	status := Status{Node: "alice", Members: []node.MemberInfo{{Name: "alice", Self: true}}}
 	entries := make([]node.Entry, 0, 6)
 	for i := range 6 {
@@ -56,9 +56,6 @@ func TestBuildParticipantsCarriesLatestDirectionBeyondDashboardRecentLimit(t *te
 	}
 
 	participants := buildParticipants(status, entries)
-	if len(buildDashboard(status, entries).Recent) != 5 {
-		t.Fatal("fixture must put one participant outside the dashboard recent cap")
-	}
 	if participants[0].Name != "peer-0" || participants[0].LatestDirection != "in" || participants[0].LatestPreview != "latest peer-0" {
 		t.Fatalf("oldest participant lost unread basis: %+v", participants[0])
 	}
@@ -88,43 +85,5 @@ func TestBuildParticipantsLatestTieUsesMessageIDIndependentOfInputOrder(t *testi
 				t.Fatalf("participant tie: %+v", got)
 			}
 		})
-	}
-}
-
-func TestBuildDashboardAggregatesActivityAndRecentConversations(t *testing.T) {
-	request := strings.Repeat("a", 32)
-	entries := []node.Entry{
-		entry("out", request, "alice", "bob", "q", at(10), job(node.JobRunning)),
-		entry("in", strings.Repeat("b", 32), "bob", "alice", "a", at(20), replyTo(request)),
-		entry("out", strings.Repeat("c", 32), "alice", "карл", "привет", at(30)),
-		entry("in", strings.Repeat("d", 32), "карл", "alice", "ответ", at(40)),
-		func() node.Entry {
-			e := entry("in", strings.Repeat("e", 32), "bob", "alice", "", at(15), replyTo(request))
-			e.Kind = node.KindStatus
-			return e
-		}(),
-	}
-
-	got := buildDashboard(Status{Node: "alice"}, entries)
-	if got.SentMessages != 2 || got.ReceivedMessages != 2 || got.TotalMessages != 4 || got.ActiveRequests != 1 {
-		t.Fatalf("counts: %+v", got)
-	}
-	if len(got.Recent) != 2 || got.Recent[0].Peer != "карл" || got.Recent[0].Preview != "ответ" ||
-		!got.Recent[0].LatestAt.Equal(time.Unix(40, 0).UTC()) || got.Recent[0].Direction != "in" ||
-		got.Recent[1].Peer != "bob" || got.Recent[1].Preview != "a" ||
-		!got.Recent[1].LatestAt.Equal(time.Unix(20, 0).UTC()) || got.Recent[1].Direction != "in" {
-		t.Fatalf("recent: %+v", got.Recent)
-	}
-}
-
-func TestBuildDashboardKeepsAllHistoryBeyondRecentPage(t *testing.T) {
-	entries := make([]node.Entry, 205)
-	for i := range entries {
-		entries[i] = entry("out", fmt.Sprintf("%032x", i+1), "alice", "bob", fmt.Sprintf("m%d", i), at(int64(i)))
-	}
-
-	got := buildDashboard(Status{Node: "alice"}, entries)
-	if got.TotalMessages != 205 || got.SentMessages != 205 || len(got.Recent) != 1 {
-		t.Fatalf("summary: %+v", got)
 	}
 }

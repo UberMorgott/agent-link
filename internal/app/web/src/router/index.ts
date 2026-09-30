@@ -3,7 +3,6 @@ import { t } from '@/lib/runtime'
 import { useProjectsStore } from '@/stores/projects'
 import AgentsView from '@/views/AgentsView.vue'
 import ChatView from '@/views/ChatView.vue'
-import DashboardView from '@/views/DashboardView.vue'
 import ParticipantsView from '@/views/ParticipantsView.vue'
 import ProjectView from '@/views/ProjectView.vue'
 import SettingsView from '@/views/SettingsView.vue'
@@ -21,14 +20,13 @@ async function landing() {
   return pid ? { name: 'project', params: { project: pid } } : { name: 'welcome' }
 }
 
-// The app serves the shell at /ui/dashboard, /ui/inbox, /ui/welcome,
+// The app serves the shell at /ui/inbox, /ui/welcome,
 // /ui/p/{pid}, /ui/p/{pid}/c/{chat}, /ui/agents, /ui/participants and /ui/settings
 // (internal/app/web.go); a reload of any of them lands here again.
 export function createAppRouter(history: RouterHistory = createWebHistory('/ui/')): Router {
   const router = createRouter({
     history,
     routes: [
-      { path: '/dashboard', name: 'dashboard', component: DashboardView },
       { path: '/inbox', name: 'inbox', component: WelcomeView, beforeEnter: landing },
       { path: '/welcome', name: 'welcome', component: WelcomeView },
       { path: '/agents', name: 'agents', component: AgentsView },
@@ -36,11 +34,11 @@ export function createAppRouter(history: RouterHistory = createWebHistory('/ui/'
       { path: '/p/:project/c/:chat', name: 'chat', component: ChatView },
       { path: '/participants', name: 'participants', component: ParticipantsView },
       { path: '/settings', name: 'settings', component: SettingsView },
-      { path: '/:rest(.*)*', redirect: '/dashboard' },
+      { path: '/:rest(.*)*', redirect: '/inbox' },
     ],
   })
   router.afterEach((to) => {
-    document.title = t("page.title." + String(to.name || 'dashboard'))
+    document.title = t("page.title." + String(to.name || 'welcome'))
   })
   return router
 }

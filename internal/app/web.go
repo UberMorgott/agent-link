@@ -44,22 +44,22 @@ func newToken() string {
 	return hex.EncodeToString(b)
 }
 
-// URL returns the address of a web UI route, e.g. "dashboard" or "inbox".
+// URL returns the address of a web UI route, e.g. "inbox" or "open".
 func (a *App) URL(page string) string {
 	return "http://" + a.APIAddr() + "/ui/" + page
 }
 
 // Handler serves the web UI under /ui/ and the node's control API elsewhere.
 //
-//	GET  /ui/dashboard, /ui/inbox, /ui/agents, /ui/participants, /ui/settings, /ui/welcome,
+//	GET  /ui/inbox, /ui/agents, /ui/participants, /ui/settings, /ui/welcome,
 //	     /ui/p/{pid}, /ui/p/{pid}/c/{chat}   application shell with the per-run token embedded
 //	GET  /ui/files/{pid}/{id}     a chat attachment (attachments.go)
-//	GET  /ui/open                 public launcher that activates or adopts the dashboard tab
+//	GET  /ui/dashboard            redirects to /ui/inbox (the overview page is gone)
+//	GET  /ui/open               public launcher that activates or adopts the named app tab
 //	GET  /ui/assets/..., /ui/icon.svg  the built UI's scripts, styles and icon (web/dist)
 //	GET  /ui/api/status            Status
 //	GET  /ui/api/settings          settings.Settings (no code, secret or project bindings)
 //	POST /ui/api/settings          settings.Settings -> save, restart every context; code and bindings are kept
-//	GET  /ui/api/dashboard         DashboardSummary
 //	GET  /ui/api/participants      []ParticipantView
 //	GET  /ui/api/events            server-sent state-change events
 //	GET  /ui/api/sessions          []SessionView (this computer's live agent sessions, every project's)
@@ -82,9 +82,12 @@ func (a *App) Handler() http.Handler {
 	ui := http.NewServeMux()
 	// The single-page app answers its own routes; a reload of any of them gets
 	// the same shell. Other /ui/ paths stay 404.
-	for _, path := range []string{"/ui/dashboard", "/ui/inbox", "/ui/agents", "/ui/participants", "/ui/settings", "/ui/welcome", "/ui/p/{pid}", "/ui/p/{pid}/c/{chat}"} {
+	for _, path := range []string{"/ui/inbox", "/ui/agents", "/ui/participants", "/ui/settings", "/ui/welcome", "/ui/p/{pid}", "/ui/p/{pid}/c/{chat}"} {
 		ui.HandleFunc("GET "+path, a.page("web/dist/index.html"))
 	}
+	// The removed overview page: a bookmark or a tab reloaded after an update
+	// lands on the inbox.
+	ui.Handle("GET /ui/dashboard", http.RedirectHandler("/ui/inbox", http.StatusFound))
 	ui.HandleFunc("GET /ui/open", a.page("web/dist/open.html"))
 	dist, _ := fs.Sub(webFS, "web/dist") // constant path inside the embed
 	files := http.StripPrefix("/ui/", http.FileServerFS(dist))
@@ -98,7 +101,6 @@ func (a *App) Handler() http.Handler {
 	})
 	api.HandleFunc("POST /ui/api/settings", a.saveSettings)
 	api.HandleFunc("GET /ui/api/hooks", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.HookStatus()) })
-	api.HandleFunc("GET /ui/api/dashboard", a.dashboard)
 	api.HandleFunc("GET /ui/api/participants", a.participants)
 	api.HandleFunc("GET /ui/api/events", a.eventsStream)
 	api.HandleFunc("GET /ui/api/sessions", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.allSessions()) })
@@ -133,7 +135,7 @@ func (a *App) Handler() http.Handler {
 	root := http.NewServeMux()
 	root.Handle("/ui/", ui)
 	root.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ui/dashboard", http.StatusFound)
+		http.Redirect(w, r, "/ui/inbox", http.StatusFound)
 	})
 	control := a.controlAPI()
 	root.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -227,11 +229,10 @@ func immutable(next http.Handler) http.Handler {
 }
 
 type saveResult struct {
-	Saved     bool               `json:"saved"`
-	Error     string             `json:"error,omitempty"`
-	Settings  *settings.Settings `json:"settings,omitempty"`
-	Status    *Status            `json:"status,omitempty"`
-	Dashboard *DashboardSummary  `json:"dashboard,omitempty"`
+	Saved    bool               `json:"saved"`
+	Error    string             `json:"error,omitempty"`
+	Settings *settings.Settings `json:"settings,omitempty"`
+	Status   *Status            `json:"status,omitempty"`
 	// Found says where the agent program was found on save, if it was looked for.
 	Found string `json:"found,omitempty"`
 }
@@ -245,13 +246,7 @@ func (a *App) webSettings() settings.Settings {
 
 func (a *App) savedStateResult(found, userErr string) saveResult {
 	s, status := a.webSettings(), a.Status()
-	entries, err := a.recent(0)
-	if err != nil {
-		a.log.Error("dashboard after settings save", "err", err)
-		entries = []node.Entry{}
-	}
-	dashboard := buildDashboard(status, entries)
-	return saveResult{Saved: true, Error: userErr, Found: found, Settings: &s, Status: &status, Dashboard: &dashboard}
+	return saveResult{Saved: true, Error: userErr, Found: found, Settings: &s, Status: &status}
 }
 
 func (a *App) saveSettings(w http.ResponseWriter, r *http.Request) {
@@ -319,16 +314,6 @@ func (a *App) recent(limit int) ([]node.Entry, error) {
 		entries = entries[:limit]
 	}
 	return entries, nil
-}
-
-func (a *App) dashboard(w http.ResponseWriter, _ *http.Request) {
-	entries, err := a.recent(0)
-	if err != nil {
-		a.log.Error("dashboard", "err", err)
-		writeError(w, http.StatusInternalServerError, msg("error.internal", nil))
-		return
-	}
-	writeJSON(w, buildDashboard(a.Status(), entries))
 }
 
 func (a *App) participants(w http.ResponseWriter, _ *http.Request) {

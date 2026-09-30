@@ -2,7 +2,6 @@
 // full so the Nuxt UI build scan (vite.config.ts) bundles each one: the page
 // never fetches an icon at run time.
 export const icons: Record<string, string> = {
-  dashboard: 'i-lucide-layout-grid',
   participants: 'i-lucide-users',
   settings: 'i-lucide-settings',
   plus: 'i-lucide-plus',

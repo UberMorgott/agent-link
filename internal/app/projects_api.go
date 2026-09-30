@@ -555,7 +555,7 @@ func (a *App) joinLegacy(w http.ResponseWriter, r *http.Request, code, addr, dir
 		return
 	}
 	if created {
-		a.changed(LegacyProjectID, "status", "settings", "dashboard", "participants")
+		a.changed(LegacyProjectID, "status", "settings", "participants")
 	}
 	writeJSON(w, JoinResult{Project: v, Created: created})
 }

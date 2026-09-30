@@ -152,7 +152,6 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
     switch (path) {
       case 'status': return { configured: true, connected: true, zerotier: true, node: SELF, online: 1, total: 2, stop_all: b.stopAll, nickname: b.profile.nickname || undefined, chat_color: b.profile.color || undefined }
       case 'settings': return { node: SELF, handler: 'none', work_dir: 'C:\\work', discovery: true }
-      case 'dashboard': return { status: { online: 1, total: 2, handler: 'none' }, total_messages: 3, active_requests: 1, recent: [] }
       case 'participants': return []
       case 'update': return { current: 'dev', enabled: false }
       case 'hooks': return {}

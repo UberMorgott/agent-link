@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
-import { ApiError, CORE_SLICES, TOKEN_HEADER, api, reloadOnNewVersion, type CoreSlice } from '@/lib/api'
+import { ApiError, CORE_SLICES, TOKEN_HEADER, api, reloadOnNewVersion, type CoreSlice, type Slice } from '@/lib/api'
 import { runtime, t, fmt } from '@/lib/runtime'
-import type { AppSettings, DashboardSummary, ParticipantView, Session, Status, UpdateStatus } from '@/types'
+import type { AppSettings, ParticipantView, Session, Status, UpdateStatus } from '@/types'
 import { useProjectsStore } from './projects'
 
 export interface ChangeEvent {
@@ -16,16 +16,17 @@ export function slicesForTopics(topics: string[]): CoreSlice[] {
   const slices = new Set<CoreSlice>()
   for (const topic of topics) {
     if ((CORE_SLICES as readonly string[]).includes(topic)) slices.add(topic as CoreSlice)
-    if (topic === 'peer' || topic === 'members') {
-      slices.add('status'); slices.add('dashboard'); slices.add('participants')
-    }
-    if (topic === 'messages' || topic === 'worker') {
-      slices.add('dashboard'); slices.add('participants')
-    }
+    if (topic === 'peer' || topic === 'members') slices.add('status')
     // The sessions list is shown filtered by project.
     if (topic.startsWith('project:')) slices.add('sessions')
   }
   return [...slices]
+}
+
+// participantsStale says whether one change event makes the participants list
+// stale: members, their connections and the message counts.
+export function participantsStale(topics: string[]): boolean {
+  return topics.some((topic) => ['all', 'participants', 'peer', 'members', 'messages', 'worker'].includes(topic))
 }
 
 // projectsForTopics names what of the projects one change event makes stale:
@@ -66,7 +67,6 @@ export function statusLine(s: Status | null): { text: string; cls: 'on' | 'off' 
 
 export const useAppStore = defineStore('app', () => {
   const status = shallowRef<Status | null>(null)
-  const dashboard = shallowRef<DashboardSummary | null>(null)
   const participants = shallowRef<ParticipantView[] | null>(null)
   const update = shallowRef<UpdateStatus | null>(null)
   const settings = shallowRef<AppSettings | null>(null)
@@ -81,8 +81,8 @@ export const useAppStore = defineStore('app', () => {
   const self = computed(() => status.value?.node || '')
   const link = computed(() => statusLine(status.value))
 
-  function setSlice(name: CoreSlice, value: unknown) {
-    const target = { status, dashboard, participants, update, settings, sessions }[name]
+  function setSlice(name: Slice, value: unknown) {
+    const target = { status, participants, update, settings, sessions }[name]
     ;(target as { value: unknown }).value = value
   }
 
@@ -104,7 +104,7 @@ export const useAppStore = defineStore('app', () => {
     if (!reloadRequired.value && !coreFailures.size) banner.value = ''
   }
 
-  async function refreshSlice(name: CoreSlice): Promise<void> {
+  async function refreshSlice(name: Slice): Promise<void> {
     try {
       setSlice(name, await api('GET', name))
       clearConnectionProblem(name)
@@ -125,6 +125,7 @@ export const useAppStore = defineStore('app', () => {
     const projects = useProjectsStore()
     const scope = projectsForTopics(topics)
     const jobs: Promise<void>[] = slicesForTopics(topics).map(refreshSlice)
+    if (participantsWatchers && participantsStale(topics)) jobs.push(refreshSlice('participants'))
     // Reading every project answers each project's own failed refresh; the
     // list answers those of projects no longer in it.
     const gone = (key: string) => key.startsWith(PROJECT_KEY) && !projects.byID(key.slice(PROJECT_KEY.length))
@@ -132,6 +133,20 @@ export const useAppStore = defineStore('app', () => {
     else if (scope.list) jobs.push(guarded('projects', projects.refreshList, gone))
     for (const pid of scope.scoped) jobs.push(guarded(PROJECT_KEY + pid, () => projects.refreshScoped(pid)))
     return Promise.all(jobs)
+  }
+
+  // The participants page reads its list while it is open, and change events
+  // keep it fresh only then; watchParticipants returns the call that stops it.
+  let participantsWatchers = 0
+  function watchParticipants(): () => void {
+    participantsWatchers++
+    void refreshSlice('participants')
+    let stopped = false
+    return () => {
+      if (stopped) return
+      stopped = true
+      participantsWatchers--
+    }
   }
 
   let reconnectDelay = 500
@@ -185,8 +200,8 @@ export const useAppStore = defineStore('app', () => {
   }
 
   return {
-    status, dashboard, participants, update, settings, sessions,
+    status, participants, update, settings, sessions,
     reloadRequired, banner, self, link,
-    refreshSlice, applyChange, connectEvents, showConnectionProblem, clearConnectionProblem,
+    refreshSlice, watchParticipants, applyChange, connectEvents, showConnectionProblem, clearConnectionProblem,
   }
 })

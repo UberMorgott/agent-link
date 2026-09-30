@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { nextTick, onUnmounted, ref } from 'vue'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UInput from '@nuxt/ui/components/Input.vue'
 import { api } from '@/lib/api'
@@ -16,6 +16,7 @@ const result = ref('')
 const adding = ref(false)
 const removing = ref<string[]>([])
 const list = ref<HTMLElement | null>(null)
+onUnmounted(app.watchParticipants())
 
 function participantDetail(person: ParticipantView): string[] {
   const details: string[] = []
@@ -25,10 +26,6 @@ function participantDetail(person: ParticipantView): string[] {
   else if (person.legacy) details.push(t("participants.legacy"))
   if ((person.addrs || []).length) details.push(fmt("participants.addresses", { addresses: person.addrs!.join(', ') }))
   return details
-}
-
-async function refreshParticipantViews() {
-  await Promise.all([app.refreshSlice('participants'), app.refreshSlice('dashboard')])
 }
 
 async function addParticipant() {
@@ -43,7 +40,7 @@ async function addParticipant() {
     app.status = await api<Status>('POST', 'members/add', { addr: value })
     addr.value = ''
     result.value = fmt("participants.add.added", { addr: value })
-    await refreshParticipantViews()
+    await app.refreshSlice('participants')
   } catch (e) {
     result.value = (e as Error).message
   } finally {
@@ -58,7 +55,7 @@ async function removeParticipant(name: string, index: number) {
   try {
     app.status = await api<Status>('POST', 'members/remove', { name })
     result.value = fmt("participants.removed", { name })
-    await refreshParticipantViews()
+    await app.refreshSlice('participants')
     await nextTick()
     const next = list.value?.querySelectorAll<HTMLElement>('.participant-main') || []
     if (next.length) next[Math.min(index, next.length - 1)]!.focus()

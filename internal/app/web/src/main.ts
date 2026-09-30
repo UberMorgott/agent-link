@@ -5,7 +5,7 @@ import ui from '@nuxt/ui/vue-plugin'
 import App from './App.vue'
 import { createAppRouter } from './router'
 import { applyUiState } from './layout/composables/layout'
-import { claimDashboardWindow } from './lib/dashboardWindow'
+import { claimAppWindow } from './lib/appWindow'
 import { setNavigator, type Params, type Query } from './lib/nav'
 import { runtime } from './lib/runtime'
 import { useAppStore } from './stores/app'
@@ -47,7 +47,7 @@ setNavigator({
   current: () => String(router.currentRoute.value.name || ''),
 })
 applyUiState()
-claimDashboardWindow()
+claimAppWindow()
 void useAppStore().connectEvents()
 
 app.mount('#app')

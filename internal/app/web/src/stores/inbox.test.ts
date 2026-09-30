@@ -27,7 +27,7 @@ describe('open chat refresh', () => {
   it('keeps the older pages and the newest messages past 1000 shown', async () => {
     const items = numbered(1300)
     serveChat(items)
-    await mountApp('/dashboard')
+    await mountApp('/welcome')
     const inbox = useInboxStore()
     await inbox.selectChat('P', 'c1')
     for (let i = 0; i < 5; i++) await inbox.loadOlder()
@@ -43,7 +43,7 @@ describe('open chat refresh', () => {
   it('starts over when more arrived than one answer holds', async () => {
     const items = numbered(10)
     serveChat(items)
-    await mountApp('/dashboard')
+    await mountApp('/welcome')
     const inbox = useInboxStore()
     await inbox.selectChat('P', 'c1')
     items.push(...numbered(500, 11))
@@ -58,7 +58,7 @@ describe('read cursors', () => {
   it('drop the cursors of a project gone from the list', async () => {
     localStorage.setItem('agentlink.reads.v2:local', JSON.stringify({ 'P:': 0, 'P:c1': 3, 'GONE:': 0, 'GONE:c9': 7 }))
     fakeApi((_method, path) => (path === 'projects' ? [] : {}))
-    await mountApp('/dashboard')
+    await mountApp('/welcome')
     const app = useAppStore()
     const projects = useProjectsStore()
     const inbox = useInboxStore()
@@ -75,7 +75,7 @@ describe('read cursors', () => {
 describe('message toasts', () => {
   it('seed the history silently, then announce each new incoming message once', async () => {
     fakeApi((_method, path) => (path === 'projects' ? [] : {}))
-    const { router } = await mountApp('/dashboard')
+    const { router } = await mountApp('/welcome')
     const app = useAppStore()
     const inbox = useInboxStore()
     const nuxt = useToast()

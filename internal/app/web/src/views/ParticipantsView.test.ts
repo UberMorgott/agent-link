@@ -12,12 +12,14 @@ async function openParticipants(people: ParticipantView[]) {
   const api = fakeApi((method, path) => {
     if (method === 'POST' && path.startsWith('members/')) return new Promise((resolve) => { release = () => resolve({ node: 'local' }) })
     if (path === 'participants') return people
-    if (path === 'dashboard') return {}
     throw new Error('unexpected call ' + method + ' ' + path)
   })
   const mounted = await mountApp('/participants')
   useAppStore().participants = people
   await settle()
+  // The page reads its list itself when it opens.
+  expect(api.calls).toEqual(['GET participants'])
+  api.calls.length = 0
   return { ...mounted, api, release: () => release!() }
 }
 
@@ -64,11 +66,11 @@ describe('participants', () => {
     expect(add.disabled).toBe(false)
     expect(addr.value).toBe('')
     expect($('#participant_add')!.hasAttribute('aria-busy')).toBe(false)
-    expect(api.calls).toEqual(['POST members/add', 'GET participants', 'GET dashboard'])
+    expect(api.calls).toEqual(['POST members/add', 'GET participants'])
 
     $$<HTMLButtonElement>('.participant-remove')[0]!.click()
     expect(await answerConfirm(false)).toContain('participants.confirm')
-    expect(api.calls).toHaveLength(3)
+    expect(api.calls).toHaveLength(2)
     const remove = $$<HTMLButtonElement>('.participant-remove')[0]!
     remove.click()
     await answerConfirm(true)

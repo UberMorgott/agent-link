@@ -148,10 +148,10 @@ try {
         Write-Host "$($n.name): $($st | ConvertTo-Json -Compress)"
     }
 
-    Write-Host '== inbound after dashboard load exposes exactly one new browser notification id'
-    Invoke-Ui $a GET dashboard | Out-Null
+    Write-Host '== inbound after status load exposes exactly one new browser notification id'
+    Invoke-Ui $a GET status | Out-Null
     $knownInbound = @((Invoke-Ui $a GET threads) | Where-Object { $_.direction -eq 'in' } | ForEach-Object { $_.id })
-    $notice = Invoke-Ui $b POST send @{ to = 'node-a'; body = 'dashboard notification' }
+    $notice = Invoke-Ui $b POST send @{ to = 'node-a'; body = 'status notification' }
     $newInbound = @(Wait-Until {
         $ids = @((Invoke-Ui $a GET threads) | Where-Object { $_.direction -eq 'in' } | ForEach-Object { $_.id })
         $new = @($ids | Where-Object { $_ -notin $knownInbound })
