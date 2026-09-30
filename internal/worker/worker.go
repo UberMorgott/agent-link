@@ -56,6 +56,11 @@ const (
 	// DefaultActivityRefresh re-sends an unchanged activity this often, so the
 	// sender keeps hearing about a job that is still running.
 	DefaultActivityRefresh = 2 * time.Minute
+	// DefaultRetryEvery is the first wait before a failed save of a job's end
+	// or a failed final reply is tried again; each further failure doubles it
+	// up to maxRetryWait.
+	DefaultRetryEvery = 15 * time.Second
+	maxRetryWait      = 10 * time.Minute
 )
 
 // MaxAttempts is how many times a job may start; only interruptions retry.
@@ -98,6 +103,7 @@ type Options struct {
 	MaxJobs         int
 	ActivityEvery   time.Duration
 	ActivityRefresh time.Duration
+	RetryEvery      time.Duration
 	// OnChange observes durable job state changes. It must return promptly.
 	OnChange func()
 	// Chats, when set, lets the worker answer chat requests (see sessions.go);
@@ -131,6 +137,9 @@ func (o Options) withDefaults() Options {
 	if o.ActivityRefresh <= 0 {
 		o.ActivityRefresh = DefaultActivityRefresh
 	}
+	if o.RetryEvery <= 0 {
+		o.RetryEvery = DefaultRetryEvery
+	}
 	return o
 }
 
@@ -154,6 +163,15 @@ type Job struct {
 	// Answered: this node answered the request another way (see Answered);
 	// the job stops, completes without a reply and sends a neutral status.
 	Answered bool `json:"answered,omitempty"`
+
+	// unsaved: the job's end is not on disk yet (its save failed); nothing
+	// follows it (no reply, no session advance) until retry saves it.
+	unsaved bool
+	// sending: its final reply is being sent.
+	sending bool
+	// retryAt and retryWait pace retry after a failed save or send.
+	retryAt   time.Time
+	retryWait time.Duration
 }
 
 func (j *Job) terminal() bool { return j.Status == node.JobCompleted || j.Status == node.JobFailed }
@@ -183,6 +201,8 @@ type Worker struct {
 	draining bool
 	// live maps a watched detached job to its cancel signal.
 	live map[string]chan struct{}
+	// saveJob writes a job atomically; the caller holds mu.
+	saveJob func(j *Job) error
 }
 
 // New opens the job store in stateDir/jobs. run may be nil when no handler is
@@ -197,6 +217,7 @@ func New(run Runner, send SendFunc, stateDir, dir string, opt Options, log *slog
 		kick: make(chan struct{}, 1), jobs: map[string]*Job{}, reattach: map[string]func(){}, live: map[string]chan struct{}{},
 		slots: opt.Slots,
 	}
+	w.saveJob = func(j *Job) error { return writeAtomic(w.jobsDir, j.Request.ID+".json", j) }
 	if w.slots == nil {
 		w.slots = NewSlots(w.opt.MaxJobs)
 		w.slots.Open()
@@ -354,19 +375,23 @@ func (w *Worker) Job(id string) (Job, bool) {
 // them in acceptance order on MaxJobs slots, until ctx is cancelled; it
 // returns when every slot has stopped. A job running at cancellation is left
 // running on disk and retried by the next Run. Without a runner, Run fails
-// the pending jobs and returns.
+// the pending jobs and returns once their ends are saved and replied. A job
+// end that failed to save or whose final reply failed to send is retried
+// (see retry) while Run runs.
 func (w *Worker) Run(ctx context.Context) {
 	w.Reattach(ctx)
 	if !w.hasHandler() {
 		for j := w.next(); j != nil; j = w.next() {
 			w.finish(j, node.JobFailed, "", ErrNoHandler)
 		}
+		w.retry(ctx, true)
 		return
 	}
 	var slots sync.WaitGroup
 	for range w.opt.MaxJobs {
 		slots.Go(func() { w.slot(ctx) })
 	}
+	slots.Go(func() { w.retry(ctx, false) })
 	slots.Wait()
 	// Reattached jobs no slot got to stay running on disk for the next start;
 	// the shared slots they held are free again.
@@ -629,11 +654,12 @@ func (w *Worker) next() *Job {
 }
 
 // nextLocked skips the jobs of a chat that already has one running (a
-// reattached one too): a chat's session takes one turn at a time.
+// reattached one too, or one whose end is not saved yet): a chat's session
+// takes one turn at a time.
 func (w *Worker) nextLocked() *Job {
 	busy := map[string]bool{}
 	for _, j := range w.jobs {
-		if j.Status == node.JobRunning && j.Request.ChatID != "" {
+		if (j.Status == node.JobRunning || j.unsaved) && j.Request.ChatID != "" {
 			busy[j.Request.ChatID] = true
 		}
 	}
@@ -814,22 +840,36 @@ func (r *relay) stop() {
 
 // finish records the outcome durably, then sends the final reply.
 // A job answered on this node another way completes without a result.
+// An end that is not on disk sends nothing (after a crash the job would run
+// again and answer twice): retry saves it, then settles it.
 func (w *Worker) finish(j *Job, status, result, errText string) {
 	w.mu.Lock()
-	answered := j.Answered
-	if answered {
+	if j.Answered {
 		status, result, errText = node.JobCompleted, "", ErrAnswered
 	}
 	j.Status, j.Result, j.Error, j.FinishedAt = status, result, errText, time.Now().UTC()
 	err := w.save(j)
-	w.mu.Unlock()
-	if err == nil {
-		w.changed()
+	if err != nil {
+		w.deferLocked(j)
 	}
+	j.unsaved = err != nil
+	w.mu.Unlock()
 	w.log.Info("handler finished", "id", j.Request.ID, "status", status, "error", errText)
 	if err != nil {
-		w.log.Error("save job", "id", j.Request.ID, "err", err)
-	} else if status == node.JobCompleted && !answered {
+		w.log.Error("save job, reply deferred", "id", j.Request.ID, "err", err)
+		return
+	}
+	w.changed()
+	w.settle(j)
+}
+
+// settle follows a job's saved end: a completed turn advances its chat's
+// session, and the final reply goes out.
+func (w *Worker) settle(j *Job) {
+	w.mu.Lock()
+	completed := j.Status == node.JobCompleted && !j.Answered
+	w.mu.Unlock()
+	if completed {
 		// An answered job's session did not take the turn, so it is not advanced.
 		w.advanceSession(j)
 		// A failed run keeps its files (<jobs>/<id>/) for diagnosis.
@@ -841,11 +881,87 @@ func (w *Worker) finish(j *Job, status, result, errText string) {
 	}
 }
 
+// deferLocked schedules j's next retry, each one later than the last. The
+// caller holds w.mu.
+func (w *Worker) deferLocked(j *Job) {
+	j.retryWait = min(max(2*j.retryWait, w.opt.RetryEvery), maxRetryWait)
+	j.retryAt = time.Now().Add(j.retryWait)
+}
+
+// retry saves the job ends whose save failed and re-sends the final replies
+// whose send failed, each when its wait is over, until ctx is cancelled;
+// untilDone also returns once nothing is left to retry.
+func (w *Worker) retry(ctx context.Context, untilDone bool) {
+	t := time.NewTicker(max(w.opt.RetryEvery/4, time.Millisecond))
+	defer t.Stop()
+	for {
+		if untilDone && !w.undelivered() {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		w.retryDue()
+	}
+}
+
+// undelivered reports whether a job end is not saved or not replied.
+func (w *Worker) undelivered() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, j := range w.jobs {
+		if j.unsaved || j.terminal() && !j.Replied {
+			return true
+		}
+	}
+	return false
+}
+
+// retryDue retries what is due: saves first, then the replies they allow.
+func (w *Worker) retryDue() {
+	now := time.Now()
+	var saved, unreplied []*Job
+	w.mu.Lock()
+	for _, j := range w.jobs {
+		switch {
+		case now.Before(j.retryAt):
+		case j.unsaved:
+			if err := w.save(j); err != nil {
+				w.deferLocked(j)
+				w.log.Error("save job", "id", j.Request.ID, "err", err)
+				continue
+			}
+			j.unsaved, j.retryWait = false, 0
+			saved = append(saved, j)
+		case j.terminal() && !j.Replied && !j.sending:
+			unreplied = append(unreplied, j)
+		}
+	}
+	w.mu.Unlock()
+	if len(saved) > 0 {
+		w.changed()
+	}
+	for _, j := range saved {
+		w.settle(j)
+	}
+	for _, j := range unreplied {
+		w.reply(j)
+	}
+}
+
 // reply sends the final reply under an id derived from the request, so a
 // reply re-sent after a crash is deduplicated by the receiver. A job answered
 // on this node another way sends only a completed status: the answer is out.
+// A failed send is retried (see retry).
 func (w *Worker) reply(j *Job) {
 	w.mu.Lock()
+	if j.Replied || j.sending || j.unsaved {
+		w.mu.Unlock()
+		return
+	}
+	j.sending = true
 	m, status, body := j.Request, j.Status, j.Result
 	if status == node.JobFailed {
 		body = "agentlink: " + j.Error
@@ -862,18 +978,22 @@ func (w *Worker) reply(j *Job) {
 		w.address(&out, m, "answered")
 	}
 	_, err := w.send(out)
+	w.mu.Lock()
+	j.sending = false
 	if err != nil {
+		w.deferLocked(j)
+		w.mu.Unlock()
 		w.log.Error("send reply", "id", m.ID, "err", err)
 		return
 	}
-	w.mu.Lock()
-	j.Replied = true
-	if err := w.save(j); err != nil {
+	j.Replied, j.retryWait = true, 0
+	// Unsaved, a restart re-sends the reply under the same id: harmless.
+	err = w.save(j)
+	w.mu.Unlock()
+	if err != nil {
 		w.log.Error("save job", "id", m.ID, "err", err)
-		w.mu.Unlock()
 		return
 	}
-	w.mu.Unlock()
 	w.changed()
 }
 
@@ -905,4 +1025,4 @@ func (w *Worker) address(out *node.Message, m node.Message, label string) {
 }
 
 // save writes j atomically. The caller holds w.mu.
-func (w *Worker) save(j *Job) error { return writeAtomic(w.jobsDir, j.Request.ID+".json", j) }
+func (w *Worker) save(j *Job) error { return w.saveJob(j) }
