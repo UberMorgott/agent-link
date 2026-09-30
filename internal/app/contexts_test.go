@@ -155,8 +155,8 @@ func TestLeaveProject(t *testing.T) {
 	if err := c.w.Accept(node.Message{ID: "fedcba9876543210fedcba9876543210", From: "bob", To: "alice", Body: "more", CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("intake closed after a refused leave: %v", err)
 	}
-	c.w.Cancel("0123456789abcdef0123456789abcdef")
-	c.w.Cancel("fedcba9876543210fedcba9876543210")
+	c.w.Answered("0123456789abcdef0123456789abcdef")
+	c.w.Answered("fedcba9876543210fedcba9876543210")
 	eventuallyApp(t, "worker idle", func() bool { return !c.w.Busy() })
 
 	if err := a.LeaveProject(b.ID); err != nil {

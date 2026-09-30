@@ -171,20 +171,6 @@ func TestDetachedIdleTimeoutKills(t *testing.T) {
 	eventually(t, "agent killed", func() bool { return !alive(p) })
 }
 
-// Cancel kills a running detached agent and fails the job.
-func TestCancelKillsDetachedAgent(t *testing.T) {
-	rec := newRecorder()
-	w := detachedWorker(t, fakeAgent(t, "sleep"), rec, t.TempDir(), Options{})
-	start(t, w)
-	accept(t, w, msg(id1, "x"))
-	p := agentPID(t, w, id1)
-	eventually(t, "watched", func() bool { return w.Cancel(id1) })
-	if got := rec.wait(t, 1)[0]; got.Body != "agentlink: "+ErrCancelled || got.JobStatus != node.JobFailed {
-		t.Fatalf("reply = %+v", got)
-	}
-	eventually(t, "agent killed", func() bool { return !alive(p) })
-}
-
 // completedStatus reports whether a completed status (no final reply) was sent for id.
 func completedStatus(rec *recorder, id string) bool {
 	return len(rec.filter(func(m node.Message) bool {

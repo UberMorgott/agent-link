@@ -305,7 +305,7 @@ func TestProjectsAPIRefusals(t *testing.T) {
 	}
 	h.wantError(t, http.MethodPost, "projects/"+p.ID+"/binding", map[string]any{"dir": t.TempDir()}, http.StatusConflict, "project_busy")
 	h.wantError(t, http.MethodPost, "projects/"+p.ID+"/leave", nil, http.StatusConflict, "project_busy")
-	c.w.Cancel(id)
+	c.w.Answered(id)
 
 	long := newHarness(t, func(a *App) { a.s.Code, a.s.Secret = "", strings.Repeat("s", 32) })
 	long.wantError(t, http.MethodPost, "projects/legacy/invite", nil, http.StatusConflict, "legacy_invite_unavailable")

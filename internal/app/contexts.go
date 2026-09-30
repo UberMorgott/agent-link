@@ -107,14 +107,12 @@ func (a *App) workerOptions(pid string, n *node.Node) (opt worker.Options, hasHa
 	return opt, hasHandler
 }
 
-// wireWorker makes w the inbound hook of n.
+// wireWorker makes w the inbound hook of n while it answers requests.
 func wireWorker(n *node.Node, w *worker.Worker, hasHandler bool) {
-	// Without a handler (or with auto-answer off) the hook only holds chat
-	// requests past the chain limit; the rest waits unread for a session.
+	// Without a handler (or with auto-answer off) no job runs: requests wait
+	// unread for a session.
 	if hasHandler {
 		n.SetInboundHook(w.Accept)
-	} else {
-		n.SetInboundHook(w.ChatsOnly)
 	}
 	// Peers show whether this node's worker answers when no session is open.
 	n.SetAutoAnswer(hasHandler)

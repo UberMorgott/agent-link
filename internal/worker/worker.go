@@ -10,8 +10,8 @@
 // reattaches to it, or finalizes it from its output, or resumes its session
 // when it died mid-run. A job interrupted while running without a way to
 // continue runs once more after restart; a second interruption fails it.
-// Timeouts (idle: no output from the agent, or the generous total cap), Cancel
-// and agent errors fail at once and kill the agent's process tree. A request
+// Timeouts (idle: no output from the agent, or the generous total cap) and
+// agent errors fail at once and kill the agent's process tree. A request
 // answered on this node another way (Answered) stops its job without a failure
 // reply. The sender
 // gets status updates (queued, running, then running with the agent's current
@@ -255,10 +255,10 @@ func New(run Runner, send SendFunc, stateDir, dir string, opt Options, log *slog
 // is a request only when the node assigns it to this worker (Chats.ClaimRun,
 // atomic with a session's ack). A chat message that asks this node but will
 // not run (no agent program, the chain limit, a closed chat) gets a JobHeld
-// status to the chat instead, so its sender never waits in silence; without a
-// handler (auto-answer off) only the chain limit does, the rest waits unread. It is the node's inbound hook (only
-// for chat messages when no handler is configured: see ChatsOnly); an error
-// withholds the ACK so the sender resends.
+// status to the chat instead, so its sender never waits in silence. Without a
+// handler (auto-answer off) a chat message waits unread for a session. It is
+// the node's inbound hook while a handler answers; an error withholds the ACK
+// so the sender resends.
 func (w *Worker) Accept(m node.Message) error {
 	chat := m.ChatID != "" && m.Kind == ""
 	if chat && (w.opt.Chats == nil || !m.Asks(w.opt.Self)) || !chat && !m.IsRequest() {
@@ -329,15 +329,6 @@ func (w *Worker) Accept(m node.Message) error {
 	w.status(m, node.JobQueued, "queued", nil)
 	w.wake()
 	return nil
-}
-
-// ChatsOnly is the inbound hook of a node without a handler: chat requests
-// get their held status from Accept, other requests stay for a person.
-func (w *Worker) ChatsOnly(m node.Message) error {
-	if m.ChatID == "" {
-		return nil
-	}
-	return w.Accept(m)
 }
 
 // wake lets one idle slot look for a queued job. A slot that takes a job
@@ -517,13 +508,11 @@ func (w *Worker) Resume() {
 
 func (w *Worker) hasHandler() bool { return w.run != nil || w.opt.Agent != nil }
 
-// unavailable reports why no job could answer a request now: no handler, or
-// the agent program is not found (after the handler looked for it again).
+// unavailable reports why no job could answer a request now: the agent
+// program is not found. Options.Agent may look for a moved program again, so
+// the check sees the program a job would run.
 func (w *Worker) unavailable() string {
-	switch {
-	case !w.hasHandler():
-		return node.HoldNoHandler
-	case w.run == nil:
+	if w.run == nil {
 		if _, err := exec.LookPath(w.opt.Agent().Name); err != nil {
 			return node.HoldNoAgent
 		}

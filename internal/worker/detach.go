@@ -60,7 +60,7 @@ type proc struct {
 	code  int           // exit code once done; -1 when unknown
 }
 
-// errCancelled marks a run stopped by Cancel.
+// errCancelled marks a run stopped because its request was answered on this node (Answered).
 var errCancelled = errors.New("cancelled")
 
 // ErrCancelled is the failure text of a cancelled job.
@@ -457,30 +457,6 @@ func (w *Worker) conclude(j *Job, rec Proc, s *stream, code int) {
 	default:
 		w.finish(j, node.JobCompleted, body, "")
 	}
-}
-
-// Cancel stops job id: a queued job fails at once, a running detached agent
-// has its process tree killed and the job fails. It reports whether the job
-// was queued or running.
-func (w *Worker) Cancel(id string) bool {
-	w.mu.Lock()
-	j, ok := w.jobs[id]
-	if !ok || j.terminal() {
-		w.mu.Unlock()
-		return false
-	}
-	if ch, running := w.live[id]; running {
-		delete(w.live, id)
-		close(ch)
-		w.mu.Unlock()
-		return true
-	}
-	queued := j.Status == node.JobQueued
-	w.mu.Unlock()
-	if queued {
-		w.finish(j, node.JobFailed, "", ErrCancelled)
-	}
-	return queued
 }
 
 // Answered stops job id because this node answered its request another way
