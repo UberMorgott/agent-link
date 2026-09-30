@@ -7,6 +7,7 @@ ignore ./internal/app/web/node_modules
 
 require (
 	fyne.io/systray v1.12.2
+	github.com/gofrs/flock v0.13.1
 	github.com/gtank/ristretto255 v0.2.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	go.uber.org/goleak v1.3.0

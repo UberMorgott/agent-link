@@ -519,7 +519,7 @@ func discussMessage(ctx context.Context, cfg config.Config, provider, body, fold
 		}
 	}
 	session, source := agentSession()
-	agent, agentType := askOrigin(pick.askKey, askNeedle(body, pick.bodyFile))
+	agent, agentType := askOrigin(ctx, pick.askKey, askNeedle(body, pick.bodyFile))
 	var result discussResult
 	err = apiJSON(ctx, http.MethodPost, apiURL(cfg, "/discuss", nil), map[string]any{
 		"folder": dir, "provider": provider, "body": body, "session_id": session,
@@ -644,7 +644,7 @@ func sendMessage(ctx context.Context, cfg config.Config, a sendArgs, ask []strin
 	var agent, agentType string
 	if a.session == "" {
 		a.session, _ = agentSession()
-		agent, agentType = askOrigin(a.askKey, askNeedle(a.body, a.bodyFile)) // the session's own subagent, if one sends
+		agent, agentType = askOrigin(ctx, a.askKey, askNeedle(a.body, a.bodyFile)) // the session's own subagent, if one sends
 	}
 	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat, Area: a.area, SessionID: a.session, AgentID: agent, AgentType: agentType, Ask: ask,
 		AskSeats: a.askSeats, Seat: os.Getenv(envSeat)}

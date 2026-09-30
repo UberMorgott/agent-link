@@ -7,6 +7,7 @@ package main
 // program name.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -260,7 +261,7 @@ func noteSent(env hookEnv, sid, chatID, msgID string) {
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}
-		unlock, err := lockFile(path + ".lock")
+		unlock, err := lockFile(context.Background(), path+".lock")
 		if err != nil {
 			return
 		}

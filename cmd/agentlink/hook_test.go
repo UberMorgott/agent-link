@@ -928,7 +928,7 @@ func TestHookWaitWakesIdleSession(t *testing.T) {
 	c.f.claimOn = true
 	c.run(hookClaude, evSessionStart)
 	c.run(hookClaude, evStop) // idle now
-	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 5 * time.Second, busyFor: time.Hour, stale: time.Minute}
+	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 5 * time.Second, busyFor: time.Hour}
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		c.f.add(chatMsg("c1", "KPECTIK", "human", "wake up", true))
@@ -978,7 +978,7 @@ func TestHookWaitRearmsAfterExecutableReplacement(t *testing.T) {
 	c.run(hookClaude, evSessionStart)
 	c.run(hookClaude, evStop)
 	c.f.add(chatMsg("c1", "KPECTIK", "agent", "after update", true))
-	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: time.Second, busyFor: time.Hour, stale: time.Minute, replaced: func() bool { return true }}
+	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: time.Second, busyFor: time.Hour, replaced: func() bool { return true }}
 	var stderr bytes.Buffer
 	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, o); code != 2 {
 		t.Fatalf("updated waiter: code %d stderr %q", code, stderr.String())
@@ -1001,37 +1001,10 @@ func TestHookWaitExecutableReplacementDoesNotWakeBusySession(t *testing.T) {
 	c := newHookCase(t)
 	c.run(hookClaude, evSessionStart)
 	c.run(hookClaude, evPreTool, `,"tool_name":"Read"`)
-	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 50 * time.Millisecond, busyFor: time.Hour, stale: time.Minute, replaced: func() bool { return true }}
+	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 50 * time.Millisecond, busyFor: time.Hour, replaced: func() bool { return true }}
 	var stderr bytes.Buffer
 	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, o); code != 0 || stderr.Len() != 0 {
 		t.Fatalf("busy waiter was rewoken: code %d stderr %q", code, stderr.String())
-	}
-}
-
-// A reader holding the state file open for a moment (the waiter polling it)
-// must not make a hook's save fail: on Windows the rename is then refused.
-func TestWriteFileAtomicWaitsForReader(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
-	if err := writeFileAtomic(path, []byte("old")); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := make(chan struct{})
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		_ = f.Close()
-		close(closed)
-	}()
-	err = writeFileAtomic(path, []byte("new"))
-	<-closed
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := os.ReadFile(filepath.Clean(path)); string(got) != "new" {
-		t.Fatalf("state = %q", got)
 	}
 }
 
@@ -1047,7 +1020,7 @@ func TestHookWaitReplacementWaitsForStopState(t *testing.T) {
 		st.LastEvent, st.LastEventAt = evStop, c.now
 		updated <- saveHookState(path, st)
 	}()
-	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: time.Second, busyFor: time.Hour, stale: time.Minute, replaced: func() bool { return true }}
+	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: time.Second, busyFor: time.Hour, replaced: func() bool { return true }}
 	var stderr bytes.Buffer
 	code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &stderr, c.env, o)
 	if err := <-updated; err != nil {
@@ -1156,7 +1129,7 @@ func TestHookWaitLeavesBusySessionAndEnds(t *testing.T) {
 	c.f.add(chatMsg("c1", "KPECTIK", "agent", "later", true))
 	env := c.env
 	env.now = func() time.Time { return c.now }
-	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 200 * time.Millisecond, busyFor: time.Hour, stale: time.Minute}
+	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 200 * time.Millisecond, busyFor: time.Hour}
 	var errw bytes.Buffer
 	// The waiter's keep-alive tells the node the idle state the hooks last
 	// told it (busy here), under the session's lock: a Stop hook saving its
@@ -1171,7 +1144,7 @@ func TestHookWaitLeavesBusySessionAndEnds(t *testing.T) {
 	o.heartbeat = time.Hour
 	// One waiter per session.
 	path := hookStatePath(c.env.dir, hookClaude, c.sid) + ".wait"
-	release, ok := takeWaitLock(path, time.Minute)
+	release, ok := takeWaitLock(path)
 	if !ok {
 		t.Fatal("lock")
 	}
@@ -1204,7 +1177,7 @@ func TestHookKeepAliveFollowsTurnNotLastEvent(t *testing.T) {
 	c.run(hookClaude, evSubagentStart, `,"agent_id":"a1","agent_type":"general-purpose"`)
 	env := c.env
 	env.now = func() time.Time { return c.now }
-	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: 0, life: 100 * time.Millisecond, busyFor: time.Hour, stale: time.Minute}
+	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: 0, life: 100 * time.Millisecond, busyFor: time.Hour}
 	var errw bytes.Buffer
 	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &errw, env, o); code != 0 {
 		t.Fatalf("waiter: %d %q", code, errw.String())
@@ -1244,7 +1217,7 @@ func TestWaiterWithoutAgentKeepsSession(t *testing.T) {
 	c := newHookCase(t)
 	c.run(hookClaude, evSessionStart)
 	c.run(hookClaude, evStop)
-	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 100 * time.Millisecond, busyFor: time.Hour, stale: time.Minute, alive: agentAlive(0)}
+	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 100 * time.Millisecond, busyFor: time.Hour, alive: agentAlive(0)}
 	var errw bytes.Buffer
 	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &errw, c.env, o); code != 0 || slices.Contains(c.f.ended, c.sid) {
 		t.Fatalf("unknown agent: code %d, ended %v", code, c.f.ended)

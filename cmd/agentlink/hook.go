@@ -54,6 +54,7 @@ import (
 
 	"github.com/UberMorgott/agent-link/internal/agenthook"
 	"github.com/UberMorgott/agent-link/internal/config"
+	"github.com/UberMorgott/agent-link/internal/fileutil"
 	"github.com/UberMorgott/agent-link/internal/node"
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
@@ -301,7 +302,7 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		endSession(env, path, in.SessionID)
 		return nil
 	}
-	unlock, err := lockFile(path + ".lock")
+	unlock, err := lockFile(context.Background(), path+".lock")
 	if err != nil {
 		quiet()
 		return err
@@ -540,7 +541,7 @@ func codexHome() string {
 // endSession ends the session's activity, deregisters it and marks its state
 // ended, which stops its waiter.
 func endSession(env hookEnv, path, sid string) {
-	unlock, err := lockFile(path + ".lock")
+	unlock, err := lockFile(context.Background(), path+".lock")
 	if err == nil {
 		defer unlock()
 	}
@@ -945,77 +946,41 @@ func loadHookState(path string) hookState {
 }
 
 func saveHookState(path string, st hookState) error {
-	return writeFileAtomic(path, mustJSON(st))
+	return fileutil.WriteAtomic(path, mustJSON(st))
 }
+
+// hookLockWait is how long a hook waits for its session's lock.
+const hookLockWait = 2 * time.Second
 
 // lockFile serializes hooks of one session (Claude Code runs PostToolUse hooks
-// of parallel tool calls at the same time). A lock older than 30s is stale.
-func lockFile(path string) (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_ = f.Close()
-			return func() { _ = os.Remove(path) }, nil
-		}
-		if st, serr := os.Stat(path); serr == nil && time.Since(st.ModTime()) > 30*time.Second {
-			_ = os.Remove(path)
-			continue
-		}
-		if time.Now().After(deadline) {
-			return nil, err
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+// of parallel tool calls at the same time): an OS lock, released with its
+// holder, never taken over by a staleness guess.
+func lockFile(ctx context.Context, path string) (func(), error) {
+	return fileutil.Lock(ctx, path, hookLockWait)
 }
 
-// pruneHookState removes state files of sessions not seen for hookStateTTL.
+// pruneHookState removes state files of sessions not seen for hookStateTTL; a
+// lock file only while nobody holds it.
 func pruneHookState(dir string, now time.Time) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
-		if info, err := e.Info(); err == nil && !e.IsDir() && now.Sub(info.ModTime()) > hookStateTTL {
-			_ = os.Remove(filepath.Join(dir, e.Name()))
+		info, err := e.Info()
+		if err != nil || e.IsDir() || now.Sub(info.ModTime()) <= hookStateTTL {
+			continue
 		}
-	}
-}
-
-// writeFileAtomic replaces path with data through a temporary file.
-func writeFileAtomic(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmp.Name())
-		return err
-	}
-	// On Windows the rename fails while another process (the session's
-	// waiter polling this state) has the file open for a moment: retry.
-	for try := 0; ; try++ {
-		err = os.Rename(tmp.Name(), path)
-		if err == nil || try == 50 {
-			break
+		path := filepath.Join(dir, e.Name())
+		if strings.HasSuffix(path, ".lock") || strings.HasSuffix(path, ".wait") {
+			unlock, ok := fileutil.TryLock(path)
+			if !ok {
+				continue
+			}
+			unlock()
 		}
-		time.Sleep(20 * time.Millisecond)
+		_ = os.Remove(path)
 	}
-	if err != nil {
-		_ = os.Remove(tmp.Name())
-	}
-	return err
 }
 
 // mustJSON encodes v without HTML escaping; v is always encodable here.

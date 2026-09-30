@@ -21,6 +21,7 @@ package main
 // before the entry's timeout.
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -28,10 +29,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/UberMorgott/agent-link/internal/agenthook"
+	"github.com/UberMorgott/agent-link/internal/fileutil"
 	"github.com/UberMorgott/agent-link/internal/node"
 )
 
@@ -41,7 +42,7 @@ type waitOpts struct {
 	heartbeat time.Duration // how often the idle session is re-registered
 	life      time.Duration // the waiter ends after this (before the entry's timeout)
 	busyFor   time.Duration // a session whose last event was a work event this recently is busy
-	stale     time.Duration // a waiter lock not refreshed for this long is stale
+
 	// alive reports whether the session (its agent process) still runs.
 	alive func() bool
 	// replaced reports whether a newer executable occupies this process's launch path.
@@ -57,9 +58,9 @@ func defaultWaitOpts(client string) waitOpts {
 		heartbeat: 5 * time.Minute,
 		life:      agenthook.WaitTimeout*time.Second - 2*time.Minute,
 		busyFor:   10 * time.Minute,
-		stale:     20 * time.Second,
-		alive:     agentAlive(agentPID(client)),
-		replaced:  executableReplaced(),
+
+		alive:    agentAlive(agentPID(client)),
+		replaced: executableReplaced(),
 	}
 }
 
@@ -86,7 +87,7 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 	if os.MkdirAll(env.dir, 0o700) != nil {
 		return 0
 	}
-	release, ok := takeWaitLock(path+".wait", o.stale)
+	release, ok := takeWaitLock(path + ".wait")
 	if !ok {
 		return 0 // another waiter of this session runs
 	}
@@ -94,7 +95,7 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 	start := time.Now()
 	var lastBeat time.Time
 	for {
-		touch(path + ".wait")
+
 		st := loadHookState(path)
 		if st.Ended || time.Since(start) > o.life {
 			return 0
@@ -134,7 +135,7 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 // SubagentStop is still busy, and a keep-alive that called it idle showed an
 // agent at work as waiting for a question. It reports whether the node took it.
 func keepAlive(env hookEnv, client, sid, folder, path string) bool {
-	unlock, err := lockFile(path + ".lock")
+	unlock, err := lockFile(context.Background(), path+".lock")
 	if err != nil {
 		return false
 	}
@@ -176,7 +177,7 @@ func pendingUnread(env hookEnv, folder, session string, st *hookState) bool {
 // wake, on stderr with the wake's marker. done is false when there was nothing after all or the
 // session became busy.
 func wakeWith(client, sid, folder, path string, stderr io.Writer, env hookEnv, busyFor time.Duration) (int, bool) {
-	unlock, err := lockFile(path + ".lock")
+	unlock, err := lockFile(context.Background(), path+".lock")
 	if err != nil {
 		return 0, false
 	}
@@ -207,22 +208,10 @@ func wakeWith(client, sid, folder, path string, stderr io.Writer, env hookEnv, b
 	return 2, true
 }
 
-// takeWaitLock makes this the session's only waiter; a lock not refreshed
-// within stale belongs to a waiter that is gone.
-func takeWaitLock(path string, stale time.Duration) (func(), bool) {
-	for range 2 {
-		f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_ = f.Close()
-			return func() { _ = os.Remove(path) }, true
-		}
-		st, serr := os.Stat(path)
-		if serr != nil || time.Since(st.ModTime()) <= stale {
-			return nil, false
-		}
-		_ = os.Remove(path)
-	}
-	return nil, false
+// takeWaitLock makes this the session's only waiter: an OS lock held for the
+// waiter's life and released with its process, however it ends.
+func takeWaitLock(path string) (func(), bool) {
+	return fileutil.TryLock(path)
 }
 
 // randomToken is a new wake token (node.WakeMarker).
@@ -230,9 +219,4 @@ func randomToken() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-func touch(path string) {
-	now := time.Now()
-	_ = os.Chtimes(path, now, now)
 }
