@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/UberMorgott/agent-link/internal/fsutil"
 	"github.com/UberMorgott/agent-link/internal/node"
 )
 
@@ -263,7 +264,9 @@ func cutRunes(s string, n int) string {
 	return string([]rune(s)[:n]) + "…"
 }
 
-// writeAtomic writes v as JSON to dir/name atomically (temp file, fsync, rename).
+// writeAtomic writes v as JSON to dir/name atomically (temp file, fsync,
+// rename). The rename waits out a reader or scanner that briefly holds the old
+// file on Windows (fsutil.ReplaceFile).
 func writeAtomic(dir, name string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -282,7 +285,7 @@ func writeAtomic(dir, name string, v any) error {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Rename(tmp, filepath.Join(dir, name))
+		err = fsutil.ReplaceFile(tmp, filepath.Join(dir, name))
 	}
 	if err != nil {
 		_ = os.Remove(tmp)
