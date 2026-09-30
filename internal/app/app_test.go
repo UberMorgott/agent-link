@@ -136,7 +136,7 @@ func TestAPITokenGuard(t *testing.T) {
 
 func TestDashboardAPIsRequireToken(t *testing.T) {
 	h := newHarness(t)
-	for _, path := range []string{"/ui/api/dashboard", "/ui/api/participants", "/ui/api/threads?peer=bob"} {
+	for _, path := range []string{"/ui/api/dashboard", "/ui/api/participants"} {
 		if code, _ := h.do(t, http.MethodGet, path, "", nil); code != http.StatusForbidden {
 			t.Errorf("%s: %d, want 403", path, code)
 		}
@@ -440,6 +440,18 @@ func TestWeakCodeWarning(t *testing.T) {
 		}
 		if c.want != "" && !strings.Contains(st.Summary(), uiStrings["tray.weak_code"]) {
 			t.Errorf("tray summary %q has no warning", st.Summary())
+		}
+	}
+}
+
+// The pre-projects UI endpoints are gone: the page reaches chats through
+// the projects API (projects/{pid}/chats, projects/{pid}/send).
+func TestLegacyUIEndpointsRemoved(t *testing.T) {
+	h := newHarness(t)
+	for _, r := range []struct{ method, path string }{{http.MethodGet, "/ui/api/inbox"}, {http.MethodGet, "/ui/api/threads"},
+		{http.MethodPost, "/ui/api/send"}, {http.MethodGet, "/ui/api/chats"}, {http.MethodGet, "/ui/api/chats/0123456789abcdef0123456789abcdef"}} {
+		if code, body := h.do(t, r.method, r.path, "{}", h.tokenHdr()); code != http.StatusNotFound {
+			t.Errorf("%s %s: %d %s", r.method, r.path, code, body)
 		}
 	}
 }

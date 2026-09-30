@@ -59,19 +59,11 @@ func (a *App) URL(page string) string {
 //	GET  /ui/api/status            Status
 //	GET  /ui/api/settings          settings.Settings (no code, secret or project bindings)
 //	POST /ui/api/settings          settings.Settings -> save, restart every context; code and bindings are kept
-//	GET  /ui/api/inbox             []node.Entry
-//	GET  /ui/api/threads           []Thread (inbox entries paired by reply_to)
 //	GET  /ui/api/dashboard         DashboardSummary
 //	GET  /ui/api/participants      []ParticipantView
 //	GET  /ui/api/events            server-sent state-change events
 //	GET  /ui/api/sessions          []SessionView (this computer's live agent sessions, every project's)
 //	     /ui/api/projects...       the projects API (projects_api.go)
-//	POST /ui/api/send              node.SendRequest -> node.Message (chat_id + ask: into a chat)
-//	GET  /ui/api/chats?archive=1   []node.ChatInfo, pre-chat history included as legacy chats
-//	POST /ui/api/chats             node.CreateChatRequest -> node.ChatInfo
-//	GET  /ui/api/chats/{id}        node.ChatInfo
-//	GET  /ui/api/chats/{id}/messages?before=SEQ&after=SEQ&limit=50   []node.ChatMessage
-//	POST /ui/api/chats/{id}/close  -> node.ChatInfo
 //	POST /ui/api/members/add       {"addr"} -> keep and dial that address -> Status
 //	POST /ui/api/members/remove    {"name"} -> remove the member everywhere -> Status
 //	POST /ui/api/pick-folder       {"start"} -> native folder dialog -> pickResult
@@ -106,17 +98,12 @@ func (a *App) Handler() http.Handler {
 	})
 	api.HandleFunc("POST /ui/api/settings", a.saveSettings)
 	api.HandleFunc("GET /ui/api/hooks", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.HookStatus()) })
-	api.HandleFunc("GET /ui/api/inbox", a.inbox)
-	api.HandleFunc("GET /ui/api/threads", a.threads)
 	api.HandleFunc("GET /ui/api/dashboard", a.dashboard)
 	api.HandleFunc("GET /ui/api/participants", a.participants)
 	api.HandleFunc("GET /ui/api/events", a.eventsStream)
 	api.HandleFunc("GET /ui/api/sessions", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.allSessions()) })
 	a.projectRoutes(api)
 	a.attachmentRoutes(api, ui)
-	api.HandleFunc("POST /ui/api/send", a.send)
-	api.HandleFunc("/ui/api/chats", a.chats)
-	api.HandleFunc("/ui/api/chats/", a.chats)
 	api.HandleFunc("POST /ui/api/members/add", a.memberAction(func(r node.MemberRequest) error { return a.AddMember(r.Addr) }))
 	api.HandleFunc("POST /ui/api/members/remove", a.memberAction(func(r node.MemberRequest) error { return a.RemoveMember(r.Name) }))
 	api.HandleFunc("POST /ui/api/pick-folder", a.pickFolder)
@@ -312,16 +299,6 @@ func (a *App) setAutoUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, a.UpdateStatus())
 }
 
-func (a *App) inbox(w http.ResponseWriter, _ *http.Request) {
-	entries, err := a.recent(200)
-	if err != nil {
-		a.log.Error("inbox", "err", err)
-		writeError(w, http.StatusInternalServerError, msg("error.internal", nil))
-		return
-	}
-	writeJSON(w, entries)
-}
-
 // recent loads local history of every context, chat messages included,
 // newest first, each entry naming its project. No context running is an
 // empty history, so the UI renders its initial state without special cases.
@@ -344,22 +321,6 @@ func (a *App) recent(limit int) ([]node.Entry, error) {
 	return entries, nil
 }
 
-// threads serves the inbox as questions paired with their answers.
-func (a *App) threads(w http.ResponseWriter, r *http.Request) {
-	peer := r.URL.Query().Get("peer")
-	limit := 200
-	if peer != "" {
-		limit = 0
-	}
-	entries, err := a.recent(limit)
-	if err != nil {
-		a.log.Error("threads", "err", err)
-		writeError(w, http.StatusInternalServerError, msg("error.internal", nil))
-		return
-	}
-	writeJSON(w, filterThreads(threads(entries), peer, a.Status().Node))
-}
-
 func (a *App) dashboard(w http.ResponseWriter, _ *http.Request) {
 	entries, err := a.recent(0)
 	if err != nil {
@@ -378,63 +339,6 @@ func (a *App) participants(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, buildParticipants(a.Status(), entries))
-}
-
-func (a *App) send(w http.ResponseWriter, r *http.Request) {
-	var req node.SendRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody)).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, msg("error.bad_request", nil))
-		return
-	}
-	n := a.node()
-	if n == nil {
-		writeError(w, http.StatusServiceUnavailable, msg("error.not_running", nil))
-		return
-	}
-	req.To, req.ChatID = strings.TrimSpace(req.To), strings.TrimSpace(req.ChatID)
-	req.AuthorKind, req.Parent = node.AuthorHuman, "" // the composer: a person writes
-	m, err := n.SendRequest(req)
-	if errors.Is(err, node.ErrAmbiguousPeer) {
-		writeError(w, http.StatusBadRequest, msg("error.ambiguous_peer", map[string]string{"peers": strings.Join(n.Peers(), ", ")}))
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusBadRequest, sendError(err))
-		return
-	}
-	writeJSON(w, m)
-}
-
-// chats serves the node's chat endpoints under /ui/api (node.ChatRoutes) with
-// the UI's own error sentences. The list includes pre-chat history.
-func (a *App) chats(w http.ResponseWriter, r *http.Request) {
-	n := a.node()
-	if n == nil {
-		if r.Method == http.MethodGet && r.URL.Path == "/ui/api/chats" {
-			writeJSON(w, []node.ChatInfo{})
-			return
-		}
-		writeError(w, http.StatusServiceUnavailable, msg("error.not_running", nil))
-		return
-	}
-	if r.Method == http.MethodGet && r.URL.Path == "/ui/api/chats" {
-		q := r.URL.Query()
-		q.Set("legacy", "1")
-		r.URL.RawQuery = q.Encode()
-	}
-	mux := http.NewServeMux()
-	n.ChatRoutes(mux, "/ui/api", true, func(w http.ResponseWriter, code int, err error) {
-		switch text := sendError(err); {
-		case errors.Is(err, node.ErrBadRequest):
-			writeError(w, code, msg("error.bad_request", nil))
-		case text == msg("error.send", nil):
-			a.log.Error("chat request", "path", r.URL.Path, "err", err)
-			writeError(w, http.StatusInternalServerError, msg("error.internal", nil))
-		default:
-			writeError(w, code, text)
-		}
-	})
-	mux.ServeHTTP(w, r)
 }
 
 // ErrPickCancelled means the user closed a Windows dialog without choosing.
@@ -607,29 +511,5 @@ func userError(err error) string {
 		return msg("error.listen", map[string]string{"addr": addr})
 	default:
 		return msg("error.start", nil)
-	}
-}
-
-func sendError(err error) string {
-	switch {
-	case errors.Is(err, node.ErrUnknownChat):
-		return msg("error.unknown_chat", nil)
-	case errors.Is(err, node.ErrChatClosed):
-		return msg("error.chat_closed", nil)
-	case errors.Is(err, node.ErrLegacyChat):
-		return msg("error.chat_legacy", nil)
-	case errors.Is(err, node.ErrNoChatSupport):
-		_, peers, _ := strings.Cut(err.Error(), ": ")
-		return msg("error.chat_unsupported", map[string]string{"peers": peers})
-	case errors.Is(err, node.ErrBadParticipants):
-		return msg("error.chat_participants", nil)
-	case errors.Is(err, node.ErrEmptyBody):
-		return msg("error.empty_body", nil)
-	case errors.Is(err, node.ErrUnknownPeer):
-		return msg("error.unknown_peer", nil)
-	case errors.Is(err, node.ErrNoAreaPeer):
-		return msg("error.no_area_peer", nil)
-	default:
-		return msg("error.send", nil)
 	}
 }
