@@ -96,8 +96,11 @@ export const useAppStore = defineStore('app', () => {
     if (!reloadRequired.value) banner.value = error.message || t("link.app_not_running")
   }
 
-  function clearConnectionProblem(name: string) {
+  // clearConnectionProblem drops the failure of name, and of every other
+  // request stale (true) marks as answered too.
+  function clearConnectionProblem(name: string, stale?: (key: string) => boolean) {
     coreFailures.delete(name)
+    if (stale) for (const key of [...coreFailures.keys()]) if (stale(key)) coreFailures.delete(key)
     if (!reloadRequired.value && !coreFailures.size) banner.value = ''
   }
 
@@ -109,21 +112,25 @@ export const useAppStore = defineStore('app', () => {
   }
 
   // guarded runs one projects refresh under the connection banner.
-  async function guarded(name: string, run: () => Promise<void>) {
+  async function guarded(name: string, run: () => Promise<void>, stale?: (key: string) => boolean) {
     try {
       await run()
-      clearConnectionProblem(name)
+      clearConnectionProblem(name, stale)
     } catch (error) { showConnectionProblem(name, error as ApiError) }
   }
 
+  const PROJECT_KEY = 'project:'
   function applyChange(event: ChangeEvent) {
     const topics = Array.isArray(event.topics) ? event.topics : []
     const projects = useProjectsStore()
     const scope = projectsForTopics(topics)
     const jobs: Promise<void>[] = slicesForTopics(topics).map(refreshSlice)
-    if (scope.all) jobs.push(guarded('projects', projects.refreshAll))
-    else if (scope.list) jobs.push(guarded('projects', projects.refreshList))
-    for (const pid of scope.scoped) jobs.push(guarded('project:' + pid, () => projects.refreshScoped(pid)))
+    // Reading every project answers each project's own failed refresh; the
+    // list answers those of projects no longer in it.
+    const gone = (key: string) => key.startsWith(PROJECT_KEY) && !projects.byID(key.slice(PROJECT_KEY.length))
+    if (scope.all) jobs.push(guarded('projects', projects.refreshAll, (key) => key.startsWith(PROJECT_KEY)))
+    else if (scope.list) jobs.push(guarded('projects', projects.refreshList, gone))
+    for (const pid of scope.scoped) jobs.push(guarded(PROJECT_KEY + pid, () => projects.refreshScoped(pid)))
     return Promise.all(jobs)
   }
 
