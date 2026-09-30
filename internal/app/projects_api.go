@@ -107,6 +107,8 @@ func (a *App) projectSeats(anyNetwork bool, do func(n *node.Node, r *http.Reques
 			writeCodedError(w, http.StatusNotFound, "not_found")
 		case errors.Is(err, node.ErrNeedsFolder):
 			writeCodedError(w, http.StatusBadRequest, "project_needs_folder")
+		case errors.Is(err, node.ErrSeatsDisabled):
+			writeCodedError(w, http.StatusConflict, "seats_local_only")
 		case err != nil:
 			writeCodedError(w, http.StatusBadRequest, "bad_request")
 		default:

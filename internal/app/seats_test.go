@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -98,5 +99,14 @@ func TestNetworkProjectSeatsRefused(t *testing.T) {
 	h.wantError(t, http.MethodPost, base+"/seat-none/stop", nil, http.StatusNotFound, "not_found")
 	if code, raw := h.api(t, http.MethodGet, base, nil, nil); code != http.StatusOK {
 		t.Fatalf("list: %d %s", code, raw)
+	}
+	// The node's own refusal (node.ErrSeatsDisabled) names the same reason,
+	// not a bad request.
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/ui/api/"+base, nil)
+	r.SetPathValue("pid", site.ID)
+	w := httptest.NewRecorder()
+	h.app.projectSeats(true, func(*node.Node, *http.Request) (any, error) { return nil, node.ErrSeatsDisabled })(w, r)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"seats_local_only"`) {
+		t.Fatalf("node refusal: %d %s", w.Code, w.Body.String())
 	}
 }
