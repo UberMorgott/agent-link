@@ -3,8 +3,9 @@ import { computed } from 'vue'
 import type { DropdownMenuItem } from '@nuxt/ui'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UDropdownMenu from '@nuxt/ui/components/DropdownMenu.vue'
+import { useToast } from '@nuxt/ui/composables/useToast'
 import { icon } from '@/lib/icons'
-import { browser, fmt, t } from '@/lib/runtime'
+import { fmt, t } from '@/lib/runtime'
 import { chatKey, useInboxStore } from '@/stores/inbox'
 import { useProjectsStore, type ProjectDialog } from '@/stores/projects'
 import type { ProjectView } from '@/types'
@@ -18,8 +19,9 @@ const projects = useProjectsStore()
 const inbox = useInboxStore()
 
 // run does a menu action; a failure is said at once, whatever is on screen.
+const toast = useToast()
 async function run(action: () => Promise<unknown> | undefined) {
-  try { await action() } catch (error) { browser.alert((error as Error).message) }
+  try { await action() } catch (error) { toast.add({ title: (error as Error).message, color: 'error', icon: icon('held') }) }
 }
 
 const items = computed<DropdownMenuItem[][]>(() => {

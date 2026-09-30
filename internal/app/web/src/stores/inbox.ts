@@ -7,7 +7,8 @@ import { ref, shallowRef, watch } from 'vue'
 import { api, chatPath, projectPath } from '@/lib/api'
 import { authorLabel, isUnread, others, preview } from '@/lib/chat'
 import { currentRoute, openChat, openProject } from '@/lib/nav'
-import { browser, fmt, t } from '@/lib/runtime'
+import { confirmAction } from '@/lib/confirm'
+import { fmt, t } from '@/lib/runtime'
 import { NARROW_QUERY } from '@/layout/composables/layout'
 import { useAppStore } from './app'
 import { useAttachmentsStore } from './attachments'
@@ -334,8 +335,8 @@ export const useInboxStore = defineStore('inbox', () => {
     } finally { membersBusy.value = false }
   }
 
-  function confirmRemove(pid: string, id: string, name: string) {
-    if (!browser.confirm(fmt("inbox.members.remove_confirm", { name }))) return
+  async function confirmRemove(pid: string, id: string, name: string) {
+    if (!(await confirmAction(fmt("inbox.members.remove_confirm", { name }), t("inbox.members.remove")))) return
     return setMembers(pid, id, [], [name])
   }
 
@@ -362,10 +363,10 @@ export const useInboxStore = defineStore('inbox', () => {
     } finally { closing.value = false }
   }
 
-  function confirmClose() {
+  async function confirmClose() {
     const info = chat.value
     const key = !info?.legacy ? "inbox.close.confirm" : legacyPeerOldOf(info) ? "inbox.close.confirm_old" : "inbox.close.confirm_legacy"
-    if (!browser.confirm(t(key))) return
+    if (!(await confirmAction(t(key), t(info?.legacy ? "inbox.close.legacy" : "inbox.close")))) return
     return closeChat()
   }
 
@@ -391,8 +392,8 @@ export const useInboxStore = defineStore('inbox', () => {
     } finally { closing.value = false }
   }
 
-  function confirmClear(pid: string) {
-    if (!browser.confirm(t("inbox.clear.confirm"))) return
+  async function confirmClear(pid: string) {
+    if (!(await confirmAction(t("inbox.clear.confirm"), t("inbox.clear")))) return
     return clearChat(pid)
   }
 

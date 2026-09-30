@@ -4,8 +4,9 @@ import AppLayout from './layout/AppLayout.vue'
 </script>
 
 <template>
-  <!-- The app shows its own toasts (MessageToasts.vue) in its one live region. -->
-  <UApp :toaster="null">
+  <!-- News comes in the app's own toasts (MessageToasts.vue); failures of an
+       action in Nuxt UI's (useToast). -->
+  <UApp>
     <AppLayout />
   </UApp>
 </template>

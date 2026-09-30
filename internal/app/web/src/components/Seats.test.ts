@@ -1,8 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { authorLabel, continues } from '@/lib/chat'
-import { browser } from '@/lib/runtime'
 import { SITE, fixture } from '@/test/backend'
-import { fakeBackend, mountApp, settle } from '@/test/harness'
+import { answerConfirm, fakeBackend, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore } from '@/stores/projects'
@@ -43,13 +42,11 @@ describe('local agents (seats)', () => {
     $<HTMLButtonElement>('#seat_start_' + codex)!.click()
     await settle()
     expect(backend.seats[LOCAL]![1]!.status).toBe('closed')
-    const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(false)
     $<HTMLButtonElement>('#seat_remove_' + codex)!.click()
-    await settle()
+    expect(await answerConfirm(false)).toContain('project.agents.remove_confirm')
     expect(calls).not.toContain('POST projects/' + LOCAL + '/seats/' + codex + '/remove')
-    confirm.mockReturnValue(true)
     $<HTMLButtonElement>('#seat_remove_' + codex)!.click()
-    await settle()
+    await answerConfirm(true)
     expect(backend.seats[LOCAL]!.map((s) => s.label)).toEqual(['Claude'])
     expect($$('#project_seats [data-seat]')).toHaveLength(1)
   })

@@ -1,7 +1,7 @@
 import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { browser, runtime } from '@/lib/runtime'
-import { fakeApi, mountApp, settle } from '@/test/harness'
+import { runtime } from '@/lib/runtime'
+import { answerConfirm, fakeApi, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore } from '@/stores/projects'
@@ -725,10 +725,10 @@ describe('the chat list and the ways into a chat', () => {
     await settle()
     projects.chats = { [P]: [chats.c4!.info] }
     await settle()
-    const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(true)
-    await inbox.confirmClear(P)
+    const cleared = inbox.confirmClear(P)
+    expect(await answerConfirm(true)).toContain('inbox.clear.confirm')
+    await cleared
     await settle()
-    expect(confirm).toHaveBeenCalledWith('inbox.clear.confirm')
     expect(projects.chats[P]!.some((c) => c.id === 'c4')).toBe(false)
     expect($('[data-chat="c4"]')).toBeNull()
     expect(router.currentRoute.value.params.chat).toBe('c6')

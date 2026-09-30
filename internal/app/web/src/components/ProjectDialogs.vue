@@ -8,7 +8,8 @@ import { pickFolder } from '@/lib/folders'
 import { icon } from '@/lib/icons'
 import { navigate, openChat, openProject } from '@/lib/nav'
 import { authorName, projectTitle, when } from '@/lib/chat'
-import { browser, fmt, t } from '@/lib/runtime'
+import { confirmAction } from '@/lib/confirm'
+import { fmt, t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore, type ProjectDialog } from '@/stores/projects'
@@ -101,8 +102,8 @@ function chatMembers(name: string, add: boolean) {
 }
 
 // removeMember removes a member from the whole project, after a confirmation.
-function removeMember(name: string) {
-  if (!browser.confirm(fmt("project.members.remove_confirm", { name }))) return
+async function removeMember(name: string) {
+  if (!(await confirmAction(fmt("project.members.remove_confirm", { name }), t("project.members.remove")))) return
   return run(async () => {
     await projects.removeMember(projects.dialogProject, name)
     result.value = fmt("project.members.removed", { name })
@@ -190,8 +191,8 @@ const seatRows = computed(() => (projects.seats[projects.dialogProject] || []).m
 function seat(action: 'add' | 'start' | 'stop' | 'remove', arg: string) {
   return run(() => projects.seatAction(projects.dialogProject, action, arg))
 }
-function removeSeat(id: string, label: string) {
-  if (!browser.confirm(fmt("project.agents.remove_confirm", { name: label }))) return
+async function removeSeat(id: string, label: string) {
+  if (!(await confirmAction(fmt("project.agents.remove_confirm", { name: label }), t("project.agents.remove")))) return
   return seat('remove', id)
 }
 

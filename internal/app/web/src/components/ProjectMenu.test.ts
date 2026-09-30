@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { browser } from '@/lib/runtime'
 import { LEGACY_CODE, SITE, fixture } from '@/test/backend'
-import { fakeBackend, mountApp, settle } from '@/test/harness'
+import { answerConfirm, fakeBackend, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
 import { useProjectsStore } from '@/stores/projects'
 
@@ -71,14 +70,11 @@ describe('the project menu', () => {
 
   it('clears the chat for everyone after a confirmation and keeps it in the history, read-only', async () => {
     const { backend, router, calls } = await open('/p/' + SITE + '/c/' + CHAT)
-    const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(false)
     ;(await menu(SITE)).find((i) => i.textContent!.trim() === 'inbox.clear')!.click()
-    await settle()
-    expect(confirm).toHaveBeenCalledWith('inbox.clear.confirm')
+    expect(await answerConfirm(false)).toContain('inbox.clear.confirm')
     expect(calls).not.toContain('POST projects/' + SITE + '/chats/' + CHAT + '/archive')
-    confirm.mockReturnValue(true)
     ;(await menu(SITE)).find((i) => i.textContent!.trim() === 'inbox.clear')!.click()
-    await settle()
+    await answerConfirm(true)
     expect(calls).toContain('POST projects/' + SITE + '/chats/' + CHAT + '/archive')
     const fresh = backend.chats[SITE]![0]!
     expect(fresh.id).not.toBe(CHAT)
@@ -121,14 +117,11 @@ describe('the project menu', () => {
     projects.openDialog('members', SITE)
     await settle()
     expect($('#member_remove_alice')).toBeNull()
-    const confirm = vi.spyOn(browser, 'confirm').mockReturnValue(false)
     $<HTMLButtonElement>('#member_remove_bob')!.click()
-    await settle()
-    expect(confirm).toHaveBeenCalledWith('project.members.remove_confirm')
+    expect(await answerConfirm(false)).toContain('project.members.remove_confirm')
     expect(calls).not.toContain('POST projects/' + SITE + '/members/remove')
-    confirm.mockReturnValue(true)
     $<HTMLButtonElement>('#member_remove_bob')!.click()
-    await settle()
+    await answerConfirm(true)
     expect(calls).toContain('POST projects/' + SITE + '/members/remove')
     expect(projects.byID(SITE)!.members.map((m) => m.name)).not.toContain('bob')
     expect($('#member_remove_bob')).toBeNull()
