@@ -6,6 +6,7 @@ import { api } from '@/lib/api'
 import { navigate } from '@/lib/nav'
 import { confirmAction } from '@/lib/confirm'
 import { fmt, t } from '@/lib/runtime'
+import { when } from '@/lib/time'
 import { useAppStore } from '@/stores/app'
 import type { ParticipantView, Status } from '@/types'
 
@@ -18,7 +19,7 @@ const list = ref<HTMLElement | null>(null)
 
 function participantDetail(person: ParticipantView): string[] {
   const details: string[] = []
-  if (!person.online && person.seen) details.push(fmt("participants.seen", { when: new Date(person.seen).toLocaleString('ru-RU') }))
+  if (!person.online && person.seen) details.push(fmt("participants.seen", { when: when(person.seen) }))
   if (person.app) details.push(fmt("participants.version", { version: person.app }))
   if (person.old_auth) details.push(t("participants.old_auth"))
   else if (person.legacy) details.push(t("participants.legacy"))

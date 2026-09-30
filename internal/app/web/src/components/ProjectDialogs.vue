@@ -87,7 +87,7 @@ const canManageChat = computed(() => {
 const members = computed(() => (view.value?.members || []).map((m) => {
   const details: string[] = []
   if (!m.self) details.push(t(m.online ? "participants.online" : "participants.lost"))
-  if (!m.self && !m.online && m.seen) details.push(fmt("participants.seen", { when: new Date(m.seen).toLocaleString('ru-RU') }))
+  if (!m.self && !m.online && m.seen) details.push(fmt("participants.seen", { when: when(m.seen) }))
   if (m.app) details.push(fmt("participants.version", { version: m.app }))
   if ((m.addrs || []).length) details.push(fmt("participants.addresses", { addresses: m.addrs!.join(', ') }))
   const inChat = (active.value?.participants || []).includes(m.name)

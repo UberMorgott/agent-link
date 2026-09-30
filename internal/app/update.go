@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/UberMorgott/agent-link/internal/humantime"
 	"github.com/UberMorgott/agent-link/internal/selfupdate"
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
@@ -34,7 +35,8 @@ type UpdateStatus struct {
 	Text    string `json:"text,omitempty"`
 	Failed  bool   `json:"failed,omitempty"`
 	// RetryAt: GitHub rate-limited the last step; it accepts requests again
-	// at this local time ("15:04").
+	// at this local time ("15:04"), shown as is by the tray and web UI whose
+	// reader is on this machine. Kept for the API; not RFC 3339.
 	RetryAt string `json:"retry_at,omitempty"`
 	// Installing: the newer release is being downloaded and swapped in;
 	// Downloaded bytes of Size (0: unknown) so far.
@@ -151,7 +153,7 @@ func (a *App) failLocked(key string, err error) {
 	a.upd.state, a.upd.failed = "", true
 	if rl, ok := errors.AsType[*selfupdate.RateLimitError](err); ok {
 		a.upd.retryAt = rl.Reset
-		a.upd.text = msg("update.error.ratelimit", map[string]string{"time": rl.Reset.Local().Format("15:04")})
+		a.upd.text = msg("update.error.ratelimit", map[string]string{"time": humantime.Format(rl.Reset)})
 		return
 	}
 	a.upd.text = msg(key, nil)
@@ -257,7 +259,7 @@ func (a *App) Changelog(ctx context.Context) Changelog {
 		a.log.Warn("changelog", "err", err)
 		out.Failed, out.Text = true, msg("update.changelog.error", nil)
 		if rl, ok := errors.AsType[*selfupdate.RateLimitError](err); ok {
-			out.Text = msg("update.error.ratelimit", map[string]string{"time": rl.Reset.Local().Format("15:04")})
+			out.Text = msg("update.error.ratelimit", map[string]string{"time": humantime.Format(rl.Reset)})
 		}
 		return out
 	}

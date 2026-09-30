@@ -36,6 +36,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/UberMorgott/agent-link/internal/humantime"
 )
 
 // Version is this build's version without a leading "v". Release builds set it:
@@ -90,7 +92,7 @@ var ErrRateLimited = errors.New("GitHub rate limit")
 type RateLimitError struct{ Reset time.Time }
 
 func (e *RateLimitError) Error() string {
-	return "GitHub rate limit exceeded for this network; retry after " + e.Reset.Local().Format("15:04")
+	return "GitHub rate limit exceeded for this network; retry after " + humantime.Format(e.Reset)
 }
 
 // Is makes errors.Is(err, ErrRateLimited) true.

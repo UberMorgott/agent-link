@@ -112,7 +112,7 @@ export function groupStateText(g: AgentGroup): string {
 export function agentTime(agent: AgentStatus, now: number): { time: string; title: string } {
   const at = Date.parse(agent.since || '')
   if (Number.isNaN(at) || TIMELESS.includes(agent.state)) return { time: '', title: '' }
-  return { time: duration(now - at), title: fmt('inbox.agents.since_title', { at: clock(agent.since) }) }
+  return { time: duration(now - at), title: fmt('inbox.agents.since_title', { at: clock(agent.since, { offset: true }) }) }
 }
 
 // countsText: an older peer's agents by provider («2 агента Codex · 1 агент Claude»).
@@ -145,7 +145,7 @@ export function olderPeerRow(peer: PeerInfo, now: number): { dot: string; state:
     dot: peer.online ? 'idle' : 'off',
     state: countsText(peer.counts) + ' · ' + presence,
     time: !known ? '—' : peer.online ? span : fmt('inbox.activity.ago', { t: span }),
-    title: known ? fmt(peer.online ? 'inbox.agents.online_title' : 'inbox.agents.seen_title', { at: clock(peer.seen) }) : '',
+    title: known ? fmt(peer.online ? 'inbox.agents.online_title' : 'inbox.agents.seen_title', { at: clock(peer.seen, { offset: true }) }) : '',
     note: olderPeerNote(peer.name),
     noteTitle: peer.app ? fmt('inbox.agents.old_peer_title', { name: peer.name, app: peer.app }) : '',
   }

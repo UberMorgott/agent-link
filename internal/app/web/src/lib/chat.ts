@@ -1,5 +1,6 @@
 // Pure chat helpers shared by the chat list, the open chat and the toasts.
 import { fmt, t } from './runtime'
+import { clock, when } from './time'
 import type { AppSettings, ChatInfo, ChatMember, ChatMessage, Delivery, Job, ProjectView, Session } from '@/types'
 
 // A message within GROUP_MS of the previous one by the same author continues it
@@ -91,14 +92,7 @@ export function projectDot(p: ProjectView, self: string): ProjectDot {
   return { cls, label: lines.join('\n') }
 }
 
-function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate() }
-export function clock(iso: string | undefined): string {
-  const at = new Date(iso || '')
-  if (Number.isNaN(at.getTime())) return ''
-  const time = at.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-  return sameDay(at, new Date()) ? time : at.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) + ' ' + time
-}
-export function when(iso: string): string { return new Date(iso).toLocaleString('ru-RU') }
+export { clock, when }
 
 
 export function preview(text: string | undefined, limit: number): string {

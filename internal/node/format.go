@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/UberMorgott/agent-link/internal/humantime"
 )
 
 // The text an agent session gets for its unread messages: the hooks inject it
@@ -29,7 +31,7 @@ func FormatUnread(m UnreadMessage) string { return formatUnread(m, false) }
 // (answerSeatAsks): the agent answers in plain text, no agentlink send.
 func formatUnread(m UnreadMessage, auto bool) string {
 	var b strings.Builder
-	at := m.CreatedAt.Local().Format("2006-01-02 15:04")
+	at := humantime.Format(m.CreatedAt)
 	from := AuthorName(m.Message)
 	switch {
 	case m.OwnHuman:

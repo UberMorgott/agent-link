@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UberMorgott/agent-link/internal/humantime"
 	"github.com/UberMorgott/agent-link/internal/node"
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
@@ -327,7 +328,7 @@ func (a *App) discussReplied(w http.ResponseWriter, n *node.Node, chat string, r
 func writeDiscussHeld(w http.ResponseWriter, st node.SeatAskState) {
 	text := cmp.Or(st.Error, "—")
 	if !st.RetryAt.IsZero() {
-		text += "; next try " + st.RetryAt.Local().Format("2006-01-02 15:04")
+		text += "; next try " + humantime.Format(st.RetryAt)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusConflict)

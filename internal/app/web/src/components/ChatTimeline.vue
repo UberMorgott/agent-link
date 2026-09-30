@@ -182,6 +182,7 @@ watch(source, () => {
               <time
                 class="msg-time"
                 :datetime="b.m.created_at"
+                :title="when(b.m.created_at, { offset: true })"
               >{{ clock(b.m.created_at) }}</time>
             </div>
             <UChatMessage
@@ -243,7 +244,7 @@ watch(source, () => {
                   <time
                     class="msg-time"
                     :datetime="b.m.created_at"
-                    :title="when(b.m.created_at)"
+                    :title="when(b.m.created_at, { offset: true })"
                   >{{ clock(b.m.created_at) }}</time>
                   <span
                     v-if="b.tick"

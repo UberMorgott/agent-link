@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/UberMorgott/agent-link/internal/humantime"
 	"github.com/UberMorgott/agent-link/internal/selfupdate"
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
@@ -159,7 +160,7 @@ func TestUpdateInstallFailures(t *testing.T) {
 func TestUpdateRateLimited(t *testing.T) {
 	reset := time.Now().Add(20 * time.Minute)
 	hhmm := reset.Local().Format("15:04")
-	want := msg("update.error.ratelimit", map[string]string{"time": hhmm})
+	want := msg("update.error.ratelimit", map[string]string{"time": humantime.Format(reset)})
 	rl := &selfupdate.RateLimitError{Reset: reset}
 
 	u := newUpdHarness(t, nil, false)
@@ -336,7 +337,7 @@ func TestChangelogEndpoint(t *testing.T) {
 	u.app.Notes = func(context.Context, string) ([]selfupdate.Note, bool, error) {
 		return nil, false, &selfupdate.RateLimitError{Reset: reset}
 	}
-	want := msg("update.error.ratelimit", map[string]string{"time": reset.Local().Format("15:04")})
+	want := msg("update.error.ratelimit", map[string]string{"time": humantime.Format(reset)})
 	if c := get(); !c.Failed || c.Text != want || c.Releases == nil || len(c.Releases) != 0 {
 		t.Fatalf("rate-limited changelog = %+v", c)
 	}

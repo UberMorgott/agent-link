@@ -93,8 +93,8 @@ function since(row: ActivityLine) {
 }
 function sinceTitle(row: ActivityLine) {
   if (!row.heard) return ''
-  const start = clock(row.since)
-  return fmt("inbox.activity.heard_title", { heard: clock(row.heard) }) + (start ? '\n' + fmt("inbox.activity.since_title", { start }) : '')
+  const start = clock(row.since, { offset: true })
+  return fmt("inbox.activity.heard_title", { heard: clock(row.heard, { offset: true }) }) + (start ? '\n' + fmt("inbox.activity.since_title", { start }) : '')
 }
 
 // --- composer ---
