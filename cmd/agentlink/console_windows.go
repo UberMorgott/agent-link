@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -22,6 +24,24 @@ var (
 	procFreeConsole           = kernel32.NewProc("FreeConsole")
 	procShowWindow            = windows.NewLazySystemDLL("user32.dll").NewProc("ShowWindow")
 )
+
+// isConsole reports whether f is a console (not a pipe or a file).
+func isConsole(f *os.File) bool {
+	var mode uint32
+	return windows.GetConsoleMode(windows.Handle(f.Fd()), &mode) == nil
+}
+
+// hideConsole starts cmd without a console window of its own (an MCP server
+// has no console to share).
+func hideConsole(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
+}
+
+// consoleInputCP is the code page of this process's console input (0: none).
+func consoleInputCP() uint32 {
+	cp, _ := windows.GetConsoleCP()
+	return cp
+}
 
 // gui is set once the app has no console: fatal then shows a message box.
 var gui bool

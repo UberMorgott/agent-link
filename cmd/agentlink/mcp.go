@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"time"
@@ -93,13 +95,15 @@ type (
 
 // runMCP serves the MCP tools on stdin/stdout until the client leaves. An
 // update of the executable does not end it: a client cannot restart a stdio
-// server on its own (a subagent cannot at all), and the tools only call the
-// local API, so the old process keeps serving until its session ends. The
-// updater parks the executable it replaced in a free numbered slot meanwhile.
+// server on its own (a subagent cannot at all), so the old process keeps
+// serving until its session ends. The updater parks the executable it
+// replaced in a free numbered slot meanwhile, and each tool call runs in the
+// new executable (delegateMCP): the session gets the updated tools without a
+// restart.
 func runMCP(cfg config.Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	ss, err := newMCPServer(cfg).Connect(ctx, mcpStdioTransport(os.Stdin, os.Stdout), nil)
+	ss, err := newMCPTools(cfg, freshExecutable()).s.Connect(ctx, mcpStdioTransport(os.Stdin, os.Stdout), nil)
 	if err != nil {
 		return err
 	}
@@ -114,9 +118,24 @@ func runMCP(cfg config.Config) error {
 	}
 }
 
+// mcpTools is the agentlink MCP server and each of its tools' call by name
+// (mcp-call runs one).
+type mcpTools struct {
+	s     *mcp.Server
+	calls map[string]func(json.RawMessage) (any, error)
+	// fresh, when set, names the executable that replaced this one at its
+	// path since it started ("" while none did): the calls run there.
+	fresh func() string
+}
+
 // newMCPServer builds the agentlink MCP server on the local API of cfg.
-func newMCPServer(cfg config.Config) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: mcpServerName, Version: selfupdate.Version}, nil)
+func newMCPServer(cfg config.Config) *mcp.Server { return newMCPTools(cfg, nil).s }
+
+// newMCPTools builds the agentlink MCP server on the local API of cfg, its
+// calls going to the fresh executable once there is one.
+func newMCPTools(cfg config.Config, fresh func() string) *mcpTools {
+	s := &mcpTools{s: mcp.NewServer(&mcp.Implementation{Name: mcpServerName, Version: selfupdate.Version}, nil),
+		calls: map[string]func(json.RawMessage) (any, error){}, fresh: fresh}
 	// proj is the project selector: the argument, else the agent's own project.
 	proj := func(p string) string { return cmp.Or(p, os.Getenv(envProjectID)) }
 	limit := func(n int) int { return cmp.Or(n, 50) }
@@ -170,6 +189,85 @@ func newMCPServer(cfg config.Config) *mcp.Server {
 		return ack(cfg, in.Chat, in.IDs, session, proj(in.Project))
 	})
 	return s
+}
+
+// freshExecutable is the executable that replaced this one at its path since
+// it started ("" while none did).
+func freshExecutable() func() string {
+	path, err := os.Executable()
+	if err != nil {
+		return func() string { return "" }
+	}
+	replaced := fileReplaced(path)
+	return func() string {
+		if replaced() {
+			return path
+		}
+		return ""
+	}
+}
+
+// mcpCallResult is what `agentlink mcp-call` prints: OK once the call ran,
+// with its text or its error.
+type mcpCallResult struct {
+	OK    bool   `json:"ok"`
+	Text  string `json:"text,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// mcpCallArgs are the arguments that run tool in an executable (a test
+// replaces them).
+var mcpCallArgs = func(tool string) []string { return []string{"mcp-call", "--tool", tool} }
+
+// delegateMCP runs tool with args in exe (`agentlink mcp-call`). ok is false
+// when exe did not run it (an executable without mcp-call, not runnable):
+// the caller runs it here then.
+func delegateMCP(ctx context.Context, exe, tool string, args json.RawMessage) (r mcpCallResult, ok bool) {
+	cmd := exec.CommandContext(ctx, exe, mcpCallArgs(tool)...) //nolint:gosec // G204: this program's own updated executable
+	cmd.Stdin = bytes.NewReader(args)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	hideConsole(cmd)
+	_ = cmd.Run() // the printed result counts, not the exit code
+	if json.Unmarshal(bytes.TrimSpace(out.Bytes()), &r) != nil || !r.OK {
+		return mcpCallResult{}, false
+	}
+	return r, true
+}
+
+// runMCPCall runs one MCP tool, its arguments JSON on in, and prints its
+// mcpCallResult: what an MCP server whose executable was updated calls.
+func runMCPCall(cfg config.Config, tool string, in io.Reader, out io.Writer) error {
+	raw, err := io.ReadAll(io.LimitReader(in, maxBodyFile+1))
+	if err != nil {
+		return err
+	}
+	r := mcpCallResult{OK: true}
+	if call := newMCPTools(cfg, nil).calls[tool]; call == nil {
+		r.Error = "unknown tool " + tool
+	} else if r.Text, err = mcpText(call(raw)); err != nil {
+		r.Error = err.Error()
+	}
+	return json.NewEncoder(out).Encode(r)
+}
+
+// mcpText is a tool's answer as its text: v's JSON ("[]" for none), or err
+// with the API's own message.
+func mcpText(v any, err error) (string, error) {
+	if err != nil {
+		if ae, ok := errors.AsType[*apiError](err); ok && ae.msg != "" {
+			err = errors.New(ae.msg) // the API's message, verbatim
+		}
+		return "", err
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(string(data)) == "null" {
+		data = []byte("[]") // an empty list
+	}
+	return string(data), nil
 }
 
 // mcpSendMessage validates the routing mode and sends.
@@ -245,31 +343,44 @@ func compactDiscuss(r discussResult) discussBrief {
 }
 
 // addTool registers a tool whose answer is the JSON of f's value as text.
-func addTool[In any](s *mcp.Server, name, desc string, f func(In) (any, error)) {
+func addTool[In any](s *mcpTools, name, desc string, f func(In) (any, error)) {
 	addToolArgs(s, name, desc, func(in In, _ json.RawMessage) (any, error) { return f(in) })
 }
 
-// addToolArgs is addTool whose f also gets the call's raw arguments.
-func addToolArgs[In any](s *mcp.Server, name, desc string, f func(In, json.RawMessage) (any, error)) {
-	mcp.AddTool(s, &mcp.Tool{Name: name, Description: desc}, func(_ context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
+// addToolArgs is addTool whose f also gets the call's raw arguments. Once
+// the executable was updated, the call runs in the new one (delegateMCP).
+func addToolArgs[In any](s *mcpTools, name, desc string, f func(In, json.RawMessage) (any, error)) {
+	s.calls[name] = func(raw json.RawMessage) (any, error) {
+		var in In
+		if len(bytes.TrimSpace(raw)) > 0 {
+			if err := json.Unmarshal(raw, &in); err != nil {
+				return nil, err
+			}
+		}
+		return f(in, raw)
+	}
+	mcp.AddTool(s.s, &mcp.Tool{Name: name, Description: desc}, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 		var args json.RawMessage
 		if req != nil && req.Params != nil {
 			args = req.Params.Arguments
 		}
-		v, err := f(in, args)
-		if err != nil {
-			if ae, ok := errors.AsType[*apiError](err); ok && ae.msg != "" {
-				err = errors.New(ae.msg) // the API's message, verbatim
+		if s.fresh != nil {
+			if exe := s.fresh(); exe != "" {
+				if r, ok := delegateMCP(ctx, exe, name, args); ok {
+					if r.Error != "" {
+						return nil, nil, errors.New(r.Error)
+					}
+					return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: r.Text}}}, nil, nil
+				}
+				if ctx.Err() != nil {
+					return nil, nil, ctx.Err()
+				}
 			}
-			return nil, nil, err
 		}
-		data, err := json.Marshal(v)
+		text, err := mcpText(f(in, args))
 		if err != nil {
 			return nil, nil, err
 		}
-		if strings.TrimSpace(string(data)) == "null" {
-			data = []byte("[]") // an empty list
-		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}}, nil, nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
 	})
 }

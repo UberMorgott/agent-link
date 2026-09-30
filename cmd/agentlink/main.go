@@ -194,7 +194,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 				if *compact {
 					out = compactDiscuss(result)
 				}
-				if encodeErr := json.NewEncoder(stdout).Encode(out); encodeErr != nil {
+				if encodeErr := newJSONEncoder(stdout).Encode(out); encodeErr != nil {
 					return 1, encodeErr
 				}
 			}
@@ -273,6 +273,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmd = func(c config.Config) (int, error) { return 0, projects(c, stdout) }
 	case "mcp":
 		cmd = func(c config.Config) (int, error) { return 0, runMCP(c) }
+	case "mcp-call":
+		// Internal: an MCP server whose executable was updated runs its tool
+		// calls in the new one (delegateMCP).
+		tool := fs.String("tool", "", "MCP tool to run; its arguments JSON on stdin")
+		cmd = func(c config.Config) (int, error) { return 0, runMCPCall(c, *tool, os.Stdin, stdout) }
 	case "add":
 		addr := fs.String("addr", "", "IP or host of a member, port optional")
 		cmd = func(c config.Config) (int, error) {
@@ -860,7 +865,7 @@ func sessionPin(cfg config.Config, session, project string, remove bool, stdout 
 	if err := apiJSON(method, apiURL(cfg, "/session-pin", withProject(nil, project)), node.PinSessionRequest{SessionID: session}, &p); err != nil {
 		return err
 	}
-	return json.NewEncoder(stdout).Encode(p)
+	return newJSONEncoder(stdout).Encode(p)
 }
 
 // projects prints the projects of the desktop app, one JSON line each.
@@ -1025,7 +1030,7 @@ func printLines[T any](r io.Reader, w io.Writer) error {
 
 // encodeLines prints one compact JSON object per line.
 func encodeLines[T any](w io.Writer, items []T) error {
-	enc := json.NewEncoder(w)
+	enc := newJSONEncoder(w)
 	for _, it := range items {
 		if err := enc.Encode(it); err != nil {
 			return err

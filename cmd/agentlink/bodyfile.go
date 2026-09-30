@@ -48,11 +48,26 @@ func messageText(body, file, flag string) (string, error) {
 		return "", fmt.Errorf("%s: text larger than %d MB", flag, maxBodyFile>>20)
 	}
 	text, err := decodeText(data)
+	if err != nil && file == "-" {
+		return "", fmt.Errorf("%s -: stdin %w%s", flag, err, stdinHint(consoleInputCP()))
+	}
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", flag, err)
 	}
 	// A file or a pipe ends with a line break the text does not mean.
 	return strings.TrimRight(text, "\r\n"), nil
+}
+
+// stdinHint tells how stdin text reaches agentlink as UTF-8: a shell pipes a
+// string in its output encoding (PowerShell's $OutputEncoding), cmd's type the
+// file's bytes; a guessed code page (cp, the console's; 65001 is UTF-8) would
+// garble the text silently, so it is refused with the way out.
+func stdinHint(cp uint32) string {
+	h := "; pipe UTF-8 (PowerShell: $OutputEncoding = [Text.UTF8Encoding]::new($false)) or pass --body-file <UTF-8 file>"
+	if cp != 0 && cp != 65001 {
+		h = fmt.Sprintf(" (console code page %d)%s", cp, h)
+	}
+	return h
 }
 
 // decodeText is data as text: UTF-8 (a BOM dropped), or UTF-16 with its BOM
