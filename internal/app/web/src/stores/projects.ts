@@ -41,8 +41,9 @@ export function historyOrder(list: ChatInfo[] | null | undefined): ChatInfo[] {
 }
 
 // The join dialog: invite → connecting (until the shared name arrives) →
-// folder (bind a folder and an alias) → done.
-export type JoinStep = 'invite' | 'connecting' | 'folder'
+// folder (bind a folder and an alias) → done; error when the joined project
+// fails before it has a name (joinProblem says why) or leaves the list.
+export type JoinStep = 'invite' | 'connecting' | 'folder' | 'error'
 
 // The dialogs of a project's menu, and those that make or join a project.
 export type ProjectDialog = '' | 'members' | 'agents' | 'autonomy' | 'history' | 'invite' | 'name' | 'folder' | 'leave' | 'create' | 'join'
@@ -68,6 +69,7 @@ export const useProjectsStore = defineStore('projects', () => {
   const joinStep = ref<JoinStep>('invite')
   const joinProject = ref('')
   const joinCreated = ref(false)
+  const joinProblem = ref('')
 
   const chatTickets = new Map<string, number>()
   // left: projects this page left; the app's late project:<pid> events for
@@ -303,6 +305,7 @@ export const useProjectsStore = defineStore('projects', () => {
     joinStep.value = 'invite'
     joinProject.value = ''
     joinCreated.value = false
+    joinProblem.value = ''
   }
 
   // join sends the invite. A project that was here already opens as it is
@@ -318,19 +321,22 @@ export const useProjectsStore = defineStore('projects', () => {
     joinCreated.value = !!result.created
     if (result.created) {
       chats.value = { ...chats.value, [result.project.id]: [] }
-      joinStep.value = joinNamed() ? 'folder' : 'connecting'
+      joinStep.value = 'connecting'
+      joinProgress()
     }
     return result
   }
 
-  function joinNamed(): boolean {
-    const view = byID(joinProject.value)
-    return !!view && (view.legacy || !!view.name)
-  }
-
-  // joinProgress moves a waiting join on once the shared name has arrived.
+  // joinProgress moves a waiting join on: to the folder once the shared name
+  // has arrived, to the error when the project failed or is gone.
   function joinProgress() {
-    if (joinStep.value === 'connecting' && joinNamed()) joinStep.value = 'folder'
+    if (joinStep.value !== 'connecting') return
+    const view = byID(joinProject.value)
+    if (view && (view.legacy || view.name)) joinStep.value = 'folder'
+    else if (!view || view.state === 'error' || view.problem) {
+      joinProblem.value = view?.problem || 'unknown_project'
+      joinStep.value = 'error'
+    }
   }
 
   // joinCancel leaves a project only this join created; it never leaves one
@@ -339,7 +345,7 @@ export const useProjectsStore = defineStore('projects', () => {
     const pid = joinProject.value
     const created = joinCreated.value
     joinReset()
-    if (pid && created) await leave(pid)
+    if (pid && created && byID(pid)) await leave(pid)
   }
 
   // --- the project dialogs (ProjectDialogs.vue): one open at a time ---
@@ -383,7 +389,7 @@ export const useProjectsStore = defineStore('projects', () => {
   return {
     expanded, setExpanded, lastLive,
     list, chats, history, refreshHistory, colorOf, displayOf, seats, refreshSeats, seatAction, current, currentProject, hasLegacy, loaded, invite, inviteFor,
-    joinStep, joinProject, joinCreated,
+    joinStep, joinProject, joinCreated, joinProblem,
     byID, upsert, listSettled, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped,
     open, landing, create, rename, bind, resumeAutonomy, stopAutonomy, addMember, removeMember, leave, createChat, revealInvite, hideInvite,
     joinReset, join, joinProgress, joinCancel, dialog, dialogProject, openDialog, closeDialog,

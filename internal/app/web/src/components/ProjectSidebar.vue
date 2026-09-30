@@ -6,7 +6,7 @@ import LocalChatGroup, { type LocalChatRow } from '@/components/LocalChatGroup.v
 import ProjectMenu from '@/components/ProjectMenu.vue'
 import UserChip from '@/components/UserChip.vue'
 import VersionBadge from '@/components/VersionBadge.vue'
-import { isUnread, projectDot } from '@/lib/chat'
+import { isUnread, projectDot, projectTitle } from '@/lib/chat'
 import { icon } from '@/lib/icons'
 import { chatLabel, groupLocalChats, isTemporary } from '@/lib/localChats'
 import { openProject } from '@/lib/nav'
@@ -35,7 +35,7 @@ function row(p: NonNullable<typeof projects.list>[number]) {
   const dot = projectDot(p, app.self)
   return {
     p,
-    name: p.display || t("projects.connecting"),
+    name: projectTitle(p),
     dot: dot.cls,
     dotLabel: dot.label,
     unread: unread(p.id),

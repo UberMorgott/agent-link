@@ -3,6 +3,7 @@ import { computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
 import ChatRow from '@/components/ChatRow.vue'
+import { projectTitle } from '@/lib/chat'
 import { icon } from '@/lib/icons'
 import { navigate } from '@/lib/nav'
 import { fmt, t } from '@/lib/runtime'
@@ -19,7 +20,7 @@ const router = useRouter()
 
 const pid = computed(() => String(route.params.project || ''))
 const view = computed(() => projects.byID(pid.value))
-const name = computed(() => view.value?.display || t("projects.connecting"))
+const name = computed(() => projectTitle(view.value))
 const legacy = computed(() => !!view.value?.legacy)
 const chats = computed(() => projects.chats[pid.value] || [])
 const active = computed(() => (legacy.value ? null : inbox.activeChat(pid.value)))
@@ -87,7 +88,11 @@ watch(() => [projects.list, pid.value] as const, ([list, id]) => {
       id="project_empty"
       class="flex h-full flex-col items-center justify-center gap-4 px-4 text-center"
     >
-      <h1 class="text-xl">
+      <!-- A project without a name that failed says why in the line below. -->
+      <h1
+        v-if="view?.display || view?.state === 'connecting'"
+        class="text-xl"
+      >
         {{ view?.state === 'connecting' ? name : fmt("project.empty", { name }) }}
       </h1>
       <p

@@ -69,6 +69,14 @@ export function whoColor(name: string, own = ''): string { return 'var(--who-' +
 
 export interface ProjectDot { cls: 'none' | 'one' | 'many'; label: string }
 
+// projectTitle is how a project is named on screen: its display name; a
+// project without one yet is connecting, or says what keeps it from working.
+export function projectTitle(p: ProjectView | null | undefined): string {
+  if (p?.display) return p.display
+  if (p?.problem) return t('project.problem.' + p.problem)
+  return t('projects.connecting')
+}
+
 // projectDot: grey with no agent session open anywhere in the project, yellow
 // with one computer, green with two or more different computers (this one
 // counts too). Its tooltip names them and who is online.

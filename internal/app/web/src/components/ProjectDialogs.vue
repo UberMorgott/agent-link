@@ -7,7 +7,7 @@ import AutonomySettings from '@/components/AutonomySettings.vue'
 import { pickFolder } from '@/lib/folders'
 import { icon } from '@/lib/icons'
 import { navigate, openChat, openProject } from '@/lib/nav'
-import { authorName, when } from '@/lib/chat'
+import { authorName, projectTitle, when } from '@/lib/chat'
 import { browser, fmt, t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore } from '@/stores/inbox'
@@ -21,7 +21,7 @@ const inbox = useInboxStore()
 const app = useAppStore()
 
 const view = computed(() => projects.byID(projects.dialogProject))
-const name = computed(() => view.value?.display || t("projects.connecting"))
+const name = computed(() => projectTitle(view.value))
 const result = ref('')
 const busy = ref(false)
 

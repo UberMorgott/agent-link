@@ -103,6 +103,31 @@ describe('the projects store', () => {
     expect(projects.byID(SITE)).not.toBeNull()
   })
 
+  it('joins: a project that fails before its name, or leaves the list, ends the wait with why', async () => {
+    const { backend, calls } = fakeBackend()
+    backend.projects = backend.projects.filter((p) => p.id !== JOINING)
+    const projects = useProjectsStore()
+    await projects.refreshList()
+    await projects.join('ALP1.NEW', '')
+    const joined = projects.byID(JOINING)!
+    projects.upsert({ ...joined, state: 'error', problem: 'auth', name: '', display: '' })
+    await nextTick()
+    expect(projects.joinStep).toBe('error')
+    expect(projects.joinProblem).toBe('auth')
+    await projects.joinCancel()
+    expect(calls).toContain('POST projects/' + JOINING + '/leave')
+
+    await projects.join('ALP1.NEW', '')
+    expect(projects.joinStep).toBe('connecting')
+    projects.list = (projects.list || []).filter((p) => p.id !== JOINING)
+    await nextTick()
+    expect(projects.joinStep).toBe('error')
+    expect(projects.joinProblem).toBe('unknown_project')
+    const leaves = calls.filter((c) => c.endsWith('/leave')).length
+    await projects.joinCancel()
+    expect(calls.filter((c) => c.endsWith('/leave'))).toHaveLength(leaves)
+  })
+
   it('remembers the last project for /inbox and opens the next one after leaving', async () => {
     fakeBackend()
     const projects = useProjectsStore()
