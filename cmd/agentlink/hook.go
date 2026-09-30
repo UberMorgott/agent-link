@@ -302,7 +302,7 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		endSession(env, path, in.SessionID)
 		return nil
 	}
-	unlock, err := lockFile(context.Background(), path+".lock")
+	unlock, err := lockFile(path + ".lock")
 	if err != nil {
 		quiet()
 		return err
@@ -541,7 +541,7 @@ func codexHome() string {
 // endSession ends the session's activity, deregisters it and marks its state
 // ended, which stops its waiter.
 func endSession(env hookEnv, path, sid string) {
-	unlock, err := lockFile(context.Background(), path+".lock")
+	unlock, err := lockFile(path + ".lock")
 	if err == nil {
 		defer unlock()
 	}
@@ -955,8 +955,8 @@ const hookLockWait = 2 * time.Second
 // lockFile serializes hooks of one session (Claude Code runs PostToolUse hooks
 // of parallel tool calls at the same time): an OS lock, released with its
 // holder, never taken over by a staleness guess.
-func lockFile(ctx context.Context, path string) (func(), error) {
-	return fileutil.Lock(ctx, path, hookLockWait)
+func lockFile(path string) (func(), error) {
+	return fileutil.Lock(path, hookLockWait)
 }
 
 // pruneHookState removes state files of sessions not seen for hookStateTTL; a

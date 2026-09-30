@@ -30,14 +30,14 @@ func TestHookRoutesRepliesToTheAskingSubagent(t *testing.T) {
 		t.Fatal("no key")
 	}
 	now := c.now
-	if agent, typ := takeAskStamp(t.Context(), c.env.dir, c.sid, key, "q?", now); agent != "a1" || typ != "Explore" {
+	if agent, typ := takeAskStamp(c.env.dir, c.sid, key, "q?", now); agent != "a1" || typ != "Explore" {
 		t.Fatalf("stamp: %q %q", agent, typ)
 	}
-	if agent, _ := takeAskStamp(t.Context(), c.env.dir, c.sid, key, "q?", now); agent != "" {
+	if agent, _ := takeAskStamp(c.env.dir, c.sid, key, "q?", now); agent != "" {
 		t.Fatalf("stamp taken twice: %q", agent)
 	}
 	mainKey, _ := mcpAskKey("send", []byte(`{"chat":"c1","body":"main q"}`))
-	if agent, _ := takeAskStamp(t.Context(), c.env.dir, c.sid, mainKey, "main q", now); agent != "" {
+	if agent, _ := takeAskStamp(c.env.dir, c.sid, mainKey, "main q", now); agent != "" {
 		t.Fatalf("the main agent's ask got a subagent: %q", agent)
 	}
 
@@ -83,10 +83,10 @@ func TestHookCLIAskStampAndAgentExpiry(t *testing.T) {
 	if n := len(c.state(hookClaude).Stamps); n != 2 {
 		t.Fatalf("stamps: %d", n)
 	}
-	if agent, _ := takeAskStamp(t.Context(), c.env.dir, c.sid, cliAskKey, "other text", c.now); agent != "" {
+	if agent, _ := takeAskStamp(c.env.dir, c.sid, cliAskKey, "other text", c.now); agent != "" {
 		t.Fatalf("main CLI ask got %q", agent)
 	}
-	if agent, typ := takeAskStamp(t.Context(), c.env.dir, c.sid, cliAskKey, "hello there friend", c.now); agent != "a2" || typ != "Plan" {
+	if agent, typ := takeAskStamp(c.env.dir, c.sid, cliAskKey, "hello there friend", c.now); agent != "a2" || typ != "Plan" {
 		t.Fatalf("subagent CLI ask: %q %q", agent, typ)
 	}
 	if !slices.Equal(liveAgentIDs(c.state(hookClaude)), []string{"a2"}) {
@@ -111,23 +111,23 @@ func TestHookAskStampAmbiguityStaysWithParent(t *testing.T) {
 	c.run(hookClaude, evPreTool, `,"agent_id":"a2","agent_type":"Plan"`+tool)
 	key, _ := mcpAskKey("send", []byte(`{"chat":"c1","body":"same"}`))
 	// a2's call runs first: no stamp may name a1 (or a2).
-	if agent, _ := takeAskStamp(t.Context(), c.env.dir, c.sid, key, "same", c.now); agent != "" {
+	if agent, _ := takeAskStamp(c.env.dir, c.sid, key, "same", c.now); agent != "" {
 		t.Fatalf("ambiguous ask routed to %q", agent)
 	}
 	// a1's call ended (PostToolUse drops its stamp): a2's alone is certain.
 	c.run(hookClaude, evPostTool, `,"agent_id":"a1","agent_type":"Explore"`+tool)
-	if agent, _ := takeAskStamp(t.Context(), c.env.dir, c.sid, key, "same", c.now); agent != "a2" {
+	if agent, _ := takeAskStamp(c.env.dir, c.sid, key, "same", c.now); agent != "a2" {
 		t.Fatalf("after a1 ended: %q", agent)
 	}
 
 	c.run(hookClaude, evPreTool, `,"agent_id":"a3","tool_name":"Bash","tool_input":{"command":"agentlink send --chat c1 --body-file q.txt"}`)
 	for _, body := range []string{"", "text the command does not hold", askNeedle("", "-")} {
-		if agent, _ := takeAskStamp(t.Context(), c.env.dir, c.sid, cliAskKey, body, c.now); agent != "" {
+		if agent, _ := takeAskStamp(c.env.dir, c.sid, cliAskKey, body, c.now); agent != "" {
 			t.Fatalf("unmatched CLI ask (%q) routed to %q", body, agent)
 		}
 	}
 	// A text file's ask is matched by its path on the command line.
-	if agent, _ := takeAskStamp(t.Context(), c.env.dir, c.sid, cliAskKey, askNeedle("", "q.txt"), c.now); agent != "a3" {
+	if agent, _ := takeAskStamp(c.env.dir, c.sid, cliAskKey, askNeedle("", "q.txt"), c.now); agent != "a3" {
 		t.Fatalf("--body-file ask: %q", agent)
 	}
 }
@@ -158,7 +158,7 @@ func TestHookAskStampDroppedOnFailureAndStop(t *testing.T) {
 func TestHookAskWithoutStampOrInCodexStaysWithParent(t *testing.T) {
 	c := newHookCase(t)
 	key, _ := mcpAskKey("send", []byte(`{"chat":"c1","body":"q"}`))
-	if agent, _ := takeAskStamp(t.Context(), c.env.dir, c.sid, key, "q", c.now); agent != "" {
+	if agent, _ := takeAskStamp(c.env.dir, c.sid, key, "q", c.now); agent != "" {
 		t.Fatalf("no hook state: %q", agent)
 	}
 	c.run(hookCodex, evSessionStart)
@@ -167,12 +167,12 @@ func TestHookAskWithoutStampOrInCodexStaysWithParent(t *testing.T) {
 	if st := c.state(hookCodex); len(st.Stamps) != 0 || len(st.Live) != 0 {
 		t.Fatalf("Codex stamped: %+v %+v", st.Stamps, st.Live)
 	}
-	if agent, _ := takeAskStamp(t.Context(), c.env.dir, c.sid, key, "q", c.now); agent != "" {
+	if agent, _ := takeAskStamp(c.env.dir, c.sid, key, "q", c.now); agent != "" {
 		t.Fatalf("Codex ask routed to %q", agent)
 	}
 	t.Setenv(envClaudeSession, "")
 	t.Setenv(envCodexThread, c.sid)
-	if agent, _ := askOrigin(t.Context(), key, "q"); agent != "" {
+	if agent, _ := askOrigin(key, "q"); agent != "" {
 		t.Fatalf("askOrigin in Codex: %q", agent)
 	}
 

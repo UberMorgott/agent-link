@@ -1,12 +1,14 @@
 // Package agenthook edits the hook settings of Claude Code and Codex so their
 // sessions run `agentlink hook <client>`: Install adds (or updates) the
-// agentlink entries, Remove takes out only those. A settings file keeps its
+// agentlink handlers, Remove takes out only those. A settings file keeps its
 // other content and key order; the previous version is saved next to it as
 // *.agentlink.bak.
 package agenthook
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +17,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/UberMorgott/agent-link/internal/fileutil"
 )
 
 // Clients.
@@ -128,29 +133,48 @@ func Handlers(client, exe, ev string) []Handler {
 	return out
 }
 
-// isAgentlink reports whether a matcher group runs `agentlink hook client`.
-func isAgentlink(group json.RawMessage, client string) bool {
-	var g struct {
-		Hooks []struct {
-			Command string   `json:"command"`
-			Args    []string `json:"args"`
-		} `json:"hooks"`
+// isAgentlink reports whether a hook handler runs `agentlink hook client`.
+func isAgentlink(handler json.RawMessage, client string) bool {
+	var h struct {
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
 	}
-	if json.Unmarshal(group, &g) != nil {
+	if json.Unmarshal(handler, &h) != nil {
 		return false
 	}
-	for _, h := range g.Hooks {
-		line := strings.ToLower(h.Command + " " + strings.Join(h.Args, " "))
-		if strings.Contains(line, "agentlink") && strings.Contains(line, "hook "+client) {
-			return true
-		}
-	}
-	return false
+	line := strings.ToLower(h.Command + " " + strings.Join(h.Args, " "))
+	return strings.Contains(line, "agentlink") && strings.Contains(line, "hook "+client)
 }
 
-// Install adds (or updates) the agentlink matcher group of every event in the
-// settings file at path, creating it and its folder when missing; an older
-// agentlink group (fewer events, no waiter) is replaced in place. It reports
+// withoutAgentlink is matcher group g without its agentlink handlers of
+// client (had: it held some); nil when none of its handlers is left. The
+// group keeps its other keys and handlers as they were.
+func withoutAgentlink(g json.RawMessage, client string) (rest json.RawMessage, had bool) {
+	obj, err := decodeObject(g)
+	if err != nil {
+		return g, false
+	}
+	raw, _ := obj.get("hooks")
+	var handlers []json.RawMessage
+	if json.Unmarshal(raw, &handlers) != nil {
+		return g, false
+	}
+	kept := slices.DeleteFunc(slices.Clone(handlers), func(h json.RawMessage) bool { return isAgentlink(h, client) })
+	if len(kept) == len(handlers) {
+		return g, false
+	}
+	if len(kept) == 0 {
+		return nil, true
+	}
+	obj.set("hooks", mustJSON(kept))
+	return obj.encode(), true
+}
+
+// Install adds (or updates) agentlink's matcher group of every event in the
+// settings file at path, creating it and its folder when missing. Only
+// agentlink's own handlers change: an older agentlink group (fewer events, no
+// waiter) is replaced in place, and an agentlink handler inside a group of
+// the user's is taken out of it, the user's handlers staying. It reports
 // whether the file changed.
 func Install(path, client, exe string) (bool, error) {
 	return edit(path, EventsFor(client), func(ev string, groups []json.RawMessage) []json.RawMessage {
@@ -162,30 +186,62 @@ func Install(path, client, exe string) (bool, error) {
 			group.Matcher = "*"
 		}
 		want := json.RawMessage(bytes.TrimSpace(mustJSON(group)))
-		for i, g := range groups {
-			if isAgentlink(g, client) {
-				groups[i] = want
-				return groups
+		out, placed := make([]json.RawMessage, 0, len(groups)+1), false
+		for _, g := range groups {
+			rest, had := withoutAgentlink(g, client)
+			switch {
+			case !had:
+				out = append(out, g)
+			case rest != nil:
+				out = append(out, rest) // the user's handlers of a shared group
+			case !placed:
+				out, placed = append(out, want), true // agentlink's own group, in place
 			}
 		}
-		return append(groups, want)
+		if !placed {
+			out = append(out, want)
+		}
+		return out
 	})
 }
 
-// Remove takes the agentlink matcher groups of client out of the settings file
-// at path; other hooks stay. A missing file is nothing to remove.
+// Remove takes the agentlink handlers of client out of the settings file at
+// path, and a matcher group they leave empty; other hooks stay. A missing
+// file is nothing to remove.
 func Remove(path, client string) (bool, error) {
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
 	return edit(path, EventsFor(client), func(_ string, groups []json.RawMessage) []json.RawMessage {
-		return slices.DeleteFunc(groups, func(g json.RawMessage) bool { return isAgentlink(g, client) })
+		var out []json.RawMessage
+		for _, g := range groups {
+			if rest, _ := withoutAgentlink(g, client); rest != nil {
+				out = append(out, rest)
+			}
+		}
+		return out
 	})
 }
 
+// editLockWait bounds the wait for another edit of the same settings file.
+const editLockWait = 10 * time.Second
+
 // edit rewrites the matcher groups of each of events with change. An event
-// left without groups is dropped, and so is an empty "hooks".
+// left without groups is dropped, and so is an empty "hooks". Edits of one
+// file are serialized across processes (the app's folder hooks, `agentlink
+// hook install`): the read-modify-write never loses another edit. The lock
+// file lives in the temporary folder, never next to the user's settings.
 func edit(path string, events []string, change func(ev string, groups []json.RawMessage) []json.RawMessage) (bool, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false, err
+	}
+	sum := sha256.Sum256([]byte(strings.ToLower(abs)))
+	unlock, err := fileutil.Lock(filepath.Join(os.TempDir(), "agentlink-hooks-"+hex.EncodeToString(sum[:8])+".lock"), editLockWait)
+	if err != nil {
+		return false, fmt.Errorf("%s: another edit holds it: %w", path, err)
+	}
+	defer unlock()
 	old, err := os.ReadFile(filepath.Clean(path))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return false, err
@@ -237,7 +293,7 @@ func edit(path string, events []string, change func(ev string, groups []json.Raw
 			return false, err
 		}
 	}
-	return true, writeFileAtomic(path, out.Bytes())
+	return true, fileutil.WriteAtomic(path, out.Bytes())
 }
 
 // ExcludeFromGit lists file (inside the git work tree dir) in the repository's
@@ -265,7 +321,7 @@ func ExcludeFromGit(dir, file string) error {
 	if len(old) > 0 && !bytes.HasSuffix(old, []byte("\n")) {
 		old = append(old, '\n')
 	}
-	return writeFileAtomic(path, append(old, line+"\n"...))
+	return fileutil.WriteAtomic(path, append(old, line+"\n"...))
 }
 
 // IsDir reports whether path is an existing folder.
@@ -355,27 +411,6 @@ func (o object) encode() []byte {
 	}
 	b.WriteByte('}')
 	return b.Bytes()
-}
-
-// writeFileAtomic replaces path with data through a temporary file.
-func writeFileAtomic(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmp.Name())
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
 }
 
 // mustJSON encodes v without HTML escaping; v is always encodable here.

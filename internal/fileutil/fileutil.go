@@ -4,7 +4,7 @@
 package fileutil
 
 import (
-	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
@@ -50,25 +50,32 @@ func WriteAtomic(path string, data []byte) error {
 // lockRetry is how often Lock tries again while another process holds the lock.
 const lockRetry = 20 * time.Millisecond
 
+// ErrLocked: another process held the lock for the whole wait.
+var ErrLocked = errors.New("locked by another process")
+
 // Lock takes the exclusive lock of the file at path (created when missing),
-// waiting up to wait (or until ctx ends) for another holder. The operating system owns the lock:
-// it is released by unlock, or when the holding process dies, and a slow
-// holder cannot lose it to a staleness guess. The file itself stays.
-func Lock(ctx context.Context, path string, wait time.Duration) (unlock func(), err error) {
+// waiting up to wait for another holder (ErrLocked). The operating system
+// owns the lock: it is released by unlock, or when the holding process dies,
+// and a slow holder cannot lose it to a staleness guess. The file itself
+// stays.
+func Lock(path string, wait time.Duration) (unlock func(), err error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 	l := flock.New(path)
-	ctx, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-	ok, err := l.TryLockContext(ctx, lockRetry)
-	if !ok {
-		if err == nil {
-			err = context.DeadlineExceeded
+	deadline := time.Now().Add(wait)
+	for {
+		ok, err := l.TryLock()
+		switch {
+		case err != nil:
+			return nil, err
+		case ok:
+			return func() { _ = l.Unlock() }, nil
+		case time.Now().After(deadline):
+			return nil, ErrLocked
 		}
-		return nil, err
+		time.Sleep(lockRetry)
 	}
-	return func() { _ = l.Unlock() }, nil
 }
 
 // TryLock takes the exclusive lock of the file at path (Lock) only if nobody

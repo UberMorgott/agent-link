@@ -22,7 +22,6 @@ package main
 import (
 	"bytes"
 	"cmp"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -248,12 +247,12 @@ func hookStateDir() (string, error) {
 // takeAskStamp is the subagent of Claude Code session sid that runs the ask
 // of key (askKey) right now, from the stamp its PreToolUse left: "" for the
 // main agent, or when no hook saw the call (older hooks, a Codex session).
-func takeAskStamp(ctx context.Context, dir, sid, key, body string, now time.Time) (agent, typ string) {
+func takeAskStamp(dir, sid, key, body string, now time.Time) (agent, typ string) {
 	if dir == "" || sid == "" || key == "" {
 		return "", ""
 	}
 	path := hookStatePath(dir, hookClaude, sid)
-	unlock, err := lockFile(ctx, path+".lock")
+	unlock, err := lockFile(path + ".lock")
 	if err != nil {
 		return "", ""
 	}
@@ -272,7 +271,7 @@ func takeAskStamp(ctx context.Context, dir, sid, key, body string, now time.Time
 
 // askOrigin is the subagent of this process's Claude Code session that runs
 // the ask of key (takeAskStamp); none outside a Claude Code session.
-func askOrigin(ctx context.Context, key, body string) (agent, typ string) {
+func askOrigin(key, body string) (agent, typ string) {
 	sid, client := agentSession()
 	if client != hookClaude {
 		return "", ""
@@ -281,7 +280,7 @@ func askOrigin(ctx context.Context, key, body string) (agent, typ string) {
 	if err != nil {
 		return "", ""
 	}
-	return takeAskStamp(ctx, dir, sid, key, body, time.Now())
+	return takeAskStamp(dir, sid, key, body, time.Now())
 }
 
 // agentQuery asks the node for this run's messages before it cuts the page

@@ -21,7 +21,6 @@ package main
 // before the entry's timeout.
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -135,7 +134,7 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 // SubagentStop is still busy, and a keep-alive that called it idle showed an
 // agent at work as waiting for a question. It reports whether the node took it.
 func keepAlive(env hookEnv, client, sid, folder, path string) bool {
-	unlock, err := lockFile(context.Background(), path+".lock")
+	unlock, err := lockFile(path + ".lock")
 	if err != nil {
 		return false
 	}
@@ -177,7 +176,7 @@ func pendingUnread(env hookEnv, folder, session string, st *hookState) bool {
 // wake, on stderr with the wake's marker. done is false when there was nothing after all or the
 // session became busy.
 func wakeWith(client, sid, folder, path string, stderr io.Writer, env hookEnv, busyFor time.Duration) (int, bool) {
-	unlock, err := lockFile(context.Background(), path+".lock")
+	unlock, err := lockFile(path + ".lock")
 	if err != nil {
 		return 0, false
 	}

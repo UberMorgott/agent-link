@@ -12,11 +12,11 @@ import (
 // taker gets it at once.
 func TestLockIsExclusiveAndOwned(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "x.lock")
-	unlock, err := Lock(t.Context(), path, time.Second)
+	unlock, err := Lock(path, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Lock(t.Context(), path, 50*time.Millisecond); err == nil {
+	if _, err := Lock(path, 50*time.Millisecond); err == nil {
 		t.Fatal("a second holder got a held lock")
 	}
 	if _, ok := TryLock(path); ok {
