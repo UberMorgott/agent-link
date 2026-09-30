@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -195,6 +196,48 @@ func TestLeaveLegacy(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(a.dataRoot(), "node_id")); err != nil {
 		t.Fatalf("legacy data gone: %v", err)
+	}
+}
+
+// Every binding the settings allow runs a context: local chats past the
+// Hub's old cap of 32 contexts open like the first ones (they were saved with
+// no context: "connecting" forever, every chat call 404). A binding left
+// without one says so (not_running) instead of connecting forever.
+func TestEveryLocalChatRuns(t *testing.T) {
+	if node.MaxHubProjects < settings.MaxProjects+settings.MaxLocalChats {
+		t.Fatalf("Hub cap %d below the bindings settings allow (%d)", node.MaxHubProjects, settings.MaxProjects+settings.MaxLocalChats)
+	}
+	folder := newBinding(t, t.TempDir())
+	folder.Scope = settings.ProjectScopeLocal
+	a := startApp(t, settings.Settings{Bindings: []settings.ProjectBinding{folder}})
+	var pids []string
+	a.mu.Lock()
+	for i := range 40 {
+		lc := &settings.LocalChat{Topic: "t" + strconv.Itoa(i), Project: folder.ID, Folder: folder.Dir, LastUsed: time.Now().UTC()}
+		pid, err := a.addLocalLocked(t.Context(), "", lc, lc.Topic)
+		if err != nil {
+			a.mu.Unlock()
+			t.Fatalf("local chat %d: %v", i, err)
+		}
+		pids = append(pids, pid)
+	}
+	a.mu.Unlock()
+	for _, pid := range pids {
+		a.mu.Lock()
+		v, ok := a.projectViewLocked(pid)
+		running := a.projects[pid] != nil
+		a.mu.Unlock()
+		if !ok || !running || v.State != ProjectReady || v.Problem != "" {
+			t.Fatalf("local chat %s: running=%v view=%+v", pid, running, v)
+		}
+	}
+	last := pids[len(pids)-1]
+	a.mu.Lock()
+	a.stopContextLocked(a.projects[last])
+	v, _ := a.projectViewLocked(last)
+	a.mu.Unlock()
+	if v.State != ProjectError || v.Problem != "not_running" {
+		t.Fatalf("binding with no context: %+v", v)
 	}
 }
 

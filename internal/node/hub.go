@@ -72,7 +72,10 @@ type HubConfig struct {
 // Hub limits.
 const (
 	// MaxHubProjects caps the project contexts of one Hub (the legacy node aside).
-	MaxHubProjects = 32
+	// Every binding runs one: it covers settings.MaxProjects projects plus
+	// settings.MaxLocalChats local chats, or a binding past it would be saved
+	// with no context (a chat that never opens).
+	MaxHubProjects = 32 + 64
 	// maxHubSessions caps the live sessions over all contexts, both directions.
 	maxHubSessions = 256
 	// maxHubDials caps the concurrent outbound dial attempts over all contexts.

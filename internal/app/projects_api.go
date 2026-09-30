@@ -169,10 +169,15 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 	}
 	v.Display = cmp.Or(v.Alias, v.Name)
 	v.Members = []node.MemberInfo{{Name: a.s.Node, Self: true, Online: true}}
-	if c != nil {
+	switch {
+	case c != nil:
 		v.Members = c.n.Members()
 		v.Problem = problemCode(c.n.Problem())
 		v.Busy = c.w != nil && c.w.Busy()
+	case a.hub != nil:
+		// Bound but not running while the others run (it failed to open at
+		// start, see the log): it never connects, and a reload cannot help.
+		v.Problem = "not_running"
 	}
 	v.Online, v.Total = peerCounts(v.Members)
 	v.Agents = agentMachines(v.Members)
@@ -337,15 +342,22 @@ func (a *App) addProjectLocked(ctx context.Context, b settings.ProjectBinding, n
 			return err
 		}
 	}
+	// The context runs before the binding is saved: a binding whose context
+	// cannot run (the Hub refuses it) is never kept, since every view of it
+	// would stay "connecting" and every call 404 until a restart.
+	if err := a.startContextLocked(c, nil); err != nil { //nolint:contextcheck // the context outlives the request: it runs under the Hub's own
+		return err
+	}
 	// A failed save leaves the new data directory unbound; a later join of
 	// the project moves it to .left.
 	if err := settings.Save(a.path, s); err != nil {
+		a.stopContextLocked(c)
 		return err
 	}
 	a.s, a.configured = s, true
 	a.syncHooksLocked()
-	a.reapplyAutonomyLocked()           // a local project may follow the changed bindings
-	return a.startContextLocked(c, nil) //nolint:contextcheck // the context outlives the request: it runs under the Hub's own
+	a.reapplyAutonomyLocked() // a local project may follow the changed bindings
+	return nil
 }
 
 func (a *App) createProject(w http.ResponseWriter, r *http.Request) {
