@@ -525,7 +525,7 @@ func discussMessage(ctx context.Context, cfg config.Config, provider, body, fold
 			return discussResult{}, absErr
 		}
 	}
-	session, source := agentSession()
+	session, source := agentSessionCtx(ctx)
 	agent, agentType := askOrigin(pick.askKey, askNeedle(body, pick.bodyFile))
 	var result discussResult
 	err = apiJSON(ctx, http.MethodPost, apiURL(cfg, "/discuss", nil), map[string]any{
@@ -583,7 +583,7 @@ func ackDiscussReply(ctx context.Context, cfg config.Config, r discussResult) er
 	if r.Reply == nil {
 		return nil
 	}
-	session, _ := agentSession()
+	session, _ := agentSessionCtx(ctx)
 	_, err := ack(ctx, cfg, "", []string{r.Reply.ID}, session, r.Project)
 	return err
 }
@@ -615,6 +615,37 @@ func agentSession() (id, client string) {
 		return id, hookCodex
 	}
 	return "", ""
+}
+
+// callSessionKey is the context key of the Codex thread that makes an MCP
+// tool call (withCallSession).
+type callSessionKey struct{}
+
+// withCallSession is ctx carrying Codex thread id as the calling session
+// (mcpCallSession); ctx itself when id is "".
+func withCallSession(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, callSessionKey{}, id)
+}
+
+// callSession is the Codex thread ctx carries (withCallSession), or "".
+func callSession(ctx context.Context) string {
+	id, _ := ctx.Value(callSessionKey{}).(string)
+	return id
+}
+
+// agentSessionCtx is agentSession for a call in ctx: the Codex thread an MCP
+// tool call names comes first (Codex gives its MCP servers no CODEX_THREAD_ID).
+func agentSessionCtx(ctx context.Context) (id, client string) {
+	if os.Getenv(envJobID) != "" {
+		return "", ""
+	}
+	if id := callSession(ctx); id != "" {
+		return id, hookCodex
+	}
+	return agentSession()
 }
 
 func send(ctx context.Context, cfg config.Config, a sendArgs, stdout, stderr io.Writer) error {
@@ -650,7 +681,7 @@ func send(ctx context.Context, cfg config.Config, a sendArgs, stdout, stderr io.
 func sendMessage(ctx context.Context, cfg config.Config, a sendArgs, ask []string) (node.Message, error) {
 	var agent, agentType string
 	if a.session == "" {
-		a.session, _ = agentSession()
+		a.session, _ = agentSessionCtx(ctx)
 		agent, agentType = askOrigin(a.askKey, askNeedle(a.body, a.bodyFile)) // the session's own subagent, if one sends
 	}
 	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat, Area: a.area, SessionID: a.session, AgentID: agent, AgentType: agentType, Ask: ask,

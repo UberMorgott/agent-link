@@ -299,6 +299,59 @@ func TestMCPUnreadUsesAgentSession(t *testing.T) {
 	}
 }
 
+// Codex names the calling thread in each tools/call's _meta (its MCP servers
+// get no CODEX_THREAD_ID); a subagent's call names its own thread, its
+// sessionId staying the root's (seen live on codex-cli 0.159.0).
+func TestMCPCallSession(t *testing.T) {
+	for _, c := range []struct {
+		meta map[string]any
+		want string
+	}{
+		{map[string]any{"threadId": "root", "sessionId": "root", "x-codex-turn-metadata": map[string]any{"thread_id": "root"}}, "root"},
+		{map[string]any{"threadId": "sub", "sessionId": "root", "x-codex-turn-metadata": map[string]any{"thread_id": "sub", "session_id": "root", "parent_thread_id": "root", "thread_source": "subagent"}}, "sub"},
+		{map[string]any{"x-codex-turn-metadata": map[string]any{"thread_id": "t1"}}, "t1"},
+		{map[string]any{"progressToken": 1}, ""},
+		{nil, ""},
+		{map[string]any{"threadId": 7}, ""},
+		{map[string]any{"threadId": "a b"}, ""},
+		{map[string]any{"threadId": strings.Repeat("x", 129)}, ""},
+	} {
+		if got := mcpCallSession(c.meta); got != c.want {
+			t.Errorf("mcpCallSession(%v) = %q, want %q", c.meta, got, c.want)
+		}
+	}
+}
+
+// The thread a Codex tool call names is the session of its send, unread and
+// ack; inside a worker's job there is none, as for the CLI.
+func TestMCPCodexCallMetaIsSession(t *testing.T) {
+	f := newFakeAPI(t)
+	cleanAgentEnv(t)
+	cs := mcpClient(t, f.api)
+	call := func(name string, args map[string]any) {
+		t.Helper()
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args,
+			Meta: mcp.Meta{"threadId": "thr-sub", "sessionId": "thr-root"}})
+		if err != nil || res.IsError {
+			t.Fatalf("%s: %v %+v", name, err, res)
+		}
+	}
+	call("send", map[string]any{"chat": "c1", "body": "hi"})
+	if f.send.SessionID != "thr-sub" {
+		t.Fatalf("send session %q, want the calling thread", f.send.SessionID)
+	}
+	f.reqs = nil
+	call("unread", nil)
+	if len(f.reqs) != 1 || !strings.Contains(f.reqs[0], "session=thr-sub") {
+		t.Fatalf("unread requests %q", f.reqs)
+	}
+	t.Setenv(envJobID, "job-1")
+	call("send", map[string]any{"chat": "c1", "body": "hi"})
+	if f.send.SessionID != "" {
+		t.Fatalf("a job's send named session %q", f.send.SessionID)
+	}
+}
+
 // send takes exactly one of chat, to and new_chat_with, and a body; nothing
 // reaches the API otherwise.
 func TestMCPSendRoutingModes(t *testing.T) {

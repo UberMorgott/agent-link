@@ -159,7 +159,7 @@ func newMCPTools(cfg config.Config, fresh func() string) *mcpTools {
 		return history(ctx, cfg, in.Chat, limit(in.Limit), in.BeforeSeq, in.AfterSeq, proj(in.Project))
 	})
 	addTool(s, "unread", "Unread messages for this node, oldest first; next is the cursor of the next page. Does not mark them read.", func(ctx context.Context, in mcpUnread) (any, error) {
-		session, _ := agentSession()
+		session, _ := agentSessionCtx(ctx)
 		return unreadForSession(ctx, cfg, in.Folder, in.After, limit(in.Limit), proj(in.Project), session, true)
 	})
 	addToolArgs(s, "send", "Send a message: into a chat (chat), the open chat with a member (to), or a new chat (new_chat_with), optionally with file attachments. Returns {id, chat}, plus hold_reason when the message is held (no agent answers it automatically).", func(ctx context.Context, in mcpSend, args json.RawMessage) (any, error) {
@@ -186,7 +186,7 @@ func newMCPTools(cfg config.Config, fresh func() string) *mcpTools {
 		}
 		session := in.Session
 		if session == "" {
-			session, _ = agentSession()
+			session, _ = agentSessionCtx(ctx)
 		}
 		return ack(ctx, cfg, in.Chat, in.IDs, session, proj(in.Project))
 	})
@@ -235,6 +235,9 @@ func delegateMCP(ctx context.Context, exe, api, tool string, args json.RawMessag
 	cmd.Env = os.Environ()
 	if api != "" {
 		cmd.Env = append(cmd.Env, envAPI+"="+api)
+	}
+	if id := callSession(ctx); id != "" {
+		cmd.Env = append(cmd.Env, envCodexThread+"="+id) // the calling Codex thread (mcpCallSession)
 	}
 	var out bytes.Buffer
 	var stderr tailWriter
@@ -384,6 +387,25 @@ func compactDiscuss(r discussResult) discussBrief {
 	return b
 }
 
+// mcpCallSession is the Codex thread that makes an MCP tool call, from the
+// call's _meta ("" when it names none). Codex starts MCP servers with a
+// filtered environment, without CODEX_THREAD_ID, but names the calling thread
+// in every tools/call: threadId, and thread_id in x-codex-turn-metadata. A
+// subagent's call names its own thread (sessionId stays its root's): the id
+// its shell sees as CODEX_THREAD_ID, so the MCP tools and agentlink in the
+// shell speak as the same session.
+func mcpCallSession(meta map[string]any) string {
+	id, _ := meta["threadId"].(string)
+	if id == "" {
+		tm, _ := meta["x-codex-turn-metadata"].(map[string]any)
+		id, _ = tm["thread_id"].(string)
+	}
+	if len(id) > 128 || strings.IndexFunc(id, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0 {
+		return ""
+	}
+	return id
+}
+
 // addTool registers a tool whose answer is the JSON of f's value as text.
 func addTool[In any](s *mcpTools, name, desc string, f func(context.Context, In) (any, error)) {
 	addToolArgs(s, name, desc, func(ctx context.Context, in In, _ json.RawMessage) (any, error) { return f(ctx, in) })
@@ -407,6 +429,7 @@ func addToolArgs[In any](s *mcpTools, name, desc string, f func(context.Context,
 		var args json.RawMessage
 		if req != nil && req.Params != nil {
 			args = req.Params.Arguments
+			ctx = withCallSession(ctx, mcpCallSession(req.Params.Meta))
 		}
 		if s.fresh != nil {
 			if exe := s.fresh(); exe != "" {

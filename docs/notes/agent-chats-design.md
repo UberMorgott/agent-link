@@ -98,6 +98,10 @@ only live temporary chats grouped per project.
   - Codex callers: extend stamp + `trackAgent` to Codex if its PreToolUse input carries
     `agent_id` (comment `agenthook.go:41-42` says both clients send it; stamping is gated to Claude
     at `hook.go:310,317`) - verify on Codex 0.155 first; else Codex subagents share the parent key.
+  - Verified on codex-cli 0.159.0 (2026-09-30): no stamps needed. A Codex subagent is its own
+    thread: its shell's `CODEX_THREAD_ID` and its MCP calls' `_meta.threadId` name the subagent's
+    thread (`sessionId` / `parent_thread_id` the root), and each thread gets its own MCP process.
+    `agentlink mcp` takes the session from `_meta` (`mcpCallSession`).
 - Risks: agent ids are per-run (a re-spawned subagent of the same type gets a new id -> new thread;
   intended). Parallel fan-out of N subagents -> N seats; seat cap is per binding (1 per provider), so
   fine, but N concurrent `codex exec` processes - see Q3 (concurrency cap).

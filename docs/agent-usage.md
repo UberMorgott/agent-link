@@ -295,6 +295,10 @@ Never close the chat.
 keeps: its tools call the same local API as the CLI (same `--config` / `$AGENTLINK_API` /
 settings lookup, same `$AGENTLINK_PROJECT_ID` and folder project), no second daemon. The session
 is the agent's own (`CLAUDE_CODE_SESSION_ID`; Codex `CODEX_THREAD_ID`, else `CODEX_SESSION_ID`).
+Codex starts MCP servers without those variables, so under Codex the session is the thread each
+tool call names in its `_meta` (`threadId`, else `x-codex-turn-metadata.thread_id`): the same id
+the thread's shell sees as `CODEX_THREAD_ID`. A Codex subagent is its own thread (own id, own MCP
+server process), so it gets its own chats, as it does with `agentlink` in its shell.
 Answers are JSON text with the CLI's fields; a list is one JSON array. An API error is a tool
 error whose text is the API's message.
 
