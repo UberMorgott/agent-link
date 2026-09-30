@@ -47,7 +47,7 @@ setNavigator({
   current: () => String(router.currentRoute.value.name || ''),
 })
 applyUiState()
-claimDashboardWindow((route) => void router.push({ name: route }))
+claimDashboardWindow()
 void useAppStore().connectEvents()
 
 app.mount('#app')
