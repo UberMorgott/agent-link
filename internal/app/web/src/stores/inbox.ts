@@ -113,8 +113,15 @@ export const useInboxStore = defineStore('inbox', () => {
     loadReads()
     if (!readsNode) return
     let next: Record<string, number> | null = null
+    // A project gone from the list (a temporary local chat that ended, one
+    // left) takes its cursors with it.
+    if (projects.list) {
+      const known = new Set(projects.list.map((p) => p.id))
+      const kept = Object.fromEntries(Object.entries(reads.value).filter(([key]) => known.has(key.slice(0, key.indexOf(':')))))
+      if (Object.keys(kept).length !== Object.keys(reads.value).length) next = kept
+    }
     for (const [pid, list] of Object.entries(projects.chats)) {
-      if (Object.hasOwn(reads.value, pid + ':')) continue
+      if (Object.hasOwn(next ?? reads.value, pid + ':')) continue
       next ??= { ...reads.value }
       next[pid + ':'] = 0
       for (const c of list) next[chatKey(pid, c.id)] = c.last_seq || 0

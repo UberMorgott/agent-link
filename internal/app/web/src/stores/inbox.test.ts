@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { fakeApi, mountApp, settle } from '@/test/harness'
 import { useAppStore } from './app'
 import { MESSAGE_TOAST_TIMEOUT, useInboxStore } from './inbox'
-import type { ChatInfo, ChatMessage } from '@/types'
+import { useProjectsStore } from './projects'
+import type { ChatInfo, ChatMessage, ProjectView } from '@/types'
 
 const message = (id: string, from: string, direction: string, body: string): ChatMessage => ({ id, seq: 1, from, direction, body, created_at: '' })
 const chat = (id: string, msg: ChatMessage): ChatInfo => ({ id, participants: ['local', msg.from], last_seq: 1, members: [], last_message: msg })
@@ -49,6 +50,24 @@ describe('open chat refresh', () => {
     expect(inbox.messages).toHaveLength(210)
     expect(inbox.messages.at(-1)!.seq).toBe(510)
     expect(inbox.hasOlder).toBe(true)
+  })
+})
+
+describe('read cursors', () => {
+  it('drop the cursors of a project gone from the list', async () => {
+    localStorage.setItem('agentlink.reads.v2:local', JSON.stringify({ 'P:': 0, 'P:c1': 3, 'GONE:': 0, 'GONE:c9': 7 }))
+    fakeApi((_method, path) => (path === 'projects' ? [] : {}))
+    await mountApp('/dashboard')
+    const app = useAppStore()
+    const projects = useProjectsStore()
+    const inbox = useInboxStore()
+    app.status = { node: 'local' }
+    projects.list = [{ id: 'P', display: 'P', legacy: false } as ProjectView]
+    projects.chats = { P: [chat('c1', message('m', 'bob', 'in', 'x'))] }
+    await settle()
+    expect(inbox.readOf('P', 'c1')).toBe(3)
+    expect(inbox.readOf('GONE', 'c9')).toBe(0)
+    expect(Object.keys(JSON.parse(localStorage.getItem('agentlink.reads.v2:local')!) as object).sort()).toEqual(['P:', 'P:c1'])
   })
 })
 
