@@ -475,9 +475,20 @@ func TestSteadyStreamOutlivesIdleWindow(t *testing.T) {
 	rec := newRecorder()
 	steady := fakeAgent(t, "stream-steady")
 	steady.Format = FormatClaude
+	const every = 200 * time.Millisecond
+	var mu sync.Mutex
+	var sentAt []time.Time // when each activity update was sent
+	send := func(m node.Message) (node.Message, error) {
+		if m.Activity != "" {
+			mu.Lock()
+			sentAt = append(sentAt, time.Now())
+			mu.Unlock()
+		}
+		return rec.send(m)
+	}
 	// The idle window must exceed the 1s a -race binary sleeps before it exits.
-	w, err := New(steady.Runner(), rec.send, t.TempDir(), t.TempDir(),
-		Options{IdleTimeout: 1500 * time.Millisecond, Timeout: 20 * time.Second, ActivityEvery: 200 * time.Millisecond}, nil)
+	w, err := New(steady.Runner(), send, t.TempDir(), t.TempDir(),
+		Options{IdleTimeout: 1500 * time.Millisecond, Timeout: 20 * time.Second, ActivityEvery: every}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,9 +499,18 @@ func TestSteadyStreamOutlivesIdleWindow(t *testing.T) {
 		t.Fatalf("reply = %+v", got)
 	}
 	acts := rec.filter(func(m node.Message) bool { return m.Activity != "" })
-	// 3s of changing activity (longer under -race), at most one update per 200ms.
-	if len(acts) < 5 || len(acts) > 25 {
-		t.Fatalf("%d activity updates, want 5..25", len(acts))
+	// 3s of changing activity, at most one update per 200ms. How many fit
+	// depends on how long the stream really took (longer under load), so the
+	// cap is checked on the gaps, not on a count.
+	if len(acts) < 5 {
+		t.Fatalf("%d activity updates, want at least 5", len(acts))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for i := 1; i < len(sentAt); i++ {
+		if gap := sentAt[i].Sub(sentAt[i-1]); gap < every {
+			t.Fatalf("activity updates %d and %d %s apart, want at least %s", i, i+1, gap, every)
+		}
 	}
 	seen := map[string]bool{}
 	for _, m := range acts {
