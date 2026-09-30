@@ -81,3 +81,42 @@ func TestSeatsDueDropsPendingWithoutRecord(t *testing.T) {
 		t.Fatalf("pending %v, want only the fresh one", got)
 	}
 }
+
+// A corrupt stored file does not keep a node from opening: it is moved aside
+// (.bad) and the rest is read.
+func TestOpenStoreQuarantinesCorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	cs, err := openChatStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := Chat{ID: newID(), Participants: []string{"a", "b"}, CreatedAt: time.Now().UTC()}
+	if _, err := cs.ensure(c); err != nil {
+		t.Fatal(err)
+	}
+	good := Message{ID: newID(), From: "b", ChatID: c.ID, Participants: c.Participants, Body: "kept", CreatedAt: time.Now().UTC()}
+	if _, _, _, err := cs.put(good, true); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(cs.chatDir(c.ID), "messages", newID()+".json")
+	if err := os.WriteFile(bad, []byte(`{"seq":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "seats.json"), []byte("[{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again, err := openChatStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := again.message(good.ID); !ok || len(again.bad) != 1 {
+		t.Fatalf("reopened: good message %v, bad %v", ok, again.bad)
+	}
+	if _, err := os.Stat(bad + ".bad"); err != nil {
+		t.Fatalf("not moved aside: %v", err)
+	}
+	st, err := openSeats(dir)
+	if err != nil || len(st.seats) != 0 || len(st.bad) != 1 {
+		t.Fatalf("seats %+v bad %v err %v", st, st.bad, err)
+	}
+}

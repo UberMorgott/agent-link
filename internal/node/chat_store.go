@@ -24,6 +24,7 @@ import (
 // held ones, which never repeat.
 type chatStore struct {
 	dir string
+	bad []string // corrupt files moved aside at open (readRecord)
 
 	mu    sync.Mutex
 	chats map[string]*chatState
@@ -100,7 +101,7 @@ func openChatStore(dir string) (*chatStore, error) {
 	}
 	cs := &chatStore{dir: dir, chats: map[string]*chatState{}, byMsg: map[string]string{}, views: map[string]ChatView{},
 		gens: map[string]uint32{}, replies: map[string]map[string]time.Time{}}
-	if err := readJSON(filepath.Join(dir, "chat_views.json"), &cs.views); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if _, err := readRecord(filepath.Join(dir, "chat_views.json"), &cs.views, &cs.bad); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 	entries, err := os.ReadDir(root)
@@ -112,13 +113,16 @@ func openChatStore(dir string) (*chatStore, error) {
 			continue
 		}
 		st := newChatState()
-		if err := readJSON(filepath.Join(root, e.Name(), "chat.json"), &st.chat); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
+		ok, err := readRecord(filepath.Join(root, e.Name(), "chat.json"), &st.chat, &cs.bad)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			continue
+		case err != nil:
 			return nil, err
+		case !ok:
+			continue // its messages stay on disk, without their chat
 		}
-		if err := readJSON(filepath.Join(root, e.Name(), "held.json"), &st.jobs); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if _, err := readRecord(filepath.Join(root, e.Name(), "held.json"), &st.jobs, &cs.bad); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, err
 		}
 		files, err := jsonFiles(filepath.Join(root, e.Name(), "messages"))
@@ -127,10 +131,11 @@ func openChatStore(dir string) (*chatStore, error) {
 		}
 		for _, f := range files {
 			var r chatRecord
-			if err := readJSON(f, &r); err != nil {
+			if ok, err := readRecord(f, &r, &cs.bad); err != nil {
 				return nil, err
+			} else if ok {
+				st.msgs = append(st.msgs, r)
 			}
-			st.msgs = append(st.msgs, r)
 		}
 		slices.SortFunc(st.msgs, func(a, b chatRecord) int { return compareSeq(a.Seq, b.Seq) })
 		for i, r := range st.msgs {

@@ -159,6 +159,8 @@ type seatStore struct {
 	dirty bool
 	// pauseLogged: seats whose hop-limit pause seatsDue logged (once per pause).
 	pauseLogged map[string]bool
+	// bad: a corrupt seats.json moved aside at open (readRecord).
+	bad []string
 }
 
 type seatMark struct {
@@ -174,7 +176,7 @@ func openSeats(dir string) (*seatStore, error) {
 	st := &seatStore{path: filepath.Join(dir, "seats.json"), run: map[string]context.CancelFunc{}, queued: map[string]bool{}, errs: map[string]string{},
 		busy: map[string]bool{}, quiet: map[string]bool{}, deferred: map[string]bool{}, marks: map[string]seatMark{}, pauseLogged: map[string]bool{},
 		handling: map[string][]Message{}, gated: map[string]bool{}, lent: map[string]bool{}, doing: map[string]agentDoing{}, ran: map[string]AgentRef{}}
-	if err := readJSON(st.path, &st.seats); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if _, err := readRecord(st.path, &st.seats, &st.bad); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	return st, nil
