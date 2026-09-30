@@ -20,10 +20,24 @@
      read ticks and the text selection. */
   --app-accent: var(--ui-primary);
   --app-accent-soft: color-mix(in srgb, var(--app-accent) 14%, transparent);
-  /* Online marks stay green whatever accent the user picks. */
-  --app-on: var(--ui-color-success-600);
-  --app-off: #b45309;
-  --app-danger: var(--ui-error);
+  /* The palette (layout/ThemeColors.vue, lib/aspects.ts): one token per aspect
+     of the app, light defaults here, dark ones below. A pick goes inline on
+     <html> over these, so each aspect recolours everywhere it shows. Online
+     marks stay green whatever accent the user picks. */
+  --app-status-online: var(--ui-color-success-600);
+  --app-status-working: var(--app-status-online);
+  --app-status-waiting: var(--ui-info, var(--app-accent));
+  --app-status-paused: #b45309;
+  --app-status-error: var(--ui-error);
+  --app-notice: var(--app-muted);
+  --app-link: var(--app-accent);
+  --app-unread: var(--app-accent);
+  --app-focus: var(--app-accent);
+  /* The messages' tints (--app-msg-mine, --app-msg-other, --app-msg-agent)
+     are unset by default: each member's own colour (--who) tints them. */
+  --app-on: var(--app-status-online);
+  --app-off: var(--app-status-paused);
+  --app-danger: var(--app-status-error);
   /* The member colors of a chat (lib/chat.ts CHAT_COLORS): a name, its
      bubbles' tint and its agents' messages. */
   --who-blue: #2563a8;
@@ -36,7 +50,7 @@
   --who-teal: #107269;
   /* The dot of a project: agents open on one computer, on two or more. */
   --app-dot-one: #d9a400;
-  --app-dot-many: var(--ui-color-success-500);
+  --app-dot-many: var(--app-status-online);
   /* The type scale: sidebar, message author, body, meta. */
   --app-font: 'Inter Variable', 'Segoe UI', system-ui, sans-serif;
   --text-side: 0.9rem;
@@ -47,8 +61,8 @@
 
 :root.dark {
   --app-side: var(--ui-color-neutral-950);
-  --app-on: var(--ui-color-success-400);
-  --app-off: #f59e0b;
+  --app-status-online: var(--ui-color-success-400);
+  --app-status-paused: #f59e0b;
   --app-accent-soft: color-mix(in srgb, var(--app-accent) 20%, transparent);
   --who-blue: #7fb2ee;
   --who-violet: #b39af0;
@@ -59,7 +73,6 @@
   --who-green: #8fd19a;
   --who-teal: #6fd0c4;
   --app-dot-one: #f5c518;
-  --app-dot-many: var(--ui-color-success-400);
 }
 
 @layer base {
@@ -75,16 +88,16 @@
     font-feature-settings: "cv11", "ss01";
   }
   button, input, textarea, select { font-family: inherit; }
-  ::selection { background: color-mix(in srgb, var(--app-accent) 30%, transparent); }
-  a { color: var(--app-accent); }
+  ::selection { background: color-mix(in srgb, var(--app-focus) 30%, transparent); }
+  a { color: var(--app-link); }
   h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; color: var(--ui-text-highlighted); }
   h2 { font-size: 1rem; font-weight: 600; color: var(--ui-text-highlighted); }
   h3 { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--app-muted); }
-  :focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
+  :focus-visible { outline: 2px solid var(--app-focus); outline-offset: 2px; }
 }
 
 @layer components {
-  .hint { color: var(--app-muted); font-size: 0.85rem; }
+  .hint { color: var(--app-notice); font-size: 0.85rem; }
   .hint.warn { color: var(--app-off); }
   .hint.failed { color: var(--app-danger); }
   .on { color: var(--app-on); }
@@ -113,11 +126,11 @@
   .chat-row .row-time { color: var(--app-muted); font-size: 0.72rem; }
   .chat-row .row-foot { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--app-muted); }
   .chat-row .row-foot > :first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chat-row.live .row-live { color: var(--app-on); }
+  .chat-row.live .row-live { color: var(--app-status-working); }
   .chat-row.compact { padding: 0.3rem 0.6rem; }
   .chat-row.compact .row-who { font-weight: 400; font-size: 0.88rem; }
   .chat-row.compact.fresh .row-who { font-weight: 600; }
-  .conversation-unread { flex: none; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--app-accent); align-self: center; }
+  .conversation-unread { flex: none; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--app-unread); align-self: center; }
 
   /* The projects of the sidebar: one row each. */
   .project-row { display: flex; align-items: center; gap: 0.1rem; border-radius: 0.6rem; }
@@ -139,7 +152,7 @@
   .project-dot.off { background: var(--app-off); opacity: 1; }
   .project-unread {
     flex: none; min-width: 1.2rem; padding: 0 0.35rem; border-radius: 999px; text-align: center;
-    background: var(--app-accent); color: var(--ui-bg); font-size: 0.7rem; font-weight: 600; line-height: 1.2rem;
+    background: var(--app-unread); color: var(--ui-bg); font-size: 0.7rem; font-weight: 600; line-height: 1.2rem;
   }
 
   /* Local chats grouped by project: a project with several chats opens and
@@ -148,7 +161,7 @@
   .local-group-count { flex: none; min-width: 1.2rem; text-align: center; font-size: 0.72rem; color: var(--app-muted); }
   .local-group-items { margin-left: 0.9rem; padding-left: 0.3rem; border-left: 1px solid var(--app-soft); }
   .chat-live { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-dot-many); }
-  .chat-live.waiting { background: var(--app-dot-one); animation: chat-live-pulse 1.6s ease-in-out infinite; }
+  .chat-live.waiting { background: var(--app-status-waiting); animation: chat-live-pulse 1.6s ease-in-out infinite; }
   @keyframes chat-live-pulse { 50% { opacity: 0.35; } }
   @media (prefers-reduced-motion: reduce) { .chat-live.waiting { animation: none; } }
 
@@ -161,7 +174,7 @@
   .user-chip:hover { background: color-mix(in srgb, var(--who) 24%, transparent); }
   .user-chip-dot { flex: none; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--who); }
   .user-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .user-chip:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 1px; }
+  .user-chip:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 1px; }
   /* The account menu: the name and the connection, the profile, the appearance. */
   .account-pop { width: min(22rem, calc(100vw - 2rem)); max-height: min(36rem, 80vh); overflow: auto; padding: 0.4rem; }
   .account-head { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.4rem 0.5rem 0.6rem; }
@@ -200,7 +213,7 @@
   /* The agents status and pause: round icon buttons in the composer's row, before send. */
   .chat-toolbar { display: flex; flex: none; align-items: center; gap: 0.125rem; }
   .chat-tool { position: relative; width: auto; min-width: 2rem; gap: 0.25rem; padding: 0 0.45rem; border: 0; border-radius: 999px; background: transparent; cursor: pointer; }
-  .chat-tool:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 1px; }
+  .chat-tool:focus-visible { outline: 2px solid var(--app-focus); outline-offset: 1px; }
   .chat-tool:disabled { opacity: 0.5; cursor: default; }
   .chat-tool.paused { background: color-mix(in srgb, var(--app-off) 16%, transparent); color: var(--app-off); }
   .chat-tool-dot {
@@ -208,9 +221,9 @@
     box-shadow: 0 0 0 2px var(--app-bg); background: var(--app-muted);
   }
   .chat-tool-dot.none { background: transparent; box-shadow: inset 0 0 0 1.5px var(--app-muted), 0 0 0 2px var(--app-bg); }
-  .chat-tool-dot.working { background: var(--app-on); animation: act-pulse 1.4s ease-in-out infinite; }
+  .chat-tool-dot.working { background: var(--app-status-working); animation: act-pulse 1.4s ease-in-out infinite; }
   .chat-tool-dot.paused { background: var(--app-off); }
-  .chat-tool-dot.waiting { background: var(--ui-info, var(--app-accent)); }
+  .chat-tool-dot.waiting { background: var(--app-status-waiting); }
   .chat-tool-count { font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums; }
   /* A thin line under the header while the agents are paused. */
   .chat-pause-banner {
@@ -227,9 +240,9 @@
   }
   .agent-row:hover { background: var(--app-soft); }
   .agent-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-muted); }
-  .agent-row.running .agent-dot { background: var(--app-on); animation: act-pulse 1.4s ease-in-out infinite; }
+  .agent-row.running .agent-dot { background: var(--app-status-working); animation: act-pulse 1.4s ease-in-out infinite; }
   .agent-row.paused .agent-dot, .agent-row.stale .agent-dot { background: var(--app-off); }
-  .agent-row.waiting .agent-dot { background: var(--ui-info, var(--app-accent)); }
+  .agent-row.waiting .agent-dot { background: var(--app-status-waiting); }
   .agent-row.off .agent-dot, .agent-row.idle .agent-dot { opacity: 0.55; }
   .agent-row.online .agent-dot { background: var(--app-on); }
   .agent-note { grid-column: 2 / -1; margin-top: -0.15rem; color: var(--app-muted); font-size: 0.72rem; line-height: 1.3; }
@@ -246,12 +259,16 @@
   .msg-author { font-weight: 650; letter-spacing: -0.005em; }
   .msg-icon { width: 0.95rem; height: 0.95rem; flex: none; opacity: 0.85; }
   /* Every member's bubbles are a muted tint of its color; your own a bit
-     stronger, on the right. */
-  .msg .msg-bubble { background: color-mix(in srgb, var(--who) 10%, var(--app-bg)); color: var(--app-text); }
-  .msg.out .msg-bubble { background: color-mix(in srgb, var(--who) 17%, var(--app-bg)); }
-  :root.dark .msg .msg-bubble { background: color-mix(in srgb, var(--who) 13%, var(--app-bg)); }
-  :root.dark .msg.out .msg-bubble { background: color-mix(in srgb, var(--who) 21%, var(--app-bg)); }
-  .msg-fyi { color: var(--app-muted); font-weight: 400; }
+     stronger, on the right. The palette's picks for your messages, the
+     others' and the agents' replace the member colours in the tint. */
+  .msg { --bubble: var(--app-msg-other, var(--who)); }
+  .msg.out { --bubble: var(--app-msg-mine, var(--who)); }
+  .msg.agent { --bubble: var(--app-msg-agent, var(--who)); }
+  .msg .msg-bubble { background: color-mix(in srgb, var(--bubble) 10%, var(--app-bg)); color: var(--app-text); }
+  .msg.out .msg-bubble { background: color-mix(in srgb, var(--bubble) 17%, var(--app-bg)); }
+  :root.dark .msg .msg-bubble { background: color-mix(in srgb, var(--bubble) 13%, var(--app-bg)); }
+  :root.dark .msg.out .msg-bubble { background: color-mix(in srgb, var(--bubble) 21%, var(--app-bg)); }
+  .msg-fyi { color: var(--app-notice); font-weight: 400; }
   .msg-body {
     margin: 0; white-space: pre-wrap; word-break: break-word;
     font: inherit; font-size: var(--text-body); line-height: 1.55;
@@ -272,10 +289,10 @@
     padding: 0; opacity: 0; transition: opacity 0.15s;
   }
   .msg:hover .msg-reply, .msg:focus-within .msg-reply, .msg-reply:focus-visible { opacity: 1; }
-  .msg-event { display: flex; justify-content: center; gap: 0.5rem; margin: 0.75rem 0; font-size: 0.78rem; color: var(--app-muted); }
+  .msg-event { display: flex; justify-content: center; gap: 0.5rem; margin: 0.75rem 0; font-size: 0.78rem; color: var(--app-notice); }
   .msg-event .msg-author { font-weight: 400; }
 
-  .act-spin { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-on); animation: act-pulse 1.4s ease-in-out infinite; align-self: center; }
+  .act-spin { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--app-status-working); animation: act-pulse 1.4s ease-in-out infinite; align-self: center; }
   @keyframes act-pulse { 50% { opacity: 0.3; } }
 
   /* The appearance choices (layout/ThemeSettings.vue): round colour swatches. */
@@ -286,6 +303,29 @@
   .config-swatch:hover { transform: scale(1.08); }
   .config-swatch.active { outline: 2px solid var(--app-accent); outline-offset: 2px; }
 
+  /* The palette: one swatch per aspect of the app, a native colour picker
+     under each (keyboard: Tab to it, Enter or Space opens it). */
+  .colors-toggle {
+    display: flex; align-items: center; gap: 0.5rem; width: 100%; padding: 0.35rem 0.5rem; border: 0; border-radius: 0.5rem;
+    background: transparent; color: var(--app-text); font: inherit; font-size: 0.875rem; font-weight: 600; text-align: left; cursor: pointer;
+  }
+  .colors-toggle:hover { background: var(--app-soft); }
+  .colors-count { flex: 1; font-weight: 400; font-size: var(--text-meta); color: var(--app-muted); }
+  .aspect-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.25rem 0.5rem; margin: 0; padding: 0; list-style: none; }
+  .aspect { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; min-width: 0; }
+  .aspect-pick { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; gap: 0.45rem; padding: 0.25rem 0.3rem; border-radius: 0.45rem; cursor: pointer; font-size: 0.8rem; }
+  .aspect-pick:hover { background: var(--app-soft); }
+  .aspect-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+  .aspect-swatch {
+    flex: none; width: 1.1rem; height: 1.1rem; border-radius: 50%;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-text-highlighted) 12%, transparent);
+  }
+  .aspect-swatch.members { background: conic-gradient(var(--who-blue), var(--who-violet), var(--who-pink), var(--who-red), var(--who-orange), var(--who-amber), var(--who-green), var(--who-teal), var(--who-blue)); }
+  .aspect-pick:focus-within .aspect-swatch { outline: 2px solid var(--app-focus); outline-offset: 2px; }
+  .aspect-name { min-width: 0; line-height: 1.2; hyphens: auto; }
+  .aspect.set .aspect-name { font-weight: 600; }
+  .aspect-warn { flex-basis: 100%; margin: 0 0 0.2rem 0.3rem; font-size: var(--text-meta); line-height: 1.3; color: var(--app-off); }
+
   /* Release notes rendered from Markdown (lib/markdown.ts). */
   .release-md { line-height: 1.55; overflow-wrap: anywhere; }
   .release-md > * + * { margin-top: 0.5rem; }
@@ -293,7 +333,7 @@
   .release-md h1, .release-md h2 { font-size: 0.85rem; }
   .release-md ul { list-style: disc; padding-left: 1.25rem; }
   .release-md ol { list-style: decimal; padding-left: 1.25rem; }
-  .release-md a { color: var(--app-accent); text-decoration: underline; }
+  .release-md a { color: var(--app-link); text-decoration: underline; }
   .release-md code { font-family: var(--font-mono, monospace); font-size: 0.95em; padding: 0 0.2rem; border-radius: 0.2rem; background: var(--ui-bg-elevated); }
   .release-md pre { overflow-x: auto; padding: 0.5rem; border-radius: 0.3rem; background: var(--ui-bg-elevated); }
   .release-md pre code { padding: 0; background: none; }

@@ -1,4 +1,5 @@
 import { computed, reactive, ref, watch } from 'vue'
+import { ASPECTS, cleanColors, type AspectColors } from '@/lib/aspects'
 import { DEFAULT_PRIMARY, DEFAULT_SURFACE, SHADES, primaryColors, primaryPalette, primaryShade, surfacePalette, surfaces } from '@/lib/palettes'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
@@ -19,11 +20,14 @@ export interface UiState {
   primary: string
   surface: string
   font: FontName
+  // The palette's picks per aspect (lib/aspects.ts), apart for the light and
+  // the dark theme: a colour made for one rarely reads on the other.
+  colors: { light: AspectColors, dark: AspectColors }
 }
 
 export const UI_STORAGE_KEY = 'agentlink' + '.ui'
 
-const defaults: UiState = { theme: 'system', primary: DEFAULT_PRIMARY, surface: DEFAULT_SURFACE, font: DEFAULT_FONT }
+const defaults = (): UiState => ({ theme: 'system', primary: DEFAULT_PRIMARY, surface: DEFAULT_SURFACE, font: DEFAULT_FONT, colors: { light: {}, dark: {} } })
 const systemDark = ref(false)
 // storageFailed is set while the browser refuses to keep the choice.
 export const storageFailed = ref(false)
@@ -34,20 +38,22 @@ export function readUiState(storage: Pick<Storage, 'getItem'>): UiState {
   try {
     const value = storage.getItem(UI_STORAGE_KEY)
     const stored: unknown = value ? JSON.parse(value) : null
-    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return { ...defaults }
-    const { theme, primary, surface, font } = stored as Record<string, unknown>
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return defaults()
+    const { theme, primary, surface, font, colors } = stored as Record<string, unknown>
+    const modes = colors && typeof colors === 'object' ? (colors as Record<string, unknown>) : {}
     return {
       theme: theme === 'light' || theme === 'dark' ? theme : 'system',
-      primary: primaryColors.some((c) => c.name === primary) ? (primary as string) : defaults.primary,
-      surface: surfaces.some((s) => s.name === surface) ? (surface as string) : defaults.surface,
-      font: FONTS.some((f) => f.name === font) ? (font as FontName) : defaults.font,
+      primary: primaryColors.some((c) => c.name === primary) ? (primary as string) : DEFAULT_PRIMARY,
+      surface: surfaces.some((s) => s.name === surface) ? (surface as string) : DEFAULT_SURFACE,
+      font: FONTS.some((f) => f.name === font) ? (font as FontName) : DEFAULT_FONT,
+      colors: { light: cleanColors(modes.light), dark: cleanColors(modes.dark) },
     }
   } catch {
-    return { ...defaults }
+    return defaults()
   }
 }
 
-export const layoutConfig = reactive<UiState>({ ...defaults })
+export const layoutConfig = reactive<UiState>(defaults())
 export const layoutState = reactive({ mobileMenuActive: false })
 
 const isDarkTheme = computed(() => layoutConfig.theme === 'dark' || (layoutConfig.theme === 'system' && systemDark.value))
@@ -69,6 +75,18 @@ function applyTheme() {
     root.style.setProperty(`--ui-color-primary-${shade}`, primary[shade])
   }
   root.style.setProperty('--ui-primary', `var(--ui-color-primary-${primaryShade(layoutConfig.primary, layoutConfig.surface, dark)})`)
+  // The palette's picks go over styles.css's tokens; an aspect with a Nuxt UI
+  // twin (the accent, errors, pauses) recolours its components too.
+  const picks = layoutConfig.colors[dark ? 'dark' : 'light']
+  for (const a of ASPECTS) {
+    const colour = picks[a.name]
+    for (const name of [a.token, a.ui]) {
+      if (!name || name === '--ui-primary') continue
+      if (colour) root.style.setProperty(name, colour)
+      else root.style.removeProperty(name)
+    }
+  }
+  if (picks.accent) root.style.setProperty('--ui-primary', picks.accent)
   root.style.setProperty('--app-font', (FONTS.find((f) => f.name === layoutConfig.font) || FONTS[0]).stack)
 }
 
@@ -87,7 +105,7 @@ function savedUiState(): UiState {
     return readUiState(localStorage)
   } catch {
     storageFailed.value = true
-    return { ...defaults }
+    return defaults()
   }
 }
 

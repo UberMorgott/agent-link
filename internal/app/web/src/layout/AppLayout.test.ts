@@ -110,7 +110,7 @@ describe('the application shell', () => {
     expect($('#theme_surface [data-surface="zinc"]')!.getAttribute('aria-pressed')).toBe('true')
     expect($('#theme_mode [data-mode="dark"]')!.getAttribute('aria-pressed')).toBe('true')
     expect($('#theme_saved')!.textContent).toContain('theme.saved')
-    expect(JSON.parse(localStorage.getItem(UI_STORAGE_KEY)!)).toEqual({ theme: 'dark', primary: 'rose', surface: 'zinc', font: 'inter' })
+    expect(JSON.parse(localStorage.getItem(UI_STORAGE_KEY)!)).toEqual({ theme: 'dark', primary: 'rose', surface: 'zinc', font: 'inter', colors: { light: {}, dark: {} } })
     // The font: four choices, each described.
     expect($$('#theme_font button').map((b) => b.dataset.font)).toEqual(['inter', 'manrope', 'plex', 'system'])
     $<HTMLButtonElement>('#theme_font [data-font="manrope"]')!.click()
@@ -118,6 +118,50 @@ describe('the application shell', () => {
     expect($('#theme_font [data-font="manrope"]')!.getAttribute('aria-pressed')).toBe('true')
     expect(document.documentElement.style.getPropertyValue('--app-font')).toContain('Manrope')
     expect(JSON.parse(localStorage.getItem(UI_STORAGE_KEY)!).font).toBe('manrope')
+  })
+
+  it('colours each aspect from the palette, warns on poor contrast and resets', async () => {
+    await open('/dashboard')
+    $<HTMLButtonElement>('#user_chip')!.click()
+    await settle()
+    $<HTMLButtonElement>('#theme_mode [data-mode="light"]')!.click()
+    const toggle = $<HTMLButtonElement>('#theme_colors_toggle')!
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect($('#theme_colors')).toBeNull()
+    toggle.click()
+    await settle()
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect($$('#theme_colors [data-aspect]').map((li) => li.dataset.aspect)).toEqual([
+      'accent', 'mine', 'other', 'agent', 'notice', 'link', 'online', 'working', 'waiting', 'paused', 'error', 'unread', 'focus',
+    ])
+    for (const input of $$<HTMLInputElement>('#theme_colors input[type="color"]')) expect(input.getAttribute('aria-label')).toMatch(/^theme\.aspect\./)
+    expect($<HTMLButtonElement>('#theme_colors_reset')!.disabled).toBe(true)
+
+    const pickColour = (aspect: string, colour: string) => {
+      const input = $<HTMLInputElement>(`[data-aspect="${aspect}"] input`)!
+      input.value = colour
+      input.dispatchEvent(new Event('input'))
+    }
+    pickColour('link', '#ffee88')
+    pickColour('unread', '#7c3aed')
+    await settle()
+    const root = document.documentElement.style
+    expect(root.getPropertyValue('--app-link')).toBe('#ffee88')
+    expect(root.getPropertyValue('--app-unread')).toBe('#7c3aed')
+    expect(JSON.parse(localStorage.getItem(UI_STORAGE_KEY)!).colors.light).toEqual({ link: '#ffee88', unread: '#7c3aed' })
+    expect($('#aspect_warn_link')!.textContent).toContain('theme.colors.low_contrast')
+    expect($('[data-aspect="link"] input')!.getAttribute('aria-describedby')).toBe('aspect_warn_link')
+    expect($('#aspect_warn_unread')).toBeNull()
+    expect(toggle.textContent).toContain('theme.colors.count')
+
+    $<HTMLButtonElement>('[data-aspect="link"] .aspect-reset')!.click()
+    await settle()
+    expect(root.getPropertyValue('--app-link')).toBe('')
+    expect($('#aspect_warn_link')).toBeNull()
+    $<HTMLButtonElement>('#theme_colors_reset')!.click()
+    await settle()
+    expect(root.getPropertyValue('--app-unread')).toBe('')
+    expect(JSON.parse(localStorage.getItem(UI_STORAGE_KEY)!).colors).toEqual({ light: {}, dark: {} })
   })
 
   it('closes the phone drawer when a project dialog opens from it', async () => {

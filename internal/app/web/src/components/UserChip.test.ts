@@ -32,7 +32,8 @@ function enter(sel: string) {
   $(sel)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
 }
 
-const posts = <R extends { url: string }>(requests: R[]) => requests.filter((r) => r.url.endsWith('/ui/api/profile'))
+type Request = { url: string; init: RequestInit }
+const posts = (requests: Request[]) => requests.filter((r) => r.url.endsWith('/ui/api/profile'))
 
 describe('the member\'s own chip', () => {
   it('opens one menu: the name and connection, the profile in place, the theme; arrows move through it', async () => {
@@ -49,7 +50,7 @@ describe('the member\'s own chip', () => {
     $('#account_menu')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
     expect(document.activeElement).toBe($('#profile_color button'))
     $('#account_menu')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
-    expect(document.activeElement).toBe($$('#theme_font button').at(-1))
+    expect(document.activeElement).toBe($('#theme_colors_toggle'))
   })
 
   it('saves the nickname on Enter and a color on its click, staying open', async () => {

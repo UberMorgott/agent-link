@@ -1,14 +1,21 @@
 <script setup lang="ts">
 import UButton from '@nuxt/ui/components/Button.vue'
+import ThemeColors from '@/layout/ThemeColors.vue'
 import { FONTS, useLayout, type ThemeMode } from '@/layout/composables/layout'
 import { icon } from '@/lib/icons'
 import { primaryColors, surfaces } from '@/lib/palettes'
 import { t } from '@/lib/runtime'
 
 // The appearance choices inside the account menu (components/UserChip.vue):
-// the theme, the accent colour, the background scale and the font, kept in
-// this browser (layout/composables/layout.ts).
-const { layoutConfig, storageFailed } = useLayout()
+// the theme, the accent colour, the background scale, the font and the
+// palette of per-aspect colours (layout/ThemeColors.vue), kept in this browser (layout/composables/layout.ts).
+const { layoutConfig, storageFailed, isDarkTheme } = useLayout()
+
+// A preset accent replaces the palette's own accent pick for this theme.
+function pick(name: string) {
+  layoutConfig.primary = name
+  delete layoutConfig.colors[isDarkTheme.value ? 'dark' : 'light'].accent
+}
 
 const modes: { value: ThemeMode, icon: string }[] = [
   { value: 'light', icon: 'sun' },
@@ -70,7 +77,7 @@ const modes: { value: ThemeMode, icon: string }[] = [
           :aria-label="t('theme.color.' + c.name)"
           :aria-pressed="layoutConfig.primary === c.name ? 'true' : 'false'"
           :style="{ backgroundColor: c.name === 'noir' ? 'var(--ui-text-highlighted)' : c.palette[500] }"
-          @click="layoutConfig.primary = c.name"
+          @click="pick(c.name)"
         />
       </div>
     </div>
@@ -127,6 +134,7 @@ const modes: { value: ThemeMode, icon: string }[] = [
         </button>
       </div>
     </div>
+    <ThemeColors />
     <p
       id="theme_saved"
       class="text-xs text-muted"

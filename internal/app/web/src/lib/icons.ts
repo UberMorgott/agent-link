@@ -35,6 +35,7 @@ export const icons: Record<string, string> = {
   sun: 'i-lucide-sun',
   moon: 'i-lucide-moon',
   system: 'i-lucide-monitor',
+  reset: 'i-lucide-rotate-ccw',
   // Chat marks: delivery ticks and who wrote a message.
   queued: 'i-lucide-clock',
   delivered: 'i-lucide-check',
