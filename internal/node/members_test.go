@@ -249,6 +249,12 @@ func TestMergeLastWriterWins(t *testing.T) {
 	if !newer(&Member{Ver: 1, Removed: true}, &Member{Ver: 1}) || newer(&Member{Ver: 1}, &Member{Ver: 1, Removed: true}) {
 		t.Fatal("tie not broken towards the tombstone")
 	}
+	// Two records of one version, one with the member's nickname: every node
+	// picks the same one (else each keeps its own and they never converge).
+	named, plain := &Member{Ver: 1, Display: "Nikita"}, &Member{Ver: 1}
+	if newer(named, plain) == newer(plain, named) {
+		t.Fatal("a tie of equal addresses is not broken")
+	}
 }
 
 func TestMergeMemberInfoPublishesOnlyAfterPersistence(t *testing.T) {

@@ -1134,3 +1134,69 @@ func TestSeatTurnsWaitForTurnGate(t *testing.T) {
 		t.Fatalf("%d turns ran at once under a cap of 2", peak)
 	}
 }
+
+// A seat whose every pending message has a failed lease (a turn that died
+// with the node, or spent its attempts) waits for a person: needs_human, not
+// closed. Start is the person's decision: the failure is forgotten and the
+// next turn runs the message.
+func TestStartSeatClearsFailedLease(t *testing.T) {
+	l := &seatLauncher{}
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	_, codex := addSeats(t, a)
+	chat, err := a.NewProjectChat(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "hi codex", AuthorKind: AuthorHuman, AskSeats: []string{"codex"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if _, err := a.leases.take(m.ID, codex.ID, seatOwner(codex.ID), ViaSeat, "", now.Add(time.Minute), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.leases.fail(seatOwner(codex.ID), []string{m.ID}, "restart", now); err != nil {
+		t.Fatal(err)
+	}
+	if s := seatByLabel(t, a, "Codex"); s.Status != SeatNeedsHuman {
+		t.Fatalf("status %q, want %q", s.Status, SeatNeedsHuman)
+	}
+	if st := a.SeatAsk(codex.ID, m.ID, now.Add(time.Hour)); !st.Stuck {
+		t.Fatalf("ask state %+v, want stuck", st)
+	}
+	if _, err := a.StartSeat(codex.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.leases.get(leaseKey(codex.ID, m.ID)); ok {
+		t.Fatal("Start kept the failed lease")
+	}
+	if st := a.SeatAsk(codex.ID, m.ID, now.Add(time.Hour)); st != (SeatAskState{}) {
+		t.Fatalf("ask state after Start %+v", st)
+	}
+	a.seatsDue(context.Background(), time.Now())
+	eventually(t, "the turn after Start", func() bool { return len(seatByLabel(t, a, "Codex").Pending) == 0 })
+}
+
+// The agent counts older peers read come from the same statuses newer peers
+// get: a seat counts while present (its live session once), a loose session
+// counts, an offline or stopped seat does not.
+func TestCountsMatchStatuses(t *testing.T) {
+	l := &seatLauncher{}
+	dir := t.TempDir()
+	a := seatNode(t, t.TempDir(), dir, l)
+	_, codex := addSeats(t, a)
+	for _, s := range []SessionRequest{{SessionID: codex.SessionID, Provider: ProviderCodex, Folder: dir}, {SessionID: "loose", Provider: ProviderClaude, Folder: dir}} {
+		if _, err := a.RegisterSession(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := a.agentCountsForArea(""); got != (AgentCounts{Claude: 1, Codex: 1}) {
+		t.Fatalf("counts %+v", got)
+	}
+	if _, err := a.StopSeat(codex.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.agentCountsForArea(""); got != (AgentCounts{Claude: 1}) {
+		t.Fatalf("counts with the seat stopped %+v", got)
+	}
+}

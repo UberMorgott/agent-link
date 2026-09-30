@@ -180,13 +180,6 @@ func killTreeOnCancel(ctx context.Context, cmd *exec.Cmd) {
 	cmd.WaitDelay = 10 * time.Second
 }
 
-// ReadClaudeStream reads the events of `claude -p --output-format
-// stream-json` until the result: started gets the session id at the first
-// event naming it. It returns the session id and the turn's error.
-func ReadClaudeStream(r io.Reader, started func(string)) (string, error) {
-	return readClaudeStream(r, started, nil, nil, nil)
-}
-
 // claudeDoing follows what a Claude stream's main agent does (its tool calls
 // by name) and its running subagents (Task/Agent calls not yet answered).
 type claudeDoing struct {

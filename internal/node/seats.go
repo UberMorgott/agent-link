@@ -55,7 +55,7 @@ const (
 	SeatOffline    = "closed"      // no live session: the node runs it for a message
 	SeatStopped    = "stopped"     // stopped by the person
 	SeatBusy       = "busy"        // open in the agent's app: its messages wait for its hooks
-	SeatNeedsHuman = "needs_human" // its turns kept failing: a new message or Start runs it again
+	SeatNeedsHuman = "needs_human" // its turns kept failing (a new message or Start runs it again), or every message's lease failed (Start runs them again)
 	SeatPaused     = "paused"      // every message for it is past the hop limit: it waits for a person
 )
 
@@ -67,6 +67,10 @@ const maxSeats = 8
 
 // ErrUnknownSeat: no seat with that id or label.
 var ErrUnknownSeat = errors.New("unknown seat")
+
+// ErrSeatsDisabled: the project has no seats (config.DisableSeats: a network
+// project, whose agents are the sessions its members open).
+var ErrSeatsDisabled = errors.New("seats are off in this project")
 
 // ErrSeatLimit: the node has maxSeats seats already.
 var ErrSeatLimit = errors.New("seat limit reached")
@@ -155,6 +159,8 @@ type seatStore struct {
 	dirty bool
 	// pauseLogged: seats whose hop-limit pause seatsDue logged (once per pause).
 	pauseLogged map[string]bool
+	// bad: a corrupt seats.json moved aside at open (readRecord).
+	bad []string
 }
 
 type seatMark struct {
@@ -170,7 +176,7 @@ func openSeats(dir string) (*seatStore, error) {
 	st := &seatStore{path: filepath.Join(dir, "seats.json"), run: map[string]context.CancelFunc{}, queued: map[string]bool{}, errs: map[string]string{},
 		busy: map[string]bool{}, quiet: map[string]bool{}, deferred: map[string]bool{}, marks: map[string]seatMark{}, pauseLogged: map[string]bool{},
 		handling: map[string][]Message{}, gated: map[string]bool{}, lent: map[string]bool{}, doing: map[string]agentDoing{}, ran: map[string]AgentRef{}}
-	if err := readJSON(st.path, &st.seats); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if _, err := readRecord(st.path, &st.seats, &st.bad); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	return st, nil
@@ -249,11 +255,53 @@ func (n *Node) Seats() []SeatView {
 	}
 	st.mu.Unlock()
 	for i := range out {
-		if out[i].Status == SeatOffline && n.seatAllPaused(out[i].Pending) {
+		switch {
+		case out[i].Status != SeatOffline && out[i].Status != SeatBusy:
+		case n.seatAllFailed(out[i].ID, out[i].Pending):
+			out[i].Status = SeatNeedsHuman
+		case out[i].Status == SeatOffline && n.seatAllPaused(out[i].Pending):
 			out[i].Status = SeatPaused
 		}
 	}
 	return out
+}
+
+// seatAllFailed reports whether seat has messages to answer and the lease of
+// every one failed (a turn that died with the node, or spent its attempts): no
+// turn runs for them until a person starts the seat (StartSeat). A message
+// past the hop limit waits for a person anyway and does not count.
+func (n *Node) seatAllFailed(seat string, pend []SeatPending) bool {
+	failed := 0
+	for _, p := range pend {
+		if l, _ := n.leases.get(leaseKey(seat, p.ID)); l.Failed {
+			failed++
+			continue
+		}
+		if rec, ok := n.chats.message(p.ID); ok && !n.seatPaused(p, rec.Message) {
+			return false
+		}
+	}
+	return failed > 0
+}
+
+// forgetSeatLeases drops the failed lease records of seat's messages ids: a person
+// decided they run again (StartSeat, the same message queued again), with no
+// attempts or failure.
+func (n *Node) forgetSeatLeases(seat string, ids []string) {
+	changed := false
+	for _, id := range ids {
+		k := leaseKey(seat, id)
+		if l, ok := n.leases.get(k); !ok || !l.Failed {
+			continue // a running turn keeps its lease
+		}
+		if err := n.leases.forget(k); err != nil {
+			n.log.Warn("save leases", "err", err)
+		}
+		changed = true
+	}
+	if changed {
+		n.changed("leases")
+	}
 }
 
 // seatAllPaused reports whether pend has messages and every one waits for a
@@ -312,6 +360,8 @@ func (n *Node) AddSeat(req SeatRequest) (SeatView, error) {
 	switch {
 	case n.cfg.Project == "":
 		return SeatView{}, ErrNotProject
+	case n.cfg.DisableSeats:
+		return SeatView{}, ErrSeatsDisabled
 	case n.NeedsFolder():
 		return SeatView{}, ErrNeedsFolder
 	case req.Provider != ProviderClaude && req.Provider != ProviderCodex:
@@ -352,6 +402,9 @@ func (n *Node) AddSeat(req SeatRequest) (SeatView, error) {
 // without a session gets one: a turn with its introduction (and its pending
 // messages). open shows the session in the desktop app.
 func (n *Node) StartSeat(id string, open bool) (SeatView, error) {
+	if n.cfg.DisableSeats {
+		return SeatView{}, ErrSeatsDisabled
+	}
 	st := n.seats
 	st.mu.Lock()
 	s := st.getLocked(id)
@@ -364,10 +417,16 @@ func (n *Node) StartSeat(id string, open bool) (SeatView, error) {
 	delete(st.deferred, id)
 	err := st.saveLocked()
 	seat, running := *s, st.run[id] != nil
+	pend := make([]string, 0, len(s.Pending))
+	for _, p := range s.Pending {
+		pend = append(pend, p.ID)
+	}
 	st.mu.Unlock()
 	if err != nil {
 		return SeatView{}, err
 	}
+	// The person decides: a message whose lease failed runs again.
+	n.forgetSeatLeases(id, pend)
 	if n.Stopped() {
 		// A seat added or resumed during the global pause keeps its place.
 		// seatsDue starts its introduction (or pending work) after resume.
@@ -412,6 +471,7 @@ func (n *Node) StopSeat(id string) (SeatView, error) {
 }
 
 // RemoveSeat stops seat id and forgets it; its session stays the person's.
+// Its messages not answered yet go back to the node's sessions (releaseSeat).
 func (n *Node) RemoveSeat(id string) error {
 	st := n.seats
 	st.mu.Lock()
@@ -423,10 +483,13 @@ func (n *Node) RemoveSeat(id string) error {
 	if cancel := st.run[id]; cancel != nil {
 		cancel()
 	}
+	pend := st.seats[i].Pending
 	st.seats = slices.Delete(st.seats, i, i+1)
 	delete(st.errs, id)
 	delete(st.busy, id)
 	delete(st.deferred, id)
+	delete(st.ran, id)
+	delete(st.pauseLogged, id)
 	for k := range st.marks {
 		if strings.HasPrefix(k, id+"/") {
 			delete(st.marks, k)
@@ -434,8 +497,50 @@ func (n *Node) RemoveSeat(id string) error {
 	}
 	err := st.saveLocked()
 	st.mu.Unlock()
+	n.releaseSeat(id, pend)
 	n.changed("seats")
 	return err
+}
+
+// releaseSeat hands the messages pend of removed seat back to normal routing:
+// a peer's message assigned to it is unread again for the node's sessions,
+// and its leases of the seat go (a running turn ends with no record).
+func (n *Node) releaseSeat(seat string, pend []SeatPending) {
+	back := false
+	for _, p := range pend {
+		ok, err := n.chats.unassign(p.ID, "seat:"+seat)
+		if err != nil {
+			n.log.Warn("return a removed seat's message", "seat", seat, "id", p.ID, "err", err)
+		}
+		back = back || ok
+		if err := n.leases.forget(leaseKey(seat, p.ID)); err != nil {
+			n.log.Warn("save leases", "err", err)
+		}
+	}
+	if len(pend) > 0 {
+		n.log.Info("a removed seat's messages went back to the sessions", "seat", seat, "messages", len(pend))
+		n.changed("leases")
+	}
+	if back {
+		n.changed("messages")
+	}
+}
+
+// dropSeats removes every seat of a project without seats (DisableSeats):
+// seats left from before go, their messages back to the sessions.
+func (n *Node) dropSeats() {
+	st := n.seats
+	st.mu.Lock()
+	var ids []string
+	for _, s := range st.seats {
+		ids = append(ids, s.ID)
+	}
+	st.mu.Unlock()
+	for _, id := range ids {
+		if err := n.RemoveSeat(id); err != nil {
+			n.log.Warn("remove a seat of a project without seats", "seat", id, "err", err)
+		}
+	}
 }
 
 // WaitSeatTurns waits up to d until no turn of a seat runs (RemoveSeat and
@@ -669,6 +774,26 @@ func (n *Node) seatsForIncoming(m Message) string {
 	return seat
 }
 
+// unqueueSeat takes message id back from the pending messages of seat ("":
+// none): seatsForIncoming queued it but storing it failed.
+func (n *Node) unqueueSeat(seat, id string) {
+	if seat == "" {
+		return
+	}
+	st := n.seats
+	st.mu.Lock()
+	var err error
+	if s := st.getLocked(seat); s != nil {
+		s.Pending = slices.DeleteFunc(s.Pending, func(p SeatPending) bool { return p.ID == id })
+		err = st.saveLocked()
+	}
+	st.mu.Unlock()
+	if err != nil {
+		n.log.Warn("save seats; saved again later", "err", err)
+	}
+	n.changed("seats")
+}
+
 // seatHas reports whether message id is pending for a seat of this node.
 func (n *Node) seatHas(id string) bool {
 	st := n.seats
@@ -703,11 +828,12 @@ func (n *Node) assignToSeat(m Message, seat string) {
 // and saves them. queued reports whether any seat has it now; err that the
 // save failed (the queue stays in memory and seatsDue saves it again).
 func (n *Node) queueSeats(id string, list []seatTo) (queued bool, err error) {
-	if len(list) == 0 {
+	if len(list) == 0 || n.cfg.DisableSeats {
 		return false, nil
 	}
 	now := time.Now().UTC()
 	st := n.seats
+	var again []string // seats that get id once more: its failure is forgotten
 	st.mu.Lock()
 	for _, t := range list {
 		s := st.getLocked(t.seat)
@@ -716,6 +842,7 @@ func (n *Node) queueSeats(id string, list []seatTo) (queued bool, err error) {
 		}
 		queued = true
 		if slices.ContainsFunc(s.Pending, func(p SeatPending) bool { return p.ID == id }) {
+			again = append(again, s.ID)
 			continue
 		}
 		s.Pending = append(s.Pending, SeatPending{ID: id, Ask: t.ask, At: now})
@@ -725,6 +852,9 @@ func (n *Node) queueSeats(id string, list []seatTo) (queued bool, err error) {
 		err = st.saveLocked()
 	}
 	st.mu.Unlock()
+	for _, s := range again {
+		n.forgetSeatLeases(s, []string{id})
+	}
 	if queued {
 		n.changed("seats")
 	}
@@ -931,6 +1061,7 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 	if !ok {
 		return
 	}
+	n.dropOrphanPending(now)
 	live := n.sess.liveIDs(now)
 	st := n.seats
 	st.mu.Lock()
@@ -996,6 +1127,54 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 		id, intro := s.ID, s.SessionID == ""
 		n.wg.Go(func() { n.seatTurn(ctx, dl, id, intro, false) })
 	}
+}
+
+// orphanGrace is how long a seat's pending message may lack its stored record
+// before dropOrphanPending drops it: seatsForIncoming queues a message just
+// before storing it.
+const orphanGrace = time.Minute
+
+// dropOrphanPending drops the pending messages of seats whose record is gone
+// (never stored, or its chat removed) past orphanGrace: no turn, hook or wake
+// could ever deliver them, and they would keep the seat waiting.
+func (n *Node) dropOrphanPending(now time.Time) {
+	st := n.seats
+	st.mu.Lock()
+	var old []string
+	for _, s := range st.seats {
+		for _, p := range s.Pending {
+			if now.Sub(p.At) > orphanGrace {
+				old = append(old, p.ID)
+			}
+		}
+	}
+	st.mu.Unlock()
+	gone := map[string]bool{}
+	for _, id := range old {
+		if _, ok := n.chats.message(id); !ok {
+			gone[id] = true
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	st.mu.Lock()
+	for _, s := range st.seats {
+		s.Pending = slices.DeleteFunc(s.Pending, func(p SeatPending) bool {
+			if gone[p.ID] {
+				n.log.Warn("seat message without its record dropped", "seat", s.ID, "id", p.ID)
+				delete(st.marks, seatKey(s.ID, p.ID))
+				return true
+			}
+			return false
+		})
+	}
+	err := st.saveLocked()
+	st.mu.Unlock()
+	if err != nil {
+		n.log.Warn("save seats; saved again later", "err", err)
+	}
+	n.changed("seats")
 }
 
 // notePaused logs once, when seat's messages start waiting for a person past

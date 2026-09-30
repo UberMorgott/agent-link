@@ -40,6 +40,7 @@ type Hub struct {
 	sessMu      sync.Mutex
 	sessions    int // live sessions over all contexts
 	maxSessions int
+	maxContexts int // HubConfig.MaxContexts
 
 	mu     sync.Mutex
 	ctx    context.Context // set by Start
@@ -66,16 +67,15 @@ type HubConfig struct {
 	Discovery bool
 	// DiscoveryPort replaces BeaconPort; 0 keeps it.
 	DiscoveryPort int
-	Log           *slog.Logger
+	// MaxContexts caps the project contexts (the legacy one aside); 0 for no
+	// cap. The app sets it to what its settings allow (settings.MaxBindings),
+	// so no binding it saves is left without a context.
+	MaxContexts int
+	Log         *slog.Logger
 }
 
 // Hub limits.
 const (
-	// MaxHubProjects caps the project contexts of one Hub (the legacy node aside).
-	// Every binding runs one: it covers settings.MaxProjects projects plus
-	// settings.MaxLocalChats local chats, or a binding past it would be saved
-	// with no context (a chat that never opens).
-	MaxHubProjects = 32 + 64
 	// maxHubSessions caps the live sessions over all contexts, both directions.
 	maxHubSessions = 256
 	// maxHubDials caps the concurrent outbound dial attempts over all contexts.
@@ -112,6 +112,7 @@ func NewHub(ln net.Listener, cfg HubConfig) *Hub {
 		beacons: beaconSocket{port: port, group: net.ParseIP(BeaconGroup).To4(), every: BeaconEvery,
 			ifaces: beaconInterfaces, log: log},
 		maxSessions: maxHubSessions,
+		maxContexts: cfg.MaxContexts,
 		nodes:       map[string]*hubEntry{},
 	}
 }
@@ -154,14 +155,14 @@ func (h *Hub) Add(n *Node) error {
 		h.mu.Unlock()
 		return fmt.Errorf("%w: %q", ErrContextExists, pid)
 	}
-	if pid != "" {
+	if pid != "" && h.maxContexts > 0 {
 		count := 0
-		for p := range h.nodes {
-			if p != "" {
+		for p, e := range h.nodes {
+			if p != "" && !e.stopping { // a context that stops frees its slot
 				count++
 			}
 		}
-		if count >= MaxHubProjects {
+		if count >= h.maxContexts {
 			h.mu.Unlock()
 			return ErrTooManyProjects
 		}

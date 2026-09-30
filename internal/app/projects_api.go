@@ -391,8 +391,8 @@ func (a *App) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	err = a.checkDirLocked("", dir, settings.ProjectScopeNetwork)
-	if err == nil && settings.ProjectCount(a.s.Bindings) >= settings.MaxProjects {
-		err = &settings.Problem{Key: "too_many_projects"}
+	if err == nil {
+		err = settings.CanAddBinding(a.s.Bindings, false)
 	}
 	if err == nil {
 		b := settings.ProjectBinding{ID: pid, Epoch: config.ProjectEpoch, Secret: secret, Alias: alias, Dir: filepathClean(dir)}
@@ -465,9 +465,10 @@ func (a *App) joinByInvite(w http.ResponseWriter, r *http.Request, inv config.In
 		writeCodedError(w, http.StatusConflict, "conflict_secret")
 		return
 	case i >= 0:
-	case settings.ProjectCount(a.s.Bindings) >= settings.MaxProjects:
-		err = &settings.Problem{Key: "too_many_projects"}
 	default:
+		if err = settings.CanAddBinding(a.s.Bindings, false); err != nil {
+			break
+		}
 		b := settings.ProjectBinding{ID: inv.ProjectID, Epoch: inv.Epoch, Secret: inv.Secret}
 		if addr != "" {
 			b.Peers = []string{addr}

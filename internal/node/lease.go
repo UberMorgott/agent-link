@@ -579,13 +579,15 @@ func (b *leaseBook) due(now time.Time, gone func(owner string) bool, active func
 }
 
 // prune drops the records of messages no longer unread (unread(key) false)
-// after leaseDoneKeep, and every record after leaseKeep.
+// after leaseDoneKeep, and every other record after leaseKeep. A held or
+// failed record stays while its message is unread: failed is terminal until a
+// person decides (a new record would deliver it automatically again).
 func (b *leaseBook) prune(now time.Time, unread func(key string) bool) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	changed := false
 	for k, l := range b.m {
-		if l.Hold && unread(k) {
+		if (l.Hold || l.Failed) && unread(k) {
 			continue
 		}
 		if now.Sub(l.At) > leaseKeep || (!unread(k) && now.Sub(l.At) > leaseDoneKeep) {

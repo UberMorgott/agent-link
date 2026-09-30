@@ -68,9 +68,8 @@ func (g *authGuard) allowIn(ip net.IP, scope string) bool {
 	return e == nil || !g.now().Before(e.until)
 }
 
-// fail records a failed handshake from ip and returns how long it is now blocked.
-func (g *authGuard) fail(ip net.IP) time.Duration { return g.failIn(ip, "") }
-
+// failIn records a failed handshake from ip in scope and returns how long it
+// is now blocked.
 func (g *authGuard) failIn(ip net.IP, scope string) time.Duration {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -97,9 +96,7 @@ func (g *authGuard) failIn(ip net.IP, scope string) time.Duration {
 	return d
 }
 
-// success forgets ip's failures.
-func (g *authGuard) success(ip net.IP) { g.successIn(ip, "") }
-
+// successIn forgets ip's failures in scope.
 func (g *authGuard) successIn(ip net.IP, scope string) {
 	g.mu.Lock()
 	delete(g.m, scopedKey(ip, scope))

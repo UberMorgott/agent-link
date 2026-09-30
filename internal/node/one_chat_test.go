@@ -80,7 +80,7 @@ func TestProjectNewestChatWins(t *testing.T) {
 			ChatMode: ChatModeProject, ChatOwner: "b", CreatedAt: at}
 	}
 	newer := open(time.Now().Add(time.Minute).UTC())
-	if !a.receiveChat("b", bID, newer) {
+	if a.receiveChat("b", bID, newer) != chatStored {
 		t.Fatal("newer chat rejected")
 	}
 	if got := activeIDs(a); !slices.Equal(got, []string{newer.ChatID}) {
@@ -93,7 +93,7 @@ func TestProjectNewestChatWins(t *testing.T) {
 		t.Fatalf("newer chat takes over from %q", c.Prev)
 	}
 	late := open(time.Now().Add(-time.Hour).UTC())
-	if !a.receiveChat("b", bID, late) {
+	if a.receiveChat("b", bID, late) != chatStored {
 		t.Fatal("late chat rejected")
 	}
 	if got := activeIDs(a); !slices.Equal(got, []string{newer.ChatID}) {

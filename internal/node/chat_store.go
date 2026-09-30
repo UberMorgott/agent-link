@@ -24,6 +24,7 @@ import (
 // held ones, which never repeat.
 type chatStore struct {
 	dir string
+	bad []string // corrupt files moved aside at open (readRecord)
 
 	mu    sync.Mutex
 	chats map[string]*chatState
@@ -100,7 +101,7 @@ func openChatStore(dir string) (*chatStore, error) {
 	}
 	cs := &chatStore{dir: dir, chats: map[string]*chatState{}, byMsg: map[string]string{}, views: map[string]ChatView{},
 		gens: map[string]uint32{}, replies: map[string]map[string]time.Time{}}
-	if err := readJSON(filepath.Join(dir, "chat_views.json"), &cs.views); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if _, err := readRecord(filepath.Join(dir, "chat_views.json"), &cs.views, &cs.bad); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 	entries, err := os.ReadDir(root)
@@ -112,13 +113,16 @@ func openChatStore(dir string) (*chatStore, error) {
 			continue
 		}
 		st := newChatState()
-		if err := readJSON(filepath.Join(root, e.Name(), "chat.json"), &st.chat); err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
+		ok, err := readRecord(filepath.Join(root, e.Name(), "chat.json"), &st.chat, &cs.bad)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			continue
+		case err != nil:
 			return nil, err
+		case !ok:
+			continue // its messages stay on disk, without their chat
 		}
-		if err := readJSON(filepath.Join(root, e.Name(), "held.json"), &st.jobs); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if _, err := readRecord(filepath.Join(root, e.Name(), "held.json"), &st.jobs, &cs.bad); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, err
 		}
 		files, err := jsonFiles(filepath.Join(root, e.Name(), "messages"))
@@ -127,10 +131,11 @@ func openChatStore(dir string) (*chatStore, error) {
 		}
 		for _, f := range files {
 			var r chatRecord
-			if err := readJSON(f, &r); err != nil {
+			if ok, err := readRecord(f, &r, &cs.bad); err != nil {
 				return nil, err
+			} else if ok {
+				st.msgs = append(st.msgs, r)
 			}
-			st.msgs = append(st.msgs, r)
 		}
 		slices.SortFunc(st.msgs, func(a, b chatRecord) int { return compareSeq(a.Seq, b.Seq) })
 		for i, r := range st.msgs {
@@ -303,13 +308,11 @@ func (cs *chatStore) get(id string) (Chat, bool) {
 	return st.chat, true
 }
 
-// add stores m, a message or a control message of a known chat, unless its id
-// is stored already. A close message closes the chat; of concurrent closes the
-// smallest message id wins everywhere. It returns the stored record (the
-// earlier one for a duplicate), whether m is new and whether it closed the chat.
-func (cs *chatStore) add(m Message) (chatRecord, bool, bool, error) { return cs.put(m, false) }
-
-// put is add that stores a new message as unread for this node's sessions.
+// put stores m, a message or a control message of a known chat, unless its id
+// is stored already; a new message is unread for this node's sessions when
+// unread. A close message closes the chat; of concurrent closes the smallest
+// message id wins everywhere. It returns the stored record (the earlier one for
+// a duplicate), whether m is new and whether it closed the chat.
 func (cs *chatStore) put(m Message, unread bool) (chatRecord, bool, bool, error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
@@ -482,6 +485,25 @@ func (cs *chatStore) reassign(id, sid string, force bool) (chatRecord, error) {
 		return chatRecord{}, bad
 	}
 	return r, err
+}
+
+// unassign takes message id from owner (a seat that is gone): nobody is
+// assigned and an unread message is unread again, for normal routing. It
+// reports whether it changed.
+func (cs *chatStore) unassign(id, owner string) (bool, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	_, changed, err := cs.updateLocked(id, func(r *chatRecord) bool {
+		if r.Assigned != owner {
+			return false
+		}
+		r.Assigned = ""
+		if r.Unread {
+			r.ReadAt = time.Time{}
+		}
+		return true
+	})
+	return changed, err
 }
 
 // claim assigns request id to owner unless someone is assigned already or a

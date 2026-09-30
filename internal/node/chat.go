@@ -1480,24 +1480,36 @@ func (n *Node) validChatEnvelope(peer, peerID string, m *Message) bool {
 	return true
 }
 
-// receiveChat stores an inbound chat message. It reports false when the
-// message is invalid and must be dropped.
-func (n *Node) receiveChat(peer, peerID string, m Message) bool {
+// chatVerdict is what receiveChat did with an inbound chat message.
+type chatVerdict uint8
+
+const (
+	chatStored   chatVerdict = iota // stored (or a known duplicate): ACK it
+	chatRejected                    // invalid: ACK and drop it, resending cannot help
+	chatRetry                       // not persisted (a disk error): no ACK, the sender resends
+)
+
+// receiveChat stores an inbound chat message (chatVerdict).
+func (n *Node) receiveChat(peer, peerID string, m Message) chatVerdict {
 	if !n.validChatEnvelope(peer, peerID, &m) {
-		return false
+		return chatRejected
 	}
 	if _, known := n.chats.get(m.ChatID); !known && !slices.Contains(m.Participants, n.cfg.Node) {
-		return false // removed from a chat it never had
+		return chatRejected // removed from a chat it never had
 	}
 	created, err := n.chats.ensure(Chat{ID: m.ChatID, Participants: m.Participants, Area: m.Area, Gen: m.ChatGen, CreatedAt: m.CreatedAt,
 		Project: n.cfg.Project, Mode: m.ChatMode, ParticipantIDs: m.ParticipantIDs, Owner: m.ChatOwner, Rev: m.ChatRev})
-	if err != nil {
+	if errors.Is(err, errChatMismatch) {
 		n.log.Warn("chat message rejected", "peer", peer, "chat", m.ChatID, "err", err)
-		return false
+		return chatRejected
+	}
+	if err != nil {
+		n.log.Error("persist chat", "peer", peer, "chat", m.ChatID, "err", err)
+		return chatRetry
 	}
 	moved, ok := n.receiveMembers(peer, m, created)
 	if !ok {
-		return false
+		return chatRejected
 	}
 	closed := false
 	switch m.Kind {
@@ -1509,7 +1521,8 @@ func (n *Node) receiveChat(peer, peerID string, m Message) bool {
 		}
 	default:
 		// A reply to a seat's message is its seat's, queued before it is
-		// stored so the worker never takes it first (ClaimRun).
+		// stored so the worker never takes it first (ClaimRun); a failed store
+		// takes it back, so no seat keeps an id without its message.
 		seat := ""
 		if _, known := n.chats.message(m.ID); !known {
 			seat = n.seatsForIncoming(m)
@@ -1517,7 +1530,8 @@ func (n *Node) receiveChat(peer, peerID string, m Message) bool {
 		_, isNew, c, err := n.chats.put(m, true)
 		if err != nil {
 			n.log.Error("persist chat message", "chat", m.ChatID, "id", m.ID, "err", err)
-			return false
+			n.unqueueSeat(seat, m.ID)
+			return chatRetry
 		}
 		closed = c
 		if isNew {
@@ -1531,7 +1545,7 @@ func (n *Node) receiveChat(peer, peerID string, m Message) bool {
 	if created || closed || moved {
 		n.changed("chats")
 	}
-	return true
+	return chatStored
 }
 
 // settleReceived keeps one active chat in this project after chat id arrived

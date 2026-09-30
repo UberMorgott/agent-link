@@ -401,16 +401,34 @@ func TestHubAddLimits(t *testing.T) {
 	if err := h.Add(newProjectNode(t, "b", p, h.ln, nil).Node); !errors.Is(err, ErrContextExists) {
 		t.Fatalf("second node of one project: %v", err)
 	}
-	for i := 1; i < MaxHubProjects; i++ {
-		if err := h.Add(newProjectNode(t, "a", newTestProject(t), h.ln, nil).Node); err != nil {
+	const maxContexts = 4
+	h.maxContexts = maxContexts // HubConfig.MaxContexts
+	var last *testNode
+	for i := 1; i < maxContexts; i++ {
+		last = newProjectNode(t, "a", newTestProject(t), h.ln, nil)
+		if err := h.Add(last.Node); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := h.Add(newProjectNode(t, "a", newTestProject(t), h.ln, nil).Node); !errors.Is(err, ErrTooManyProjects) {
-		t.Fatalf("project %d: %v", MaxHubProjects+1, err)
+		t.Fatalf("project %d: %v", maxContexts+1, err)
 	}
 	if err := h.Add(newTestNode(t, "a", testSecret, nil, t.TempDir(), h.ln, nil).Node); err != nil {
-		t.Fatalf("legacy beside %d projects: %v", MaxHubProjects, err)
+		t.Fatalf("legacy beside %d projects: %v", maxContexts, err)
+	}
+	// A context that stops frees its slot at once: a leave and a join at the
+	// cap do not fail.
+	h.mu.Lock()
+	h.nodes[last.cfg.Project].stopping = true
+	h.mu.Unlock()
+	if err := h.Add(newProjectNode(t, "a", newTestProject(t), h.ln, nil).Node); err != nil {
+		t.Fatalf("add beside a stopping context: %v", err)
+	}
+	h.mu.Lock()
+	h.nodes[last.cfg.Project].stopping = false
+	h.mu.Unlock()
+	if !h.Remove(last.cfg.Project) {
+		t.Fatal("remove the stopped context")
 	}
 	if h.Remove("nope") {
 		t.Fatal("removed an unknown context")

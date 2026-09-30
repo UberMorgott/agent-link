@@ -155,8 +155,8 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 	pid := a.localProjectOfLocked(dir)
 	folderless := pid == "" && !a.projectFolderLocked(dir) && !inWorkTree(dir)
 	if pid == "" && !folderless {
-		if settings.ProjectCount(a.s.Bindings) >= settings.MaxProjects {
-			return "", &settings.Problem{Key: "too_many_projects"}
+		if err := settings.CanAddBinding(a.s.Bindings, false); err != nil {
+			return "", err
 		}
 		var err error
 		if pid, err = a.addLocalLocked(ctx, dir, nil, filepath.Base(dir)); err != nil {
@@ -192,8 +192,8 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 			return a.s.Bindings[best].ID, a.touchLocalChatLocked(best, req.SessionID)
 		}
 	}
-	if len(a.s.Bindings)-settings.ProjectCount(a.s.Bindings) >= settings.MaxLocalChats {
-		return "", &settings.Problem{Key: "too_many_projects"}
+	if err := settings.CanAddBinding(a.s.Bindings, true); err != nil {
+		return "", err
 	}
 	// A temporary chat of no owner says so: its first session is no owner
 	// (settings.LocalChat.OwnerOf).

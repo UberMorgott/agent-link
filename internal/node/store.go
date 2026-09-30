@@ -3,6 +3,7 @@ package node
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 //	node_id                  this node's random id
 type store struct {
 	dir string
+	bad []string // corrupt files moved aside at open (readRecord)
 
 	mu      sync.Mutex
 	inbox   map[string]*inboxRecord
@@ -56,10 +58,11 @@ func openStore(dir string) (*store, error) {
 	}
 	for _, f := range files {
 		var r inboxRecord
-		if err := readJSON(f, &r); err != nil {
+		if ok, err := readRecord(f, &r, &s.bad); err != nil {
 			return nil, err
+		} else if ok {
+			s.inbox[r.Message.ID] = &r
 		}
-		s.inbox[r.Message.ID] = &r
 	}
 	return s, nil
 }
@@ -457,6 +460,24 @@ func jsonFiles(dir string) ([]string, error) {
 		}
 	}
 	return files, nil
+}
+
+// readRecord reads the JSON file at path into v like readJSON, but a file
+// that does not decode (corrupt) is moved aside to path+".bad" and added to
+// *bad: ok is false then, with no error, so one bad file does not keep a
+// context from starting.
+func readRecord(path string, v any, bad *[]string) (ok bool, err error) {
+	err = readJSON(path, v)
+	var syntax *json.SyntaxError
+	var typ *json.UnmarshalTypeError
+	if err == nil || (!errors.As(err, &syntax) && !errors.As(err, &typ) && !errors.Is(err, io.ErrUnexpectedEOF)) {
+		return err == nil, err
+	}
+	if rerr := os.Rename(path, path+".bad"); rerr != nil {
+		return false, errors.Join(err, rerr)
+	}
+	*bad = append(*bad, path)
+	return false, nil
 }
 
 func readJSON(path string, v any) error {

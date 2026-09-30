@@ -222,3 +222,47 @@ func TestValidateOwnedLocalChats(t *testing.T) {
 		t.Fatalf("shared topic owned: %+v", o)
 	}
 }
+
+// CanAddBinding is the one cap check for a new binding: a project up to
+// MaxProjects, a local chat up to MaxLocalChats, each counted apart.
+func TestCanAddBinding(t *testing.T) {
+	var bs []ProjectBinding
+	for range MaxProjects {
+		bs = append(bs, newBinding(t, ""))
+	}
+	var p *Problem
+	if err := CanAddBinding(bs, false); !errors.As(err, &p) || p.Key != "too_many_projects" {
+		t.Fatalf("project past the cap: %v", err)
+	}
+	if err := CanAddBinding(bs, true); err != nil {
+		t.Fatalf("a chat beside full projects: %v", err)
+	}
+	for range MaxLocalChats {
+		b := newBinding(t, "")
+		b.Chat = &LocalChat{}
+		bs = append(bs, b)
+	}
+	if err := CanAddBinding(bs, true); !errors.As(err, &p) {
+		t.Fatalf("chat past the cap: %v", err)
+	}
+	if MaxBindings != MaxProjects+MaxLocalChats {
+		t.Fatal("MaxBindings")
+	}
+}
+
+// Normalize cleans a local chat's folder like a project's directory, on a
+// copy of the chat.
+func TestNormalizeCleansChatFolder(t *testing.T) {
+	dir := t.TempDir()
+	b := newBinding(t, "")
+	b.Scope = ProjectScopeLocal
+	b.Chat = &LocalChat{Folder: " " + dir + string(filepath.Separator) + "." + string(filepath.Separator) + " ", Topic: "x"}
+	orig := b.Chat.Folder
+	got := (Settings{Node: "alice", Bindings: []ProjectBinding{b}}).Normalize()
+	if f := got.Bindings[0].Chat.Folder; f != filepath.Clean(dir) {
+		t.Fatalf("folder %q, want %q", f, filepath.Clean(dir))
+	}
+	if b.Chat.Folder != orig {
+		t.Fatal("Normalize changed the caller's chat")
+	}
+}

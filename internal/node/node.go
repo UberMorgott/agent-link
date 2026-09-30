@@ -286,6 +286,9 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	if n.seats, err = openSeats(cfg.DataDir); err != nil {
 		return nil, err
 	}
+	for _, p := range slices.Concat(st.bad, chats.bad, n.seats.bad) {
+		n.log.Error("corrupt file moved aside; its content is left out", "file", p+".bad")
+	}
 	n.deliv = newDeliveryState()
 	if err := n.loadLaunchState(); err != nil {
 		return nil, err
@@ -303,6 +306,9 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		n.log.Warn("delivery leases unreadable; starting over", "err", err)
 	}
 	n.restoreLeases(time.Now())
+	if cfg.DisableSeats {
+		n.dropSeats() // seats left from before the project had none
+	}
 	return n, nil
 }
 

@@ -291,9 +291,13 @@ func (n *Node) receive(pc *peerConn, m *Message) bool {
 		return pc.write(frame{Type: "ack", ID: m.ID}) == nil
 	}
 	if m.ChatID != "" {
-		if !n.receiveChat(pc.peer, pc.id, *m) {
+		switch n.receiveChat(pc.peer, pc.id, *m) {
+		case chatRejected:
 			n.log.Warn("rejected chat message", "peer", pc.peer, "id", m.ID, "chat", m.ChatID)
 			return pc.write(frame{Type: "ack", ID: m.ID}) == nil // dropped: resending cannot help
+		case chatRetry:
+			return true // not persisted: no ACK, the sender resends
+		case chatStored:
 		}
 		if m.Kind == KindChatOpen || m.Kind == KindChatClose || m.Kind == KindChatMembers || m.Kind == KindReceipt {
 			return pc.write(frame{Type: "ack", ID: m.ID}) == nil

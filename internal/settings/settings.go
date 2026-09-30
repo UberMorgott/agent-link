@@ -330,11 +330,22 @@ func (b ProjectBinding) LaunchModeOf() string {
 const Version = 2
 
 // MaxProjects caps the bindings that are projects, MaxLocalChats those that
-// are local chats.
+// are local chats; MaxBindings is both (every binding runs one context).
 const (
 	MaxProjects   = 32
 	MaxLocalChats = 64
+	MaxBindings   = MaxProjects + MaxLocalChats
 )
+
+// CanAddBinding reports whether bs has room for one more binding: a local
+// chat when chat, else a project (a Problem too_many_projects when not).
+func CanAddBinding(bs []ProjectBinding, chat bool) error {
+	projects := ProjectCount(bs)
+	if (chat && len(bs)-projects >= MaxLocalChats) || (!chat && projects >= MaxProjects) {
+		return problem("too_many_projects")
+	}
+	return nil
+}
 
 // maxAlias caps a binding's Alias, in runes.
 const maxAlias = 64
@@ -530,6 +541,13 @@ func (s Settings) Normalize() Settings {
 			b.Alias, b.Dir = strings.TrimSpace(b.Alias), strings.TrimSpace(b.Dir)
 			if b.Dir != "" {
 				b.Dir = filepath.Clean(b.Dir)
+			}
+			if b.Chat != nil { // a copy: the caller's binding stays as it was
+				lc := *b.Chat
+				if lc.Folder = strings.TrimSpace(lc.Folder); lc.Folder != "" {
+					lc.Folder = filepath.Clean(lc.Folder)
+				}
+				b.Chat = &lc
 			}
 			bs[i] = b
 		}
