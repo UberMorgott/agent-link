@@ -46,11 +46,6 @@ type inboxAddr struct {
 	woke          time.Time
 }
 
-// inboxWakeGrace: a session still idle this long after a successful inbox
-// wake did not take it (its crossSessionInbound setting may drop posts, or
-// it sits in a dialog); its background waiter wakes it from then on.
-const inboxWakeGrace = 2 * time.Minute
-
 // inboxPostTimeout bounds one post to an inbox.
 const inboxPostTimeout = 5 * time.Second
 

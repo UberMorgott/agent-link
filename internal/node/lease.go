@@ -53,26 +53,13 @@ const (
 	ViaSeat   = "seat"   // the node's turn of a seat
 )
 
-// Lease limits.
+// The lease book's file and record keeping (its budgets: policy.go).
 const (
 	leaseFile = "leases.json"
-	// maxLeaseAttempts bounds the automatic leases of one message (every via
-	// but ViaHook); then it is failed.
-	maxLeaseAttempts = 5
-	// maxOwnerFails: an owner whose leases of a message failed this often is
-	// passed over for it.
-	maxOwnerFails   = 2
-	leaseBackoffMin = 15 * time.Second
-	leaseBackoffMax = 5 * time.Minute
-	// runningHold is how long a running lease waits for its ack.
-	runningHold = launchHold
 	// leaseDoneKeep: a record of a message no longer unread is kept this long
 	// (the API shows it); leaseKeep bounds every record.
 	leaseDoneKeep = 10 * time.Minute
-	// leaseHoldMax bounds a held lease whose ack keeps failing (holdForAck):
-	// then it is failed and the message is released to the hooks.
-	leaseHoldMax = time.Hour
-	leaseKeep    = 7 * 24 * time.Hour
+	leaseKeep     = 7 * 24 * time.Hour
 )
 
 // Lease is one message's delivery lease for one recipient on this node.
@@ -536,12 +523,6 @@ func (b *leaseBook) passedOver(key, owner string) bool {
 type leaseEnd struct {
 	owner, id, reason string
 }
-
-// queuedOwnerMax bounds how long a session keeps a message whose wake prompt
-// sits in its queue or inbox while it shows no activity (active: its last hook
-// event, not a heartbeat): a session whose waiter hit its wake cap but keeps
-// heartbeating would hold it for as long as it stays registered.
-const queuedOwnerMax = 30 * time.Minute
 
 // due lists the leases that must end now: past their deadline, owned by a
 // session that is not live (gone(owner) true), or queued in a session that

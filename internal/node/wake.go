@@ -368,13 +368,6 @@ func (n *Node) queueLeaseActive(owner, token string, ids []string) bool {
 	return false
 }
 
-// maxIdleWakes bounds the node's wakes of one idle period: the first, and one
-// retry after it lapsed untaken (inboxWakeGrace; its claim lapses with it and
-// the messages are unread again). A lapsed wake also frees the session's
-// waiter (Claude, InboxWakes); a message goes to one of them only (claims).
-// After that the waiter or the session's next event takes them.
-const maxIdleWakes = 2
-
 // wakeDue reports whether the node may wake the idle session now: not woken
 // in this idle period yet, or its last wake lapsed untaken (a session that
 // took it left the idle period) and a retry is left.

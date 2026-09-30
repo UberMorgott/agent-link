@@ -36,11 +36,6 @@ import (
 // Otherwise only live sessions count: a message for a session that is gone is
 // anyone's.
 
-// claimTTL is how long a claim holds without an ack: the hook acks right
-// after it delivers, so a claim older than that was never delivered and the
-// message goes back to its route.
-const claimTTL = time.Minute
-
 // AffinityLapse: a session with no hook event (LastActive) for this long no
 // longer holds its chats (routeOf), though its waiter keeps it live.
 const AffinityLapse = 30 * time.Minute
@@ -61,10 +56,6 @@ type sessionClaim struct {
 	// pending (holdForAck); held until acknowledged, delivered to nobody.
 	ackOnly bool
 }
-
-// launchHold bounds a launch claim: the first turn's own timeout, plus the
-// time to end it (runDirect drops or acknowledges it before that).
-const launchHold = desktopTurnTimeout + 5*time.Minute
 
 // held reports whether the claim still holds for a live session: claimTTL,
 // or inboxWakeGrace for a wake (then the session's waiter takes over); a
@@ -365,19 +356,6 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 	n.report(spent, AttemptNeedsHuman)
 	return granted, nil
 }
-
-// maxWaiterWakes bounds the wakes of one message by Claude waiters (Claim
-// with a WakeToken), like maxIdleWakes the node's own: a wake no hook event
-// proved lapses and may be tried again, but a session that never shows it
-// got one (it is gone, or its transcript lacks the wakes) is not woken for
-// that message forever. After that no waiter wakes for it: it stays unread
-// for the session's next event, and its author hears it needs a person
-// (AttemptNeedsHuman).
-const maxWaiterWakes = 2
-
-// waiterWakeKeep: a message's waiter wake count is forgotten this long after
-// its last wake.
-const waiterWakeKeep = 24 * time.Hour
 
 // waiterSpentMsg reports whether no waiter may wake with the message of key
 // any more: it used up maxWaiterWakes (the lease's count, forgotten

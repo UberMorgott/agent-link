@@ -69,7 +69,6 @@ const (
 	launchGrace    = 10 * time.Second
 	launchConfirm  = 90 * time.Second
 	launchDebounce = 3 * time.Minute
-	launchTries    = 2
 )
 
 // Launch failure reasons (launch_failed:<reason>).

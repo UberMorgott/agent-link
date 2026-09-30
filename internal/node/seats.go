@@ -59,9 +59,6 @@ const (
 	SeatPaused     = "paused"      // every message for it is past the hop limit: it waits for a person
 )
 
-// seatRetry are the waits before the automatic tries of a seat's failed turn.
-var seatRetry = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute}
-
 // maxSeats bounds the seats of a node.
 const maxSeats = 8
 
