@@ -634,6 +634,26 @@ func TestCodexSubagentActivity(t *testing.T) {
 	}
 }
 
+// A Codex child started before its session had a chat to report to is still
+// a live child: the tool calls after the session took a chat are not shown
+// as the parent's own.
+func TestCodexSubagentBeforeChat(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookCodex, evSessionStart)
+	c.run(hookCodex, evSubagentStart, `,"agent_id":"child-1"`)
+	noteSent(c.env, c.sid, "c1", "own1")
+	c.now = c.now.Add(time.Minute)
+	c.run(hookCodex, evPreTool, `,"tool_name":"apply_patch","tool_input":{"command":"*** Update File: TASKS.md"}`)
+	for _, a := range c.f.activity {
+		if a.AgentID == "" && a.Text != "работает с субагентами" {
+			t.Fatalf("a child's work shown as the parent's: %v", c.f.texts())
+		}
+	}
+	if len(c.f.activity) == 0 {
+		t.Fatal("no activity")
+	}
+}
+
 func TestCodexSubagentStopAfterParentIdle(t *testing.T) {
 	c := newHookCase(t)
 	c.run(hookCodex, evSessionStart)

@@ -61,9 +61,10 @@ func (h *hookSession) report(typ, text, phase string) {
 
 // reportMain reports only what hooks can honestly attribute to the main
 // agent. Codex tool hooks do not identify the agent that ran them, so while
-// children are active their tool calls must not be presented as the parent's.
+// children are live (Kids, also those started before the session had a chat
+// to report to) their tool calls must not be presented as the parent's.
 func (h *hookSession) reportMain(typ, text, phase string) {
-	if h.client == hookCodex && phase != node.PhaseIdle && len(h.st.Subagents) > 0 {
+	if h.client == hookCodex && phase != node.PhaseIdle && len(h.st.Kids) > 0 {
 		typ, text = "thinking", "работает с субагентами"
 	}
 	h.report(typ, text, phase)

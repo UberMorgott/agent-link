@@ -342,8 +342,9 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	}
 	if event == evSubagentStart || event == evSubagentStop {
 		h.subagent(in.AgentID, in.AgentType, event == evSubagentStop)
+		kids := client == hookCodex && st.trackKid(event, in.AgentID, now)
 		h.reportCodexAgentState()
-		if client == hookCodex && st.trackKid(event, in.AgentID, now) {
+		if kids {
 			if st.Idle {
 				h.tellDoing(node.AgentSubagents) // its turn ended: the node shows it waiting for them
 			} else {
