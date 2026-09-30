@@ -237,3 +237,31 @@ func TestLeasePersisted(t *testing.T) {
 		t.Fatal("ack")
 	}
 }
+
+// A failed record outlives leaseKeep while its message is unread: a person
+// decides, the message is never delivered automatically again. Once read it
+// goes like any other.
+func TestPruneKeepsFailedUnread(t *testing.T) {
+	b := newLeaseBook("")
+	now := time.Now()
+	mustTake(t, b, "m1", "", launchOwner("x"), ViaLaunch, "", now.Add(time.Minute), now)
+	if err := b.fail(launchOwner("x"), []string{"m1"}, "restart", now); err != nil {
+		t.Fatal(err)
+	}
+	later := now.Add(leaseKeep + 24*time.Hour)
+	if err := b.prune(later, func(string) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if l := leaseState(t, b, "m1"); !l.Failed {
+		t.Fatalf("failed record %+v", l)
+	}
+	if ok, _ := b.take("m1", "", launchOwner("y"), ViaLaunch, "", later.Add(time.Minute), later); ok {
+		t.Fatal("a failed message was taken again")
+	}
+	if err := b.prune(later, func(string) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := b.get("m1"); ok {
+		t.Fatal("a read message's failed record is kept")
+	}
+}
