@@ -171,19 +171,19 @@ func TestProjectChatMembersReceive(t *testing.T) {
 			ChatMode: ChatModeProject, ChatOwner: "b", ChatRev: rev}
 	}
 	abc, abcIDs := []string{"a", "b", "c"}, []string{a.ID(), bID, cID}
-	if !a.receiveChat("b", bID, env("b", KindChatMembers, abc, abcIDs, 1)) {
+	if a.receiveChat("b", bID, env("b", KindChatMembers, abc, abcIDs, 1)) != chatStored {
 		t.Fatal("the owner's change rejected")
 	}
-	if a.receiveChat("c", cID, env("c", KindChatMembers, []string{"a", "c"}, []string{a.ID(), cID}, 2)) {
+	if a.receiveChat("c", cID, env("c", KindChatMembers, []string{"a", "c"}, []string{a.ID(), cID}, 2)) == chatStored {
 		t.Fatal("a non-owner's change accepted")
 	}
-	if !a.receiveChat("b", bID, env("b", KindChatMembers, []string{"b", "c"}, []string{bID, cID}, 2)) {
+	if a.receiveChat("b", bID, env("b", KindChatMembers, []string{"b", "c"}, []string{bID, cID}, 2)) != chatStored {
 		t.Fatal("the removal rejected")
 	}
 	if info, _ := a.Chat(id); !info.Removed || !info.Archived {
 		t.Fatalf("not removed: %+v", info)
 	}
-	if a.receiveChat("c", cID, env("c", "", abc, abcIDs, 1)) {
+	if a.receiveChat("c", cID, env("c", "", abc, abcIDs, 1)) == chatStored {
 		t.Fatal("a stale message of a chat a was removed from accepted")
 	}
 }

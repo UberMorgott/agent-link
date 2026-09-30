@@ -669,6 +669,26 @@ func (n *Node) seatsForIncoming(m Message) string {
 	return seat
 }
 
+// unqueueSeat takes message id back from the pending messages of seat ("":
+// none): seatsForIncoming queued it but storing it failed.
+func (n *Node) unqueueSeat(seat, id string) {
+	if seat == "" {
+		return
+	}
+	st := n.seats
+	st.mu.Lock()
+	var err error
+	if s := st.getLocked(seat); s != nil {
+		s.Pending = slices.DeleteFunc(s.Pending, func(p SeatPending) bool { return p.ID == id })
+		err = st.saveLocked()
+	}
+	st.mu.Unlock()
+	if err != nil {
+		n.log.Warn("save seats; saved again later", "err", err)
+	}
+	n.changed("seats")
+}
+
 // seatHas reports whether message id is pending for a seat of this node.
 func (n *Node) seatHas(id string) bool {
 	st := n.seats
@@ -931,6 +951,7 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 	if !ok {
 		return
 	}
+	n.dropOrphanPending(now)
 	live := n.sess.liveIDs(now)
 	st := n.seats
 	st.mu.Lock()
@@ -996,6 +1017,54 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 		id, intro := s.ID, s.SessionID == ""
 		n.wg.Go(func() { n.seatTurn(ctx, dl, id, intro, false) })
 	}
+}
+
+// orphanGrace is how long a seat's pending message may lack its stored record
+// before dropOrphanPending drops it: seatsForIncoming queues a message just
+// before storing it.
+const orphanGrace = time.Minute
+
+// dropOrphanPending drops the pending messages of seats whose record is gone
+// (never stored, or its chat removed) past orphanGrace: no turn, hook or wake
+// could ever deliver them, and they would keep the seat waiting.
+func (n *Node) dropOrphanPending(now time.Time) {
+	st := n.seats
+	st.mu.Lock()
+	var old []string
+	for _, s := range st.seats {
+		for _, p := range s.Pending {
+			if now.Sub(p.At) > orphanGrace {
+				old = append(old, p.ID)
+			}
+		}
+	}
+	st.mu.Unlock()
+	gone := map[string]bool{}
+	for _, id := range old {
+		if _, ok := n.chats.message(id); !ok {
+			gone[id] = true
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+	st.mu.Lock()
+	for _, s := range st.seats {
+		s.Pending = slices.DeleteFunc(s.Pending, func(p SeatPending) bool {
+			if gone[p.ID] {
+				n.log.Warn("seat message without its record dropped", "seat", s.ID, "id", p.ID)
+				delete(st.marks, seatKey(s.ID, p.ID))
+				return true
+			}
+			return false
+		})
+	}
+	err := st.saveLocked()
+	st.mu.Unlock()
+	if err != nil {
+		n.log.Warn("save seats; saved again later", "err", err)
+	}
+	n.changed("seats")
 }
 
 // notePaused logs once, when seat's messages start waiting for a person past
