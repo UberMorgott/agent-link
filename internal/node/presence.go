@@ -66,12 +66,9 @@ type AreaPresence struct {
 // session takes, which is part of its presence. It must be set before Serve or Run.
 func (n *Node) SetAutoAnswer(on bool) { n.autoAnswer = on }
 
-// presenceFor is this node's presence for a peer with areas peerAreas: the
-// working folder's, then every area both have, sorted.
-func (n *Node) presenceFor(peerAreas []string) []AreaPresence {
-	return n.presenceForCaps(peerAreas, false)
-}
-
+// presenceForCaps is this node's presence for a peer with areas peerAreas:
+// the working folder's, then every area both have, sorted; with its agent
+// counts when counts.
 func (n *Node) presenceForCaps(peerAreas []string, counts bool) []AreaPresence {
 	areas := []string{""}
 	for _, a := range n.cfg.Areas {

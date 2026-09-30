@@ -308,13 +308,11 @@ func (cs *chatStore) get(id string) (Chat, bool) {
 	return st.chat, true
 }
 
-// add stores m, a message or a control message of a known chat, unless its id
-// is stored already. A close message closes the chat; of concurrent closes the
-// smallest message id wins everywhere. It returns the stored record (the
-// earlier one for a duplicate), whether m is new and whether it closed the chat.
-func (cs *chatStore) add(m Message) (chatRecord, bool, bool, error) { return cs.put(m, false) }
-
-// put is add that stores a new message as unread for this node's sessions.
+// put stores m, a message or a control message of a known chat, unless its id
+// is stored already; a new message is unread for this node's sessions when
+// unread. A close message closes the chat; of concurrent closes the smallest
+// message id wins everywhere. It returns the stored record (the earlier one for
+// a duplicate), whether m is new and whether it closed the chat.
 func (cs *chatStore) put(m Message, unread bool) (chatRecord, bool, bool, error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()

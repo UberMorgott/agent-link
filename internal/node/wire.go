@@ -144,8 +144,6 @@ func (w *wire) secure(k channelKeys, dialer bool) error {
 	return nil
 }
 
-func (w *wire) sealed() bool { return w.out != nil }
-
 // next returns the next frame's bytes. Any error ends the session.
 func (w *wire) next() ([]byte, error) {
 	if w.in != nil {
