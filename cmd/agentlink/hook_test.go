@@ -1404,3 +1404,25 @@ func TestHookSessionStartNamesCLIPath(t *testing.T) {
 		t.Fatal("no marker: want this executable")
 	}
 }
+
+// A stale installed plugin is told to the person at SessionStart only, as
+// systemMessage: never model context, never at a later event.
+func TestHookSessionStartStalePluginNotice(t *testing.T) {
+	t.Cleanup(func() { pluginNotice = func(string) string { return "" } })
+	var asked []string
+	pluginNotice = func(client string) string {
+		asked = append(asked, client)
+		return "agent-link: плагин устарел"
+	}
+	c := newHookCase(t)
+	v := parseOut(t, c.run(hookCodex, evSessionStart))
+	if v.SystemMessage != "agent-link: плагин устарел" || strings.Contains(v.HookSpecificOutput.AdditionalContext, "устарел") {
+		t.Fatalf("notice %q context %q", v.SystemMessage, v.HookSpecificOutput.AdditionalContext)
+	}
+	if out := c.run(hookCodex, evPrompt, `,"prompt":"hi"`); strings.Contains(out, "устарел") {
+		t.Fatalf("notice repeated after SessionStart: %q", out)
+	}
+	if !slices.Equal(asked, []string{hookCodex}) {
+		t.Fatalf("checked %q", asked)
+	}
+}

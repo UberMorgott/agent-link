@@ -137,6 +137,7 @@ func runApp(args []string) error {
 	a.SetExecutable(exe)
 	a.Relaunch = func() error { return selfupdate.Start(exe, relaunchArgs(args)) }
 	go a.RunUpdates(quitCtx)
+	go a.RefreshPlugins(quitCtx)
 	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {

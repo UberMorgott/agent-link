@@ -357,8 +357,13 @@ claude plugin install agent-link@agent-link
 
 **Updating the plugin.** Claude Code refreshes a third-party marketplace only when its auto-update
 is on (off by default), so the installed skill, hooks and `.mcp.json` stay at the commit of the
-install (`~/.claude/plugins/known_marketplaces.json` shows `lastUpdated`). Refresh by hand, then
-start a new session:
+install (`~/.claude/plugins/known_marketplaces.json` shows `lastUpdated`). The desktop app checks
+at every start: when the installed copy's `.codex-plugin/plugin.json` version is not the one the
+running `agentlink` was built with, it runs these commands itself (Codex:
+`codex plugin marketplace upgrade <marketplace>` and `codex plugin add agent-link@<marketplace>`),
+never editing the plugin cache; a plugin still stale after that is named at the start of every
+session in a line for you (never the model) with the exact commands. By hand, then start a new
+session:
 
 ```powershell
 claude plugin marketplace update agent-link

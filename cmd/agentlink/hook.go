@@ -228,6 +228,10 @@ const envAttended = "CLAUDE_CODE_SESSION_ATTENDED"
 // hookHeadless is headless; tests replace it.
 var hookHeadless = headless
 
+// pluginNotice is the SessionStart line about a stale installed plugin
+// (agenthook.PluginCheck.Notice); tests replace it.
+var pluginNotice = func(client string) string { return agenthook.CheckPlugin(client).Notice() }
+
 // headless reports whether the hook runs in a non-interactive agent run that
 // no person is behind: `claude -p` or `codex exec`. Claude Code says so in
 // envAttended; without it (older versions, Codex) the agent's command line
@@ -429,6 +433,11 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 		text = strings.TrimSpace(text + "\n\n" + cliHint(env.exe))
 	}
 	notice := joinNotice(takeNotice(&st), b.notice)
+	if event == evSessionStart {
+		// A plugin left at an old install runs hooks this executable may no
+		// longer serve: the person hears it once per session, the model never.
+		notice = joinNotice(notice, pluginNotice(client))
+	}
 	if text == "" && notice == "" {
 		h.accept(b) // only what the prompt that woke the session carried
 		return nil
