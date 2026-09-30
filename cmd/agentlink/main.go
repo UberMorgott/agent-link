@@ -63,14 +63,15 @@ const usage = `usage:
   agentlink mcp [--config <path>]   (stdio MCP server "agentlink" for an agent session: tools projects, members, seats, chats, history, unread, send, discuss, ack)
   agentlink add    --config <path> --addr <ip[:port]> [--project <id>]   (dial a member's address; it spreads to all members)
   agentlink remove --config <path> --name <node> [--project <id>]   (remove a member from the whole network)
-  agentlink hook <claude|codex> [--event auto]   (run by an agent's hooks: tells the session about new messages; never claims them)
+  agentlink hook <claude|codex> [--event auto]   (run by an agent's hooks: hands the session the new messages for it and reports what it does)
   agentlink hook install <claude|codex> [--scope user|project]   (add that hook to ~/.claude/settings.json or ~/.codex/hooks.json)
   agentlink update [--check]    (install the latest GitHub release next to this program; --check only reports)
   agentlink version
 Client commands (all but serve) may omit --config: they then use $AGENTLINK_API, else the desktop
 app's settings (api, default 127.0.0.1:7520). --project (default $AGENTLINK_PROJECT_ID, set for a
 project's agents) picks the project; without it the chat or message named, else this folder's
-project, else the network from before projects, else the only project; failing that the error\nnames the known projects. wait exits 2 on timeout with a note on stderr.`
+project, else the network from before projects, else the only project; failing that the error
+names the known projects. wait exits 2 on timeout with a note on stderr.`
 
 // exitTimeout is returned by wait when no message arrived in time.
 const exitTimeout = 2

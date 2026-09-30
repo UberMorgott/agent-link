@@ -51,6 +51,13 @@ func TestRunExitCodes(t *testing.T) {
 	}
 }
 
+// The usage is a raw string: an escape in it would print as a backslash.
+func TestUsageHasNoEscapes(t *testing.T) {
+	if i := strings.Index(usage, `\n`); i >= 0 {
+		t.Fatalf("usage holds a literal \\n at %d: %q", i, usage[max(0, i-20):i+10])
+	}
+}
+
 func TestClickDebounce(t *testing.T) {
 	d := &debounce{gap: clickGap}
 	t0 := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
