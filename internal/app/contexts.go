@@ -86,7 +86,12 @@ func (a *App) workerOptions(pid string, n *node.Node) (opt worker.Options, hasHa
 	opt = a.Worker
 	opt.MaxJobs = a.s.MaxJobs
 	topic := projectTopic(pid)
-	opt.OnChange = func() { a.events.publish("worker", topic) }
+	opt.OnChange = func() {
+		a.events.publish("worker", topic)
+		if pid != "" {
+			a.liveChanged() // a job in a local chat makes it live
+		}
+	}
 	// Chat requests run in per-chat agent sessions and answer the whole chat.
 	opt.Chats, opt.Self = n, a.s.Node
 	// Agents reach the app's control API through $AGENTLINK_API, and name
@@ -139,7 +144,12 @@ func (a *App) newNodeOf(pid string, cfg config.Config, key []byte) (*node.Node, 
 		n.SetLauncher(a.Launcher, a.s.Handler)
 	}
 	topic := projectTopic(pid)
-	n.SetChangeHook(func(t string) { a.events.publish(t, topic) })
+	n.SetChangeHook(func(t string) {
+		a.events.publish(t, topic)
+		if cfg.LocalOnly && (t == "seats" || t == "chats" || t == "messages") {
+			a.liveChanged() // a local chat's turns and messages make it live
+		}
+	})
 	// The emergency stop is the app's, for every context (SetStopAll).
 	n.SetStopped(a.s.StopAll)
 	// So is this member's chat color, which its record carries to the members.

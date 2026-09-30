@@ -157,11 +157,9 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 			Autonomy: autonomyViewOf(a.effectiveBindingLocked(b), c)}
 		switch {
 		case b.Chat != nil:
-			v.Chat = a.localChatViewLocked(b, a.liveAgentsLocked())
+			v.Chat = a.localChatViewLocked(b)
 		case b.ScopeOf() == settings.ProjectScopeLocal:
-			var act LocalActivityView
-			act.Live, act.Waiting, act.LastActive = a.localChatLiveLocked(b, nil)
-			v.Activity = &act
+			v.Activity = a.localActivityLocked(b)
 		}
 		if c != nil {
 			v.Name = c.n.ProjectMeta().Name

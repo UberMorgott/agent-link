@@ -88,14 +88,6 @@ func (a *App) observeOwnerLocked(pid string, o settings.LocalChatOwner, live map
 	return gone && now.Sub(w.gone) >= RetireGrace
 }
 
-// ownerLiveLocked reports whether the owner o of local chat pid counts as
-// live: its session is, and a subagent is among its live agents (or was never
-// seen there, so its absence says nothing).
-func (a *App) ownerLiveLocked(pid string, o settings.LocalChatOwner, live map[string]map[string]bool) bool {
-	agents, ok := live[o.Session]
-	return ok && (o.Agent == "" || agents[o.Agent] || !a.owners[pid].agent)
-}
-
 func (a *App) forgetOwnerLocked(pid string) { delete(a.owners, pid) }
 
 // ownerGoneLocked reports whether the owner of owned local chat pid is gone
@@ -197,7 +189,7 @@ func (a *App) retireChat(pid string) {
 		return
 	}
 	defer func() { go a.events.publish("projects", projectTopic(pid), "status", "dashboard") }()
-	if c != nil && hasUnread(c.n) {
+	if c != nil && localChatState(c, nil).unread {
 		lc := *a.s.Bindings[i].Chat
 		lc.Retired = time.Now().UTC()
 		s := a.s
@@ -220,49 +212,30 @@ func (a *App) retireChat(pid string) {
 	a.log.Info("owned chat retired", "project", pid)
 }
 
-// hasUnread reports an unread message in n's chats (an error counts as one:
-// nothing is dropped unseen).
-func hasUnread(n *node.Node) bool {
-	chats, err := n.Chats(false, false)
-	if err != nil {
-		return true
-	}
-	for _, ci := range chats {
-		if ci.Unread > 0 {
-			return true
-		}
-	}
-	return false
+// liveState is a local chat's LocalChatView.Live, LiveEndedAt, Waiting and
+// LastActive (localChatLiveLocked).
+type liveState struct {
+	live, waiting bool
+	endedAt, last time.Time
 }
 
-// localChatLiveLocked is LocalChatView.Live, Waiting and LastActive of the
-// local chat of binding b (live: liveAgentsLocked). Live: not retired, and
-// its owner (session, and subagent) is live, another session of it is live,
-// a discuss caller waits for a reply (App.discussWaiters), a seat's turn runs
-// or is queued, or a job runs. A shared chat (a folder's project chat, b.Chat
-// nil, or a persistent topic) is live only while something runs in it or one
-// of its sessions is live: an idle one is not in use, however long it is kept.
-// An unread reply alone does not keep it live: it is for a person (the
-// dashboard's needs_human), and a retired chat stays hidden only for it.
-func (a *App) localChatLiveLocked(b settings.ProjectBinding, live map[string]map[string]bool) (isLive, waiting bool, last time.Time) {
-	lc := b.Chat
-	c := a.projects[b.ID]
-	last, waiting, running := localChatState(c, lc)
-	waiting = waiting || a.discussWaiters[b.ID] > 0
-	if lc == nil {
-		return waiting || running, waiting, last
-	}
-	if !lc.Retired.IsZero() {
-		return false, waiting, last
-	}
-	o := lc.OwnerOf()
-	if o != nil && a.ownerLiveLocked(b.ID, *o, live) {
-		return true, waiting, last
-	}
-	for _, s := range lc.Sessions {
-		if _, ok := live[s]; ok && (o == nil || s != o.Session) {
-			return true, waiting, last
+// localChatLiveLocked is the live state of the local chat of binding b
+// (b.Chat nil: a folder's project chat). Live: not retired, and a discuss
+// caller waits for a reply (App.discussWaiters), a seat's turn runs or is
+// queued, or other work runs in it. Its owner's session being open does not
+// make it live (that only keeps it from retiring), nor does an unread reply:
+// it is for a person (the dashboard's needs_human), and a retired chat stays
+// hidden only for it. Not live, endedAt is when it was last seen to stop
+// (checkLive), else its last activity.
+func (a *App) localChatLiveLocked(b settings.ProjectBinding) liveState {
+	st := localChatState(a.projects[b.ID], b.Chat)
+	v := liveState{waiting: st.waiting || a.discussWaiters[b.ID] > 0, last: st.last}
+	v.live = (v.waiting || st.running) && (b.Chat == nil || b.Chat.Retired.IsZero())
+	if !v.live {
+		v.endedAt = v.last
+		if m, ok := a.chatLive[b.ID]; ok && !m.live && !m.endedAt.IsZero() {
+			v.endedAt = m.endedAt
 		}
 	}
-	return waiting || running, waiting, last
+	return v
 }
