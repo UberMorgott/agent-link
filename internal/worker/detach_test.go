@@ -421,7 +421,12 @@ func TestReplyWaitsForSavedEnd(t *testing.T) {
 	if got := rec.wait(t, 1)[0]; got.Body != "done" || got.JobStatus != node.JobCompleted {
 		t.Fatalf("reply = %+v", got)
 	}
-	eventually(t, "replied stored", func() bool { return storedJob(t, w, id1).Replied })
+	// Poll memory, not the file: reply saves Replied under w.mu, and on Windows
+	// a read that meets the save's rename fails with a sharing violation.
+	eventually(t, "replied", func() bool { j, _ := w.Job(id1); return j.Replied })
+	if !storedJob(t, w, id1).Replied {
+		t.Fatal("replied not stored")
+	}
 }
 
 // A final reply whose send failed is sent again without a restart.
