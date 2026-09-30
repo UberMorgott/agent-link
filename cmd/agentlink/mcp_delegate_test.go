@@ -20,6 +20,7 @@ import (
 const (
 	mcpCallHelperEnv = "AGENTLINK_TEST_MCPCALL_HELPER"
 	mcpCallMarkerEnv = "AGENTLINK_TEST_MCPCALL_MARKER"
+	mcpCallCrashEnv  = "AGENTLINK_TEST_MCPCALL_CRASH"
 )
 
 // TestMCPCallHelper makes this test binary act as the updated executable's
@@ -31,6 +32,10 @@ func TestMCPCallHelper(t *testing.T) {
 	}
 	i := slices.Index(os.Args, "mcp-call")
 	_ = os.WriteFile(os.Getenv(mcpCallMarkerEnv), []byte(strings.Join(os.Args[i:], " ")), 0o600)
+	if os.Getenv(mcpCallCrashEnv) == "1" {
+		_, _ = io.WriteString(os.Stdout, mcpCallStarted+"\n")
+		os.Exit(3) // started, then died without a result
+	}
 	os.Exit(run(os.Args[i:], os.Stdout, os.Stderr))
 }
 
@@ -39,13 +44,16 @@ func TestMCPCallHelper(t *testing.T) {
 // session gets the updated tools without a restart; an executable that cannot
 // run it leaves the call to the server itself.
 func TestMCPCallsRunInUpdatedExecutable(t *testing.T) {
+	var hits atomic.Int32
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
 		_, _ = io.WriteString(w, `[{"id":"p1","name":"Проект — один"}]`)
 	}))
 	t.Cleanup(api.Close)
 	host := strings.TrimPrefix(api.URL, "http://")
 	marker := filepath.Join(t.TempDir(), "ran")
-	t.Setenv(envAPI, host)
+	// The new process calls this server's API, not its own default.
+	t.Setenv(envAPI, "127.0.0.1:1")
 	t.Setenv(mcpCallHelperEnv, "1")
 	t.Setenv(mcpCallMarkerEnv, marker)
 	old := mcpCallArgs
@@ -85,6 +93,13 @@ func TestMCPCallsRunInUpdatedExecutable(t *testing.T) {
 	if text, isErr := callTool(t, cs, "history", map[string]any{"chat": ""}); !isErr || !strings.Contains(text, "chat is required") {
 		t.Fatalf("delegated error: %q %v", text, isErr)
 	}
+	// A call that started and died is an error, never run a second time here.
+	t.Setenv(mcpCallCrashEnv, "1")
+	before := hits.Load()
+	if text, isErr := callTool(t, cs, "projects", nil); !isErr || !strings.Contains(text, "did not finish projects") || hits.Load() != before {
+		t.Fatalf("crashed call: %q %v, api hits %d -> %d", text, isErr, before, hits.Load())
+	}
+	t.Setenv(mcpCallCrashEnv, "")
 	// An executable that cannot run the call: the server runs it itself.
 	gone := filepath.Join(t.TempDir(), "gone.exe")
 	fresh.Store(&gone)

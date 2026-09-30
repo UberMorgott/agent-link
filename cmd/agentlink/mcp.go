@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -122,6 +123,7 @@ func runMCP(cfg config.Config) error {
 // (mcp-call runs one).
 type mcpTools struct {
 	s     *mcp.Server
+	api   string // the local API the tools call
 	calls map[string]func(json.RawMessage) (any, error)
 	// fresh, when set, names the executable that replaced this one at its
 	// path since it started ("" while none did): the calls run there.
@@ -135,7 +137,7 @@ func newMCPServer(cfg config.Config) *mcp.Server { return newMCPTools(cfg, nil).
 // calls going to the fresh executable once there is one.
 func newMCPTools(cfg config.Config, fresh func() string) *mcpTools {
 	s := &mcpTools{s: mcp.NewServer(&mcp.Implementation{Name: mcpServerName, Version: selfupdate.Version}, nil),
-		calls: map[string]func(json.RawMessage) (any, error){}, fresh: fresh}
+		api: cfg.API, calls: map[string]func(json.RawMessage) (any, error){}, fresh: fresh}
 	// proj is the project selector: the argument, else the agent's own project.
 	proj := func(p string) string { return cmp.Or(p, os.Getenv(envProjectID)) }
 	limit := func(n int) int { return cmp.Or(n, 50) }
@@ -207,8 +209,10 @@ func freshExecutable() func() string {
 	}
 }
 
-// mcpCallResult is what `agentlink mcp-call` prints: OK once the call ran,
-// with its text or its error.
+// mcpCallStarted is the first line `agentlink mcp-call` prints, before it
+// runs the call; mcpCallResult the last: OK, with the call's text or error.
+const mcpCallStarted = `{"started":true}`
+
 type mcpCallResult struct {
 	OK    bool   `json:"ok"`
 	Text  string `json:"text,omitempty"`
@@ -219,27 +223,62 @@ type mcpCallResult struct {
 // replaces them).
 var mcpCallArgs = func(tool string) []string { return []string{"mcp-call", "--tool", tool} }
 
-// delegateMCP runs tool with args in exe (`agentlink mcp-call`). ok is false
-// when exe did not run it (an executable without mcp-call, not runnable):
-// the caller runs it here then.
-func delegateMCP(ctx context.Context, exe, tool string, args json.RawMessage) (r mcpCallResult, ok bool) {
+// delegateMCP runs tool with args in exe (`agentlink mcp-call`) on the local
+// API api (this server's, never the new process's own default). ran is false
+// only when exe never started the call (not runnable, or no mcp-call: no
+// started line): the caller runs it itself then. A call that started is never
+// run twice: without its result it is an error (a send may have gone out).
+func delegateMCP(ctx context.Context, exe, api, tool string, args json.RawMessage) (text string, ran bool, err error) {
 	cmd := exec.CommandContext(ctx, exe, mcpCallArgs(tool)...) //nolint:gosec // G204: this program's own updated executable
 	cmd.Stdin = bytes.NewReader(args)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	hideConsole(cmd)
-	_ = cmd.Run() // the printed result counts, not the exit code
-	if json.Unmarshal(bytes.TrimSpace(out.Bytes()), &r) != nil || !r.OK {
-		return mcpCallResult{}, false
+	cmd.Env = os.Environ()
+	if api != "" {
+		cmd.Env = append(cmd.Env, envAPI+"="+api)
 	}
-	return r, true
+	var out bytes.Buffer
+	var stderr tailWriter
+	cmd.Stdout, cmd.Stderr = &out, &stderr
+	hideConsole(cmd)
+	werr := cmd.Run() // the printed result counts, not the exit code
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if strings.TrimSpace(lines[0]) != mcpCallStarted {
+		return "", false, nil
+	}
+	var r mcpCallResult
+	if len(lines) < 2 || json.Unmarshal([]byte(lines[len(lines)-1]), &r) != nil || !r.OK {
+		return "", true, fmt.Errorf("the updated agentlink (%s) did not finish %s (%w): %s", exe, tool, cmp.Or(werr, errNoResult), strings.TrimSpace(stderr.String()))
+	}
+	if r.Error != "" {
+		return "", true, errors.New(r.Error)
+	}
+	return r.Text, true, nil
 }
 
-// runMCPCall runs one MCP tool, its arguments JSON on in, and prints its
-// mcpCallResult: what an MCP server whose executable was updated calls.
+// errNoResult: a delegated call started and ended without printing its result.
+var errNoResult = errors.New("no result")
+
+// tailWriter keeps the last 1 KiB written to it.
+type tailWriter struct{ b []byte }
+
+func (t *tailWriter) Write(p []byte) (int, error) {
+	t.b = append(t.b, p...)
+	if len(t.b) > 1024 {
+		t.b = t.b[len(t.b)-1024:]
+	}
+	return len(p), nil
+}
+
+func (t *tailWriter) String() string { return string(t.b) }
+
+// runMCPCall runs one MCP tool, its arguments JSON on in, printing
+// mcpCallStarted before and its mcpCallResult after: what an MCP server
+// whose executable was updated calls.
 func runMCPCall(cfg config.Config, tool string, in io.Reader, out io.Writer) error {
 	raw, err := io.ReadAll(io.LimitReader(in, maxBodyFile+1))
 	if err != nil {
+		return err
+	}
+	if _, err := io.WriteString(out, mcpCallStarted+"\n"); err != nil {
 		return err
 	}
 	r := mcpCallResult{OK: true}
@@ -366,11 +405,11 @@ func addToolArgs[In any](s *mcpTools, name, desc string, f func(In, json.RawMess
 		}
 		if s.fresh != nil {
 			if exe := s.fresh(); exe != "" {
-				if r, ok := delegateMCP(ctx, exe, name, args); ok {
-					if r.Error != "" {
-						return nil, nil, errors.New(r.Error)
+				if text, ran, err := delegateMCP(ctx, exe, s.api, name, args); ran {
+					if err != nil {
+						return nil, nil, err
 					}
-					return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: r.Text}}}, nil, nil
+					return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil, nil
 				}
 				if ctx.Err() != nil {
 					return nil, nil, ctx.Err()
