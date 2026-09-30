@@ -462,6 +462,24 @@ describe('the open chat', () => {
     expect(toggle.dataset.state).toBe('working')
   })
 
+  it('lists a member with a nickname once, its job lines covered by its agents', async () => {
+    const { projects, inbox } = await openInbox()
+    await inbox.selectChat(P, group, '')
+    const since = new Date(Date.now() - 65000).toISOString()
+    projects.list = (projects.list || []).map((project) => project.id === P ? {
+      ...project,
+      members: [
+        { name: 'local', self: true, online: true },
+        { name: 'bob', display: 'Боб', online: true, agent: true, agents: [{ provider: 'codex', state: 'thinking', since }] },
+      ],
+    } : project)
+    await settle()
+    await openAgents()
+    const bob = agentRows().filter((row) => /bob|Боб/.test(text(row)))
+    expect(bob).toHaveLength(1)
+    expect(bob[0]!.dataset.kind).toBe('agent')
+  })
+
   it('says in one line when no agent is known', async () => {
     const { inbox } = await openInbox()
     await inbox.selectChat(P, 'c3', '')
