@@ -331,26 +331,35 @@ func (a *App) addProjectLocked(ctx context.Context, b settings.ProjectBinding, n
 	if err := a.moveToLeft(b.ID); err != nil {
 		return err
 	}
+	// Any failure from here leaves no data directory without a binding.
+	started := false
+	undo := func(err error) error {
+		if started {
+			a.stopContextLocked(a.projects[b.ID])
+		}
+		if lerr := a.moveToLeft(b.ID); lerr != nil {
+			a.log.Warn("move data of a project not added", "project", b.ID, "err", lerr)
+		}
+		return err
+	}
 	c, err := a.newProjectContext(b)
 	if err != nil {
-		return err
+		return undo(err)
 	}
 	if name != "" {
 		if _, err := c.n.Rename(name); err != nil {
-			return err
+			return undo(err)
 		}
 	}
 	// The context runs before the binding is saved: a binding whose context
 	// cannot run (the Hub refuses it) is never kept, since every view of it
 	// would stay "connecting" and every call 404 until a restart.
 	if err := a.startContextLocked(c, nil); err != nil { //nolint:contextcheck // the context outlives the request: it runs under the Hub's own
-		return err
+		return undo(err)
 	}
-	// A failed save leaves the new data directory unbound; a later join of
-	// the project moves it to .left.
+	started = true
 	if err := settings.Save(a.path, s); err != nil {
-		a.stopContextLocked(c)
-		return err
+		return undo(err)
 	}
 	a.s, a.configured = s, true
 	a.syncHooksLocked()
@@ -568,106 +577,120 @@ func (a *App) renameProject(w http.ResponseWriter, r *http.Request) {
 	a.writeView(w, pid)
 }
 
+// bindRequest is the body of POST projects/{pid}/binding (absent: kept; "":
+// cleared).
+type bindRequest struct {
+	Alias      *string `json:"alias"`
+	Dir        *string `json:"dir"`
+	LaunchMode *string `json:"launch_mode"`
+	autonomyRequest
+}
+
 // bindProject changes this member's alias, folder, autonomy and launch mode
-// of a project (absent: kept; "": cleared). A folder change needs an idle worker
-// (project_busy).
+// of a project. A folder change needs an idle worker (project_busy).
 func (a *App) bindProject(w http.ResponseWriter, r *http.Request) {
 	pid := r.PathValue("pid")
-	var req struct {
-		Alias      *string `json:"alias"`
-		Dir        *string `json:"dir"`
-		LaunchMode *string `json:"launch_mode"`
-		autonomyRequest
-	}
+	var req bindRequest
 	if !decode(w, r, &req) {
 		return
 	}
 	a.mu.Lock()
-	err := a.bindLocked(pid, req.Alias, req.Dir) //nolint:contextcheck // a folder change restarts the context under the Hub's context
-	if err == nil && !req.empty() {
-		err = a.setAutonomyLocked(pid, req.autonomyRequest)
-	}
-	if err == nil && req.LaunchMode != nil {
-		err = a.setLaunchModeLocked(pid, *req.LaunchMode)
-	}
+	changed, err := a.bindLocked(pid, req) //nolint:contextcheck // a folder change restarts the context under the Hub's context
 	a.mu.Unlock()
+	if changed {
+		a.changed(pid, "settings", "status")
+	}
 	if err != nil {
 		a.failed(w, "bind project", err)
 		return
 	}
-	a.changed(pid, "settings", "status")
 	a.writeView(w, pid)
 }
 
-func (a *App) bindLocked(pid string, alias, dir *string) error {
+// bindLocked checks the whole request before it changes anything, then
+// applies it: the folder first (it restarts the context and may be refused),
+// then the alias, autonomy and launch mode in one save. changed reports that
+// something was saved, also when a later step failed.
+func (a *App) bindLocked(pid string, req bindRequest) (changed bool, err error) {
 	if _, ok := a.projectViewLocked(pid); !ok {
-		return ErrUnknownProject
+		return false, ErrUnknownProject
 	}
 	legacy := pid == LegacyProjectID
-	if alias != nil {
-		*alias = strings.TrimSpace(*alias)
-		if !settings.ValidAlias(*alias) || (legacy && *alias != "") {
-			return &settings.Problem{Key: "alias"}
+	if req.Alias != nil {
+		*req.Alias = strings.TrimSpace(*req.Alias)
+		if !settings.ValidAlias(*req.Alias) || (legacy && *req.Alias != "") {
+			return false, &settings.Problem{Key: "alias"}
 		}
 	}
-	if dir != nil {
-		*dir = filepathClean(strings.TrimSpace(*dir))
+	if legacy && (!req.empty() || req.LaunchMode != nil) ||
+		req.LaunchMode != nil && *req.LaunchMode != node.LaunchDesktop && *req.LaunchMode != node.LaunchTerminal {
+		return false, &settings.Problem{Key: "bad_request"}
+	}
+	old := a.s.WorkDir
+	if req.Dir != nil {
+		*req.Dir = filepathClean(strings.TrimSpace(*req.Dir))
 		scope := settings.ProjectScopeNetwork
 		if !legacy {
-			scope = a.s.Bindings[a.bindingIndex(pid)].ScopeOf()
+			b := a.s.Bindings[a.bindingIndex(pid)]
+			scope, old = b.ScopeOf(), b.Dir
 		}
-		if err := a.checkDirLocked(pid, *dir, scope); err != nil {
-			return err
-		}
-		old := a.s.WorkDir
-		if !legacy {
-			old = a.s.Bindings[a.bindingIndex(pid)].Dir
-		}
-		if *dir != old {
-			if err := a.setProjectDirLocked(pid, *dir); err != nil {
-				return err
-			}
+		if err := a.checkDirLocked(pid, *req.Dir, scope); err != nil {
+			return false, err
 		}
 	}
-	if alias == nil || legacy {
-		return nil
+	if !legacy {
+		if _, _, err := a.bindingEditsLocked(pid, req); err != nil {
+			return false, err
+		}
 	}
-	i := a.bindingIndex(pid)
-	if a.s.Bindings[i].Alias == *alias {
-		return nil
+	if req.Dir != nil && *req.Dir != old {
+		if err := a.setProjectDirLocked(pid, *req.Dir); err != nil {
+			return false, err
+		}
+		changed = true
 	}
-	s := a.s
-	s.Bindings = slices.Clone(s.Bindings)
-	s.Bindings[i].Alias = *alias
+	if legacy {
+		return changed, nil
+	}
+	s, edited, err := a.bindingEditsLocked(pid, req)
+	if err != nil || !edited {
+		return changed, err
+	}
 	if err := settings.Save(a.path, s); err != nil {
-		return err
+		return changed, err
 	}
 	a.s = s
-	return nil
+	a.reapplyAutonomyLocked() // this project, and the local ones that follow it
+	b := s.Bindings[a.bindingIndex(pid)]
+	if c := a.projects[pid]; c != nil {
+		c.n.SetLaunchMode(b.LaunchModeOf())
+	}
+	a.log.Info("project binding", "project", pid, "alias", b.Alias, "launch_mode", b.LaunchModeOf(), "autonomy", b.AutonomyOf(),
+		"max_auto_depth", b.MaxAutoDepthOf(), "turns_per_hour", b.TurnsPerHourOf(), "max_run_minutes", b.MaxRunMinutesOf())
+	return true, nil
 }
 
-// setLaunchModeLocked sets where a project opens sessions ("desktop" or
-// "terminal") and applies it to its running node; the legacy network and
-// other modes are bad_request.
-func (a *App) setLaunchModeLocked(pid, mode string) error {
+// bindingEditsLocked is the settings with req's alias, autonomy and launch
+// mode applied to binding pid, validated; edited reports any change.
+func (a *App) bindingEditsLocked(pid string, req bindRequest) (s settings.Settings, edited bool, err error) {
 	i := a.bindingIndex(pid)
-	if i < 0 || (mode != node.LaunchDesktop && mode != node.LaunchTerminal) {
-		return &settings.Problem{Key: "bad_request"}
-	}
-	if a.s.Bindings[i].LaunchModeOf() == mode {
-		return nil
-	}
-	s := a.s
+	s = a.s
 	s.Bindings = slices.Clone(s.Bindings)
-	s.Bindings[i].LaunchMode = mode
-	if err := settings.Save(a.path, s); err != nil {
-		return err
+	b := s.Bindings[i]
+	if req.Alias != nil && b.Alias != *req.Alias {
+		b.Alias, edited = *req.Alias, true
 	}
-	a.s = s
-	if c := a.projects[pid]; c != nil {
-		c.n.SetLaunchMode(mode)
+	if !req.empty() {
+		b, edited = a.withAutonomyRequestLocked(b, req.autonomyRequest), true
 	}
-	return nil
+	if req.LaunchMode != nil && b.LaunchModeOf() != *req.LaunchMode {
+		b.LaunchMode, edited = *req.LaunchMode, true
+	}
+	s.Bindings[i] = b
+	if edited {
+		err = s.Validate()
+	}
+	return s, edited, err
 }
 
 // revealInvite answers the invite of a project, the only way its secret

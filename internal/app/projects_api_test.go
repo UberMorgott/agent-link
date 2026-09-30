@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"slices"
@@ -503,5 +504,57 @@ func TestJoinLegacyNeedsWorkDir(t *testing.T) {
 	}
 	if got := h.app.Settings().WorkDir; got != dir {
 		t.Fatalf("work_dir %q, want %q", got, dir)
+	}
+}
+
+// A project that fails to be added leaves no data directory behind (it
+// would be reported as an orphan at every start).
+func TestFailedAddLeavesNoDataDir(t *testing.T) {
+	h := projectsHarness(t, "alice", "")
+	pid, err := config.NewProjectID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := config.NewProjectSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.app.mu.Lock()
+	err = h.app.addProjectLocked(t.Context(), settings.ProjectBinding{ID: pid, Epoch: config.ProjectEpoch, Secret: secret}, "bad\nname")
+	h.app.mu.Unlock()
+	if err == nil {
+		t.Fatal("a bad name was accepted")
+	}
+	if _, err := os.Stat(h.app.projectDir(pid)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("data dir of a project not added: %v", err)
+	}
+	if hasBinding(h, pid) {
+		t.Fatal("binding kept")
+	}
+}
+
+// A binding change is checked whole before anything is saved: a bad launch
+// mode or autonomy leaves the valid alias beside it unsaved.
+func TestBindProjectAllOrNothing(t *testing.T) {
+	h := projectsHarness(t, "alice", "")
+	var p ProjectView
+	if code, raw := h.api(t, http.MethodPost, "projects", map[string]any{"name": "Shared"}, &p); code != http.StatusOK {
+		t.Fatalf("create: %d %s", code, raw)
+	}
+	for _, body := range []map[string]any{
+		{"alias": "mine", "launch_mode": "nowhere"},
+		{"alias": "mine", "autonomy": "sometimes"},
+	} {
+		if code, raw := h.api(t, http.MethodPost, "projects/"+p.ID+"/binding", body, nil); code != http.StatusBadRequest {
+			t.Fatalf("%v: %d %s", body, code, raw)
+		}
+		if s, _, _ := settings.Load(h.app.path); s.Bindings[0].Alias != "" || h.app.Settings().Bindings[0].Alias != "" {
+			t.Fatalf("%v saved the alias", body)
+		}
+	}
+	var v ProjectView
+	if code, raw := h.api(t, http.MethodPost, "projects/"+p.ID+"/binding", map[string]any{"alias": "mine", "launch_mode": node.LaunchTerminal}, &v); code != http.StatusOK ||
+		v.Alias != "mine" || v.LaunchMode != node.LaunchTerminal {
+		t.Fatalf("valid change: %d %s", code, raw)
 	}
 }
