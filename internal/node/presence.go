@@ -109,31 +109,16 @@ func (n *Node) presenceForCaps(peerAreas []string, counts bool) []AreaPresence {
 	return out
 }
 
-// agentCountsForArea takes independent snapshots of the session and seat
-// registries. Both change events cause presence to be sent again.
+// agentCountsForArea counts the agents of area that are present: the ones
+// AgentStatuses lists as not stopped, paused, off or waiting for a person
+// (the counts older peers read; newer ones get the list itself).
 func (n *Node) agentCountsForArea(area string) AgentCounts {
 	var counts AgentCounts
-	if n.Stopped() {
-		return counts
-	}
-	want := n.localArea(area)
-	seats := n.Seats()
-	seatSessions := make(map[string]bool, len(seats))
-	if n.cfg.Project == "" || area != "" {
-		seats = nil
-	}
-	for _, seat := range seats {
-		if seat.SessionID != "" {
-			seatSessions[seat.SessionID] = true
-		}
-		switch seat.Status {
-		case SeatActive, SeatIdle, SeatRunning, SeatBusy:
-			counts.add(seat.Provider)
-		}
-	}
-	for _, session := range n.Sessions() {
-		if session.Area == want && !seatSessions[session.SessionID] {
-			counts.add(session.Provider)
+	for _, a := range n.AgentStatuses(area) {
+		switch a.State {
+		case AgentPaused, AgentStopped, AgentHuman, AgentOff:
+		default:
+			counts.add(a.Provider)
 		}
 	}
 	return counts

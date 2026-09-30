@@ -1176,3 +1176,27 @@ func TestStartSeatClearsFailedLease(t *testing.T) {
 	a.seatsDue(context.Background(), time.Now())
 	eventually(t, "the turn after Start", func() bool { return len(seatByLabel(t, a, "Codex").Pending) == 0 })
 }
+
+// The agent counts older peers read come from the same statuses newer peers
+// get: a seat counts while present (its live session once), a loose session
+// counts, an offline or stopped seat does not.
+func TestCountsMatchStatuses(t *testing.T) {
+	l := &seatLauncher{}
+	dir := t.TempDir()
+	a := seatNode(t, t.TempDir(), dir, l)
+	_, codex := addSeats(t, a)
+	for _, s := range []SessionRequest{{SessionID: codex.SessionID, Provider: ProviderCodex, Folder: dir}, {SessionID: "loose", Provider: ProviderClaude, Folder: dir}} {
+		if _, err := a.RegisterSession(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := a.agentCountsForArea(""); got != (AgentCounts{Claude: 1, Codex: 1}) {
+		t.Fatalf("counts %+v", got)
+	}
+	if _, err := a.StopSeat(codex.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.agentCountsForArea(""); got != (AgentCounts{Claude: 1}) {
+		t.Fatalf("counts with the seat stopped %+v", got)
+	}
+}
