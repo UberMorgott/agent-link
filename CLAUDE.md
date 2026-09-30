@@ -12,8 +12,8 @@ in your final response. `aegis verify` itself runs gofmt, go build, go vet,
 go test, aegis-lint and the web checks; run a check by hand only for what it
 reported as not established (e.g. vitest in internal/app/web) until it is fixed.
 
-The pre-commit hook (`lefthook.yml`) still runs qgate until `aegis verify` can pass
-on this repo; then it switches to Aegis.
+The pre-commit and pre-merge-commit hooks (`lefthook.yml`) run `aegis verify`
+(switched from qgate 2026-09-30).
 
 ## Releases
 
