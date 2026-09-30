@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/UberMorgott/agent-link/internal/gitwt"
 	"github.com/UberMorgott/agent-link/internal/humantime"
 	"github.com/UberMorgott/agent-link/internal/node"
 	"github.com/UberMorgott/agent-link/internal/settings"
@@ -69,8 +70,11 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		writeCodedError(w, http.StatusBadRequest, "dir")
 		return
 	}
+	// git is asked before the lock: a linked worktree joins its main
+	// checkout's project.
+	tree := gitwt.Of(r.Context(), dir)
 	a.mu.Lock()
-	pid, created, err := a.discussContextLocked(r.Context(), req, dir)
+	pid, created, err := a.discussContextLocked(r.Context(), req, dir, tree)
 	c := a.projects[pid]
 	var lc *settings.LocalChat
 	if i := a.bindingIndex(pid); i >= 0 {

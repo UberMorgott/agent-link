@@ -585,6 +585,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"project.problem.name_taken":        "Ваше имя уже занято в этом проекте — смените имя в настройках.",
 	"project.problem.removed":           "Вас удалили из проекта — попросите участников пригласить вас снова.",
 	"project.problem.not_running":       "Не запустился — перезапустите agent-link; причина в журнале agentlink.log.",
+	"project.problem.folder_missing":    "Папка проекта удалена. Когда в нём не останется непрочитанного и ожидающего, agent-link уберёт его сам.",
 	"project.empty":                     "Начните разговор в {name}",
 	"project.menu":                      "Меню проекта {name}",
 	"project.menu.members":              "Участники",

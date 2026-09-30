@@ -34,7 +34,8 @@ type ProjectView struct {
 	Dir     string `json:"dir"`     // bound folder; "" = none
 	State   string `json:"state"`
 	// Problem is "" or a code: unknown_project, auth, name_taken, removed,
-	// not_running (bound, but its context failed to open).
+	// not_running (bound, but its context failed to open), folder_missing (a
+	// local binding whose folder was removed, kept for what waits in it).
 	Problem string `json:"problem"`
 	// Online and Total count the other members: Members lists this node too
 	// (self: true), so Total is len(Members)-1.

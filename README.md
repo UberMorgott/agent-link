@@ -90,6 +90,12 @@ is moved automatically.
   here just opens it. At most 32 projects and 64 members per project.
 - **Local project create**: `agentlink discuss --with codex` (or `--with claude`) creates or reuses the local
   project/chat for the selected folder under **«Мои нейросети»**. It stays there until cleared.
+  A new local project binds the folder's git work tree; a linked worktree (`git worktree add`, as
+  agents use) joins its main checkout's project (asked with `git rev-parse --git-dir
+  --git-common-dir` and `git worktree list`), while an agent's own chat from it works in the
+  worktree. A local project or chat whose folder was removed shows «Папка проекта удалена» and is
+  removed by itself once nothing unread or waiting is left in it (a folder on a drive that is not
+  there counts as still present).
 - **Network project menu** `⋯`: **Участники**, **Приглашение** (hidden `••••` until you reveal it; the
   settings page and the other API answers never carry the secret), **Общее имя** (anyone renames it
   for everyone; the last rename wins), **Агенты**, **Автономия агентов…**, **Моя папка** (folder and

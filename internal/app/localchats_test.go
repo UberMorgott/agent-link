@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 	"testing"
@@ -627,5 +629,157 @@ func TestAutoLocalProjectBindsGitRoot(t *testing.T) {
 	}
 	if dir := h.app.Settings().Bindings[0].Dir; dir != root {
 		t.Fatalf("bound %q, want the work tree %q", dir, root)
+	}
+}
+
+// A local project and chat whose folder was removed (an agent's git worktree)
+// are shown as folder_missing and collected once nothing waits in them; a
+// chat with an unread reply stays, and so does its project.
+func TestGCCollectsLocalBindingsOfRemovedFolders(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
+	gone, held, kept := repoDir(t), repoDir(t), repoDir(t)
+	project := discussIn(t, h, map[string]any{"folder": gone})
+	topic := discussIn(t, h, map[string]any{"folder": gone, "topic": "t"})
+	waiting := discussIn(t, h, map[string]any{"folder": held, "session_id": "gone-1"})
+	h.app.mu.Lock()
+	heldProject := h.app.localProjectOfLocked(held)
+	h.app.mu.Unlock()
+	other := discussIn(t, h, map[string]any{"folder": kept})
+	for _, r := range []localChatResult{project, topic, other} {
+		n := h.app.projects[r.Project].n
+		for _, s := range n.Seats() {
+			if err := n.RemoveSeat(s.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	heldNode := h.app.projects[waiting.Project].n
+	eventuallyApp(t, "seat's first turn", func() bool {
+		seats := heldNode.Seats()
+		return len(seats) == 1 && seats[0].Status != node.SeatRunning && len(seats[0].Pending) == 0
+	})
+	if _, err := heldNode.SendRequest(node.SendRequest{ChatID: waiting.Chat, ReplyTo: waiting.ID, Body: "answer",
+		Seat: waiting.Seat, AuthorKind: node.AuthorAgent}); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{gone, held} {
+		if err := os.RemoveAll(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	problems := map[string]string{}
+	for _, p := range h.app.Projects() {
+		problems[p.ID] = p.Problem
+	}
+	for id, want := range map[string]string{project.Project: "folder_missing", topic.Project: "folder_missing",
+		waiting.Project: "folder_missing", heldProject: "folder_missing", other.Project: ""} {
+		if problems[id] != want {
+			t.Fatalf("project %s problem %q, want %q", id, problems[id], want)
+		}
+	}
+	h.app.gcLocalChats(time.Now())
+	h.app.mu.Lock()
+	defer h.app.mu.Unlock()
+	for _, id := range []string{project.Project, topic.Project} {
+		if h.app.bindingIndex(id) >= 0 || h.app.projects[id] != nil {
+			t.Fatalf("binding %s of a removed folder kept", id)
+		}
+	}
+	// The unread reply keeps its chat, and the chat its project.
+	for _, id := range []string{waiting.Project, heldProject, other.Project} {
+		if h.app.bindingIndex(id) < 0 {
+			t.Fatalf("binding %s removed", id)
+		}
+	}
+}
+
+// A folder on a volume that is not there (an unplugged drive) is not gone.
+func TestFolderGone(t *testing.T) {
+	dir := t.TempDir()
+	if folderGone(dir) || folderGone("") {
+		t.Fatal("an existing folder or none is gone")
+	}
+	if !folderGone(filepath.Join(dir, "removed")) {
+		t.Fatal("a removed folder is not gone")
+	}
+	if runtime.GOOS == "windows" {
+		for _, v := range "ZYXWVUTSRQPONMLKJIHG" {
+			root := string(v) + `:\`
+			if _, err := os.Stat(root); err != nil {
+				if folderGone(root + "project") {
+					t.Fatalf("a folder of the absent volume %s is gone", root)
+				}
+				break
+			}
+		}
+	}
+}
+
+// gitWorktree makes a git repository and a linked worktree of it outside its
+// folder (as an agent's worktree); it skips the test without git.
+func gitWorktree(t *testing.T) (main, worktree string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := t.TempDir()
+	main, worktree = filepath.Join(root, "main"), filepath.Join(root, "wt")
+	if err := os.Mkdir(main, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"commit", "-q", "--allow-empty", "-m", "init"}, {"worktree", "add", "-q", worktree}} {
+		cmd := exec.CommandContext(t.Context(), "git", append([]string{"-C", main, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...) // #nosec G204 -- fixed git commands in a test folder
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return main, worktree
+}
+
+// sameFolder reports whether a and b are one folder, however spelled.
+func sameFolder(a, b string) bool {
+	sa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	sb, err := os.Stat(b)
+	return err == nil && os.SameFile(sa, sb)
+}
+
+// A discuss from a linked worktree joins the main checkout's project instead
+// of making one for the worktree; an agent's chat there works in the
+// worktree and leaves with it.
+func TestLinkedWorktreeJoinsMainProject(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
+	main, wt := gitWorktree(t)
+	first := discussIn(t, h, map[string]any{"folder": wt})
+	bs := h.app.Settings().Bindings
+	if len(bs) != 1 || bs[0].Chat != nil || !sameFolder(bs[0].Dir, main) {
+		t.Fatalf("a worktree's first discuss bound %+v, want the main checkout %s", bs, main)
+	}
+	if again := discussIn(t, h, map[string]any{"folder": main}); again.Project != first.Project {
+		t.Fatalf("the main checkout got another project: %+v, first %+v", again, first)
+	}
+	own := discussIn(t, h, map[string]any{"folder": wt, "session_id": "wt-session"})
+	h.app.mu.Lock()
+	lc := h.app.s.Bindings[h.app.bindingIndex(own.Project)].Chat
+	h.app.mu.Unlock()
+	if lc == nil || lc.Project != first.Project || !sameFolder(lc.Folder, wt) {
+		t.Fatalf("the worktree agent's chat %+v, want of project %s in %s", lc, first.Project, wt)
+	}
+	n := h.app.projects[own.Project].n
+	for _, s := range n.Seats() {
+		if err := n.RemoveSeat(s.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatal(err)
+	}
+	h.app.gcLocalChats(time.Now())
+	h.app.mu.Lock()
+	defer h.app.mu.Unlock()
+	if h.app.bindingIndex(own.Project) >= 0 || h.app.bindingIndex(first.Project) < 0 {
+		t.Fatalf("after the worktree went: %+v", h.app.s.Bindings)
 	}
 }

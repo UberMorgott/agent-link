@@ -1,8 +1,10 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/UberMorgott/agent-link/internal/config"
+	"github.com/UberMorgott/agent-link/internal/gitwt"
 	"github.com/UberMorgott/agent-link/internal/node"
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
@@ -150,7 +153,7 @@ func localChatViewOf(lc *settings.LocalChat) LocalChatView {
 // chat of its topic (discussOwner), else the topic's shared chat, else the
 // folder's project chat. created reports that pid is a binding this call
 // added (discuss removes it again when the call fails and it stayed empty).
-func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir string) (pid string, created bool, err error) {
+func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir string, tree gitwt.Tree) (pid string, created bool, err error) {
 	if req.Chat != "" {
 		for i, b := range a.s.Bindings {
 			if c := a.projects[b.ID]; c != nil && b.ScopeOf() == settings.ProjectScopeLocal && c.n.OwnsChat(req.Chat) {
@@ -174,14 +177,16 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 		}
 	}
 	pid = a.localProjectOfLocked(dir)
-	root := gitRoot(dir)
-	folderless := pid == "" && !a.projectFolderLocked(dir) && root == ""
+	if pid == "" && tree.Linked() {
+		pid = a.localProjectOfLocked(tree.Main)
+	}
+	folderless := pid == "" && !a.projectFolderLocked(dir) && tree.Top == ""
 	if pid == "" && !folderless {
 		// A new local project binds the whole work tree, whatever subfolder
-		// asks first; a project folder outside git binds itself.
-		if root == "" {
-			root = dir
-		}
+		// asks first, and a linked worktree its main checkout (a worktree is
+		// a working copy of that project, removed when its work is done); a
+		// project folder outside git binds itself.
+		root := cmp.Or(tree.Main, dir)
 		if err := settings.CanAddBinding(a.s.Bindings, false); err != nil {
 			return "", false, err
 		}
@@ -228,6 +233,11 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 		LastUsed: time.Now().UTC(), Unowned: owner == nil && req.Topic == ""}
 	if pid != "" {
 		lc.Folder = a.bindingDirLocked(pid)
+		if tree.Linked() && !within(tree.Top, lc.Folder) {
+			// Asked from a linked worktree: its agents work there, not in the
+			// main checkout, and the chat leaves with the worktree (the GC).
+			lc.Folder = tree.Top
+		}
 	}
 	if req.SessionID != "" {
 		lc.Sessions = []string{req.SessionID}
@@ -294,21 +304,6 @@ func (a *App) localProjectOfLocked(dir string) string {
 // projectFolderLocked reports whether a project (of any scope) holds dir.
 func (a *App) projectFolderLocked(dir string) bool {
 	return slices.ContainsFunc(a.s.Bindings, func(b settings.ProjectBinding) bool { return b.Dir != "" && within(b.Dir, dir) })
-}
-
-// gitRoot is the top folder of the git work tree holding dir (where its .git
-// is), "" outside one: a project folder even before any project binds it.
-func gitRoot(dir string) string {
-	for d := filepath.Clean(dir); ; {
-		if _, err := os.Stat(filepath.Join(d, ".git")); err == nil {
-			return d
-		}
-		up := filepath.Dir(d)
-		if up == d {
-			return ""
-		}
-		d = up
-	}
 }
 
 // maxChatSessions bounds LocalChat.Sessions: the first (the creator) and the
@@ -393,7 +388,11 @@ func (a *App) gcLoop(ctx context.Context) {
 //     its last use, even while its owner lives (a discuss that failed, or
 //     one whose seats went);
 //   - every temporary chat none of whose sessions is live after TempChatIdle
-//     without activity.
+//     without activity;
+//   - every local binding (a project or chat discuss made) whose folder was
+//     removed (folderGone), once nothing is held in it either (a seat's
+//     messages waiting for a person); a project stays while a chat of it
+//     stays. Until then the project list shows it as folder_missing.
 //
 // Its data goes to .left, as a leave's. An unread reply whose session ended
 // (ChatInfo.NeedsHuman) keeps the chat until a person reads it or reassigns
@@ -405,7 +404,8 @@ func (a *App) gcLocalChats(now time.Time) {
 	var drop []string
 	for _, b := range a.s.Bindings {
 		lc := b.Chat
-		if lc == nil || !lc.Temporary && lc.Retired.IsZero() || a.retiring[b.ID] || a.discussWaiters[b.ID] > 0 {
+		gone := b.ScopeOf() == settings.ProjectScopeLocal && folderGone(b.WorkDir())
+		if !gone && (lc == nil || !lc.Temporary && lc.Retired.IsZero()) || a.retiring[b.ID] || a.discussWaiters[b.ID] > 0 {
 			continue
 		}
 		c := a.projects[b.ID]
@@ -414,6 +414,11 @@ func (a *App) gcLocalChats(now time.Time) {
 			continue
 		}
 		switch {
+		case gone:
+			// Nothing is known of a context that is not running: keep it.
+			if c == nil || slices.ContainsFunc(c.n.Seats(), func(s node.SeatView) bool { return len(s.Pending) > 0 }) {
+				continue
+			}
 		case !lc.Retired.IsZero():
 		case c != nil && st.empty && now.Sub(st.last) >= EmptyChatGrace:
 		case now.Sub(st.last) >= TempChatIdle:
@@ -428,6 +433,12 @@ func (a *App) gcLocalChats(now time.Time) {
 		}
 		drop = append(drop, b.ID)
 	}
+	// A project leaves only with every chat of it.
+	drop = slices.DeleteFunc(drop, func(pid string) bool {
+		return slices.ContainsFunc(a.s.Bindings, func(b settings.ProjectBinding) bool {
+			return b.Chat != nil && b.Chat.Project == pid && !slices.Contains(drop, b.ID)
+		})
+	})
 	for _, pid := range drop {
 		if err := a.leaveProjectLocked(pid); err != nil {
 			a.log.Warn("remove local chat", "project", pid, "err", err)
@@ -438,6 +449,19 @@ func (a *App) gcLocalChats(now time.Time) {
 		a.log.Info("local chat removed", "project", pid)
 		go a.events.publish("projects", projectTopic(pid), "status")
 	}
+}
+
+// folderGone reports that folder dir was removed: it does not exist while its
+// volume does, so an unplugged drive or an unreachable share is not gone.
+func folderGone(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	_, err := os.Stat(filepath.VolumeName(dir) + string(filepath.Separator))
+	return err == nil
 }
 
 // chatState is what a local chat's context shows now (localChatState).

@@ -178,6 +178,11 @@ func (a *App) projectViewLocked(pid string) (ProjectView, bool) {
 		// start, see the log): it never connects, and a reload cannot help.
 		v.Problem = "not_running"
 	}
+	if i := a.bindingIndex(pid); v.Problem == "" && i >= 0 && v.Scope == settings.ProjectScopeLocal && folderGone(a.s.Bindings[i].WorkDir()) {
+		// Its folder was removed: it leaves with the GC once nothing in it
+		// waits (gcLocalChats).
+		v.Problem = "folder_missing"
+	}
 	v.Online, v.Total = peerCounts(v.Members)
 	v.Agents = agentMachines(v.Members)
 	switch {
