@@ -1,4 +1,5 @@
 import { computed, reactive, ref, watch } from 'vue'
+import { useMediaQuery } from '@vueuse/core'
 import { ASPECTS, cleanColors, type AspectColors } from '@/lib/aspects'
 import { DEFAULT_PRIMARY, DEFAULT_SURFACE, SHADES, primaryColors, primaryPalette, primaryShade, surfacePalette, surfaces } from '@/lib/palettes'
 
@@ -114,7 +115,6 @@ function savedUiState(): UiState {
 // paint already has the chosen colours.
 export function applyUiState() {
   Object.assign(layoutConfig, savedUiState())
-  watchNarrow()
   if (!systemQuery && typeof window.matchMedia === 'function') {
     systemQuery = window.matchMedia('(prefers-color-scheme: dark)')
     systemDark.value = systemQuery.matches
@@ -129,15 +129,7 @@ export function applyUiState() {
 // NARROW_QUERY matches the phone layout: below Tailwind's md breakpoint the
 // sidebar becomes a drawer and the inbox shows either the list or one chat.
 export const NARROW_QUERY = '(max-width: 767px)'
-export const isNarrow = ref(false)
-let narrowQuery: MediaQueryList | undefined
-
-export function watchNarrow() {
-  if (narrowQuery || typeof window.matchMedia !== 'function') return
-  narrowQuery = window.matchMedia(NARROW_QUERY)
-  isNarrow.value = narrowQuery.matches
-  narrowQuery.addEventListener('change', () => { isNarrow.value = narrowQuery!.matches })
-}
+export const isNarrow = useMediaQuery(NARROW_QUERY)
 
 export function useLayout() {
   const toggleMenu = () => { layoutState.mobileMenuActive = !layoutState.mobileMenuActive }

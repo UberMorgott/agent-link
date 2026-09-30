@@ -9,7 +9,7 @@ import { authorLabel, isUnread, others, preview } from '@/lib/chat'
 import { currentRoute, openChat, openProject } from '@/lib/nav'
 import { confirmAction } from '@/lib/confirm'
 import { fmt, t } from '@/lib/runtime'
-import { NARROW_QUERY } from '@/layout/composables/layout'
+import { isNarrow } from '@/layout/composables/layout'
 import { useAppStore } from './app'
 import { useAttachmentsStore } from './attachments'
 import { useProjectsStore } from './projects'
@@ -48,7 +48,6 @@ function storageSet(key: string, value: string) {
 
 // chatKey names one chat across projects: drafts and read cursors use it.
 export function chatKey(project: string, chat: string) { return project + ':' + chat }
-function narrow() { return typeof matchMedia === 'function' && matchMedia(NARROW_QUERY).matches }
 
 export const useInboxStore = defineStore('inbox', () => {
   const app = useAppStore()
@@ -357,7 +356,7 @@ export const useInboxStore = defineStore('inbox', () => {
     try {
       await api('POST', chatPath(pid, info.id, 'close'))
       const rest = (projects.chats[pid] || []).filter((c) => c.id !== info.id)
-      const next = narrow() ? null : rest.find((c) => !c.legacy) || rest[0]
+      const next = isNarrow.value ? null : rest.find((c) => !c.legacy) || rest[0]
       // Leave the chat before the list changes, so nothing reloads it.
       await selectChat(pid, '', '')
       projects.removeChat(pid, info.id)
