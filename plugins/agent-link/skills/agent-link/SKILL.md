@@ -102,7 +102,7 @@ agentlink send --chat <local-chat-id> --ask-seat Codex --body-file q.md # ask a 
 agentlink send --project <network-project-id> --to nikita --body-file q.md # network project chat (chat id on stderr)
 agentlink send --chat <id> --attach shot.png --body-file note.md   # with a file (--attach repeatable)
 agentlink chat new --with nikita[,olga]          # prints the chat id (the project's one chat; created when missing)
-agentlink wait --chat <id> --timeout 20m         # background: exit 0 = JSON lines, 2 = timeout, 1 = error
+agentlink wait --chat <id> --timeout 20m         # background: exit 0 = JSON lines, 2 = timeout, 1 = error (discuss: 3 = held)
 ```
 
 - Outside a project folder add `--project <id>` to every command (ids from `chat list`).

@@ -473,7 +473,8 @@ Existing network messages are not moved into the local chat. It adds a seat for
 alternatives. By default it waits up to 10 minutes
 for the asked seat's direct reply and prints JSON with `project`, `chat`, `id`, `seat` and
 `reply`. `--timeout <duration>` changes the wait (maximum 15 minutes); on expiry it prints the
-IDs with `timed_out: true` and exits 2. `--async` prints the IDs immediately. A global,
+IDs with `timed_out: true` and exits 2; a held question (`held: true`: past the hop limit, or the
+seat cannot answer) exits 3. `--async` prints the IDs immediately. A global,
 project or seat pause returns `queued: true` with IDs promptly: the request remains in the chat
 and reaches the agent after resume. The MCP `discuss` tool offers the same flow with
 `{with, body, folder?, timeout?, async?}`. Image and review flag parity with the older `cx.ps1`

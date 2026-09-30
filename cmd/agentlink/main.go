@@ -44,7 +44,7 @@ const usage = `usage:
   agentlink serve --config <path>
   agentlink send  --config <path> [--to <node|area:NAME>] [--area <name>] (--body-file <path|-> | --body <text>) [--reply-to <id>] [--ask <node,...>] [--project <id>]   (into the one open chat with them; no --to: the only peer; the area defaults to this folder's project)
   agentlink send  --config <path> --chat <id> (--body-file <path|-> | --body <text>) [--ask <node,...>] [--ask-seat <label>] [--reply-to <id>] [--project <id>]   (to every chat participant; --ask: who must answer; --ask-seat: a local agent of this node, repeatable)
-  agentlink discuss --with <claude|codex> (--body-file <path|-> | --body <text>) [--folder <path>] [--chat <id> | --topic <name> | --temporary] [--shared] [--timeout 10m] [--async] [--compact]   (message text: a file, never a shell argument with quotes; ask in this session's own local agent chat, separate from network chats; --shared: the folder's shared project chat; --async returns IDs immediately; exit 2 on timeout)
+  agentlink discuss --with <claude|codex> (--body-file <path|-> | --body <text>) [--folder <path>] [--chat <id> | --topic <name> | --temporary] [--shared] [--timeout 10m] [--async] [--compact]   (message text: a file, never a shell argument with quotes; ask in this session's own local agent chat, separate from network chats; --shared: the folder's shared project chat; --async returns IDs immediately; exit 2 on timeout, 3 when held: no answer comes automatically)
   agentlink wait  --config <path> [--timeout 0] [--chat <id>] [--project <id>]   (seconds or duration; 0 = forever; exit 2 on timeout; --chat: only that chat)
   agentlink chat new     --config <path> --with <node,...> [--area <name>] [--project <id>]   (prints the chat id; you are added; in a project: its one active chat)
   agentlink chat archive --config <path> [--chat <id>] [--project <id>]   (the project's chat history goes to the archive; a fresh chat with the same members opens; prints its id)
@@ -73,8 +73,13 @@ project's agents) picks the project; without it the chat or message named, else 
 project, else the network from before projects, else the only project; failing that the error
 names the known projects. wait exits 2 on timeout with a note on stderr.`
 
-// exitTimeout is returned by wait when no message arrived in time.
-const exitTimeout = 2
+// Exit codes besides 0 (done) and 1 (error): exitTimeout when wait or discuss
+// got no answer in time, exitHeld when discuss's question is held (hop limit,
+// or the asked seat cannot answer): no reply comes without a person or a retry.
+const (
+	exitTimeout = 2
+	exitHeld    = 3
+)
 
 func main() {
 	args := os.Args[1:]
@@ -202,8 +207,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 			if err != nil {
 				return 1, err
 			}
-			if result.TimedOut {
+			switch {
+			case result.TimedOut:
 				return exitTimeout, nil
+			case result.Held:
+				return exitHeld, nil
 			}
 			return 0, nil
 		}
