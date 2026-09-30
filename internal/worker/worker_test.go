@@ -375,10 +375,20 @@ func TestSlots(t *testing.T) {
 			if maxRunning != slots {
 				t.Fatalf("max concurrent jobs = %d, want %d", maxRunning, slots)
 			}
-			// Claims happen in order under the lock; a slot may record its
-			// start a moment after the next slot, so compare within a window.
+			// Claims happen in order under the lock, but a slot records its start
+			// after claiming: once release is closed, one slot can run several
+			// later jobs before a lagging slot records an earlier one. What must
+			// hold: when job n records, every earlier job is claimed, and each
+			// unrecorded one holds one of the other slots-1 slots.
 			for i, p := range started {
-				if n, _ := strconv.Atoi(p); n < i-(slots-1) || n > i+(slots-1) {
+				n, _ := strconv.Atoi(p)
+				earlier := 0
+				for _, q := range started[:i] {
+					if m, _ := strconv.Atoi(q); m < n {
+						earlier++
+					}
+				}
+				if earlier < n-(slots-1) {
 					t.Fatalf("start order %v", started)
 				}
 			}
