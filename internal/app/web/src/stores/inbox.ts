@@ -3,6 +3,7 @@
 // the chat lists live in stores/projects.ts, and SSE "project:<pid>" events
 // reload them (stores/app.ts), which reloads the open chat too.
 import { defineStore } from 'pinia'
+import { useToast, type Toast } from '@nuxt/ui/composables/useToast'
 import { ref, shallowRef, watch } from 'vue'
 import { api, chatPath, projectPath } from '@/lib/api'
 import { authorLabel, isUnread, legacyPeerOld, others, preview } from '@/lib/chat'
@@ -18,14 +19,14 @@ import type { ChatInfo, ChatMessage, SentMessage } from '@/types'
 export const PAGE_SIZE = 200
 // MAX_PAGE: the most messages one request answers (projects_api.go chatMessages).
 export const MAX_PAGE = 1000
-// A toast only announces news: it leaves on its own after
+// A toast (Nuxt UI's useToast) only announces news: it leaves on its own after
 // MESSAGE_TOAST_TIMEOUT, and the close button drops it right away. Failures
 // keep their own place — the connection banner stays until the problem is gone.
 export const MESSAGE_TOAST_TIMEOUT = 6000
+// MAX_TOASTS: the most messages one refresh announces.
 const MAX_TOASTS = 3
 
-export interface Toast {
-  id: number
+interface MessageNews {
   notificationID: string
   project: string
   chat: string
@@ -77,7 +78,7 @@ export const useInboxStore = defineStore('inbox', () => {
   // Read cursors (D11): the last seq seen per chatKey; "<pid>:" marks a
   // project whose history has been seeded.
   const reads = ref<Record<string, number>>({})
-  const toasts = ref<Toast[]>([])
+  const toast = useToast()
 
   // Every answer carries the generation it was asked in: switching the
   // project or the chat drops what was still on its way.
@@ -85,8 +86,6 @@ export const useInboxStore = defineStore('inbox', () => {
   let readsNode = ''
   let notificationNode = ''
   let notificationIDs: string[] = []
-  let toastSeq = 0
-  const toastTimers = new Map<number, ReturnType<typeof setTimeout>>()
 
   function chatVisible() { return currentRoute() === 'chat' }
   function intend(kind: 'reset' | 'prepended' | 'auto') { scrollIntent.value = { kind, n: scrollIntent.value.n + 1 } }
@@ -411,23 +410,23 @@ export const useInboxStore = defineStore('inbox', () => {
     notificationIDs = bounded
   }
 
-  function dismissToast(id: number) {
-    const timer = toastTimers.get(id)
-    if (timer !== undefined) clearTimeout(timer)
-    toastTimers.delete(id)
-    toasts.value = toasts.value.filter((toast) => toast.id !== id)
-  }
-
-  function showMessageToast(item: Omit<Toast, 'id'>) {
-    while (toasts.value.length >= MAX_TOASTS) dismissToast(toasts.value[0]!.id)
-    const id = ++toastSeq
-    toasts.value = [...toasts.value, { ...item, id }]
-    toastTimers.set(id, setTimeout(() => dismissToast(id), MESSAGE_TOAST_TIMEOUT))
-  }
-
-  function openToast(toast: Toast) {
-    dismissToast(toast.id)
-    openChat(toast.project, toast.chat, toast.message)
+  // showMessageToast: the toast and its «Открыть» both open the message.
+  function showMessageToast(item: MessageNews) {
+    const id = 'message:' + item.notificationID
+    const open = () => {
+      toast.remove(id)
+      openChat(item.project, item.chat, item.message)
+    }
+    toast.add({
+      id,
+      title: item.from,
+      description: item.body,
+      duration: MESSAGE_TOAST_TIMEOUT,
+      // The close button's props; the label falls through to its <button>.
+      close: { 'aria-label': t("inbox.toast.close") } as Toast['close'],
+      actions: [{ label: t("inbox.toast.open"), onClick: open }],
+      onClick: open,
+    })
   }
 
   // processIncomingChats announces the chats' new incoming messages, by project.
@@ -479,8 +478,8 @@ export const useInboxStore = defineStore('inbox', () => {
 
   return {
     project, selectedChat, selectedMessage, chat, messages, hasOlder, scrollIntent, drafts, composer, replyTo, sendResult,
-    subtitleError, sending, closing, focusComposer, reads, toasts, starting, startResult,
+    subtitleError, sending, closing, focusComposer, reads, starting, startResult,
     loadChat, loadOlder, saveDraft, setReply, selectChat, canSend, submitMessage,
-    startChat, openPeer, activeChat, openActive, closeChat, confirmClose, clearChat, confirmClear, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, unreadCount, openKey,
+    startChat, openPeer, activeChat, openActive, closeChat, confirmClose, clearChat, confirmClear, membersBusy, setMembers, confirmRemove, processIncomingChats, readOf, unreadCount, openKey,
   }
 })

@@ -125,7 +125,11 @@ describe('local chats sidebar', () => {
     const tree = document.querySelector('#local_chat_tree')!
     expect(tree.querySelector('[data-project="run"] .chat-live')).not.toBeNull()
     expect(tree.querySelector('[data-project="done"] .chat-live')).toBeNull()
-    expect(tree.querySelector('[data-project="done"] .project-dot')!.getAttribute('title')).toBeNull()
+    // A chat not at work says so, not who of the network is online.
+    const idle = tree.querySelector('[data-project="done"] .project-dot')!
+    expect(idle.getAttribute('title')).toBe('local_chat.idle')
+    expect(idle.getAttribute('aria-label')).toBe('local_chat.idle')
+    expect(tree.textContent).not.toContain('projects.online')
     vi.advanceTimersByTime(29_000)
     await settle()
     expect(tree.querySelector('[data-project="done"]')).not.toBeNull()

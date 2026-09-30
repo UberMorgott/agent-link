@@ -2,7 +2,6 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
-import MessageToasts from '@/components/MessageToasts.vue'
 import JoinProjectModal from '@/components/JoinProjectModal.vue'
 import NewProjectModal from '@/components/NewProjectModal.vue'
 import ProjectDialogs from '@/components/ProjectDialogs.vue'
@@ -98,7 +97,6 @@ watch(current, () => { void nextTick(() => view.value?.focus({ preventScroll: tr
           @click="browser.reload()"
         />
       </div>
-      <MessageToasts />
     </div>
     <ProjectDialogs />
     <NewProjectModal />

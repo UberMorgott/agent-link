@@ -4,8 +4,8 @@ import AppLayout from './layout/AppLayout.vue'
 </script>
 
 <template>
-  <!-- News comes in the app's own toasts (MessageToasts.vue); failures of an
-       action in Nuxt UI's (useToast). -->
+  <!-- News of a message and failures of an action both come in Nuxt UI's
+       toasts (useToast). -->
   <UApp>
     <AppLayout />
   </UApp>

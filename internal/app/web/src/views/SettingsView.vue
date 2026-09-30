@@ -267,7 +267,7 @@ const myAddr = computed(() => {
 
 function hookText(client: string | undefined, state: string | undefined) {
   if (!client || !state) return ''
-  if (state === 'ok') return fmt("settings.hooks.ok", { agent: client === 'both' ? 'Claude и Codex' : client === 'codex' ? 'Codex' : 'Claude' })
+  if (state === 'ok') return fmt("settings.hooks.ok", { agent: client === 'both' ? t("settings.hooks.both") : client === 'codex' ? 'Codex' : 'Claude' })
   return t("settings.hooks." + state)
 }
 

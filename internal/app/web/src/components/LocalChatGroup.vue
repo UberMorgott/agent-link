@@ -15,7 +15,8 @@ export interface LocalChatRow {
   unread: number
   active: boolean
   // live: 'waiting' (someone waits for a reply), 'live' (its agents are at
-  // work) or '' (nothing at work: a plain dot).
+  // work) or '' (nothing at work: a plain dot with a local tooltip, never the
+  // network project's who-is-online one).
   live: '' | 'live' | 'waiting'
 }
 
@@ -61,7 +62,9 @@ function liveLabel(state: string): string {
         <span
           v-else
           class="project-dot"
-          aria-hidden="true"
+          :title="t('local_chat.idle')"
+          role="img"
+          :aria-label="t('local_chat.idle')"
         />
         <span class="project-name">{{ rows[0]!.name }}</span>
         <span
@@ -146,7 +149,9 @@ function liveLabel(state: string): string {
             <span
               v-else
               class="project-dot"
-              aria-hidden="true"
+              :title="t('local_chat.idle')"
+              role="img"
+              :aria-label="t('local_chat.idle')"
             />
             <span class="project-name">{{ r.name }}</span>
             <span

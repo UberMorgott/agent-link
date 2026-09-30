@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
+import { useToast } from '@nuxt/ui/composables/useToast'
 import { fakeApi, mountApp, settle } from '@/test/harness'
 import { useAppStore } from './app'
 import { MESSAGE_TOAST_TIMEOUT, useInboxStore } from './inbox'
@@ -74,16 +75,18 @@ describe('read cursors', () => {
 describe('message toasts', () => {
   it('seed the history silently, then announce each new incoming message once', async () => {
     fakeApi((_method, path) => (path === 'projects' ? [] : {}))
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const { router } = await mountApp('/dashboard')
     const app = useAppStore()
     const inbox = useInboxStore()
+    const nuxt = useToast()
+    nuxt.clear()
     app.status = { node: 'local' }
     await settle()
     const initial = [chat('c-old', message('old', 'bob', 'in', 'old'))]
     const long = '😀'.repeat(121)
     const next = [chat('c-new', message('new', 'карл & sons', 'in', long)), ...initial, chat('c-out', message('out', 'local', 'out', 'ignore'))]
-    const toasts = () => Array.from(document.querySelectorAll<HTMLElement>('#message-toast-region .message-toast'))
+    // The message toasts still open in Nuxt UI's toaster.
+    const toasts = () => nuxt.toasts.value.filter((x) => x.open && String(x.id).startsWith('message:'))
 
     inbox.processIncomingChats({ P: initial })
     await settle()
@@ -92,24 +95,19 @@ describe('message toasts', () => {
     await settle()
     expect(toasts()).toHaveLength(1)
     const toast = toasts()[0]!
-    expect(toast.textContent).toContain('карл & sons')
-    const preview = toast.querySelector('.message-toast-preview')!.textContent!.trim()
+    expect(toast.title).toBe('карл & sons')
+    const preview = String(toast.description)
     expect(preview.endsWith('…')).toBe(true)
     expect(Array.from(preview.replace(/…$/, ''))).toHaveLength(120)
-    const close = toast.querySelector<HTMLButtonElement>('.message-toast-close')!
-    expect(close.tagName).toBe('BUTTON')
-    expect(close.getAttribute('aria-label')).toBe('inbox.toast.close')
-    expect(vi.getTimerCount()).toBe(1)
-    toast.querySelector<HTMLButtonElement>('.message-toast-main')!.click()
+    expect(toast.duration).toBe(MESSAGE_TOAST_TIMEOUT)
+    expect(toast.close).toEqual({ 'aria-label': 'inbox.toast.close' })
+    expect(toast.actions?.[0]?.label).toBe('inbox.toast.open')
+    toast.onClick!(toast)
     await settle()
     expect(router.currentRoute.value.name).toBe('chat')
     expect(router.currentRoute.value.params).toEqual({ project: 'P', chat: 'c-new' })
     expect(router.currentRoute.value.query).toEqual({ message: 'new' })
     expect(toasts()).toHaveLength(0)
-    // The inbox's inputs schedule their autofocus with a zero delay; the
-    // toast's own timer must be gone.
-    vi.advanceTimersByTime(0)
-    expect(vi.getTimerCount()).toBe(0)
     const saved = JSON.parse(localStorage.getItem('agentlink.notifications.v1:local')!) as string[]
     expect(saved).toContain('old')
     expect(saved).toContain('new')
@@ -121,16 +119,14 @@ describe('message toasts', () => {
     inbox.processIncomingChats({ P: [chat('c-old', message('old2', 'bob', 'in', 'seen here')), ...next] })
     await settle()
     expect(toasts()).toHaveLength(0)
-    // At most three at a time; each leaves on its own or by its close button.
+    // One refresh announces at most three; «Открыть» opens its message.
     inbox.processIncomingChats({ P: [...next, ...Array.from({ length: 4 }, (_, i) => chat('c' + i, message('bulk' + i, 'peer' + i, 'in', 'bulk ' + i)))] })
     await settle()
-    expect(toasts()).toHaveLength(3)
-    toasts()[0]!.querySelector<HTMLButtonElement>('.message-toast-close')!.click()
+    expect(toasts().map((x) => x.title)).toEqual(['peer0', 'peer1', 'peer2'])
+    const open = toasts()[1]!.actions![0]!.onClick as (event: MouseEvent) => void
+    open(new MouseEvent('click'))
     await settle()
-    expect(toasts()).toHaveLength(2)
-    expect(vi.getTimerCount()).toBe(2)
-    vi.advanceTimersByTime(MESSAGE_TOAST_TIMEOUT)
-    await settle()
-    expect(toasts()).toHaveLength(0)
+    expect(router.currentRoute.value.params).toEqual({ project: 'P', chat: 'c1' })
+    expect(toasts().map((x) => x.title)).toEqual(['peer0', 'peer2'])
   })
 })

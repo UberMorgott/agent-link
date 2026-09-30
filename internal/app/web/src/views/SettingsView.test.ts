@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { browser } from '@/lib/runtime'
+import { browser, runtime } from '@/lib/runtime'
 import { fakeApi, mountApp, settle } from '@/test/harness'
 import { useAppStore } from '@/stores/app'
 import { useProjectsStore } from '@/stores/projects'
@@ -19,7 +19,7 @@ async function edit(input: HTMLInputElement, value: string) {
 
 const field = (name: string) => $<HTMLInputElement>('#form [name="' + name + '"]')!
 
-async function openSettings(saved: AppSettings, answer: (body: AppSettings) => SaveResult, legacy = true) {
+async function openSettings(saved: AppSettings, answer: (body: AppSettings) => SaveResult, legacy = true, hooks: object = {}) {
   const sent: AppSettings[] = []
   let picked = 'E:\\docs'
   const api = fakeApi((method, path, body) => {
@@ -28,7 +28,7 @@ async function openSettings(saved: AppSettings, answer: (body: AppSettings) => S
     if (path === 'settings' && method === 'POST') { sent.push(body as AppSettings); return answer(body as AppSettings) }
     if (path === 'pick-folder') return { path: picked }
     if (path === 'agent') return { text: '' }
-    if (path === 'hooks') return {}
+    if (path === 'hooks') return hooks
     throw new Error('unexpected call ' + method + ' ' + path)
   })
   await mountApp('/settings')
@@ -39,6 +39,13 @@ async function openSettings(saved: AppSettings, answer: (body: AppSettings) => S
 }
 
 describe('settings', () => {
+  it('names both agents of the hooks from the dictionary', async () => {
+    runtime.strings = { 'settings.hooks.ok': 'Хуки: {agent} ✓', 'settings.hooks.both': 'Оба агента' }
+    await openSettings({ node: 'n' }, (body) => ({ saved: true, settings: body }), true, { client: 'both', work_dir: 'ok' })
+    await settle()
+    expect($('#work_dir_hooks')!.textContent!.trim()).toBe('Хуки: Оба агента ✓')
+  })
+
   it('render saved projects as rows and save a row only when it is complete and unique', async () => {
     const { sent } = await openSettings({ node: 'n', areas: ['site'], projects: { site: { dir: 'E:\\site' } } }, (body) => ({ saved: true, settings: body }))
     const rows = () => $$('#projects > li')
