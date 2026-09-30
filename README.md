@@ -354,6 +354,23 @@ claude plugin marketplace add UberMorgott/agent-link
 claude plugin install agent-link@agent-link
 ```
 
+**Updating the plugin.** Claude Code refreshes a third-party marketplace only when its auto-update
+is on (off by default), so the installed skill, hooks and `.mcp.json` stay at the commit of the
+install (`~/.claude/plugins/known_marketplaces.json` shows `lastUpdated`). Refresh by hand, then
+start a new session:
+
+```powershell
+claude plugin marketplace update agent-link
+claude plugin update agent-link@agent-link
+```
+
+or turn on auto-update once: `/plugin` → Marketplaces → agent-link → Enable auto-update. A copy of
+the skill in `~/.codex/skills/agent-link` is never refreshed: delete it (Codex then uses the
+plugin's) or copy `plugins/agent-link/skills/agent-link/SKILL.md` over it again. The `agentlink`
+executable updates by itself; an MCP server started before an update runs each tool call in the
+updated executable (`agentlink mcp-call`), but the desktop app (the node) runs the old code until it
+restarts.
+
 The plugin runs agentlink through its launcher `bin/agentlink.cmd` (cmd.exe built-ins only, no
 PowerShell or Git Bash needed), which takes the first of: `%AGENTLINK_EXE%`, the path the desktop
 app writes at every start to `%APPDATA%\agentlink\executable.path`, `agentlink.exe` on `PATH`.
