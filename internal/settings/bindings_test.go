@@ -222,3 +222,30 @@ func TestValidateOwnedLocalChats(t *testing.T) {
 		t.Fatalf("shared topic owned: %+v", o)
 	}
 }
+
+// CanAddBinding is the one cap check for a new binding: a project up to
+// MaxProjects, a local chat up to MaxLocalChats, each counted apart.
+func TestCanAddBinding(t *testing.T) {
+	var bs []ProjectBinding
+	for range MaxProjects {
+		bs = append(bs, newBinding(t, ""))
+	}
+	var p *Problem
+	if err := CanAddBinding(bs, false); !errors.As(err, &p) || p.Key != "too_many_projects" {
+		t.Fatalf("project past the cap: %v", err)
+	}
+	if err := CanAddBinding(bs, true); err != nil {
+		t.Fatalf("a chat beside full projects: %v", err)
+	}
+	for range MaxLocalChats {
+		b := newBinding(t, "")
+		b.Chat = &LocalChat{}
+		bs = append(bs, b)
+	}
+	if err := CanAddBinding(bs, true); !errors.As(err, &p) {
+		t.Fatalf("chat past the cap: %v", err)
+	}
+	if MaxBindings != MaxProjects+MaxLocalChats {
+		t.Fatal("MaxBindings")
+	}
+}

@@ -68,7 +68,7 @@ func (a *App) startHubLocked(ctx context.Context) error {
 		return err
 	}
 	hctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	hub := node.NewHub(ln, node.HubConfig{Discovery: a.s.DiscoveryOn() && a.Discovery, Log: a.log})
+	hub := node.NewHub(ln, node.HubConfig{Discovery: a.s.DiscoveryOn() && a.Discovery, MaxContexts: settings.MaxBindings, Log: a.log})
 	hub.Start(hctx)
 	jobs := a.s.MaxJobs
 	if jobs <= 0 {

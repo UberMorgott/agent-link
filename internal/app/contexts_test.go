@@ -204,9 +204,6 @@ func TestLeaveLegacy(t *testing.T) {
 // no context: "connecting" forever, every chat call 404). A binding left
 // without one says so (not_running) instead of connecting forever.
 func TestEveryLocalChatRuns(t *testing.T) {
-	if node.MaxHubProjects < settings.MaxProjects+settings.MaxLocalChats {
-		t.Fatalf("Hub cap %d below the bindings settings allow (%d)", node.MaxHubProjects, settings.MaxProjects+settings.MaxLocalChats)
-	}
 	folder := newBinding(t, t.TempDir())
 	folder.Scope = settings.ProjectScopeLocal
 	a := startApp(t, settings.Settings{Bindings: []settings.ProjectBinding{folder}})
