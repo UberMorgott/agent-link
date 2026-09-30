@@ -411,7 +411,6 @@ function back() {
                   :aria-label="t('inbox.agents.title')"
                 >
                   <UPopover
-                    v-if="inProject || agentRows.length"
                     v-model:open="agentsOpen"
                     :content="{ side: 'top', align: 'end', sideOffset: 8, collisionPadding: 8 }"
                   >

@@ -7,9 +7,10 @@ import USwitch from '@nuxt/ui/components/Switch.vue'
 import AutonomySettings from '@/components/AutonomySettings.vue'
 import { icon } from '@/lib/icons'
 import { api } from '@/lib/api'
+import { pickFolder } from '@/lib/folders'
 import { browser, fmt, t } from '@/lib/runtime'
 import {
-  effectiveAPI, projectsBody, projectsKey, settingsBody, type ProjectRow, type SettingsFields,
+  DEFAULT_API, DEFAULT_LISTEN_PORT, effectiveAPI, projectsBody, projectsKey, settingsBody, type ProjectRow, type SettingsFields,
 } from '@/lib/settingsForm'
 import { useAppStore } from '@/stores/app'
 import { useProjectsStore } from '@/stores/projects'
@@ -149,26 +150,18 @@ function removeProject(row: ProjectRow) {
   void editedAndSave()
 }
 
-// The tray process opens the native Windows folder dialog: a page cannot see
-// absolute paths on disk. pickFolder returns the chosen folder.
-async function pickFolder(start: string): Promise<string | null> {
+// chooseFolder asks for a folder (lib/folders), saying so meanwhile; the
+// chosen folder, or null with the reason in the result line.
+async function chooseFolder(start: string): Promise<string | null> {
   result.value = t("settings.work_dir.picking")
-  try {
-    const r = await api<{ path?: string; message?: string }>('POST', 'pick-folder', { start: start.trim() })
-    if (r.path) {
-      result.value = ''
-      return r.path
-    }
-    result.value = r.message || ''
-  } catch (e) {
-    result.value = (e as Error).message
-  }
-  return null
+  const r = await pickFolder(start)
+  result.value = r.path ? '' : r.message || ''
+  return r.path || null
 }
 
 async function pickWorkDir() {
   picking.value = true
-  const path = await pickFolder(form.work_dir).finally(() => { picking.value = false })
+  const path = await chooseFolder(form.work_dir).finally(() => { picking.value = false })
   if (path === null) return
   form.work_dir = path
   workDirKey.value = "settings.work_dir.chosen"
@@ -176,7 +169,7 @@ async function pickWorkDir() {
 }
 
 async function pickProjectDir(row: ProjectRow) {
-  const path = await pickFolder(row.dir)
+  const path = await chooseFolder(row.dir)
   if (path === null) return
   row.dir = path
   await editedAndSave()
@@ -261,7 +254,10 @@ const workDirShown = computed(() => {
 const myAddr = computed(() => {
   const st = app.status
   if (!st?.configured) return ''
-  const addr = (st.listen || '').replace(/:7420$/, '')
+  // The default peer port goes without saying.
+  const listen = st.listen || ''
+  const port = ':' + DEFAULT_LISTEN_PORT
+  const addr = listen.endsWith(port) ? listen.slice(0, -port.length) : listen
   let text = addr ? fmt("settings.my_addr", { addr }) : ''
   if (!st.zerotier) text += ' ' + t("settings.my_addr.none")
   return text
@@ -697,7 +693,7 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
                   v-model="form.api"
                   name="api"
                   autocomplete="off"
-                  placeholder="127.0.0.1:7520"
+                  :placeholder="DEFAULT_API"
                 /></label>
                 <p class="hint">
                   {{ t("settings.api.hint") }}

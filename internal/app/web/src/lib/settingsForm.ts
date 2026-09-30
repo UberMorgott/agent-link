@@ -4,6 +4,8 @@
 import type { AppSettings, Project } from '@/types'
 
 export const DEFAULT_API = '127.0.0.1:7520'
+// DEFAULT_LISTEN_PORT: the node's peer port when listen names none of its own.
+export const DEFAULT_LISTEN_PORT = 7420
 
 export interface SettingsFields {
   node: string

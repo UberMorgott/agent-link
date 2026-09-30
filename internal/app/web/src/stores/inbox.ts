@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef, watch } from 'vue'
 import { api, chatPath, projectPath } from '@/lib/api'
-import { authorLabel, isUnread, others, preview } from '@/lib/chat'
+import { authorLabel, isUnread, legacyPeerOld, others, preview } from '@/lib/chat'
 import { currentRoute, openChat, openProject } from '@/lib/nav'
 import { confirmAction } from '@/lib/confirm'
 import { fmt, t } from '@/lib/runtime'
@@ -371,7 +371,7 @@ export const useInboxStore = defineStore('inbox', () => {
 
   async function confirmClose() {
     const info = chat.value
-    const key = !info?.legacy ? "inbox.close.confirm" : legacyPeerOldOf(info) ? "inbox.close.confirm_old" : "inbox.close.confirm_legacy"
+    const key = !info?.legacy ? "inbox.close.confirm" : legacyPeerOld(info) ? "inbox.close.confirm_old" : "inbox.close.confirm_legacy"
     if (!(await confirmAction(t(key), t(info?.legacy ? "inbox.close.legacy" : "inbox.close")))) return
     return closeChat()
   }
@@ -401,10 +401,6 @@ export const useInboxStore = defineStore('inbox', () => {
   async function confirmClear(pid: string) {
     if (!(await confirmAction(t("inbox.clear.confirm"), t("inbox.clear")))) return
     return clearChat(pid)
-  }
-
-  function legacyPeerOldOf(info: ChatInfo) {
-    return (info.members || []).some((m) => !m.self && m.connected && !m.compatible)
   }
 
   // --- notifications: a toast for a new incoming message in any chat ---
