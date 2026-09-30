@@ -465,7 +465,7 @@ func localChatState(c *appContext, lc *settings.LocalChat) chatState {
 	}
 	seats := c.n.Seats()
 	for _, s := range seats {
-		st.waiting = st.waiting || len(s.Pending) > 0 || s.Status == node.SeatRunning || s.TurnQueued
+		st.waiting = st.waiting || seatWaits(s)
 	}
 	chats, err := c.n.Chats(false, false)
 	if err != nil {
@@ -483,6 +483,20 @@ func localChatState(c *appContext, lc *settings.LocalChat) chatState {
 	}
 	st.running = st.running || c.w != nil && c.w.Busy()
 	return st
+}
+
+// seatWaits reports whether seat s has work that runs by itself: a turn
+// running or queued, or messages a turn will take. Messages whose turns failed
+// or that wait past the hop limit (needs_human, paused) wait for a person, so
+// they keep no chat live.
+func seatWaits(s node.SeatView) bool {
+	switch {
+	case s.Status == node.SeatRunning || s.TurnQueued:
+		return true
+	case s.Status == node.SeatNeedsHuman || s.Status == node.SeatPaused:
+		return false
+	}
+	return len(s.Pending) > 0
 }
 
 // liveMark is the live state of a local binding last seen by checkLive.

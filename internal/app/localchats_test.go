@@ -153,6 +153,30 @@ func chatViewOf(t *testing.T, h *harness, pid string) LocalChatView {
 	return LocalChatView{}
 }
 
+// A seat keeps its chat waiting only for work that runs by itself: messages
+// whose turns failed (needs_human) or that wait past the hop limit (paused)
+// wait for a person.
+func TestSeatWaitsSkipsFailedAndPaused(t *testing.T) {
+	pend := []node.SeatPending{{ID: "m1", Ask: true}}
+	for _, tc := range []struct {
+		v    node.SeatView
+		want bool
+	}{
+		{node.SeatView{Status: node.SeatOffline}, false},
+		{node.SeatView{Pending: pend, Status: node.SeatOffline}, true},
+		{node.SeatView{Pending: pend, Status: node.SeatBusy}, true},
+		{node.SeatView{Status: node.SeatRunning}, true},
+		{node.SeatView{Status: node.SeatActive, TurnQueued: true}, true},
+		{node.SeatView{Pending: pend, Status: node.SeatNeedsHuman}, false},
+		{node.SeatView{Pending: pend, Status: node.SeatPaused}, false},
+	} {
+		if got := seatWaits(tc.v); got != tc.want {
+			t.Errorf("seatWaits(status %s, pending %d, queued %v) = %v, want %v",
+				tc.v.Status, len(tc.v.Pending), tc.v.TurnQueued, got, tc.want)
+		}
+	}
+}
+
 // A temporary chat is live only while a caller waits for a reply or a turn
 // runs: its owner's open session does not make it live, nor does an unread
 // reply (it is for a person, not the sidebar). Not live, it says since when.
