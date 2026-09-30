@@ -241,7 +241,17 @@ func (a *App) controlAPI() http.Handler {
 			mu := a.ownerLock(body.SessionID)
 			mu.Lock()
 			defer mu.Unlock()
-			a.forward(w, r, selector{project: pick(r, body.Project), folder: body.Folder}, true)
+			sel := selector{project: pick(r, body.Project), folder: body.Folder}
+			if sel.project == "" {
+				ctxs := a.routeContexts()
+				if _, rerr := route(ctxs, sel); rerr != nil {
+					if chats := sessionChats(ctxs, body.SessionID); len(chats) > 0 {
+						registerInChats(w, r, chats)
+						return
+					}
+				}
+			}
+			a.forward(w, r, sel, true)
 		}
 	})
 	mux.HandleFunc("POST /claim", a.controlClaim)
@@ -430,16 +440,17 @@ func (a *App) forward(w http.ResponseWriter, r *http.Request, sel selector, scop
 func (a *App) sessionContexts(sel selector, session string) (out []routeCtx, exact int, rerr *routeError) {
 	ctxs := a.routeContexts()
 	var chats []routeCtx
-	if session != "" && sel.project == "" {
-		for _, x := range ctxs {
-			if x.chat != nil && slices.Contains(x.chat.Sessions, session) {
-				chats = append(chats, x)
-			}
-		}
+	if sel.project == "" {
+		chats = sessionChats(ctxs, session)
 	}
 	c, err := route(ctxs, sel)
 	if err == nil {
 		err = folderScoped(c, sel.folder)
+		if err == errFolderOutside && ownChat(c, session) {
+			// The session's own local chat has no folder: it takes the
+			// session's claims from whatever folder it works in.
+			err = nil
+		}
 	}
 	if err != nil {
 		if len(chats) > 0 && sel.project == "" {
@@ -468,6 +479,50 @@ func (a *App) sessionContexts(sel selector, session string) (out []routeCtx, exa
 	}
 	return out, 1, nil
 }
+
+// ownChat reports whether c is a local chat session used
+// (settings.LocalChat.Sessions).
+func ownChat(c routeCtx, session string) bool {
+	return session != "" && c.chat != nil && slices.Contains(c.chat.Sessions, session)
+}
+
+// sessionChats is the local chats of ctxs session used (ownChat).
+func sessionChats(ctxs []routeCtx, session string) []routeCtx {
+	var out []routeCtx
+	for _, x := range ctxs {
+		if ownChat(x, session) {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// registerInChats serves POST /sessions for a session whose folder is in no
+// project: it registers in every local chat it used (sessionChats), its only
+// contexts there (sessionContexts). Refused as an unbound folder, its hooks
+// delivered nothing and no node woke it, though the replies to its discuss
+// waited in those chats. The first chat answers.
+func registerInChats(w http.ResponseWriter, r *http.Request, chats []routeCtx) {
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	for _, c := range chats[1:] {
+		rr := r.Clone(r.Context())
+		rr.Body = io.NopCloser(bytes.NewReader(data))
+		c.n.APIHandler().ServeHTTP(discardResponse{}, rr)
+	}
+	r.Body = io.NopCloser(bytes.NewReader(data))
+	chats[0].n.APIHandler().ServeHTTP(w, r)
+}
+
+// discardResponse is a ResponseWriter that drops what it is written.
+type discardResponse struct{}
+
+func (discardResponse) Header() http.Header         { return http.Header{} }
+func (discardResponse) Write(b []byte) (int, error) { return len(b), nil }
+func (discardResponse) WriteHeader(int)             {}
 
 // controlUnread serves GET /unread: for a session, the unread messages of every
 // context of its folder (sessionContexts), merged in cursor order, each naming
