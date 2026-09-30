@@ -244,18 +244,26 @@ export const useInboxStore = defineStore('inbox', () => {
     const pid = project.value
     const id = info.id
     const key = chatKey(pid, id)
+    // What goes out; whatever is typed or added while it is on its way stays.
+    const files = useAttachmentsStore()
+    const sentBody = composer.value
+    const sentReply = replyTo.value
+    const sentFiles = files.items.filter((p) => p.attachment).map((p) => p.key)
     sending.value = true
     sendResult.value = ''
     try {
-      const body: Record<string, unknown> = { chat_id: id, body: composer.value, ask: messageAsk(info) }
-      if (replyTo.value) body.reply_to = replyTo.value.id
-      const files = useAttachmentsStore()
-      if (files.uploading) return // the send button waits for the uploads
+      const body: Record<string, unknown> = { chat_id: id, body: sentBody, ask: messageAsk(info) }
+      if (sentReply) body.reply_to = sentReply.id
       if (files.ready.length) body.attachments = files.ready
       const sent = await api<SentMessage>('POST', projectPath(pid, 'send'), body)
-      drafts.value = { ...drafts.value, [key]: '' }
       const here = openKey() === key
-      if (here) { composer.value = ''; setReply(null); files.clear() }
+      if (here) {
+        if (composer.value === sentBody) composer.value = ''
+        if (replyTo.value === sentReply) setReply(null)
+        files.removeKeys(sentFiles)
+      }
+      const draft = here ? composer.value : drafts.value[key] || ''
+      drafts.value = { ...drafts.value, [key]: draft === sentBody ? '' : draft }
       // A legacy chat continues elsewhere: in a real chat, or in the plain
       // message's own legacy chat.
       const next = info.legacy ? sent.chat_id || 'legacy-' + sent.id + '-' + info.peer : sent.chat_id || id
@@ -268,7 +276,6 @@ export const useInboxStore = defineStore('inbox', () => {
     } catch (error) { sendResult.value = (error as Error).message }
     finally { sending.value = false }
   }
-
   // --- a project's one chat ---
 
   // activeChat is a project's one active chat, if it has one.

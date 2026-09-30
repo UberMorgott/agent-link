@@ -562,6 +562,17 @@ describe('the open chat', () => {
     await settle()
     expect(api.calls.filter((c) => c === 'POST projects/PROJ/send')).toHaveLength(1)
     expect($('#inbox_result')).toBeNull()
+    // Text typed while a message is on its way stays in the composer.
+    inbox.composer = 'one'
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle()
+    inbox.composer = 'one and more'
+    releaseSend!()
+    await settle()
+    expect(sent.at(-1)).toMatchObject({ body: 'one' })
+    expect(inbox.composer).toBe('one and more')
+    inbox.composer = ''
+    await settle()
     const again = $<HTMLTextAreaElement>('#body')!
     again.value = 'more'
     again.dispatchEvent(new Event('input'))
