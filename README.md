@@ -697,4 +697,6 @@ Details: [docs/agent-usage.md](docs/agent-usage.md#hearing-about-messages-in-a-l
   is embedded in the page and must come from the same origin, so other websites cannot read or
   change settings or send messages; the pages refuse to be framed. Their Content-Security-Policy
   admits only same-origin scripts and styles, plus the style elements carrying the page's
-  per-load nonce.
+  per-load nonce. The token lives only in the app's memory and changes on every start, so quitting
+  and starting the app (or installing an update) rotates it; a tab left open then reloads itself
+  after an update, or asks for a reload (F5) after a plain restart.
