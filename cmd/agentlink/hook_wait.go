@@ -50,19 +50,28 @@ type waitOpts struct {
 
 // defaultWaitOpts: the session's process is the client's agent among the
 // waiter's ancestors (agentPID: Claude Code runs it through cmd.exe and the
-// plugin's agentlink.cmd, so the parent is not the agent). Without one, the
-// waiter stops rather than tracking a launcher that can outlive the session.
+// plugin's agentlink.cmd, so the parent is not the agent).
 func defaultWaitOpts(client string) waitOpts {
-	ppid := agentPID(client)
 	return waitOpts{
 		poll:      2 * time.Second,
 		heartbeat: 5 * time.Minute,
 		life:      agenthook.WaitTimeout*time.Second - 2*time.Minute,
 		busyFor:   10 * time.Minute,
 		stale:     20 * time.Second,
-		alive:     func() bool { return processAlive(ppid) },
+		alive:     agentAlive(agentPID(client)),
 		replaced:  executableReplaced(),
 	}
+}
+
+// agentAlive reports whether the agent process pid still runs; nil when pid
+// is unknown (0: no /proc, an unrecognised launcher): an agent not found is
+// not an agent gone, so the waiter then ends only with the session
+// (SessionEnd) or its life, and never unregisters a live session.
+func agentAlive(pid int) func() bool {
+	if pid == 0 {
+		return nil
+	}
+	return func() bool { return processAlive(pid) }
 }
 
 // hookWait runs the waiter; its exit code is 2 when it delivered a batch on

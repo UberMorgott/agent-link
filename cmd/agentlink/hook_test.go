@@ -1207,13 +1207,27 @@ func TestHookKeepAliveFollowsTurnNotLastEvent(t *testing.T) {
 	}
 }
 
-func TestDefaultWaitOptsWithoutAgentFailsClosed(t *testing.T) {
+// An agent process the waiter cannot find is unknown, not gone: the waiter
+// must not unregister the session then (it did at every Stop on a platform
+// or launcher agentPID does not recognise). A known agent that ended does.
+func TestWaiterWithoutAgentKeepsSession(t *testing.T) {
 	const client = "agentlink-nonexistent-agent"
 	if pid := agentPID(client); pid != 0 {
 		t.Fatalf("unexpected agent pid %d", pid)
 	}
-	if defaultWaitOpts(client).alive() {
-		t.Fatal("waiter must stop when its agent ancestor cannot be found")
+	if defaultWaitOpts(client).alive != nil {
+		t.Fatal("an unknown agent must not count as gone")
+	}
+	if !agentAlive(os.Getpid())() {
+		t.Fatal("a running agent counts as gone")
+	}
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evStop)
+	o := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 100 * time.Millisecond, busyFor: time.Hour, stale: time.Minute, alive: agentAlive(0)}
+	var errw bytes.Buffer
+	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &errw, c.env, o); code != 0 || slices.Contains(c.f.ended, c.sid) {
+		t.Fatalf("unknown agent: code %d, ended %v", code, c.f.ended)
 	}
 }
 
