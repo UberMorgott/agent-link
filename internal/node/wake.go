@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"slices"
 	"time"
 )
 
@@ -38,6 +39,13 @@ import (
 // wakePoll is how often the node looks for idle sessions to wake.
 const wakePoll = 2 * time.Second
 
+// wakeDormant is how often a dormant local chat's node runs the same loop:
+// one with no live session, no seat with a turn or pending messages, no open
+// lease, no launch in progress and no message a launch is for (dormant). Any
+// change of the node (Node.changed) runs the loop at once and it polls every
+// wakePoll again until it is dormant once more.
+const wakeDormant = 60 * time.Second
+
 // SessionWaker wakes an idle agent session (codexqueue.Queue).
 type SessionWaker interface {
 	// Check looks for the agent's CLI (when due, or always when force); it may
@@ -64,11 +72,14 @@ func (n *Node) canQueue() bool { return n.waker != nil && n.waker.Ready() }
 
 // wakeLoop wakes idle sessions and runs the launch ladder until ctx is done.
 func (n *Node) wakeLoop(ctx context.Context) {
-	every := n.wakeEvery
+	every, dormantEvery := n.wakeEvery, n.dormantEvery
 	if every <= 0 {
 		every = wakePoll
 	}
-	t := time.NewTicker(every)
+	if dormantEvery <= 0 {
+		dormantEvery = wakeDormant
+	}
+	t := time.NewTimer(every)
 	defer t.Stop()
 	for {
 		if n.waker != nil {
@@ -86,12 +97,68 @@ func (n *Node) wakeLoop(ctx context.Context) {
 		n.seatsDue(ctx, time.Now())
 		n.launchMaintain(ctx, time.Now())
 		n.launchDue(ctx, time.Now())
+		// The pass's own changes do not run it again: drop their kicks, then
+		// decide. A change after this point kicks a dormant loop at once, and
+		// dormant sees every change before it.
+		select {
+		case <-n.wakeKick:
+		default:
+		}
+		wait, kick := every, (<-chan struct{})(nil)
+		if n.dormant(time.Now()) {
+			wait, kick = dormantEvery, n.wakeKick
+		}
+		n.wakeTicks.Add(1)
+		t.Reset(wait)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-kick:
 		}
 	}
+}
+
+// kickWake runs a dormant wake loop at once (Node.changed).
+func (n *Node) kickWake() {
+	select {
+	case n.wakeKick <- struct{}{}:
+	default:
+	}
+}
+
+// dormant reports whether the wake loop of a local chat has nothing to do
+// until something changes (wakeDormant). Network projects never are.
+func (n *Node) dormant(now time.Time) bool {
+	if !n.cfg.LocalOnly || len(n.sess.liveIDs(now)) > 0 {
+		return false
+	}
+	st := n.seats
+	st.mu.Lock()
+	busy := len(st.run) > 0 || len(st.queued) > 0 || slices.ContainsFunc(st.seats, func(s *Seat) bool { return len(s.Pending) > 0 })
+	st.mu.Unlock()
+	if busy {
+		return false
+	}
+	for _, l := range n.leases.all() {
+		if l.State != LeaseAcked && l.State != LeaseFailed {
+			return false
+		}
+	}
+	d := n.deliv
+	d.mu.Lock()
+	busy = len(d.pending) > 0 || len(d.acks) > 0
+	d.mu.Unlock()
+	if busy {
+		return false
+	}
+	// A message a launch is for, or will be once its launchGrace passed.
+	for _, dir := range n.launchAreas() {
+		if eligible, _ := n.launchable(dir, now.Add(launchGrace)); len(eligible) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // syncQueueWake gives the sessions that asked for WakeQueue that mode while

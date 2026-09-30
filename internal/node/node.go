@@ -105,6 +105,12 @@ type Node struct {
 	// wakePoll); nil: none.
 	waker     SessionWaker
 	wakeEvery time.Duration
+	// dormantEvery (0: wakeDormant) is the wake loop's period while the node
+	// is dormant; wakeKick (Node.changed) ends that wait at once; wakeTicks
+	// counts the loop's passes.
+	dormantEvery time.Duration
+	wakeKick     chan struct{}
+	wakeTicks    atomic.Int64
 	// poster wakes idle Claude sessions through their inbox (inbox.go);
 	// launcher opens a visible session when none is live (launch.go), as the
 	// project's autonomy allows (auto, autonomy.go). deliv is the delivery
@@ -290,6 +296,7 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 		n.log.Error("corrupt file moved aside; its content is left out", "file", p+".bad")
 	}
 	n.deliv = newDeliveryState()
+	n.wakeKick = make(chan struct{}, 1)
 	if err := n.loadLaunchState(); err != nil {
 		return nil, err
 	}
@@ -343,6 +350,7 @@ func (n *Node) SetSessionHook(fn func(sid string, live bool)) { n.onSession = fn
 func (n *Node) SetChangeHook(fn func(topic string)) { n.onChange = fn }
 
 func (n *Node) changed(topic string) {
+	n.kickWake()
 	if n.onChange != nil {
 		n.onChange(topic)
 	}
