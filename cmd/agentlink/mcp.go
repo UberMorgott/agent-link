@@ -210,7 +210,8 @@ func freshExecutable() func() string {
 }
 
 // mcpCallStarted is the first line `agentlink mcp-call` prints, before it
-// runs the call; mcpCallResult the last: OK, with the call's text or error.
+// runs the call; mcpCallResult the last: OK with the call's text, or not OK
+// with its error.
 const mcpCallStarted = `{"started":true}`
 
 type mcpCallResult struct {
@@ -245,11 +246,12 @@ func delegateMCP(ctx context.Context, exe, api, tool string, args json.RawMessag
 		return "", false, nil
 	}
 	var r mcpCallResult
-	if len(lines) < 2 || json.Unmarshal([]byte(lines[len(lines)-1]), &r) != nil || !r.OK {
+	parsed := len(lines) >= 2 && json.Unmarshal([]byte(lines[len(lines)-1]), &r) == nil
+	switch {
+	case parsed && r.Error != "":
+		return "", true, errors.New(r.Error) // the tool's own error (an older mcp-call said ok with it)
+	case !parsed || !r.OK:
 		return "", true, fmt.Errorf("the updated agentlink (%s) did not finish %s (%w): %s", exe, tool, cmp.Or(werr, errNoResult), strings.TrimSpace(stderr.String()))
-	}
-	if r.Error != "" {
-		return "", true, errors.New(r.Error)
 	}
 	return r.Text, true, nil
 }
@@ -281,12 +283,13 @@ func runMCPCall(cfg config.Config, tool string, in io.Reader, out io.Writer) err
 	if _, err := io.WriteString(out, mcpCallStarted+"\n"); err != nil {
 		return err
 	}
-	r := mcpCallResult{OK: true}
+	var r mcpCallResult
 	if call := newMCPTools(cfg, nil).calls[tool]; call == nil {
 		r.Error = "unknown tool " + tool
 	} else if r.Text, err = mcpText(call(raw)); err != nil {
 		r.Error = err.Error()
 	}
+	r.OK = r.Error == ""
 	return json.NewEncoder(out).Encode(r)
 }
 
