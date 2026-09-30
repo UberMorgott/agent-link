@@ -172,6 +172,13 @@ func (a *App) sessionLock(sid string) *sync.Mutex {
 	return &a.sessLocks[h.Sum32()%uint32(len(a.sessLocks))]
 }
 
+// discussLock is the lock of binding pid's discuss seat choice (App.discussLocks).
+func (a *App) discussLock(pid string) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(pid))
+	return &a.discussLocks[h.Sum32()%uint32(len(a.discussLocks))]
+}
+
 // ownerLock is the lock of session sid's registration (App.ownerLocks).
 func (a *App) ownerLock(sid string) *sync.Mutex {
 	h := fnv.New32a()

@@ -101,6 +101,9 @@ type App struct {
 	// ownerLocks serialize, per session id (ownerLock), its registration and
 	// the removal of its owned chats' seats (retireChat).
 	ownerLocks [64]sync.Mutex
+	// discussLocks serialize, per local binding (discussLock), a discuss
+	// call's choice or addition of the seat it asks.
+	discussLocks [64]sync.Mutex
 	// turns caps the seat turns of every context that run at once
 	// (node.MaxParallelTurns); the rest wait in line.
 	turns *node.TurnGate

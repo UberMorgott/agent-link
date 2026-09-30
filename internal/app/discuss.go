@@ -120,13 +120,15 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	// seats use their explicit project selector in hooks.
 	send := node.SendRequest{ChatID: chat.ID, Body: req.Body, Folder: dir, SessionID: req.SessionID, AgentID: req.AgentID,
 		AgentType: req.AgentType, Seat: req.Seat, AuthorKind: authorKind(req.SessionID, req.Seat)}
-	// Serialize the check and addition across concurrent discuss requests.
+	// Serialize the check and addition across concurrent discuss requests of
+	// the binding (its node's seats), not the whole app.
 	// The seat is never the caller's own, nor one waiting upstream in the
 	// caller's chain (DiscussSeat): another seat of the provider is added.
-	a.mu.Lock()
+	mu := a.discussLock(pid)
+	mu.Lock()
 	seat, err = c.n.DiscussSeat(req.Provider, chat.ID, send)
 	if err != nil {
-		a.mu.Unlock()
+		mu.Unlock()
 		fail(func() { a.failed(w, "discuss agent", err) })
 		return
 	}
@@ -135,7 +137,8 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		// first turn (with the introduction) carries the message.
 		view, addErr := c.n.AddSeat(node.SeatRequest{Provider: req.Provider, Defer: true}) //nolint:contextcheck // the seat turn outlives the request and runs under the node's own context
 		if addErr != nil {
-			a.mu.Unlock()
+			mu.Unlock()
+
 			if errors.Is(addErr, node.ErrSeatLimit) {
 				// Every seat of the provider is the caller or waits in its chain.
 				fail(func() { writeCodedError(w, http.StatusConflict, "discuss_no_seat") })
@@ -146,7 +149,8 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		}
 		seat, added = view.ID, true
 	}
-	a.mu.Unlock()
+	mu.Unlock()
+
 	send.AskSeats = []string{seat}
 	message, err := c.n.SendRequest(send)
 	if err != nil {
