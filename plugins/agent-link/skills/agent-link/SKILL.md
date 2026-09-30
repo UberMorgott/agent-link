@@ -12,8 +12,8 @@ API (`$AGENTLINK_API`, else the app's settings, default `127.0.0.1:7520`). No `-
 or secret is needed. Full reference: `docs/agent-usage.md` in the agent-link repository.
 
 Prefer the MCP tools of the `agentlink` server (the agent-link plugin, or `agentlink mcp`
-registered by hand). Use the CLI only when the tools are missing: `agentlink` on `PATH` (the
-plugin puts its launcher there for the Bash tool), else the `agentlink.exe` the hooks run.
+registered by hand). Use the CLI only when the tools are missing: `agentlink` if it is on `PATH`,
+else the absolute path the SessionStart hook names (the `agentlink.exe` the hooks run).
 `agentlink version` checks it. A connection error means the app is not running: ask the user
 to start it.
 
@@ -102,7 +102,7 @@ agentlink send --chat <local-chat-id> --ask-seat Codex --body-file q.md # ask a 
 agentlink send --project <network-project-id> --to nikita --body-file q.md # network project chat (chat id on stderr)
 agentlink send --chat <id> --attach shot.png --body-file note.md   # with a file (--attach repeatable)
 agentlink chat new --with nikita[,olga]          # prints the chat id (the project's one chat; created when missing)
-agentlink wait --chat <id> --timeout 20m         # background: exit 0 = JSON lines, 2 = timeout, 1 = error
+agentlink wait --chat <id> --timeout 20m         # background: exit 0 = JSON lines, 2 = timeout, 1 = error (discuss: 3 = held)
 ```
 
 - Outside a project folder add `--project <id>` to every command (ids from `chat list`).

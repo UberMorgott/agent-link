@@ -46,7 +46,7 @@ func (h *hookSession) report(typ, text, phase string) {
 	for chat, replyTo := range h.st.Active {
 		req := node.ActivityRequest{SessionID: h.sid, ReplyTo: replyTo, Type: typ, Text: text, Phase: phase}
 		err := hookCall(h.env.api, http.MethodPost, "/chats/"+url.PathEscape(chat)+"/activity", nil, req, nil, hookHTTPTimeout)
-		var se *statusError
+		var se *apiError
 		switch {
 		case err == nil:
 			posted = true
@@ -61,9 +61,10 @@ func (h *hookSession) report(typ, text, phase string) {
 
 // reportMain reports only what hooks can honestly attribute to the main
 // agent. Codex tool hooks do not identify the agent that ran them, so while
-// children are active their tool calls must not be presented as the parent's.
+// children are live (Kids, also those started before the session had a chat
+// to report to) their tool calls must not be presented as the parent's.
 func (h *hookSession) reportMain(typ, text, phase string) {
-	if h.client == hookCodex && phase != node.PhaseIdle && len(h.st.Subagents) > 0 {
+	if h.client == hookCodex && phase != node.PhaseIdle && len(h.st.Kids) > 0 {
 		typ, text = "thinking", "работает с субагентами"
 	}
 	h.report(typ, text, phase)
@@ -102,7 +103,7 @@ func (h *hookSession) tellDoing(kind string) {
 	}
 	err := hookCall(h.env.api, http.MethodPost, "/sessions/"+url.PathEscape(h.sid)+"/doing", h.env.withProject(nil),
 		node.SessionDoingRequest{Doing: kind, Subagents: subs}, nil, hookDoingTimeout)
-	var se *statusError
+	var se *apiError
 	if err == nil || errors.As(err, &se) { // refused (an older node): not asked again until it changes
 		h.st.Doing, h.st.DoingSubs = kind, subs
 	}

@@ -1,6 +1,7 @@
 package agenthook
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,10 +51,40 @@ func TestPluginEnabled(t *testing.T) {
 			}
 		})
 	}
-	dir := t.TempDir()
-	writeClaudeConfig(t, dir, `{"enabledPlugins":{"agent-link@agent-link":true}}`, installed)
-	t.Setenv("CLAUDE_CONFIG_DIR", dir)
-	if PluginEnabled(Codex) {
-		t.Fatal("codex has no agent-link plugin")
+}
+
+// Codex's plugin state: config.toml's [plugins."name@marketplace"] enabled
+// and the installed copy under plugins/cache/<marketplace>/<name>.
+func TestCodexPluginEnabled(t *testing.T) {
+	const cfg = "model = \"x\"\n[hooks.state.'C:\\a\\hooks.json:stop:0:0']\ntrusted_hash = \"sha256:1\"\n\n[plugins.\"agent-link@mkt\"]\nenabled = %s\n"
+	for name, tc := range map[string]struct {
+		config    string
+		installed bool
+		want      bool
+	}{
+		"enabled":       {fmt.Sprintf(cfg, "true"), true, true},
+		"disabled":      {fmt.Sprintf(cfg, "false"), true, false},
+		"not installed": {fmt.Sprintf(cfg, "true"), false, false},
+		"not listed":    {"[plugins.\"other@mkt\"]\nenabled = true\n", true, false},
+		"no config":     {"", true, false},
+		"broken config": {"[plugins.\"agent-link@mkt\"\nenabled = true\n", true, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			if tc.config != "" {
+				if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(tc.config), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.installed {
+				if err := os.MkdirAll(filepath.Join(home, "plugins", "cache", "mkt", PluginName, "0.1.0"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("CODEX_HOME", home)
+			if got := PluginEnabled(Codex); got != tc.want {
+				t.Fatalf("PluginEnabled(codex) = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

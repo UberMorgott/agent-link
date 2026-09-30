@@ -28,10 +28,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/UberMorgott/agent-link/internal/agenthook"
+	"github.com/UberMorgott/agent-link/internal/fileutil"
 	"github.com/UberMorgott/agent-link/internal/node"
 )
 
@@ -41,7 +41,7 @@ type waitOpts struct {
 	heartbeat time.Duration // how often the idle session is re-registered
 	life      time.Duration // the waiter ends after this (before the entry's timeout)
 	busyFor   time.Duration // a session whose last event was a work event this recently is busy
-	stale     time.Duration // a waiter lock not refreshed for this long is stale
+
 	// alive reports whether the session (its agent process) still runs.
 	alive func() bool
 	// replaced reports whether a newer executable occupies this process's launch path.
@@ -50,19 +50,28 @@ type waitOpts struct {
 
 // defaultWaitOpts: the session's process is the client's agent among the
 // waiter's ancestors (agentPID: Claude Code runs it through cmd.exe and the
-// plugin's agentlink.cmd, so the parent is not the agent). Without one, the
-// waiter stops rather than tracking a launcher that can outlive the session.
+// plugin's agentlink.cmd, so the parent is not the agent).
 func defaultWaitOpts(client string) waitOpts {
-	ppid := agentPID(client)
 	return waitOpts{
 		poll:      2 * time.Second,
 		heartbeat: 5 * time.Minute,
 		life:      agenthook.WaitTimeout*time.Second - 2*time.Minute,
 		busyFor:   10 * time.Minute,
-		stale:     20 * time.Second,
-		alive:     func() bool { return processAlive(ppid) },
-		replaced:  executableReplaced(),
+
+		alive:    agentAlive(agentPID(client)),
+		replaced: executableReplaced(),
 	}
+}
+
+// agentAlive reports whether the agent process pid still runs; nil when pid
+// is unknown (0: no /proc, an unrecognised launcher): an agent not found is
+// not an agent gone, so the waiter then ends only with the session
+// (SessionEnd) or its life, and never unregisters a live session.
+func agentAlive(pid int) func() bool {
+	if pid == 0 {
+		return nil
+	}
+	return func() bool { return processAlive(pid) }
 }
 
 // hookWait runs the waiter; its exit code is 2 when it delivered a batch on
@@ -77,7 +86,7 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 	if os.MkdirAll(env.dir, 0o700) != nil {
 		return 0
 	}
-	release, ok := takeWaitLock(path+".wait", o.stale)
+	release, ok := takeWaitLock(path + ".wait")
 	if !ok {
 		return 0 // another waiter of this session runs
 	}
@@ -85,7 +94,7 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 	start := time.Now()
 	var lastBeat time.Time
 	for {
-		touch(path + ".wait")
+
 		st := loadHookState(path)
 		if st.Ended || time.Since(start) > o.life {
 			return 0
@@ -198,22 +207,10 @@ func wakeWith(client, sid, folder, path string, stderr io.Writer, env hookEnv, b
 	return 2, true
 }
 
-// takeWaitLock makes this the session's only waiter; a lock not refreshed
-// within stale belongs to a waiter that is gone.
-func takeWaitLock(path string, stale time.Duration) (func(), bool) {
-	for range 2 {
-		f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_ = f.Close()
-			return func() { _ = os.Remove(path) }, true
-		}
-		st, serr := os.Stat(path)
-		if serr != nil || time.Since(st.ModTime()) <= stale {
-			return nil, false
-		}
-		_ = os.Remove(path)
-	}
-	return nil, false
+// takeWaitLock makes this the session's only waiter: an OS lock held for the
+// waiter's life and released with its process, however it ends.
+func takeWaitLock(path string) (func(), bool) {
+	return fileutil.TryLock(path)
 }
 
 // randomToken is a new wake token (node.WakeMarker).
@@ -221,9 +218,4 @@ func randomToken() string {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-func touch(path string) {
-	now := time.Now()
-	_ = os.Chtimes(path, now, now)
 }

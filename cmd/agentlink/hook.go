@@ -54,8 +54,8 @@ import (
 
 	"github.com/UberMorgott/agent-link/internal/agenthook"
 	"github.com/UberMorgott/agent-link/internal/config"
+	"github.com/UberMorgott/agent-link/internal/fileutil"
 	"github.com/UberMorgott/agent-link/internal/node"
-	"github.com/UberMorgott/agent-link/internal/settings"
 )
 
 // Hook clients.
@@ -267,12 +267,11 @@ func defaultHookEnv() (hookEnv, error) {
 	if err != nil {
 		return hookEnv{}, err
 	}
-	p, err := settings.DefaultPath()
+	dir, err := hookStateDir()
 	if err != nil {
 		return hookEnv{}, err
 	}
-	return hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks"), project: strings.TrimSpace(os.Getenv("AGENTLINK_PROJECT_ID")),
-		exe: cliPath(filepath.Dir(p))}, nil
+	return hookEnv{api: cfg.API, dir: dir, project: strings.TrimSpace(os.Getenv(envProjectID)), exe: cliPath(filepath.Dir(dir))}, nil
 }
 
 // hookRun handles one hook event: it reads the input, keeps the session
@@ -342,8 +341,9 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	}
 	if event == evSubagentStart || event == evSubagentStop {
 		h.subagent(in.AgentID, in.AgentType, event == evSubagentStop)
+		kids := client == hookCodex && st.trackKid(event, in.AgentID, now)
 		h.reportCodexAgentState()
-		if client == hookCodex && st.trackKid(event, in.AgentID, now) {
+		if kids {
 			if st.Idle {
 				h.tellDoing(node.AgentSubagents) // its turn ended: the node shows it waiting for them
 			} else {
@@ -424,7 +424,8 @@ func hookRun(client, event string, stdin io.Reader, stdout io.Writer, env hookEn
 	}
 	text := withNotes(notes, b.text)
 	if event == evSessionStart && env.exe != "" {
-		// The plugin puts agentlink on PATH only for its MCP and hook commands.
+		// agentlink need not be on the agent's own PATH (a plugin's launcher is not):
+		// name the executable the CLI commands run.
 		text = strings.TrimSpace(text + "\n\n" + cliHint(env.exe))
 	}
 	notice := joinNotice(takeNotice(&st), b.notice)
@@ -483,7 +484,7 @@ func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force, id
 		return !st.Unbound
 	}
 	err := hookCall(env.api, http.MethodPost, "/sessions", env.withProject(nil), sessionRequest(client, sid, folder, idle, liveAgentIDs(*st)), nil, hookHTTPTimeout)
-	var se *statusError
+	var se *apiError
 	switch {
 	case err == nil:
 		if st.Idle != idle || force {
@@ -756,7 +757,7 @@ func (h *hookSession) claim(page node.UnreadPage) (node.UnreadPage, error) {
 		}
 		var got []string
 		err := hookCall(h.env.api, http.MethodPost, "/claim", h.env.projectQuery(p), req, &got, hookHTTPTimeout)
-		var se *statusError
+		var se *apiError
 		switch {
 		case errors.As(err, &se) && (se.code == http.StatusNotFound || se.code == http.StatusMethodNotAllowed):
 			got = req.IDs
@@ -909,44 +910,12 @@ func plural(n int, one, few, many string) string {
 	return many
 }
 
-// statusError is a non-2xx answer of the node.
-type statusError struct {
-	code int
-	msg  string
-}
-
-func (e *statusError) Error() string { return fmt.Sprintf("node: %d %s", e.code, e.msg) }
-
-// hookCall calls the local API with a short timeout: a hook must not stall
-// the session when the node is down. body (when not nil) is sent as JSON, a
-// JSON answer is decoded into out (when not nil).
+// hookCall calls the local API (apiCall) with a short timeout: a hook must
+// not stall the session when the node is down.
 func hookCall(api, method, path string, q url.Values, body, out any, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	var rd io.Reader
-	if body != nil {
-		rd = bytes.NewReader(mustJSON(body))
-	}
-	req, err := http.NewRequestWithContext(ctx, method, apiURL(config.Config{API: api}, path, q), rd)
-	if err != nil {
-		return err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return &statusError{code: resp.StatusCode, msg: strings.TrimSpace(string(msg))}
-	}
-	if out == nil || resp.StatusCode == http.StatusNoContent {
-		return nil
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return apiCall(ctx, method, apiURL(config.Config{API: api}, path, q), body, out)
 }
 
 var sessionJunk = regexp.MustCompile(`[^A-Za-z0-9_-]`)
@@ -976,77 +945,41 @@ func loadHookState(path string) hookState {
 }
 
 func saveHookState(path string, st hookState) error {
-	return writeFileAtomic(path, mustJSON(st))
+	return fileutil.WriteAtomic(path, mustJSON(st))
 }
+
+// hookLockWait is how long a hook waits for its session's lock.
+const hookLockWait = 2 * time.Second
 
 // lockFile serializes hooks of one session (Claude Code runs PostToolUse hooks
-// of parallel tool calls at the same time). A lock older than 30s is stale.
+// of parallel tool calls at the same time): an OS lock, released with its
+// holder, never taken over by a staleness guess.
 func lockFile(path string) (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			_ = f.Close()
-			return func() { _ = os.Remove(path) }, nil
-		}
-		if st, serr := os.Stat(path); serr == nil && time.Since(st.ModTime()) > 30*time.Second {
-			_ = os.Remove(path)
-			continue
-		}
-		if time.Now().After(deadline) {
-			return nil, err
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	return fileutil.Lock(path, hookLockWait)
 }
 
-// pruneHookState removes state files of sessions not seen for hookStateTTL.
+// pruneHookState removes state files of sessions not seen for hookStateTTL; a
+// lock file only while nobody holds it.
 func pruneHookState(dir string, now time.Time) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
-		if info, err := e.Info(); err == nil && !e.IsDir() && now.Sub(info.ModTime()) > hookStateTTL {
-			_ = os.Remove(filepath.Join(dir, e.Name()))
+		info, err := e.Info()
+		if err != nil || e.IsDir() || now.Sub(info.ModTime()) <= hookStateTTL {
+			continue
 		}
-	}
-}
-
-// writeFileAtomic replaces path with data through a temporary file.
-func writeFileAtomic(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmp.Name())
-		return err
-	}
-	// On Windows the rename fails while another process (the session's
-	// waiter polling this state) has the file open for a moment: retry.
-	for try := 0; ; try++ {
-		err = os.Rename(tmp.Name(), path)
-		if err == nil || try == 50 {
-			break
+		path := filepath.Join(dir, e.Name())
+		if strings.HasSuffix(path, ".lock") || strings.HasSuffix(path, ".wait") {
+			unlock, ok := fileutil.TryLock(path)
+			if !ok {
+				continue
+			}
+			unlock()
 		}
-		time.Sleep(20 * time.Millisecond)
+		_ = os.Remove(path)
 	}
-	if err != nil {
-		_ = os.Remove(tmp.Name())
-	}
-	return err
 }
 
 // mustJSON encodes v without HTML escaping; v is always encodable here.

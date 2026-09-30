@@ -44,7 +44,7 @@ const usage = `usage:
   agentlink serve --config <path>
   agentlink send  --config <path> [--to <node|area:NAME>] [--area <name>] (--body-file <path|-> | --body <text>) [--reply-to <id>] [--ask <node,...>] [--project <id>]   (into the one open chat with them; no --to: the only peer; the area defaults to this folder's project)
   agentlink send  --config <path> --chat <id> (--body-file <path|-> | --body <text>) [--ask <node,...>] [--ask-seat <label>] [--reply-to <id>] [--project <id>]   (to every chat participant; --ask: who must answer; --ask-seat: a local agent of this node, repeatable)
-  agentlink discuss --with <claude|codex> (--body-file <path|-> | --body <text>) [--folder <path>] [--chat <id> | --topic <name> | --temporary] [--shared] [--timeout 10m] [--async] [--compact]   (message text: a file, never a shell argument with quotes; ask in this session's own local agent chat, separate from network chats; --shared: the folder's shared project chat; --async returns IDs immediately; exit 2 on timeout)
+  agentlink discuss --with <claude|codex> (--body-file <path|-> | --body <text>) [--folder <path>] [--chat <id> | --topic <name> | --temporary] [--shared] [--timeout 10m] [--async] [--compact]   (message text: a file, never a shell argument with quotes; ask in this session's own local agent chat, separate from network chats; --shared: the folder's shared project chat; --async returns IDs immediately; exit 2 on timeout, 3 when held: no answer comes automatically)
   agentlink wait  --config <path> [--timeout 0] [--chat <id>] [--project <id>]   (seconds or duration; 0 = forever; exit 2 on timeout; --chat: only that chat)
   agentlink chat new     --config <path> --with <node,...> [--area <name>] [--project <id>]   (prints the chat id; you are added; in a project: its one active chat)
   agentlink chat archive --config <path> [--chat <id>] [--project <id>]   (the project's chat history goes to the archive; a fresh chat with the same members opens; prints its id)
@@ -63,17 +63,23 @@ const usage = `usage:
   agentlink mcp [--config <path>]   (stdio MCP server "agentlink" for an agent session: tools projects, members, seats, chats, history, unread, send, discuss, ack)
   agentlink add    --config <path> --addr <ip[:port]> [--project <id>]   (dial a member's address; it spreads to all members)
   agentlink remove --config <path> --name <node> [--project <id>]   (remove a member from the whole network)
-  agentlink hook <claude|codex> [--event auto]   (run by an agent's hooks: tells the session about new messages; never claims them)
+  agentlink hook <claude|codex> [--event auto]   (run by an agent's hooks: hands the session the new messages for it and reports what it does)
   agentlink hook install <claude|codex> [--scope user|project]   (add that hook to ~/.claude/settings.json or ~/.codex/hooks.json)
   agentlink update [--check]    (install the latest GitHub release next to this program; --check only reports)
   agentlink version
 Client commands (all but serve) may omit --config: they then use $AGENTLINK_API, else the desktop
 app's settings (api, default 127.0.0.1:7520). --project (default $AGENTLINK_PROJECT_ID, set for a
 project's agents) picks the project; without it the chat or message named, else this folder's
-project, else the network from before projects, else the only project; failing that the error\nnames the known projects. wait exits 2 on timeout with a note on stderr.`
+project, else the network from before projects, else the only project; failing that the error
+names the known projects. wait exits 2 on timeout with a note on stderr.`
 
-// exitTimeout is returned by wait when no message arrived in time.
-const exitTimeout = 2
+// Exit codes besides 0 (done) and 1 (error): exitTimeout when wait or discuss
+// got no answer in time, exitHeld when discuss's question is held (hop limit,
+// or the asked seat cannot answer): no reply comes without a person or a retry.
+const (
+	exitTimeout = 2
+	exitHeld    = 3
+)
 
 func main() {
 	args := os.Args[1:]
@@ -115,6 +121,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		name, rest = "session "+rest[0], rest[1:]
 	}
+	ctx := context.Background()
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	switch name {
@@ -161,7 +168,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			if err != nil {
 				return 1, err
 			}
-			return 0, send(c, sendArgs{to: *to, body: text, replyTo: *replyTo, chat: *chat, ask: *ask, area: *area, project: proj(), session: *session, files: attach, askSeats: askSeat, bodyFile: *bodyFile}, stdout)
+			return 0, send(ctx, c, sendArgs{to: *to, body: text, replyTo: *replyTo, chat: *chat, ask: *ask, area: *area, project: proj(), session: *session, files: attach, askSeats: askSeat, bodyFile: *bodyFile}, stdout, stderr)
 		}
 	case "discuss":
 		with := fs.String("with", "", "local agent to ask: claude or codex")
@@ -170,7 +177,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		bodyFile := fs.String("body-file", "", "read message text from this file (UTF-8 or UTF-16 with BOM; - reads stdin); same as --prompt-file")
 		folder := fs.String("folder", "", "project working folder (default: current folder)")
 		async := fs.Bool("async", false, "return after posting instead of waiting for the answer")
-		timeout := fs.String("timeout", "10m", "maximum time to wait for the answer (up to 15m)")
+		timeout := fs.String("timeout", discussTimeout, "maximum time to wait for the answer (up to "+discussMaxWait.String()+")")
 		chat := fs.String("chat", "", "continue this local chat (id from an earlier discuss)")
 		topic := fs.String("topic", "", "named chat: this session's own thread of that name (with --shared the project's persistent chat)")
 		temporary := fs.Bool("temporary", false, "start a new temporary chat (removed when its session ends)")
@@ -188,28 +195,34 @@ func run(args []string, stdout, stderr io.Writer) int {
 			if err != nil {
 				return 1, err
 			}
-			result, err := discussMessage(c, *with, prompt, *folder, *async, *timeout, discussPick{chat: *chat, topic: *topic, temporary: *temporary, shared: *shared, askKey: cliAskKey, bodyFile: cmp.Or(*bodyFile, *promptFile)})
+			result, err := discussMessage(ctx, c, *with, prompt, *folder, *async, *timeout, discussPick{chat: *chat, topic: *topic, temporary: *temporary, shared: *shared, askKey: cliAskKey, bodyFile: cmp.Or(*bodyFile, *promptFile)})
 			if result.ID != "" {
 				var out any = result
 				if *compact {
 					out = compactDiscuss(result)
 				}
 				if encodeErr := newJSONEncoder(stdout).Encode(out); encodeErr != nil {
-					return 1, encodeErr
+					return 1, encodeErr // the reply stays unread: the hooks deliver it
+				}
+				if ackErr := ackDiscussReply(ctx, c, result); ackErr != nil {
+					_, _ = fmt.Fprintln(stderr, "agentlink: reply not marked read:", ackErr)
 				}
 			}
 			if err != nil {
 				return 1, err
 			}
-			if result.TimedOut {
+			switch {
+			case result.TimedOut:
 				return exitTimeout, nil
+			case result.Held:
+				return exitHeld, nil
 			}
 			return 0, nil
 		}
 	case "wait":
 		timeout := fs.String("timeout", "0", "seconds or Go duration; 0 waits forever")
 		chat := fs.String("chat", "", "only messages of this chat; others stay for a later wait")
-		cmd = func(c config.Config) (int, error) { return wait(c, *timeout, *chat, proj(), stdout, stderr) }
+		cmd = func(c config.Config) (int, error) { return wait(ctx, c, *timeout, *chat, proj(), stdout, stderr) }
 	case "close":
 		_ = fs.String("chat", "", "chat id")
 		cmd = func(config.Config) (int, error) {
@@ -220,73 +233,77 @@ func run(args []string, stdout, stderr io.Writer) int {
 		folder := fs.String("folder", "", "only messages for a session in this folder (default: all)")
 		limit := fs.Int("limit", 50, "maximum messages")
 		after := fs.String("after", "", "cursor of the last message of the previous page")
-		cmd = func(c config.Config) (int, error) { return 0, chatUnread(c, *folder, *after, *limit, proj(), stdout) }
+		cmd = func(c config.Config) (int, error) {
+			return 0, chatUnread(ctx, c, *folder, *after, *limit, proj(), stdout)
+		}
 	case "chat ack":
 		chat := fs.String("chat", "", "chat id (default: any chat, and plain messages)")
 		ids := fs.String("ids", "", "message ids, comma-separated")
 		session := fs.String("session", "", "the reading session's id")
-		cmd = func(c config.Config) (int, error) { return 0, chatAck(c, *chat, *ids, *session, proj(), stdout) }
+		cmd = func(c config.Config) (int, error) { return 0, chatAck(ctx, c, *chat, *ids, *session, proj(), stdout) }
 	case "chat reassign":
 		id := fs.String("id", "", "id of the unread message to hand over")
 		session := fs.String("session", "", "id of the live session that takes it")
 		force := fs.Bool("force", false, "also move a message that does not need a person (a live session waits for it)")
-		cmd = func(c config.Config) (int, error) { return 0, chatReassign(c, *id, *session, *force, proj(), stdout) }
+		cmd = func(c config.Config) (int, error) {
+			return 0, chatReassign(ctx, c, *id, *session, *force, proj(), stdout)
+		}
 	case "session pin":
 		session := fs.String("session", "", "id of the live Codex thread preferred for new untargeted project messages")
-		cmd = func(c config.Config) (int, error) { return 0, sessionPin(c, *session, proj(), false, stdout) }
+		cmd = func(c config.Config) (int, error) { return 0, sessionPin(ctx, c, *session, proj(), false, stdout) }
 	case "session unpin":
 		session := fs.String("session", "", "id of the pinned Codex thread")
-		cmd = func(c config.Config) (int, error) { return 0, sessionPin(c, *session, proj(), true, stdout) }
+		cmd = func(c config.Config) (int, error) { return 0, sessionPin(ctx, c, *session, proj(), true, stdout) }
 	case "chat new":
 		with := fs.String("with", "", "the other participants, comma-separated")
 		area := fs.String("area", "", "area (project) the participants' agents work in")
-		cmd = func(c config.Config) (int, error) { return 0, chatNew(c, *with, *area, proj(), stdout) }
+		cmd = func(c config.Config) (int, error) { return 0, chatNew(ctx, c, *with, *area, proj(), stdout) }
 	case "chat archive":
 		chat := fs.String("chat", "", "chat id to archive (default: the project's active chat)")
-		cmd = func(c config.Config) (int, error) { return 0, chatArchive(c, *chat, proj(), stdout) }
+		cmd = func(c config.Config) (int, error) { return 0, chatArchive(ctx, c, *chat, proj(), stdout) }
 	case "chat list":
 		archive := fs.Bool("archive", false, "list the archive instead of the main list")
 		legacy := fs.Bool("legacy", false, "add history from before chats as virtual chats")
-		cmd = func(c config.Config) (int, error) { return 0, chatList(c, *archive, *legacy, proj(), stdout) }
+		cmd = func(c config.Config) (int, error) { return 0, chatList(ctx, c, *archive, *legacy, proj(), stdout) }
 	case "chat history":
 		chat := fs.String("chat", "", "chat id; default $"+envChatID)
 		limit := fs.Int("limit", 50, "maximum messages")
 		before := fs.Uint64("before", 0, "only messages before this seq (0: up to the newest)")
 		after := fs.Uint64("after", 0, "only messages after this seq, oldest first")
 		cmd = func(c config.Config) (int, error) {
-			return 0, chatHistory(c, *chat, *limit, *before, *after, proj(), stdout)
+			return 0, chatHistory(ctx, c, *chat, *limit, *before, *after, proj(), stdout)
 		}
 	case "inbox":
 		limit := fs.Int("limit", 50, "maximum entries")
-		cmd = func(c config.Config) (int, error) { return 0, inbox(c, *limit, proj(), stdout) }
+		cmd = func(c config.Config) (int, error) { return 0, inbox(ctx, c, *limit, proj(), stdout) }
 	case "members":
-		cmd = func(c config.Config) (int, error) { return 0, members(c, "", nil, proj(), stdout) }
+		cmd = func(c config.Config) (int, error) { return 0, members(ctx, c, "", nil, proj(), stdout) }
 	case "seats":
 		cmd = func(c config.Config) (int, error) {
-			list, err := listSeats(c, proj())
+			list, err := listSeats(ctx, c, proj())
 			if err != nil {
 				return 0, err
 			}
 			return 0, encodeLines(stdout, list)
 		}
 	case "projects":
-		cmd = func(c config.Config) (int, error) { return 0, projects(c, stdout) }
+		cmd = func(c config.Config) (int, error) { return 0, projects(ctx, c, stdout) }
 	case "mcp":
 		cmd = func(c config.Config) (int, error) { return 0, runMCP(c) }
 	case "mcp-call":
 		// Internal: an MCP server whose executable was updated runs its tool
 		// calls in the new one (delegateMCP).
 		tool := fs.String("tool", "", "MCP tool to run; its arguments JSON on stdin")
-		cmd = func(c config.Config) (int, error) { return 0, runMCPCall(c, *tool, os.Stdin, stdout) }
+		cmd = func(c config.Config) (int, error) { return 0, runMCPCall(ctx, c, *tool, os.Stdin, stdout) }
 	case "add":
 		addr := fs.String("addr", "", "IP or host of a member, port optional")
 		cmd = func(c config.Config) (int, error) {
-			return 0, members(c, "/members", &node.MemberRequest{Addr: *addr}, proj(), stdout)
+			return 0, members(ctx, c, "/members", &node.MemberRequest{Addr: *addr}, proj(), stdout)
 		}
 	case "remove":
 		name := fs.String("name", "", "node name of the member")
 		cmd = func(c config.Config) (int, error) {
-			return 0, members(c, "/members/remove", &node.MemberRequest{Name: *name}, proj(), stdout)
+			return 0, members(ctx, c, "/members/remove", &node.MemberRequest{Name: *name}, proj(), stdout)
 		}
 	default:
 		_, _ = fmt.Fprintln(stderr, usage)
@@ -476,16 +493,23 @@ type discussPick struct {
 	bodyFile          string // as sendArgs.bodyFile
 }
 
-func discussMessage(cfg config.Config, provider, body, folder string, async bool, timeout string, pick discussPick) (discussResult, error) {
+// A discuss waits discussTimeout for its answer by default ("" asks for it),
+// at most discussMaxWait.
+const (
+	discussTimeout = "10m"
+	discussMaxWait = 15 * time.Minute
+)
+
+func discussMessage(ctx context.Context, cfg config.Config, provider, body, folder string, async bool, timeout string, pick discussPick) (discussResult, error) {
 	if provider != node.ProviderClaude && provider != node.ProviderCodex {
 		return discussResult{}, errors.New("--with must be claude or codex")
 	}
 	if strings.TrimSpace(body) == "" {
 		return discussResult{}, errors.New("--body is required")
 	}
-	d, err := parseTimeout(timeout)
-	if err != nil || d <= 0 || d > 15*time.Minute {
-		return discussResult{}, errors.New("--timeout must be greater than 0 and at most 15m")
+	d, err := parseTimeout(cmp.Or(timeout, discussTimeout))
+	if err != nil || d <= 0 || d > discussMaxWait {
+		return discussResult{}, errors.New("--timeout must be greater than 0 and at most " + discussMaxWait.String())
 	}
 	dir := folder
 	if dir == "" {
@@ -504,7 +528,7 @@ func discussMessage(cfg config.Config, provider, body, folder string, async bool
 	session, source := agentSession()
 	agent, agentType := askOrigin(pick.askKey, askNeedle(body, pick.bodyFile))
 	var result discussResult
-	err = apiJSON(http.MethodPost, apiURL(cfg, "/discuss", nil), map[string]any{
+	err = apiJSON(ctx, http.MethodPost, apiURL(cfg, "/discuss", nil), map[string]any{
 		"folder": dir, "provider": provider, "body": body, "session_id": session,
 		"source": source, "seat": os.Getenv(envSeat), "agent_id": agent, "agent_type": agentType,
 		"chat": pick.chat, "topic": pick.topic, "temporary": pick.temporary, "shared": pick.shared,
@@ -517,7 +541,9 @@ func discussMessage(cfg config.Config, provider, body, folder string, async bool
 	}
 	q := url.Values{"project": {result.Project}, "chat": {result.Chat}, "id": {result.ID},
 		"seat": {result.Seat}, "timeout": {d.String()}, "client_ack": {"1"}}
-	resp, err := apiDo(http.MethodGet, apiURL(cfg, "/discuss/reply", q), nil)
+	ctx, cancel := context.WithTimeout(ctx, d+apiTimeout) // the node answers within d
+	defer cancel()
+	resp, err := apiDo(ctx, http.MethodGet, apiURL(cfg, "/discuss/reply", q), nil)
 	if err != nil {
 		return result, err
 	}
@@ -538,7 +564,7 @@ func discussMessage(cfg config.Config, provider, body, folder string, async bool
 			return result, nil
 		}
 	}
-	if err := checkStatus(resp, http.StatusOK); err != nil {
+	if err := checkStatus(resp); err != nil {
 		return result, err
 	}
 	var reply node.Message
@@ -546,13 +572,20 @@ func discussMessage(cfg config.Config, provider, body, folder string, async bool
 		return result, err
 	}
 	result.Reply = &reply
-	// Read only now that this call has it: a reply the caller never got stays
-	// unread, and the session's hooks deliver it (at least once, never lost).
-	ack, acked := node.AckRequest{IDs: []string{reply.ID}, SessionID: session}, []node.AckResult{}
-	if err := apiJSON(http.MethodPost, apiURL(cfg, "/ack", url.Values{"project": {result.Project}}), ack, &acked); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "agentlink: reply not marked read:", err)
-	}
 	return result, nil
+}
+
+// ackDiscussReply marks the reply of a discuss read, for the asking session:
+// the caller does so only once it handed the reply on (printed it, answered
+// the tool call). A reply the caller never delivered stays unread, and the
+// session's hooks deliver it (at least once, never lost).
+func ackDiscussReply(ctx context.Context, cfg config.Config, r discussResult) error {
+	if r.Reply == nil {
+		return nil
+	}
+	session, _ := agentSession()
+	_, err := ack(ctx, cfg, "", []string{r.Reply.ID}, session, r.Project)
+	return err
 }
 
 // listFlag is a repeatable string flag.
@@ -584,7 +617,7 @@ func agentSession() (id, client string) {
 	return "", ""
 }
 
-func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
+func send(ctx context.Context, cfg config.Config, a sendArgs, stdout, stderr io.Writer) error {
 	if a.body == "" && len(a.files) == 0 {
 		return errors.New("--body is required (or --attach)")
 	}
@@ -596,17 +629,17 @@ func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 	if a.ask != "" {
 		ask = []string{a.ask}
 	}
-	m, err := sendMessage(cfg, a, ask)
+	m, err := sendMessage(ctx, cfg, a, ask)
 	if err != nil {
 		return err
 	}
 	if m.ChatID != "" && a.chat == "" {
 		// send --to continued the chat with that member; stdout stays the id alone.
-		fmt.Fprintln(os.Stderr, "chat "+m.ChatID)
+		_, _ = fmt.Fprintln(stderr, "chat "+m.ChatID)
 	}
 	if m.HoldReason != "" {
 		// stdout stays the id alone; nobody answers it automatically.
-		fmt.Fprintln(os.Stderr, "held: "+node.HoldText(m.HoldReason))
+		_, _ = fmt.Fprintln(stderr, "held: "+node.HoldText(m.HoldReason))
 	}
 	_, err = fmt.Fprintln(stdout, m.ID)
 	return err
@@ -614,7 +647,7 @@ func send(cfg config.Config, a sendArgs, stdout io.Writer) error {
 
 // sendMessage posts one message (to a.chat, else a.to) for send and the MCP
 // send tool; the session defaults to the agent's own and learns the chat.
-func sendMessage(cfg config.Config, a sendArgs, ask []string) (node.Message, error) {
+func sendMessage(ctx context.Context, cfg config.Config, a sendArgs, ask []string) (node.Message, error) {
 	var agent, agentType string
 	if a.session == "" {
 		a.session, _ = agentSession()
@@ -636,18 +669,20 @@ func sendMessage(cfg config.Config, a sendArgs, ask []string) (node.Message, err
 	// its own reply to it never counts as answered by someone else.
 	r.Parent = os.Getenv(envJobID)
 	var m node.Message
-	if err := apiJSON(http.MethodPost, apiURL(cfg, "/send", withProject(nil, a.project)), r, &m); err != nil {
+	if err := apiJSON(ctx, http.MethodPost, apiURL(cfg, "/send", withProject(nil, a.project)), r, &m); err != nil {
 		return node.Message{}, err
 	}
 	if m.ChatID != "" && r.SessionID != "" {
-		if p, err := settings.DefaultPath(); err == nil {
-			noteSent(hookEnv{api: cfg.API, dir: filepath.Join(filepath.Dir(p), "hooks")}, r.SessionID, m.ChatID, m.ID)
+		if dir, err := hookStateDir(); err == nil {
+			// Hook bookkeeping on the hooks' own short deadline (hookCall): the
+			// message is sent, its activity line is not part of this call.
+			noteSent(hookEnv{api: cfg.API, dir: dir}, r.SessionID, m.ChatID, m.ID) //nolint:contextcheck // see above
 		}
 	}
 	return m, nil
 }
 
-func wait(cfg config.Config, timeout, chat, project string, stdout, stderr io.Writer) (int, error) {
+func wait(ctx context.Context, cfg config.Config, timeout, chat, project string, stdout, stderr io.Writer) (int, error) {
 	d, err := parseTimeout(timeout)
 	if err != nil {
 		return 1, err
@@ -659,7 +694,12 @@ func wait(cfg config.Config, timeout, chat, project string, stdout, stderr io.Wr
 	if wd, err := os.Getwd(); err == nil {
 		q.Set("folder", wd) // the app picks the project of this folder
 	}
-	resp, err := apiDo(http.MethodGet, apiURL(cfg, "/wait", q), nil)
+	if d > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, d+apiTimeout) // the node answers within d
+		defer cancel()
+	}
+	resp, err := apiDo(ctx, http.MethodGet, apiURL(cfg, "/wait", q), nil)
 	if err != nil {
 		return 1, err
 	}
@@ -669,29 +709,25 @@ func wait(cfg config.Config, timeout, chat, project string, stdout, stderr io.Wr
 		_, _ = fmt.Fprintf(stderr, "agentlink: no message within %s\n", d)
 		return exitTimeout, nil
 	}
-	if err := checkStatus(resp, http.StatusOK); err != nil {
+	if err := checkStatus(resp); err != nil {
 		return 1, err
 	}
 	return 0, printLines[node.Message](resp.Body, stdout)
 }
 
-func inbox(cfg config.Config, limit int, project string, stdout io.Writer) error {
-	resp, err := apiDo(http.MethodGet, apiURL(cfg, "/inbox", inFolder(url.Values{"limit": {strconv.Itoa(limit)}}, project)), nil)
-	if err != nil {
+func inbox(ctx context.Context, cfg config.Config, limit int, project string, stdout io.Writer) error {
+	var entries []node.Entry
+	if err := apiJSON(ctx, http.MethodGet, apiURL(cfg, "/inbox", inFolder(url.Values{"limit": {strconv.Itoa(limit)}}, project)), nil, &entries); err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if err := checkStatus(resp, http.StatusOK); err != nil {
-		return err
-	}
-	return printLines[node.Entry](resp.Body, stdout)
+	return encodeLines(stdout, entries)
 }
 
-func chatNew(cfg config.Config, with, area, project string, stdout io.Writer) error {
+func chatNew(ctx context.Context, cfg config.Config, with, area, project string, stdout io.Writer) error {
 	if strings.TrimSpace(with) == "" {
 		return errors.New("--with is required")
 	}
-	info, err := createChat(cfg, []string{with}, area, project)
+	info, err := createChat(ctx, cfg, []string{with}, area, project)
 	if err != nil {
 		return err
 	}
@@ -700,32 +736,32 @@ func chatNew(cfg config.Config, with, area, project string, stdout io.Writer) er
 }
 
 // createChat opens a chat with the participants (names, comma lists allowed).
-func createChat(cfg config.Config, with []string, area, project string) (node.ChatInfo, error) {
+func createChat(ctx context.Context, cfg config.Config, with []string, area, project string) (node.ChatInfo, error) {
 	var info node.ChatInfo
-	err := apiJSON(http.MethodPost, apiURL(cfg, "/chats", inFolder(nil, project)), node.CreateChatRequest{Participants: with, Area: area}, &info)
+	err := apiJSON(ctx, http.MethodPost, apiURL(cfg, "/chats", inFolder(nil, project)), node.CreateChatRequest{Participants: with, Area: area}, &info)
 	return info, err
 }
 
 // chatArchive moves the project's chat history to the archive and prints the
 // id of the fresh active chat.
-func chatArchive(cfg config.Config, chat, project string, stdout io.Writer) error {
+func chatArchive(ctx context.Context, cfg config.Config, chat, project string, stdout io.Writer) error {
 	var info node.ChatInfo
-	if err := apiJSON(http.MethodPost, apiURL(cfg, "/chats/archive", inFolder(nil, project)), node.ArchiveRequest{ChatID: chat}, &info); err != nil {
+	if err := apiJSON(ctx, http.MethodPost, apiURL(cfg, "/chats/archive", inFolder(nil, project)), node.ArchiveRequest{ChatID: chat}, &info); err != nil {
 		return err
 	}
 	_, err := fmt.Fprintln(stdout, info.ID)
 	return err
 }
 
-func chatList(cfg config.Config, archive, legacy bool, project string, stdout io.Writer) error {
-	chats, err := listChats(cfg, archive, legacy, project)
+func chatList(ctx context.Context, cfg config.Config, archive, legacy bool, project string, stdout io.Writer) error {
+	chats, err := listChats(ctx, cfg, archive, legacy, project)
 	if err != nil {
 		return err
 	}
 	return encodeLines(stdout, chats)
 }
 
-func listChats(cfg config.Config, archive, legacy bool, project string) ([]node.ChatInfo, error) {
+func listChats(ctx context.Context, cfg config.Config, archive, legacy bool, project string) ([]node.ChatInfo, error) {
 	q := withProject(nil, project)
 	if archive {
 		q.Set("archive", "1")
@@ -734,25 +770,25 @@ func listChats(cfg config.Config, archive, legacy bool, project string) ([]node.
 		q.Set("legacy", "1")
 	}
 	var chats []node.ChatInfo
-	err := apiJSON(http.MethodGet, apiURL(cfg, "/chats", q), nil, &chats)
+	err := apiJSON(ctx, http.MethodGet, apiURL(cfg, "/chats", q), nil, &chats)
 	return chats, err
 }
 
-func chatHistory(cfg config.Config, chat string, limit int, before, after uint64, project string, stdout io.Writer) error {
+func chatHistory(ctx context.Context, cfg config.Config, chat string, limit int, before, after uint64, project string, stdout io.Writer) error {
 	if chat == "" {
 		chat = os.Getenv(envChatID)
 	}
 	if chat == "" {
 		return errors.New("--chat is required")
 	}
-	msgs, err := history(cfg, chat, limit, before, after, project)
+	msgs, err := history(ctx, cfg, chat, limit, before, after, project)
 	if err != nil {
 		return err
 	}
 	return encodeLines(stdout, msgs)
 }
 
-func history(cfg config.Config, chat string, limit int, before, after uint64, project string) ([]node.ChatMessage, error) {
+func history(ctx context.Context, cfg config.Config, chat string, limit int, before, after uint64, project string) ([]node.ChatMessage, error) {
 	q := withProject(url.Values{"limit": {strconv.Itoa(limit)}}, project)
 	if before > 0 {
 		q.Set("before", strconv.FormatUint(before, 10))
@@ -761,14 +797,14 @@ func history(cfg config.Config, chat string, limit int, before, after uint64, pr
 		q.Set("after", strconv.FormatUint(after, 10))
 	}
 	var msgs []node.ChatMessage
-	err := apiJSON(http.MethodGet, apiURL(cfg, "/chats/"+url.PathEscape(chat)+"/messages", q), nil, &msgs)
+	err := apiJSON(ctx, http.MethodGet, apiURL(cfg, "/chats/"+url.PathEscape(chat)+"/messages", q), nil, &msgs)
 	return msgs, err
 }
 
 // chatUnread prints this node's unread messages, one JSON line each, and a
 // last line {"next": cursor, "total": n} when more pages follow.
-func chatUnread(cfg config.Config, folder, after string, limit int, project string, stdout io.Writer) error {
-	page, err := unread(cfg, folder, after, limit, project)
+func chatUnread(ctx context.Context, cfg config.Config, folder, after string, limit int, project string, stdout io.Writer) error {
+	page, err := unread(ctx, cfg, folder, after, limit, project)
 	if err != nil {
 		return err
 	}
@@ -782,11 +818,11 @@ func chatUnread(cfg config.Config, folder, after string, limit int, project stri
 }
 
 // unread reads one page of unread messages; it never marks them read.
-func unread(cfg config.Config, folder, after string, limit int, project string) (node.UnreadPage, error) {
-	return unreadForSession(cfg, folder, after, limit, project, "", false)
+func unread(ctx context.Context, cfg config.Config, folder, after string, limit int, project string) (node.UnreadPage, error) {
+	return unreadForSession(ctx, cfg, folder, after, limit, project, "", false)
 }
 
-func unreadForSession(cfg config.Config, folder, after string, limit int, project, session string, agent bool) (node.UnreadPage, error) {
+func unreadForSession(ctx context.Context, cfg config.Config, folder, after string, limit int, project, session string, agent bool) (node.UnreadPage, error) {
 	q := inFolder(url.Values{"limit": {strconv.Itoa(limit)}}, project)
 	if folder != "" {
 		abs, err := filepath.Abs(folder)
@@ -805,12 +841,12 @@ func unreadForSession(cfg config.Config, folder, after string, limit int, projec
 		q.Set("agent", "1")
 	}
 	var page node.UnreadPage
-	err := apiJSON(http.MethodGet, apiURL(cfg, "/unread", q), nil, &page)
+	err := apiJSON(ctx, http.MethodGet, apiURL(cfg, "/unread", q), nil, &page)
 	return page, err
 }
 
 // chatAck marks messages read and prints one JSON line per id (node.AckResult).
-func chatAck(cfg config.Config, chat, ids, session, project string, stdout io.Writer) error {
+func chatAck(ctx context.Context, cfg config.Config, chat, ids, session, project string, stdout io.Writer) error {
 	var list []string
 	for id := range strings.SplitSeq(ids, ",") {
 		if id = strings.TrimSpace(id); id != "" {
@@ -820,7 +856,7 @@ func chatAck(cfg config.Config, chat, ids, session, project string, stdout io.Wr
 	if len(list) == 0 {
 		return errors.New("--ids is required")
 	}
-	res, err := ack(cfg, chat, list, session, project)
+	res, err := ack(ctx, cfg, chat, list, session, project)
 	if err != nil {
 		return err
 	}
@@ -828,31 +864,31 @@ func chatAck(cfg config.Config, chat, ids, session, project string, stdout io.Wr
 }
 
 // ack marks ids read, in chat when named, for the reading session.
-func ack(cfg config.Config, chat string, ids []string, session, project string) ([]node.AckResult, error) {
+func ack(ctx context.Context, cfg config.Config, chat string, ids []string, session, project string) ([]node.AckResult, error) {
 	path := "/ack"
 	if chat != "" {
 		path = "/chats/" + url.PathEscape(chat) + "/ack"
 	}
 	var res []node.AckResult
-	err := apiJSON(http.MethodPost, apiURL(cfg, path, withProject(nil, project)), node.AckRequest{IDs: ids, SessionID: session}, &res)
+	err := apiJSON(ctx, http.MethodPost, apiURL(cfg, path, withProject(nil, project)), node.AckRequest{IDs: ids, SessionID: session}, &res)
 	return res, err
 }
 
 // chatReassign hands unread message id to live session session (POST
 // /reassign) and prints the message as it is now, one JSON line.
-func chatReassign(cfg config.Config, id, session string, force bool, project string, stdout io.Writer) error {
+func chatReassign(ctx context.Context, cfg config.Config, id, session string, force bool, project string, stdout io.Writer) error {
 	id, session = strings.TrimSpace(id), strings.TrimSpace(session)
 	if id == "" || session == "" {
 		return errors.New("--id and --session are required")
 	}
 	var m node.ChatMessage
-	if err := apiJSON(http.MethodPost, apiURL(cfg, "/reassign", withProject(nil, project)), node.ReassignRequest{ID: id, SessionID: session, Force: force}, &m); err != nil {
+	if err := apiJSON(ctx, http.MethodPost, apiURL(cfg, "/reassign", withProject(nil, project)), node.ReassignRequest{ID: id, SessionID: session, Force: force}, &m); err != nil {
 		return err
 	}
 	return encodeLines(stdout, []node.ChatMessage{m})
 }
 
-func sessionPin(cfg config.Config, session, project string, remove bool, stdout io.Writer) error {
+func sessionPin(ctx context.Context, cfg config.Config, session, project string, remove bool, stdout io.Writer) error {
 	session = strings.TrimSpace(session)
 	if session == "" {
 		return errors.New("--session is required")
@@ -862,59 +898,69 @@ func sessionPin(cfg config.Config, session, project string, remove bool, stdout 
 	if remove {
 		method = http.MethodDelete
 	}
-	if err := apiJSON(method, apiURL(cfg, "/session-pin", withProject(nil, project)), node.PinSessionRequest{SessionID: session}, &p); err != nil {
+	if err := apiJSON(ctx, method, apiURL(cfg, "/session-pin", withProject(nil, project)), node.PinSessionRequest{SessionID: session}, &p); err != nil {
 		return err
 	}
 	return newJSONEncoder(stdout).Encode(p)
 }
 
 // projects prints the projects of the desktop app, one JSON line each.
-func projects(cfg config.Config, stdout io.Writer) error {
-	list, err := listProjects(cfg)
+func projects(ctx context.Context, cfg config.Config, stdout io.Writer) error {
+	list, err := listProjects(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	return encodeLines(stdout, list)
 }
 
-func listProjects(cfg config.Config) ([]app.ProjectView, error) {
+func listProjects(ctx context.Context, cfg config.Config) ([]app.ProjectView, error) {
 	var list []app.ProjectView
-	err := apiJSON(http.MethodGet, apiURL(cfg, "/projects", nil), nil, &list)
+	err := apiJSON(ctx, http.MethodGet, apiURL(cfg, "/projects", nil), nil, &list)
 	return list, err
 }
 
-// apiJSON calls the local API with req as the JSON body (nil: none) and
-// decodes a 200 answer into out.
-func apiJSON(method, u string, req, out any) error {
-	var body []byte
-	if req != nil {
-		var err error
-		if body, err = json.Marshal(req); err != nil {
-			return err
-		}
-	}
-	resp, err := apiDo(method, u, body)
+// apiTimeout bounds an ordinary call of the local API (apiJSON), and is the
+// margin of a long poll past the time the node answers it in: a wedged node
+// fails a command instead of hanging it. Tests shorten it.
+var apiTimeout = 30 * time.Second
+
+// apiJSON is apiCall bounded by apiTimeout: an ordinary call, never a long
+// poll.
+func apiJSON(ctx context.Context, method, u string, req, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
+	defer cancel()
+	return apiCall(ctx, method, u, req, out)
+}
+
+// apiCall calls the local API with req as the JSON body (nil: none) and
+// decodes a 2xx answer's JSON into out (nil, or a 204: nothing to decode);
+// any other answer is an *apiError. Hooks and commands share it.
+func apiCall(ctx context.Context, method, u string, req, out any) error {
+	resp, err := apiDo(ctx, method, u, req)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if err := checkStatus(resp, http.StatusOK); err != nil {
+	if err := checkStatus(resp); err != nil {
 		return err
+	}
+	if out == nil || resp.StatusCode == http.StatusNoContent {
+		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
 // members lists the member table, after posting req to path when req is set.
-func members(cfg config.Config, path string, req *node.MemberRequest, project string, stdout io.Writer) error {
+func members(ctx context.Context, cfg config.Config, path string, req *node.MemberRequest, project string, stdout io.Writer) error {
 	var list []node.MemberInfo
 	var err error
 	if req == nil {
-		list, err = listMembers(cfg, project)
+		list, err = listMembers(ctx, cfg, project)
 	} else {
 		if req.Addr == "" && req.Name == "" {
 			return errors.New("--addr or --name is required")
 		}
-		err = apiJSON(http.MethodPost, apiURL(cfg, path, inFolder(nil, project)), req, &list)
+		err = apiJSON(ctx, http.MethodPost, apiURL(cfg, path, inFolder(nil, project)), req, &list)
 	}
 	if err != nil {
 		return err
@@ -923,15 +969,15 @@ func members(cfg config.Config, path string, req *node.MemberRequest, project st
 }
 
 // listSeats lists the local agents (seats) of the project's node.
-func listSeats(cfg config.Config, project string) ([]node.SeatView, error) {
+func listSeats(ctx context.Context, cfg config.Config, project string) ([]node.SeatView, error) {
 	var list []node.SeatView
-	err := apiJSON(http.MethodGet, apiURL(cfg, "/seats", inFolder(nil, project)), nil, &list)
+	err := apiJSON(ctx, http.MethodGet, apiURL(cfg, "/seats", inFolder(nil, project)), nil, &list)
 	return list, err
 }
 
-func listMembers(cfg config.Config, project string) ([]node.MemberInfo, error) {
+func listMembers(ctx context.Context, cfg config.Config, project string) ([]node.MemberInfo, error) {
 	var list []node.MemberInfo
-	err := apiJSON(http.MethodGet, apiURL(cfg, "/members", inFolder(nil, project)), nil, &list)
+	err := apiJSON(ctx, http.MethodGet, apiURL(cfg, "/members", inFolder(nil, project)), nil, &list)
 	return list, err
 }
 
@@ -988,9 +1034,14 @@ func parseTimeout(s string) (time.Duration, error) {
 	return d, nil
 }
 
-// apiDo sends one request to the local API: a POST carries body as JSON.
-func apiDo(method, u string, body []byte) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(context.Background(), method, u, bytes.NewReader(body))
+// apiDo sends one request to the local API, body (not nil) as JSON; ctx ends
+// it (a cancelled MCP call, a deadline).
+func apiDo(ctx context.Context, method, u string, body any) (*http.Response, error) {
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(mustJSON(body))
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, rd)
 	if err != nil {
 		return nil, err
 	}
@@ -1005,19 +1056,25 @@ func apiURL(cfg config.Config, path string, q url.Values) string {
 	return u.String()
 }
 
-func checkStatus(resp *http.Response, want int) error {
-	if resp.StatusCode == want {
+// checkStatus is nil for a 2xx answer, else its *apiError.
+func checkStatus(resp *http.Response) error {
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
 		return nil
 	}
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return &apiError{status: resp.Status, msg: string(bytes.TrimSpace(msg))}
+	return &apiError{code: resp.StatusCode, msg: string(bytes.TrimSpace(msg))}
 }
 
-// apiError is a local API answer other than the expected status; msg is the
+// apiError is a local API answer other than 2xx: its status code and the
 // API's own error text.
-type apiError struct{ status, msg string }
+type apiError struct {
+	code int
+	msg  string
+}
 
-func (e *apiError) Error() string { return "api " + e.status + ": " + e.msg }
+func (e *apiError) Error() string {
+	return fmt.Sprintf("api %d %s: %s", e.code, http.StatusText(e.code), e.msg)
+}
 
 // printLines decodes a JSON array and prints one compact JSON object per line.
 func printLines[T any](r io.Reader, w io.Writer) error {

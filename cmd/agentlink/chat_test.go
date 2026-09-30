@@ -123,9 +123,10 @@ func TestDiscussCLIWaitsAndReadsPromptFile(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil || !got.TimedOut || got.ID != "m1" {
 		t.Fatalf("timeout result: %q: %v", stdout.String(), err)
 	}
-	// A seat that cannot answer ends the wait with its reason, held.
+	// A seat that cannot answer ends the wait with its reason, held: a script
+	// tells it from an answer by the exit code.
 	stdout.Reset()
-	if code := run([]string{"discuss", "--with", "codex", "--body", "limit", "--timeout", "22ms", "--config", f.cfg}, &stdout, &stderr); code != 0 {
+	if code := run([]string{"discuss", "--with", "codex", "--body", "limit", "--timeout", "22ms", "--config", f.cfg}, &stdout, &stderr); code != exitHeld {
 		t.Fatalf("failed seat exit: %d, out %q, err %q", code, stdout.String(), stderr.String())
 	}
 	got = discussResult{}

@@ -1,6 +1,10 @@
 package main
 
-import "path/filepath"
+import (
+	"path/filepath"
+
+	"github.com/UberMorgott/agent-link/internal/fileutil"
+)
 
 // exeMarkerName is the file, next to the default settings file, that holds the
 // absolute path of the running desktop app's executable. The plugin launchers
@@ -10,5 +14,5 @@ const exeMarkerName = "executable.path"
 // writeExeMarker atomically records exe in dir's marker file: the path alone,
 // no newline, so a batch file's `set /p` reads it verbatim.
 func writeExeMarker(dir, exe string) error {
-	return writeFileAtomic(filepath.Join(dir, exeMarkerName), []byte(exe))
+	return fileutil.WriteAtomic(filepath.Join(dir, exeMarkerName), []byte(exe))
 }

@@ -51,6 +51,13 @@ func TestRunExitCodes(t *testing.T) {
 	}
 }
 
+// The usage is a raw string: an escape in it would print as a backslash.
+func TestUsageHasNoEscapes(t *testing.T) {
+	if i := strings.Index(usage, `\n`); i >= 0 {
+		t.Fatalf("usage holds a literal \\n at %d: %q", i, usage[max(0, i-20):i+10])
+	}
+}
+
 func TestClickDebounce(t *testing.T) {
 	d := &debounce{gap: clickGap}
 	t0 := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
@@ -81,21 +88,5 @@ func TestDashboardURLUsesLauncher(t *testing.T) {
 	}
 	if got, want := dashboardURL(a), "http://127.0.0.1:7631/ui/open"; got != want {
 		t.Fatalf("dashboardURL() = %q, want %q", got, want)
-	}
-}
-
-func TestStartupURLShowsSettingsUntilConfigured(t *testing.T) {
-	a, err := app.New(filepath.Join(t.TempDir(), "config.json"), slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := a.SetAPIAddr("127.0.0.1:7631"); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := startupURL(a, false), "http://127.0.0.1:7631/ui/settings"; got != want {
-		t.Fatalf("unconfigured startupURL() = %q, want %q", got, want)
-	}
-	if got, want := startupURL(a, true), "http://127.0.0.1:7631/ui/open"; got != want {
-		t.Fatalf("configured startupURL() = %q, want %q", got, want)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -161,6 +162,55 @@ func TestInstallMigratesOldEntries(t *testing.T) {
 	if strings.Contains(got, "C:/old") || strings.Count(got, "C:/new/agentlink.exe") != len(ClaudeEvents)+1 || strings.Count(got, `"--wait"`) != 1 ||
 		!strings.Contains(got, `"mine"`) || !strings.Contains(got, `"asyncRewake": true`) || !strings.Contains(got, SessionEnd) {
 		t.Fatalf("migrated:\n%s", got)
+	}
+}
+
+// A group of the user's that also holds an agentlink handler keeps the
+// user's handler: Install and Remove change agentlink's handlers only.
+func TestSharedGroupKeepsUserHandlers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	shared := `{"hooks": {"Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "mine --stop"}, {"type": "command", "command": "C:/old/agentlink.exe", "args": ["hook", "claude"], "timeout": 10}]}]}}`
+	if err := os.WriteFile(path, []byte(shared), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install(path, Claude, `C:\new\agentlink.exe`); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Clean(path))
+	if got := string(data); !strings.Contains(got, "mine --stop") || strings.Contains(got, "C:/old") || strings.Count(got, `"--wait"`) != 1 {
+		t.Fatalf("install over a shared group:\n%s", got)
+	}
+	if _, err := Remove(path, Claude); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(filepath.Clean(path))
+	if got := string(data); !strings.Contains(got, "mine --stop") || strings.Contains(got, "agentlink") || !strings.Contains(got, `"matcher": ""`) {
+		t.Fatalf("remove from a shared group:\n%s", got)
+	}
+}
+
+// Concurrent edits of one file (the app's folder hooks, `agentlink hook
+// install`) never lose each other's entries.
+func TestConcurrentInstallsKeepBoth(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, client := range []string{Claude, Codex} {
+		wg.Go(func() {
+			_, err := Install(path, client, `C:\agentlink.exe`)
+			errs <- err
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, _ := os.ReadFile(filepath.Clean(path))
+	if got := string(data); !strings.Contains(got, "hook claude") && !strings.Contains(got, `"claude"`) || !strings.Contains(got, "hook codex") {
+		t.Fatalf("a concurrent edit was lost:\n%s", got)
 	}
 }
 

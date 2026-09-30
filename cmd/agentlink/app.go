@@ -56,9 +56,12 @@ func runApp(args []string) error {
 	if !*noTray && leaveConsole(args) {
 		return nil
 	}
+	// isDefault: the default settings file, the one the CLI, hooks and plugin
+	// launchers read.
+	isDefault := filepath.Clean(*cfgPath) == filepath.Clean(defPath)
 	// The default settings folder must be the real one, not a packaged app's
 	// private copy of it (see leaveSandbox).
-	if filepath.Clean(*cfgPath) == filepath.Clean(defPath) {
+	if isDefault {
 		if moved, err := leaveSandbox(filepath.Dir(*cfgPath), args, *outside, *noTray); err != nil {
 			return err
 		} else if moved {
@@ -96,7 +99,7 @@ func runApp(args []string) error {
 	}
 	// The Run entry starts the executable without flags, so autostart only
 	// makes sense for the default settings file.
-	if filepath.Clean(*cfgPath) != filepath.Clean(defPath) {
+	if !isDefault {
 		a.SetAutostart, a.AutostartState = nil, nil
 	} else if moved, err := app.MigrateAutostart(exe); err != nil {
 		log.Warn("autostart migration", "err", err)
@@ -104,7 +107,7 @@ func runApp(args []string) error {
 		log.Info("autostart now starts this executable", "exe", exe)
 	}
 	// Folder hooks too: `agentlink hook` reads the default settings file.
-	if filepath.Clean(*cfgPath) == filepath.Clean(defPath) {
+	if isDefault {
 		a.HookExe = exe
 	}
 	quitCtx, quit := context.WithCancel(context.Background())
@@ -125,7 +128,7 @@ func runApp(args []string) error {
 	log.Info("start", "version", selfupdate.Version, "exe", exe)
 	// Plugin launchers find this executable through the marker; only the
 	// instance of the default settings, which they read, writes it.
-	if filepath.Clean(*cfgPath) == filepath.Clean(defPath) {
+	if isDefault {
 		if err := writeExeMarker(filepath.Dir(*cfgPath), exe); err != nil {
 			log.Warn("executable marker", "err", err)
 		}
@@ -157,7 +160,7 @@ func runApp(args []string) error {
 		return nil
 	}
 	if !a.Configured() {
-		openBrowser(startupURL(a, false))
+		openBrowser(a.URL("settings"))
 	}
 	clicks := &debounce{gap: clickGap}
 	systray.SetOnTapped(func() { // left click; a right click shows the menu
@@ -327,13 +330,6 @@ func (d *debounce) allow(now time.Time) bool {
 }
 
 func dashboardURL(a *app.App) string { return a.URL("open") }
-
-func startupURL(a *app.App, configured bool) string {
-	if !configured {
-		return a.URL("settings")
-	}
-	return dashboardURL(a)
-}
 
 func openLog(path string) (io.WriteCloser, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
