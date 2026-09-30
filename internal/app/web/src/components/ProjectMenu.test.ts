@@ -126,6 +126,8 @@ describe('the project menu', () => {
     expect(projects.byID(SITE)!.members.map((m) => m.name)).not.toContain('bob')
     expect($('#member_remove_bob')).toBeNull()
     expect(document.body.textContent).toContain('project.members.removed')
+    // News is not an error: only a failure is coloured as one.
+    expect(Array.from(document.querySelectorAll('.dialog-result')).find((p) => p.textContent!.includes('project.members.removed'))!.className).not.toContain('text-error')
   })
 
   it('masks the invite, reveals it once on the eye, copies it and forgets it on close', async () => {
