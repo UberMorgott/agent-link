@@ -2,8 +2,9 @@
 # build, go vet, go test, aegis-lint, web checks when web files change).
 # Activated by `lefthook install`. Switched from qgate 2026-09-30.
 #
-# `aegis verify` with no flags measures the working tree (staged + unstaged)
-# against HEAD -- exactly the change about to be committed. Failures it proves
+# `aegis verify` in a git hook (Aegis 0.1.45+) judges exactly the staged tree
+# against HEAD -- the change about to be committed; unstaged edits are left
+# out. Exit 4 means the daemon was lost; verify reruns itself once. Failures it proves
 # pre-existing on HEAD are reported but do not block (profile fast).
 #
 # VERIFIED TRAP (lefthook 2.1.12, Windows): a job written as
