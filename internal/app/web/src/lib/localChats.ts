@@ -1,11 +1,12 @@
 // The local chats section of the sidebar: every local binding grouped by its
-// project, each only while someone is in it
+// project, each only while its agents are at work
 // (docs/notes/agent-chats-design.md R6, R7).
+import { onScopeDispose, ref, watch } from 'vue'
 import { t } from '@/lib/runtime'
 import type { ProjectView } from '@/types'
 
-// HIDE_GRACE_MS: a temporary chat stays this long after it was last seen live
-// or last active, so it does not flicker away between two turns.
+// HIDE_GRACE_MS: a chat stays this long after its agents stopped (the app's
+// live_ended_at), so it does not flicker away between two turns.
 export const HIDE_GRACE_MS = 60_000
 
 // NO_PROJECT is the group key of chats outside any project folder.
@@ -22,19 +23,46 @@ export function isTemporary(p: ProjectView): boolean {
   return scope === 'project_temporary' || scope === 'folderless_temporary'
 }
 
-// chatVisible: every local chat (a folder's project chat, a topic, a
-// temporary chat) shows while live, and for HIDE_GRACE_MS after it was last
-// seen live or active: a chat nobody talks in is dead weight. keep holds one
-// that must stay anyway (its unread messages, the chat on screen). A retired
-// chat never shows (the dashboard's needs_human shows its reply). An app
-// without the live flag shows it as before.
-export function chatVisible(p: ProjectView, now: number, lastLive: ReadonlyMap<string, number>, keep?: (p: ProjectView) => boolean): boolean {
-  const lc = p.local_chat
-  if (lc?.retired) return false
-  const state = lc || p.activity
-  if (!state || state.live === undefined || state.live || keep?.(p)) return true
-  const active = Date.parse(state.last_active || '') || 0
-  return now - Math.max(active, lastLive.get(p.id) || 0) < HIDE_GRACE_MS
+// liveState: 'waiting' (a caller waits for a reply), 'live' (a turn runs or
+// is queued) or '' (nothing at work).
+export function liveState(p: ProjectView): '' | 'live' | 'waiting' {
+  const state = p.local_chat || p.activity
+  if (!state?.live) return ''
+  return state.waiting ? 'waiting' : 'live'
+}
+
+// graceEnd is when a chat that stopped being live leaves (0: live, or never live).
+function graceEnd(p: ProjectView): number {
+  const state = p.local_chat || p.activity
+  if (!state || state.live) return 0
+  const ended = Date.parse(state.live_ended_at || '')
+  return Number.isNaN(ended) ? 0 : ended + HIDE_GRACE_MS
+}
+
+// chatVisible: a local chat (a folder's project chat, a topic, a temporary
+// chat) shows while live and for HIDE_GRACE_MS after, else only while keep
+// holds it (its unread messages, the chat on screen). A retired chat never
+// shows (the dashboard's needs_human shows its reply).
+export function chatVisible(p: ProjectView, now: number, keep?: (p: ProjectView) => boolean): boolean {
+  if (p.local_chat?.retired) return false
+  if (liveState(p) || keep?.(p)) return true
+  return now < graceEnd(p)
+}
+
+// useGraceClock is the time local chats are shown at: it moves on when the
+// next grace of list ends, so a chat leaves then without waiting for an event.
+export function useGraceClock(list: () => ProjectView[]) {
+  const now = ref(Date.now())
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const schedule = () => {
+    clearTimeout(timer)
+    now.value = Date.now()
+    const next = Math.min(...list().map(graceEnd).filter((at) => at > now.value))
+    if (Number.isFinite(next)) timer = setTimeout(schedule, next - now.value)
+  }
+  watch(list, schedule, { immediate: true })
+  onScopeDispose(() => clearTimeout(timer))
+  return now
 }
 
 function groupKey(p: ProjectView): string {
@@ -57,11 +85,11 @@ export function chatLabel(p: ProjectView): string {
 // groupLocalChats groups the visible local bindings by project: groups by
 // name, the chats outside projects last; in a group the project's own chat
 // first, then the rest by name.
-export function groupLocalChats(list: ProjectView[], now: number, lastLive: ReadonlyMap<string, number>, keep?: (p: ProjectView) => boolean): LocalChatGroupView[] {
+export function groupLocalChats(list: ProjectView[], now: number, keep?: (p: ProjectView) => boolean): LocalChatGroupView[] {
   const local = list.filter((p) => p.scope === 'local')
   const byKey = new Map<string, ProjectView[]>()
   for (const p of local) {
-    if (!chatVisible(p, now, lastLive, keep)) continue
+    if (!chatVisible(p, now, keep)) continue
     const key = groupKey(p)
     byKey.set(key, [...(byKey.get(key) || []), p])
   }

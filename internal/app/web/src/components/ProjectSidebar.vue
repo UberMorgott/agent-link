@@ -1,18 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import UIcon from '@nuxt/ui/components/Icon.vue'
 import LocalChatGroup, { type LocalChatRow } from '@/components/LocalChatGroup.vue'
 import ProjectMenu from '@/components/ProjectMenu.vue'
 import UserChip from '@/components/UserChip.vue'
 import VersionBadge from '@/components/VersionBadge.vue'
-import { isUnread, projectDot, projectTitle } from '@/lib/chat'
+import { projectDot, projectTitle } from '@/lib/chat'
 import { icon } from '@/lib/icons'
-import { chatLabel, groupLocalChats, isTemporary } from '@/lib/localChats'
+import { chatLabel, groupLocalChats, liveState, useGraceClock } from '@/lib/localChats'
 import { openProject } from '@/lib/nav'
 import { t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
-import { chatKey, useInboxStore } from '@/stores/inbox'
+import { useInboxStore } from '@/stores/inbox'
 import { useProjectsStore } from '@/stores/projects'
 import type { ProjectView } from '@/types'
 
@@ -27,41 +27,35 @@ const current = computed(() => String(route.name || ''))
 // The app icon from public/, served next to the page.
 const logo = `${import.meta.env.BASE_URL}icon.svg`
 
-function unread(pid: string): number {
-  return (projects.chats[pid] || []).filter((c) => isUnread(c, inbox.openKey() === chatKey(pid, c.id), inbox.readOf(pid, c.id))).length
-}
+// onScreen: the project (or its chat) is the page shown.
+const onScreen = (pid: string) => projects.current === pid && (current.value === 'project' || current.value === 'chat')
 
-function row(p: NonNullable<typeof projects.list>[number]) {
+function row(p: ProjectView) {
   const dot = projectDot(p, app.self)
   return {
     p,
     name: projectTitle(p),
     dot: dot.cls,
     dotLabel: dot.label,
-    unread: unread(p.id),
-    active: projects.current === p.id && (current.value === 'project' || current.value === 'chat'),
+    unread: inbox.unreadCount(p.id),
+    active: onScreen(p.id),
   }
 }
 const tree = computed(() => (projects.list || []).filter((p) => p.scope !== 'local').map(row))
 
-// Local chats by project, each only while live (lib/localChats).
-// now ticks so a chat that stopped being live leaves after its grace.
-const now = ref(Date.now())
-let ticker: ReturnType<typeof setInterval> | undefined
-onMounted(() => { ticker = setInterval(() => { now.value = Date.now() }, 15_000) })
-onUnmounted(() => clearInterval(ticker))
+// Local chats by project, each only while its agents are at work and for a
+// grace after (lib/localChats); the clock moves on when a grace ends.
+const now = useGraceClock(() => projects.list || [])
 function localRow(p: ProjectView, group: string): LocalChatRow {
-  const base = row(p)
   const lc = p.local_chat
-  const live = lc && isTemporary(p) && lc.live ? (lc.waiting ? 'waiting' : 'live') : ''
   // A chat alone in its project's group keeps its project's name beside its
   // own; in an open group the project's own chat is named as such.
-  const name = !lc ? (group ? base.name : chatLabel(p)) : group ? group + ' · ' + chatLabel(p) : chatLabel(p)
-  return { ...base, live, name }
+  const name = !lc ? (group ? projectTitle(p) : chatLabel(p)) : group ? group + ' · ' + chatLabel(p) : chatLabel(p)
+  return { p, name, unread: inbox.unreadCount(p.id), active: onScreen(p.id), live: liveState(p) }
 }
 // A chat with unread messages or on screen stays until read or left.
-const keepLocal = (p: ProjectView) => unread(p.id) > 0 || row(p).active
-const localTree = computed(() => groupLocalChats(projects.list || [], now.value, projects.lastLive, keepLocal).map((g) => ({
+const keepLocal = (p: ProjectView) => inbox.unreadCount(p.id) > 0 || onScreen(p.id)
+const localTree = computed(() => groupLocalChats(projects.list || [], now.value, keepLocal).map((g) => ({
   ...g,
   rows: g.items.map((p) => localRow(p, g.items.length === 1 ? g.name : '')),
 })))

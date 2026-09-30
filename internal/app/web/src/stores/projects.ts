@@ -376,18 +376,8 @@ export const useProjectsStore = defineStore('projects', () => {
     expanded.value = next
     storageSet(EXPANDED_KEY, JSON.stringify(next))
   }
-  // lastLive: when each local chat was last seen live (or stopped being
-  // live), so a chat idle between two turns does not vanish at once.
-  const lastLive = new Map<string, number>()
-  watch(list, (next, prev) => {
-    const now = Date.now()
-    const live = (p: ProjectView) => !!(p.local_chat?.live || p.activity?.live)
-    const wasLive = new Set((prev || []).filter(live).map((p) => p.id))
-    for (const p of next || []) if (live(p) || wasLive.has(p.id)) lastLive.set(p.id, now)
-  })
-
   return {
-    expanded, setExpanded, lastLive,
+    expanded, setExpanded,
     list, chats, history, refreshHistory, colorOf, displayOf, seats, refreshSeats, seatAction, current, currentProject, hasLegacy, loaded, invite, inviteFor,
     joinStep, joinProject, joinCreated, joinProblem,
     byID, upsert, listSettled, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped,

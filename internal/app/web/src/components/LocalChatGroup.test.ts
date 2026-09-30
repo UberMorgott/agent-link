@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { HIDE_GRACE_MS, NO_PROJECT, groupLocalChats } from '@/lib/localChats'
+import { describe, expect, it, vi } from 'vitest'
+import { HIDE_GRACE_MS, NO_PROJECT, groupLocalChats, liveState } from '@/lib/localChats'
 import { fixture } from '@/test/backend'
 import { fakeBackend, mountApp, settle } from '@/test/harness'
 import { useProjectsStore } from '@/stores/projects'
@@ -18,41 +18,37 @@ function chat(id: string, of: string, lc: Partial<LocalChatView>): ProjectView {
 }
 
 describe('local chats grouping', () => {
-  it('keeps every local chat only while live or within the grace, or while kept', () => {
-    const old = new Date(NOW - 10 * 60_000).toISOString()
+  it('keeps every local chat only while live or within the grace after it, or while kept', () => {
+    const ago = (ms: number) => new Date(NOW - ms).toISOString()
     const list = [
-      project('SITE', 'Сайт'),
-      project('IDLE', 'Старый', { live: false, last_active: old }),
-      project('KEPT', 'Непрочитанный', { live: false, last_active: old }),
-      project('BUSY', 'Занятой', { live: true, waiting: true, last_active: old }),
+      project('SITE', 'Сайт', { live: true }),
+      project('IDLE', 'Старый', { live: false, live_ended_at: ago(10 * 60_000) }),
+      project('KEPT', 'Непрочитанный', { live: false, live_ended_at: ago(10 * 60_000) }),
+      project('BUSY', 'Занятой', { live: true, waiting: true }),
       chat('live', 'SITE', { live: true }),
-      chat('ended', 'SITE', { live: false, last_active: old }),
-      chat('just_ended', 'SITE', { live: false, last_active: old }),
-      chat('recent', 'SITE', { live: false, last_active: new Date(NOW - 5_000).toISOString() }),
-      chat('topic', 'SITE', { scope: 'project', topic: 'Дизайн', live: false, last_active: old }),
-      chat('older_app', 'SITE', { live: undefined, last_active: old }),
+      // Its owner session is open, but nothing runs: not live, and never was.
+      chat('owner_open', 'SITE', { live: false, last_active: ago(2 * 60_000) }),
+      chat('ended', 'SITE', { live: false, live_ended_at: ago(HIDE_GRACE_MS + 1_000) }),
+      chat('just_ended', 'SITE', { live: false, live_ended_at: ago(30_000) }),
+      chat('topic', 'SITE', { scope: 'project', topic: 'Дизайн', live: false, live_ended_at: ago(10 * 60_000) }),
       chat('loose', '', { scope: 'folderless_temporary', live: true }),
-      chat('retired', 'SITE', { live: false, retired: true, last_active: new Date(NOW - 5_000).toISOString() }),
+      chat('retired', 'SITE', { live: false, retired: true, live_ended_at: ago(5_000) }),
     ]
-    const lastLive = new Map([['just_ended', NOW - HIDE_GRACE_MS / 2]])
     const keep = (p: ProjectView) => p.id === 'KEPT'
-    const groups = groupLocalChats(list, NOW, lastLive, keep)
+    const groups = groupLocalChats(list, NOW, keep)
     // An idle folder's project chat leaves like any other; an unread (kept) one and a busy one stay.
     expect(groups.map((g) => g.key)).toEqual(['BUSY', 'KEPT', 'SITE', NO_PROJECT])
-    expect(groups[2]!.items.map((p) => p.id)).toEqual(expect.arrayContaining(['SITE', 'live', 'just_ended', 'recent', 'older_app']))
-    expect(groups[2]!.items[0]!.id).toBe('SITE')
-    expect(groups[2]!.items.some((p) => p.id === 'ended')).toBe(false)
-    // A shared topic nobody talks in is dead weight too.
-    expect(groups[2]!.items.some((p) => p.id === 'topic')).toBe(false)
-    // An app without the activity flag shows a project chat as before.
-    expect(groupLocalChats([project('OLD', 'Прежний', null as never)], NOW + 3_600_000, lastLive).map((g) => g.key)).toEqual(['OLD'])
-    // A retired chat leaves at once, its recent reply notwithstanding.
-    expect(groups[2]!.items.some((p) => p.id === 'retired')).toBe(false)
+    expect(groups[2]!.items.map((p) => p.id).sort()).toEqual(['SITE', 'just_ended', 'live'])
     // After the grace the chat that just ended leaves too.
-    expect(groupLocalChats(list, NOW + HIDE_GRACE_MS, lastLive, keep).find((g) => g.key === 'SITE')?.items.some((p) => p.id === 'just_ended') ?? false).toBe(false)
+    expect(groupLocalChats(list, NOW + 30_000, keep).find((g) => g.key === 'SITE')!.items.map((p) => p.id)).toEqual(['SITE', 'live'])
+  })
+
+  it('names what is at work: a waiting caller, a running turn, or nothing', () => {
+    expect(liveState(chat('w', '', { live: true, waiting: true }))).toBe('waiting')
+    expect(liveState(chat('r', '', { live: true, waiting: false }))).toBe('live')
+    expect(liveState(chat('i', '', { live: false }))).toBe('')
   })
 })
-
 describe('local chats sidebar', () => {
   it('shows one project with several live chats as a group that opens, a single chat as a plain row, and hides ended chats', async () => {
     const api = fakeBackend()
@@ -112,5 +108,30 @@ describe('local chats sidebar', () => {
     await projects.refreshList()
     await settle()
     expect(tree.querySelector('[data-group="SHOP_LOCAL"] [data-project="c3"]')).not.toBeNull()
+  })
+
+  it('shows a green dot only while live, and drops an ended chat when its grace runs out', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const api = fakeBackend()
+    await mountApp('/agents')
+    const projects = useProjectsStore()
+    const ended = new Date(Date.now() - 30_000).toISOString()
+    for (const p of [chat('run', '', { scope: 'folderless_temporary', live: true }), chat('done', '', { scope: 'folderless_temporary', live: false, live_ended_at: ended })]) {
+      api.backend.projects.push(p)
+      api.backend.chats[p.id] = []
+    }
+    await projects.refreshList()
+    await settle()
+    const tree = document.querySelector('#local_chat_tree')!
+    expect(tree.querySelector('[data-project="run"] .chat-live')).not.toBeNull()
+    expect(tree.querySelector('[data-project="done"] .chat-live')).toBeNull()
+    expect(tree.querySelector('[data-project="done"] .project-dot')!.getAttribute('title')).toBeNull()
+    vi.advanceTimersByTime(29_000)
+    await settle()
+    expect(tree.querySelector('[data-project="done"]')).not.toBeNull()
+    vi.advanceTimersByTime(1_000)
+    await settle()
+    expect(tree.querySelector('[data-project="done"]')).toBeNull()
+    expect(tree.querySelector('[data-project="run"]')).not.toBeNull()
   })
 })

@@ -12,12 +12,10 @@ import type { ProjectView } from '@/types'
 export interface LocalChatRow {
   p: ProjectView
   name: string
-  dot: string
-  dotLabel: string
   unread: number
   active: boolean
-  // live: 'waiting' (someone waits for a reply), 'live', or '' (not a
-  // temporary chat, or no live flag).
+  // live: 'waiting' (someone waits for a reply), 'live' (its agents are at
+  // work) or '' (nothing at work: a plain dot).
   live: '' | 'live' | 'waiting'
 }
 
@@ -63,11 +61,7 @@ function liveLabel(state: string): string {
         <span
           v-else
           class="project-dot"
-          :class="rows[0]!.dot"
-          :data-dot="rows[0]!.dot"
-          :title="rows[0]!.dotLabel"
-          role="img"
-          :aria-label="rows[0]!.dotLabel.replace(/\n/g, '; ')"
+          aria-hidden="true"
         />
         <span class="project-name">{{ rows[0]!.name }}</span>
         <span
@@ -152,11 +146,7 @@ function liveLabel(state: string): string {
             <span
               v-else
               class="project-dot"
-              :class="r.dot"
-              :data-dot="r.dot"
-              :title="r.dotLabel"
-              role="img"
-              :aria-label="r.dotLabel.replace(/\n/g, '; ')"
+              aria-hidden="true"
             />
             <span class="project-name">{{ r.name }}</span>
             <span

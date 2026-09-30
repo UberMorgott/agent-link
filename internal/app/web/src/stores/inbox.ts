@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef, watch } from 'vue'
 import { api, chatPath, projectPath } from '@/lib/api'
-import { authorLabel, others, preview } from '@/lib/chat'
+import { authorLabel, isUnread, others, preview } from '@/lib/chat'
 import { currentRoute, openChat, openProject } from '@/lib/nav'
 import { browser, fmt, t } from '@/lib/runtime'
 import { NARROW_QUERY } from '@/layout/composables/layout'
@@ -128,6 +128,10 @@ export const useInboxStore = defineStore('inbox', () => {
   }
   // readOf is the read cursor of a chat.
   function readOf(pid: string, id: string): number { return reads.value[chatKey(pid, id)] || 0 }
+  // unreadCount is how many of a project's chats have news for this member.
+  function unreadCount(pid: string): number {
+    return (projects.chats[pid] || []).filter((c) => isUnread(c, openKey() === chatKey(pid, c.id), readOf(pid, c.id))).length
+  }
 
   // Legacy two-person chats still ask their only peer by default. Project
   // chat messages are ordinary messages to the group.
@@ -467,6 +471,6 @@ export const useInboxStore = defineStore('inbox', () => {
     project, selectedChat, selectedMessage, chat, messages, hasOlder, scrollIntent, drafts, composer, replyTo, sendResult,
     subtitleError, sending, closing, focusComposer, reads, toasts, starting, startResult,
     loadChat, loadOlder, saveDraft, setReply, selectChat, canSend, submitMessage,
-    startChat, openPeer, activeChat, openActive, closeChat, confirmClose, clearChat, confirmClear, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, openKey,
+    startChat, openPeer, activeChat, openActive, closeChat, confirmClose, clearChat, confirmClear, membersBusy, setMembers, confirmRemove, processIncomingChats, dismissToast, openToast, readOf, unreadCount, openKey,
   }
 })
