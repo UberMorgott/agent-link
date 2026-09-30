@@ -80,6 +80,36 @@ func TestMCPTransportClosesWithOpenStdin(t *testing.T) {
 	}
 }
 
+// An MCP server of an old version is never killed by an update: it ends when
+// its host disconnects (stdin closes), which ends runMCP's ss.Wait.
+func TestMCPServerEndsWhenHostDisconnects(t *testing.T) {
+	in, host, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, drain, err := os.Pipe()
+	if err != nil {
+		_ = in.Close()
+		_ = host.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close(); _ = in.Close(); _ = output.Close(); _ = drain.Close() })
+	go func() { _, _ = io.Copy(io.Discard, drain) }()
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "v0"}, nil)
+	ss, err := server.Connect(t.Context(), mcpStdioTransport(in, output), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- ss.Wait() }()
+	_ = host.Close() // the host goes away
+	select {
+	case <-waitDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("MCP server kept running after its host disconnected")
+	}
+}
+
 // mcpHelperEnv makes this test binary act as `agentlink mcp` for
 // TestMCPServesAfterExecutableReplacement.
 const mcpHelperEnv = "AGENTLINK_TEST_MCP_HELPER"

@@ -23,7 +23,8 @@ package main
 // An update of the executable does not end or wake it: exit 2 costs the idle
 // model a turn, so it is kept for real messages. The old waiter keeps polling
 // the node (old and new versions talk over the same API; the updater parks
-// the locked old file), and the session's next Stop starts the new one.
+// the locked old file), and the session's next Stop starts the new one, which
+// asks the old one to hand the session over (takeOver) so it ends then.
 
 import (
 	"crypto/rand"
@@ -46,6 +47,9 @@ type waitOpts struct {
 	heartbeat time.Duration // how often the idle session is re-registered
 	life      time.Duration // the waiter ends after this (before the entry's timeout)
 	busyFor   time.Duration // a session whose last event was a work event this recently is busy
+	// handoff: how long a new waiter waits for the session's running one to
+	// hand over (takeOver); 0 tries once.
+	handoff time.Duration
 
 	// alive reports whether the session (its agent process) still runs.
 	alive func() bool
@@ -60,6 +64,7 @@ func defaultWaitOpts(client string) waitOpts {
 		heartbeat: 5 * time.Minute,
 		life:      agenthook.WaitTimeout*time.Second - 2*time.Minute,
 		busyFor:   10 * time.Minute,
+		handoff:   10 * time.Second,
 
 		alive: agentAlive(agentPID(client)),
 	}
@@ -90,15 +95,18 @@ func hookWait(client string, stdin io.Reader, stderr io.Writer, env hookEnv, o w
 	}
 	release, ok := takeWaitLock(path + ".wait")
 	if !ok {
-		return 0 // another waiter of this session runs
+		if release, ok = takeOver(path, o); !ok {
+			return 0 // another waiter of this session runs and did not hand over
+		}
 	}
 	defer release()
 	start := time.Now()
+	_ = os.Remove(path + handoffSuffix) // the request this waiter made, if any
 	var lastBeat time.Time
 	for {
 
 		st := loadHookState(path)
-		if st.Ended || time.Since(start) > o.life {
+		if st.Ended || time.Since(start) > o.life || handedOff(path, start) {
 			return 0
 		}
 		if o.alive != nil && !o.alive() {
@@ -201,6 +209,42 @@ func wakeWith(client, sid, folder, path string, stderr io.Writer, env hookEnv, b
 // waiter's life and released with its process, however it ends.
 func takeWaitLock(path string) (func(), bool) {
 	return fileutil.TryLock(path)
+}
+
+// handoffSuffix names a new waiter's request (next to the session's state)
+// that the running one hand the session over to it.
+const handoffSuffix = ".handoff"
+
+// takeOver asks the session's running waiter to hand over (a request file it
+// sees at its next poll, handedOff) and waits up to o.handoff for its lock.
+// The session is never without a waiter: the old one ends only once a new one
+// asked, so an update's old waiter (still running the parked executable) goes
+// at the session's next Stop instead of at the end of its life. A waiter of a
+// version before the hand-over ignores the request; this one then gives up and
+// takes the request back, leaving nothing behind.
+func takeOver(path string, o waitOpts) (func(), bool) {
+	req := path + handoffSuffix
+	if os.WriteFile(req, nil, 0o600) != nil {
+		return nil, false
+	}
+	deadline := time.Now().Add(o.handoff)
+	for {
+		if release, ok := takeWaitLock(path + ".wait"); ok {
+			return release, true
+		}
+		if !time.Now().Before(deadline) {
+			_ = os.Remove(req)
+			return nil, false
+		}
+		time.Sleep(min(o.poll, 200*time.Millisecond))
+	}
+}
+
+// handedOff reports that a newer waiter asked for the session after this one
+// took it at start.
+func handedOff(path string, start time.Time) bool {
+	st, err := os.Stat(path + handoffSuffix)
+	return err == nil && st.ModTime().After(start)
 }
 
 // randomToken is a new wake token (node.WakeMarker).

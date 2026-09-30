@@ -133,7 +133,7 @@ func runApp(args []string) error {
 			log.Warn("executable marker", "err", err)
 		}
 	}
-	go cleanupUpdate(exe, log)
+	go cleanupUpdate(quitCtx, exe, log)
 	a.SetExecutable(exe)
 	a.Relaunch = func() error { return selfupdate.Start(exe, relaunchArgs(args)) }
 	go a.RunUpdates(quitCtx)
@@ -222,17 +222,38 @@ func relaunchArgs(args []string) []string {
 }
 
 // cleanupUpdate removes the files an earlier update left next to exe. The
-// replaced executables stay locked until the old instance has exited, which
-// after an update is a moment after this one started.
-func cleanupUpdate(exe string, log *slog.Logger) {
-	var err error
-	for range 60 {
-		if err = selfupdate.Cleanup(exe); err == nil {
+// replaced executables stay locked until their processes exit: the old app a
+// moment after this one started, an old MCP server when its host disconnects,
+// an old Stop-hook waiter when it hands over or ends. So it tries every second
+// for a minute, then every ten minutes until the app quits.
+func cleanupUpdate(ctx context.Context, exe string, log *slog.Logger) {
+	cleanupLoop(ctx, exe, log, time.Second, 60, 10*time.Minute)
+}
+
+func cleanupLoop(ctx context.Context, exe string, log *slog.Logger, fast time.Duration, fastTries int, slow time.Duration) {
+	warned := false
+	for try := 1; ; try++ {
+		removed, err := selfupdate.CleanupFiles(exe)
+		if len(removed) > 0 {
+			log.Info("update leftovers removed", "files", removed)
+		}
+		if err == nil {
 			return
 		}
-		time.Sleep(time.Second)
+		wait := fast
+		if try >= fastTries {
+			wait = slow
+			if !warned {
+				log.Warn("update leftovers still in use, retrying", "err", err)
+				warned = true
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
 	}
-	log.Warn("update leftovers", "err", err)
 }
 
 // onReady builds the tray menu once. Windows redraws (and on some builds closes)

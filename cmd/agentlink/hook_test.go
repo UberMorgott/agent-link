@@ -923,6 +923,73 @@ func TestToolActivity(t *testing.T) {
 	}
 }
 
+// The waiter a later Stop starts (after an update: the new executable) asks
+// the running one to hand over; the old one ends quietly, never waking the
+// session, the new one delivers, and no request file is left behind.
+func TestHookWaiterHandsOver(t *testing.T) {
+	c := newHookCase(t)
+	c.run(hookClaude, evSessionStart)
+	c.run(hookClaude, evStop) // idle now
+	env := c.env
+	env.now = time.Now
+	path := hookStatePath(c.env.dir, hookClaude, c.sid)
+	old := waitOpts{poll: 10 * time.Millisecond, heartbeat: time.Hour, life: 10 * time.Second, busyFor: time.Hour}
+	var oldErr bytes.Buffer
+	oldDone := make(chan int, 1)
+	go func() { oldDone <- hookWait(hookClaude, strings.NewReader(c.input(evStop)), &oldErr, env, old) }()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if _, err := os.Stat(path + ".wait"); err == nil {
+			if release, ok := takeWaitLock(path + ".wait"); ok {
+				release() // not taken yet
+			} else {
+				break // the old waiter runs
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("old waiter never started")
+		}
+	}
+	started := time.Now()
+	c.run(hookClaude, evStop)
+	newer := old
+	newer.handoff = 5 * time.Second
+	var newErr bytes.Buffer
+	newDone := make(chan int, 1)
+	go func() { newDone <- hookWait(hookClaude, strings.NewReader(c.input(evStop)), &newErr, env, newer) }()
+	select {
+	case code := <-oldDone:
+		if code != 0 || oldErr.Len() != 0 || time.Since(started) > 3*time.Second {
+			t.Fatalf("old waiter: code %d stderr %q after %v", code, oldErr.String(), time.Since(started))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("old waiter did not hand over")
+	}
+	c.f.add(chatMsg("c1", "KPECTIK", "agent", "after hand-over", true))
+	if code := <-newDone; code != 2 || !strings.Contains(newErr.String(), "after hand-over") {
+		t.Fatalf("new waiter: code %d stderr %q", code, newErr.String())
+	}
+	if _, err := os.Stat(path + handoffSuffix); err == nil {
+		t.Fatal("hand-over request left behind")
+	}
+}
+
+// A running waiter that does not hand over (a version before it) keeps the
+// session; the new one gives up and takes its request back.
+func TestHookWaiterTakeOverGivesUp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s")
+	release, ok := takeWaitLock(path + ".wait")
+	if !ok {
+		t.Fatal("lock")
+	}
+	defer release()
+	if _, ok := takeOver(path, waitOpts{poll: 10 * time.Millisecond, handoff: 50 * time.Millisecond}); ok {
+		t.Fatal("took a held lock")
+	}
+	if _, err := os.Stat(path + handoffSuffix); err == nil {
+		t.Fatal("request left behind")
+	}
+}
+
 func TestHookWaitWakesIdleSession(t *testing.T) {
 	c := newHookCase(t)
 	c.f.claimOn = true

@@ -451,10 +451,20 @@ func parkOld(path string) (string, error) {
 // there, so a caller starting right after an update can retry until the old
 // process is gone.
 func Cleanup(exePath string) error {
+	_, err := CleanupFiles(exePath)
+	return err
+}
+
+// CleanupFiles is Cleanup that also returns the files it removed.
+func CleanupFiles(exePath string) ([]string, error) {
 	dir := filepath.Dir(exePath)
 	var first error
+	var removed []string
 	remove := func(path string) {
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) && first == nil {
+		err := os.Remove(path)
+		if err == nil {
+			removed = append(removed, path)
+		} else if !errors.Is(err, fs.ErrNotExist) && first == nil {
 			first = err
 		}
 	}
@@ -472,7 +482,7 @@ func Cleanup(exePath string) error {
 	for _, p := range legacy {
 		remove(filepath.Join(dir, fileName(p)))
 	}
-	return first
+	return removed, first
 }
 
 // LegacyName reports whether base is the file name of an executable older

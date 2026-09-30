@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"time"
 
 	"github.com/UberMorgott/agent-link/internal/agenthook"
 	"github.com/UberMorgott/agent-link/internal/selfupdate"
@@ -17,7 +18,8 @@ var pluginRunner agenthook.Runner = agenthook.RunCommand
 // what this executable no longer has. It runs the clients' own plugin
 // commands (never touching their plugin cache) and only for a released build
 // of the default settings (HookExe set); a plugin still stale afterwards is
-// told to the person by the SessionStart hook with the exact commands.
+// told to the person by the SessionStart hook with the exact commands. Then it
+// removes old copies the clients no longer use (prunePlugins).
 func (a *App) RefreshPlugins(ctx context.Context) {
 	if a.HookExe == "" || !selfupdate.Valid(a.Version) {
 		return
@@ -40,5 +42,18 @@ func (a *App) RefreshPlugins(ctx context.Context) {
 			continue
 		}
 		a.log.Info("plugin refreshed", "client", client, "plugin", c.ID, "installed", c.Installed, "stale", c.Stale())
+	}
+	a.prunePlugins(time.Now())
+}
+
+// prunePlugins removes the clients' old agent-link plugin copies
+// (agenthook.PrunePluginCaches); a copy still in use stays for the next start.
+func (a *App) prunePlugins(now time.Time) {
+	removed, err := agenthook.PrunePluginCaches(now)
+	if len(removed) > 0 {
+		a.log.Info("old plugin copies removed", "dirs", removed)
+	}
+	if err != nil {
+		a.log.Warn("old plugin copies kept", "err", err)
 	}
 }
