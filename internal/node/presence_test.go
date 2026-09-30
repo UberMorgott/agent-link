@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"testing"
+	"time"
 )
 
 // A node tells its peers, per shared area, whether a live session is attached
@@ -63,11 +64,17 @@ func TestPresencePropagates(t *testing.T) {
 	}
 	sees("session ended", "dev", AreaPresence{Area: "dev", AutoAnswer: true})
 
-	// A session that stops heartbeating expires without any call.
-	if _, err := b.RegisterSession(SessionRequest{SessionID: "s3", Provider: "codex", Folder: proj, TTLSec: 1}); err != nil {
+	// A session that stops heartbeating expires without any call. Its last
+	// heartbeat is moved past the TTL only once a has seen it: a real short TTL
+	// could run out before b's next presence frame (at most one per
+	// presenceGap), and a would never see the session at all.
+	if _, err := b.RegisterSession(SessionRequest{SessionID: "s3", Provider: "codex", Folder: proj, TTLSec: 60}); err != nil {
 		t.Fatal(err)
 	}
 	sees("short session", "dev", AreaPresence{Area: "dev", Session: WakeNextEvent, AutoAnswer: true, Counts: AgentCounts{Codex: 1}})
+	b.sess.mu.Lock()
+	b.sess.sessions["s3"].LastSeen = time.Now().Add(-61 * time.Second)
+	b.sess.mu.Unlock()
 	sees("short session expired", "dev", AreaPresence{Area: "dev", AutoAnswer: true})
 
 	b.stop()
