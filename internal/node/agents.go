@@ -154,6 +154,15 @@ func (n *Node) setSeatDoing(seat, kind string, subs int) {
 	}
 }
 
+// setSeatRan keeps the model and reasoning effort seat's turn runs with, as
+// its agent reported them at the turn's start (effort empty: not reported).
+func (n *Node) setSeatRan(seat, model, effort string) {
+	st := n.seats
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.ran[seat] = AgentRef{Model: model, Effort: effort}
+}
+
 // sessionAgent is the status of live session s (its hooks' reports).
 func sessionAgent(s Session, now time.Time) AgentStatus {
 	a := AgentStatus{Provider: s.Provider, Subagents: max(len(s.liveAgents(now)), s.Subs)}

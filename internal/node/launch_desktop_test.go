@@ -74,6 +74,14 @@ func TestReadClaudeStream(t *testing.T) {
 	if err != nil || id != "s-1" || !slices.Equal(got, []string{"s-1"}) {
 		t.Fatalf("ok: %q %v %v", id, err, got)
 	}
+	// The init event's model is what the turn runs with (no effort in it).
+	var ran []string
+	in = `{"type":"system","subtype":"hook_started","session_id":"s-3"}` + "\n" +
+		`{"type":"system","subtype":"init","session_id":"s-3","model":"claude-opus-5-5[1m]"}` + "\n" + `{"type":"result","subtype":"success","session_id":"s-3"}` + "\n"
+	if _, err := readClaudeStream(strings.NewReader(in), func(string) {}, nil, func(m, e string) { ran = append(ran, m+"/"+e) }); err != nil ||
+		!slices.Equal(ran, []string{"claude-opus-5-5[1m]/"}) {
+		t.Fatalf("model: %v %v", err, ran)
+	}
 	got = nil
 	in = `{"type":"system","subtype":"init","session_id":"s-2"}` + "\n" + `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"boom"}` + "\n"
 	if id, err := ReadClaudeStream(strings.NewReader(in), started); id != "s-2" || err == nil || !strings.Contains(err.Error(), "boom") {
@@ -118,7 +126,8 @@ func fakeAppServer(t *testing.T, r io.Reader, w io.Writer, status string, early 
 			if params["cwd"] != `C:\p` || params["approvalPolicy"] != "never" || params["sandbox"] != "danger-full-access" {
 				t.Errorf("thread/start %v", params)
 			}
-			_ = enc.Encode(map[string]any{"id": id, "result": map[string]any{"thread": map[string]any{"id": "th-1"}}})
+			_ = enc.Encode(map[string]any{"id": id, "result": map[string]any{"thread": map[string]any{"id": "th-1"},
+				"model": "gpt-6.1-sol", "reasoningEffort": "medium"}})
 		case "thread/resume":
 			if params["threadId"] == "busy" {
 				_ = enc.Encode(map[string]any{"id": id, "error": map[string]any{"code": -32600, "message": "already has an active writer"}})
@@ -127,7 +136,8 @@ func fakeAppServer(t *testing.T, r io.Reader, w io.Writer, status string, early 
 			if params["threadId"] != "th-1" {
 				t.Errorf("resume %v", params)
 			}
-			_ = enc.Encode(map[string]any{"id": id, "result": map[string]any{"thread": map[string]any{"id": "th-1"}}})
+			_ = enc.Encode(map[string]any{"id": id, "result": map[string]any{"thread": map[string]any{"id": "th-1"},
+				"model": "gpt-6.1-sol", "reasoningEffort": nil}})
 		case "turn/start":
 			input, _ := params["input"].([]any)
 			var in map[string]any
@@ -168,15 +178,24 @@ func TestCodexTurn(t *testing.T) {
 			fakeAppServer(t, sr, sw, c.status, c.early, &seen)
 			_ = sw.Close()
 		}()
-		var started []string
+		var started, ran []string
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		id, err := CodexTurn(ctx, cr, cw, LaunchSpec{Provider: ProviderCodex, Folder: `C:\p`, ResumeID: c.resume, Prompt: "line1\n\"q\""},
+		id, err := CodexTurn(ctx, cr, cw, LaunchSpec{Provider: ProviderCodex, Folder: `C:\p`, ResumeID: c.resume, Prompt: "line1\n\"q\"",
+			Ran: func(model, effort string) { ran = append(ran, model+"/"+effort) }},
 			"1.0", func(s string) { started = append(started, s) })
 		cancel()
 		_ = cw.Close()
 		<-done
 		if id != "th-1" || (err != nil) != c.wantErr || !slices.Equal(started, []string{"th-1"}) {
 			t.Fatalf("%+v: id %q err %v started %v", c, id, err, started)
+		}
+		// The thread's model and effort, once (a resumed thread: the model's default effort).
+		wantRan := "gpt-6.1-sol/medium"
+		if c.resume == "th-1" {
+			wantRan = "gpt-6.1-sol/"
+		}
+		if !slices.Equal(ran, []string{wantRan}) {
+			t.Fatalf("%+v: ran %v", c, ran)
 		}
 		if c.status == "interrupted" && !errors.Is(err, ErrTurnInterrupted) {
 			t.Fatalf("%+v: interrupted: %v", c, err)

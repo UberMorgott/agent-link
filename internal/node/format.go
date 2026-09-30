@@ -40,9 +40,9 @@ func FormatUnread(m UnreadMessage) string {
 	if m.OwnHuman {
 		return b.String()
 	}
-	reply := fmt.Sprintf("agentlink send --to %s --reply-to %s --body \"<текст>\"", m.From, m.ID)
+	reply := fmt.Sprintf("agentlink send --to %s --reply-to %s --body-file <файл>", m.From, m.ID)
 	if m.ChatID != "" {
-		reply = fmt.Sprintf("agentlink send --chat %s --reply-to %s --body \"<текст>\"", m.ChatID, m.ID)
+		reply = fmt.Sprintf("agentlink send --chat %s --reply-to %s --body-file <файл>", m.ChatID, m.ID)
 	}
 	switch {
 	case m.Assigned == "worker":
@@ -98,6 +98,12 @@ func WakeMarker(token string) string { return "[agent-link wake " + token + "]" 
 func WokenBy(prompt string, m UnreadMessage) bool {
 	return m.WakeToken != "" && strings.Contains(prompt, WakeMarker(m.WakeToken)) && strings.Contains(prompt, "id "+m.ID)
 }
+
+// ReplyTextNote tells an agent how a message's text reaches agentlink intact:
+// never on the command line, where the shell rewrites quotes ("" → ") and
+// splits the text. FormatUnread's reply line only names --body-file (the
+// hooks' budget); a seat's introduction says it in full.
+const ReplyTextNote = "(или MCP-инструмент agentlink send; текст — только файлом или через MCP, не в --body: оболочка портит кавычки)"
 
 // AuthorName is who wrote m as people see it: its node, and the local agent
 // that wrote it ("Morgott · Codex").

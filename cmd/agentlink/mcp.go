@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -85,6 +86,8 @@ type (
 		Temporary bool `json:"temporary,omitempty" jsonschema:"start a new temporary chat, removed when this session ends; pass its id as chat afterwards"`
 		// Shared asks in the project's shared chat instead of the session's own.
 		Shared bool `json:"shared,omitempty" jsonschema:"ask in the folder's shared project chat (or the topic's shared chat) instead of this session's own chat"`
+		// Full answers with the whole result instead of the compact one.
+		Full bool `json:"full,omitempty" jsonschema:"return the whole result with the full reply message (default: compact: chat, id, reply text, reply_id, from, model, effort and status)"`
 	}
 )
 
@@ -144,13 +147,17 @@ func newMCPServer(cfg config.Config) *mcp.Server {
 		key, _ := mcpAskKey("send", args)
 		return mcpSendMessage(cfg, in, proj(""), key)
 	})
-	addToolArgs(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's private agent chat. Each session (and each subagent) has its own chat and thread with that agent, reused on every call and closed when the session ends; topic names another own thread, shared the folder's shared project chat, chat an earlier chat by id, temporary a new one. Local only, separate from any network project for the same folder, waits for the exact agent's reply (default 10m), and returns the reply with project/chat IDs. Use async to post without waiting; timed_out returns IDs for later history lookup; held with hold_reason seat_failed, seat_error and retry_at when the agent cannot answer (e.g. its usage limit), the question staying pending for it.", func(in mcpDiscuss, args json.RawMessage) (any, error) {
+	addToolArgs(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's private agent chat. Each session (and each subagent) has its own chat and thread with that agent, reused on every call and closed when the session ends; topic names another own thread, shared the folder's shared project chat, chat an earlier chat by id, temporary a new one. Local only, separate from any network project for the same folder, waits for the exact agent's reply (default 10m), and returns the reply compactly: chat, id (the question), reply (its text), reply_id, from, model and effort the agent ran with (full: the whole reply message and project). Use async to post without waiting; timed_out returns IDs for later history lookup; held with hold_reason seat_failed, seat_error and retry_at when the agent cannot answer (e.g. its usage limit), the question staying pending for it.", func(in mcpDiscuss, args json.RawMessage) (any, error) {
 		key, _ := mcpAskKey("discuss", args)
 		timeout := in.Timeout
 		if timeout == "" {
 			timeout = "10m"
 		}
-		return discussMessage(cfg, in.With, in.Body, in.Folder, in.Async, timeout, discussPick{chat: in.Chat, topic: in.Topic, temporary: in.Temporary, shared: in.Shared, askKey: key})
+		r, err := discussMessage(cfg, in.With, in.Body, in.Folder, in.Async, timeout, discussPick{chat: in.Chat, topic: in.Topic, temporary: in.Temporary, shared: in.Shared, askKey: key})
+		if err != nil || in.Full {
+			return r, err
+		}
+		return compactDiscuss(r), nil
 	})
 	addTool(s, "ack", "Mark messages read: their authors get read receipts.", func(in mcpAck) (any, error) {
 		if len(in.IDs) == 0 {
@@ -196,6 +203,45 @@ func mcpSendMessage(cfg config.Config, in mcpSend, project, askKey string) (any,
 		res["hold_reason"] = m.HoldReason // held: no agent answers it automatically (node.Hold*)
 	}
 	return res, nil
+}
+
+// discussBrief is the compact result of a discuss: the reply's text and who
+// wrote it with what, the IDs to continue or look it up, and any status.
+type discussBrief struct {
+	Chat        string    `json:"chat"`
+	ID          string    `json:"id,omitempty"` // the question
+	Reply       string    `json:"reply,omitempty"`
+	ReplyID     string    `json:"reply_id,omitempty"`
+	From        string    `json:"from,omitempty"`
+	Model       string    `json:"model,omitempty"`
+	Effort      string    `json:"effort,omitempty"`
+	Attachments []string  `json:"attachments,omitempty"`
+	Queued      bool      `json:"queued,omitempty"`
+	TimedOut    bool      `json:"timed_out,omitempty"`
+	Held        bool      `json:"held,omitempty"`
+	HoldReason  string    `json:"hold_reason,omitempty"`
+	Note        string    `json:"note,omitempty"`
+	SeatError   string    `json:"seat_error,omitempty"`
+	RetryAt     time.Time `json:"retry_at,omitzero"`
+}
+
+// compactDiscuss is r without what an asker rarely needs (the reply's
+// routing and bookkeeping fields, the project, scope and topic).
+func compactDiscuss(r discussResult) discussBrief {
+	b := discussBrief{Chat: r.Chat, ID: r.ID, Queued: r.Queued, TimedOut: r.TimedOut, Held: r.Held,
+		HoldReason: r.HoldReason, Note: r.Note, SeatError: r.SeatError, RetryAt: r.RetryAt}
+	if m := r.Reply; m != nil {
+		b.Reply, b.ReplyID, b.From = m.Body, m.ID, m.From
+		if m.Agent != nil {
+			b.From, b.Model, b.Effort = cmp.Or(m.Agent.Label, m.Agent.Provider), m.Agent.Model, m.Agent.Effort
+		}
+		for _, a := range m.Attachments {
+			if a.Path != "" {
+				b.Attachments = append(b.Attachments, a.Path)
+			}
+		}
+	}
+	return b
 }
 
 // addTool registers a tool whose answer is the JSON of f's value as text.

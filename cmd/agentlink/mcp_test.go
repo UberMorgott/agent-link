@@ -491,3 +491,30 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// discuss answers compactly by default: the reply's text, who wrote it with
+// what model and effort, and the IDs; full is the whole result, as the CLI's.
+func TestMCPDiscussCompact(t *testing.T) {
+	f := newFakeAPI(t)
+	cleanAgentEnv(t)
+	cs := mcpClient(t, f.api)
+	text, isErr := callTool(t, cs, "discuss", map[string]any{"with": "codex", "body": "q"})
+	want := `{"chat":"c1","effort":"medium","from":"Codex","id":"m1","model":"gpt-6.1-sol","reply":"answer","reply_id":"m2"}`
+	if isErr || normJSON(t, text) != want {
+		t.Fatalf("compact: %s", text)
+	}
+	cliOut := f.run("discuss", "--with", "codex", "--body", "q", "--compact")
+	if normJSON(t, cliOut) != want {
+		t.Fatalf("CLI --compact: %s", cliOut)
+	}
+	text, isErr = callTool(t, cs, "discuss", map[string]any{"with": "codex", "body": "q", "full": true})
+	cliOut = f.run("discuss", "--with", "codex", "--body", "q")
+	if isErr || normJSON(t, text) != normJSON(t, cliOut) || !strings.Contains(text, `"project":"p1"`) {
+		t.Fatalf("full: %s, CLI %s", text, cliOut)
+	}
+	// Status only when there is no reply yet.
+	text, _ = callTool(t, cs, "discuss", map[string]any{"with": "codex", "body": "q", "timeout": "20ms"})
+	if normJSON(t, text) != `{"chat":"c1","id":"m1","timed_out":true}` {
+		t.Fatalf("timed out: %s", text)
+	}
+}

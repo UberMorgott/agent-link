@@ -267,9 +267,13 @@ func TestSeatConversationLoopLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.seatAck("", claude.ID, []string{start.ID})
+	a.setSeatRan(claude.ID, "claude-opus-5-5", "") // the turn's agent reported its model
 	q, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "codex, what is 2+2?", ReplyTo: start.ID, Seat: claude.ID, AskSeats: []string{"Codex"}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if q.Agent == nil || q.Agent.Model != "claude-opus-5-5" || q.Agent.Effort != "" {
+		t.Fatalf("model: %+v", q.Agent)
 	}
 	if q.Agent == nil || q.Agent.Seat != claude.ID || q.Agent.Provider != ProviderClaude || AuthorName(q) != "morgott · Claude" || q.AutoDepth != 1 {
 		t.Fatalf("question %+v %+v", q, q.Agent)
@@ -715,7 +719,8 @@ func TestSeatSetupTurnPostsNothing(t *testing.T) {
 	l := &seatLauncher{}
 	a := seatNode(t, t.TempDir(), t.TempDir(), l)
 	var setupErr, askErr error
-	var setupPrompt string
+	var setupPrompt, askPrompt string
+	var answer Message
 	var hookGranted []string
 	chatOf := func(spec LaunchSpec) string {
 		for _, e := range spec.Env {
@@ -727,7 +732,9 @@ func TestSeatSetupTurnPostsNothing(t *testing.T) {
 	}
 	l.set(nil, func(spec LaunchSpec) {
 		if strings.Contains(spec.Prompt, "question") {
-			_, askErr = a.SendRequest(SendRequest{ChatID: chatOf(spec), Body: "answer", Seat: spec.Seat})
+			askPrompt = spec.Prompt
+			spec.Ran("gpt-6.1-sol", "medium") // the agent reports what it runs with
+			answer, askErr = a.SendRequest(SendRequest{ChatID: chatOf(spec), Body: "answer", Seat: spec.Seat})
 			return
 		}
 		setupPrompt = spec.Prompt
@@ -762,6 +769,16 @@ func TestSeatSetupTurnPostsNothing(t *testing.T) {
 	eventually(t, "answered", func() bool { return len(seatByLabel(t, a, "Claude").Pending) == 0 })
 	if askErr != nil {
 		t.Fatalf("a turn with a message may not send: %v", askErr)
+	}
+	// The reply names what the seat's turn ran with.
+	if answer.Agent == nil || answer.Agent.Model != "gpt-6.1-sol" || answer.Agent.Effort != "medium" {
+		t.Fatalf("reply agent %+v", answer.Agent)
+	}
+	// Seats never get told to put a reply's text on a command line.
+	for _, p := range []string{setupPrompt, askPrompt} {
+		if strings.Contains(p, "--body \"") || !strings.Contains(p, "--body-file") {
+			t.Fatalf("prompt tells to reply by --body: %q", p)
+		}
 	}
 }
 

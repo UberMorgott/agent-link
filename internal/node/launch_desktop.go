@@ -159,7 +159,7 @@ func runClaude(ctx context.Context, bin string, spec LaunchSpec, started func(st
 	if err := cmd.Start(); err != nil {
 		return "", err
 	}
-	id, serr := readClaudeStream(out, started, spec.Doing)
+	id, serr := readClaudeStream(out, started, spec.Doing, spec.Ran)
 	_, _ = io.Copy(io.Discard, out)
 	werr := cmd.Wait()
 	if serr != nil {
@@ -184,7 +184,7 @@ func killTreeOnCancel(ctx context.Context, cmd *exec.Cmd) {
 // stream-json` until the result: started gets the session id at the first
 // event naming it. It returns the session id and the turn's error.
 func ReadClaudeStream(r io.Reader, started func(string)) (string, error) {
-	return readClaudeStream(r, started, nil)
+	return readClaudeStream(r, started, nil, nil)
 }
 
 // claudeDoing follows what a Claude stream's main agent does (its tool calls
@@ -231,7 +231,9 @@ func (d *claudeDoing) event(typ, parent string, message json.RawMessage) {
 	}
 }
 
-func readClaudeStream(r io.Reader, started func(string), doing func(string, int)) (string, error) {
+// ran, when set, gets the model the stream's init event names (Claude does not
+// report its reasoning effort there).
+func readClaudeStream(r io.Reader, started func(string), doing func(string, int), ran func(string, string)) (string, error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	id := ""
@@ -243,6 +245,7 @@ func readClaudeStream(r io.Reader, started func(string), doing func(string, int)
 			SessionID string          `json:"session_id"`
 			IsError   bool            `json:"is_error"`
 			Result    string          `json:"result"`
+			Model     string          `json:"model"`
 			Parent    string          `json:"parent_tool_use_id"`
 			Message   json.RawMessage `json:"message"`
 		}
@@ -252,6 +255,9 @@ func readClaudeStream(r io.Reader, started func(string), doing func(string, int)
 		if id == "" && validSessionID(ev.SessionID) {
 			id = ev.SessionID
 			started(id)
+		}
+		if ran != nil && ev.Type == "system" && ev.Subtype == "init" && ev.Model != "" {
+			ran(ev.Model, "")
 		}
 		if ev.Type == "assistant" || ev.Type == "user" {
 			d.event(ev.Type, ev.Parent, ev.Message)
@@ -502,6 +508,10 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 		Thread struct {
 			ID string `json:"id"`
 		} `json:"thread"`
+		// The thread's settings for its turns (reasoningEffort null: the
+		// model's default).
+		Model           string `json:"model"`
+		ReasoningEffort string `json:"reasoningEffort"`
 	}
 	// Full permissions (the owner's choice): no approvals, no sandbox.
 	full := func(p map[string]any) map[string]any {
@@ -523,6 +533,9 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 	tid := th.Thread.ID
 	if !validSessionID(tid) {
 		return "", fmt.Errorf("codex: bad thread id %q", tid)
+	}
+	if spec.Ran != nil && th.Model != "" {
+		spec.Ran(th.Model, th.ReasoningEffort)
 	}
 	var tr struct {
 		Turn struct {

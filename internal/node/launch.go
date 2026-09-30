@@ -105,6 +105,9 @@ type LaunchSpec struct {
 	// Doing, when set, hears what a direct turn's agent does as its stream
 	// shows it: a ToolKind state and its running subagents (tool names only).
 	Doing func(kind string, subagents int)
+	// Ran, when set, hears the model and reasoning effort a direct turn runs
+	// with, once its agent reports them (effort empty: not reported).
+	Ran func(model, effort string)
 }
 
 // SessionLauncher opens a visible agent session.

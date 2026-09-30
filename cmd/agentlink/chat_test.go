@@ -56,7 +56,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 				w.WriteHeader(http.StatusConflict) // the asked seat's turns fail
 				_, _ = w.Write([]byte(`{"error":"usage limit","code":"seat_failed","hold_reason":"seat_failed","seat_error":"You've hit your usage limit","retry_at":"2026-10-03T09:00:00Z"}`))
 			default:
-				_ = json.NewEncoder(w).Encode(node.Message{ID: "m2", ReplyTo: "m1", Body: "answer", Agent: &node.AgentRef{Seat: "seat-codex"}})
+				_ = json.NewEncoder(w).Encode(node.Message{ID: "m2", ReplyTo: "m1", Body: "answer", From: "a", Agent: &node.AgentRef{Seat: "seat-codex", Label: "Codex", Provider: "codex", Model: "gpt-6.1-sol", Effort: "medium"}})
 			}
 		case r.URL.Path == "/send":
 			f.send = node.SendRequest{}

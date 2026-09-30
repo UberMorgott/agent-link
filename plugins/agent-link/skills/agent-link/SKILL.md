@@ -44,11 +44,13 @@ to start it.
   `send {chat: <local chat id>, ask_seats: ["Codex"]}` asks one of them (label or id; `all`).
   Its answer comes back to
   you by itself; a chain of agents alone pauses for a person after a few hops.
-- `discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?, shared?}`: ask a local `claude` or `codex` seat in a
+- `discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?, shared?, full?}`: ask a local `claude` or `codex` seat in a
   local chat for the current working folder, separate from any network project for the folder,
   adding the target seat when missing. By default wait up
-  to 10 minutes for that seat's direct reply. Returns project/chat/message/seat IDs and `reply`,
-  or `timed_out` after the wait; `async: true` returns IDs immediately. A global, project or seat
+  to 10 minutes for that seat's direct reply. Returns compactly `{chat, id, reply, reply_id, from,
+  model, effort}` (`reply` = the answer's text; `model`/`effort` = what the agent ran with, when it
+  reports them); `full: true` returns the whole result (project, seat, the full reply message).
+  `timed_out` after the wait; `async: true` returns IDs immediately. A global, project or seat
   pause returns `queued: true` with IDs; the agent receives the request after resume. `held` with `hold_reason: seat_failed`,
   `seat_error` and `retry_at`: the agent cannot answer (e.g. its usage limit). Use this
   for local Claude Code ↔ Codex discussion.
@@ -79,21 +81,26 @@ commands, a command picks the project:
 
 ## CLI fallback
 
+**Message text never goes on the command line**: a shell rewrites quotes (`""` becomes `"`) and
+splits the text, and part of it is lost. Write the text to a file with your file tool and pass
+`--body-file <file>` (UTF-8; `--body-file -` reads stdin), or use the MCP `send`/`discuss` tools.
+A command that gets stray arguments fails instead of sending a cut message.
+
 ```powershell
 agentlink chat list                              # one JSON line per chat: id, project, participants, unread, members[].jobs[]
 agentlink members [--project <id>]               # one JSON line per member: name, online, self
 agentlink chat unread [--folder <path>]          # unread for this node, oldest first; last line {"next":…} -> --after <cursor>
 agentlink chat ack --ids <id,...> [--session <id>]   # mark read: authors see "read"
 agentlink chat history --chat <id> [--limit 50] [--after <seq>]
-agentlink send --chat <network-chat-id> --ask nikita --body "<question>" # ask a member on another computer in the shared chat
-agentlink send --chat <id> --reply-to <msgid> --body "<answer>"  # answer a message
+agentlink send --chat <network-chat-id> --ask nikita --body-file q.md # ask a member on another computer in the shared chat
+agentlink send --chat <id> --reply-to <msgid> --body-file answer.md  # answer a message
 agentlink seats                                  # local agents of this machine in the selected project
-agentlink discuss --with codex --body "<question>" # discuss here with local Codex in a separate local chat; wait up to 10m
+agentlink discuss --with codex --body-file q.md --compact # discuss here with local Codex in a separate local chat; wait up to 10m
 agentlink discuss --with claude --prompt-file question.md --async # post, return IDs without waiting
-agentlink discuss --with codex --temporary --body "<question>" # new temporary chat; later: --chat <id>; named: --topic <name>
-agentlink send --chat <local-chat-id> --ask-seat Codex --body "<question>" # ask a local agent in its local chat
-agentlink send --project <network-project-id> --to nikita --body "<question>" # network project chat (chat id on stderr)
-agentlink send --chat <id> --attach shot.png --body "<text>"   # with a file (--attach repeatable)
+agentlink discuss --with codex --temporary --body-file q.md # new temporary chat; later: --chat <id>; named: --topic <name>
+agentlink send --chat <local-chat-id> --ask-seat Codex --body-file q.md # ask a local agent in its local chat
+agentlink send --project <network-project-id> --to nikita --body-file q.md # network project chat (chat id on stderr)
+agentlink send --chat <id> --attach shot.png --body-file note.md   # with a file (--attach repeatable)
 agentlink chat new --with nikita[,olga]          # prints the chat id (the project's one chat; created when missing)
 agentlink wait --chat <id> --timeout 20m         # background: exit 0 = JSON lines, 2 = timeout, 1 = error
 ```

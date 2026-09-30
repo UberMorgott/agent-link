@@ -88,15 +88,20 @@ local Claude Code ↔ Codex discussions use a separate local project/chat for th
 For the legacy network, conversations are still identified by their member set and area.
 Clearing a chat keeps a dated snapshot and continues in that project's one active chat.
 
+Message text never goes on the command line: a shell rewrites quotes (`""` becomes `"`) and
+splits the text, and part of it is lost. Write it to a file and pass `--body-file <file>` (UTF-8,
+or UTF-16 with BOM; `--body-file -` reads stdin), or use the MCP tools. `--body <text>` is for short
+plain text typed by a person; any command given stray arguments fails instead of sending.
+
 ```powershell
 agentlink members                                              # who is in the network: one JSON line each, this node first
-agentlink send         --project <network-project-id> --to nikita --body "<question>" # ask a remote member in its shared chat
-agentlink send         --to nikita --area dev --body "<question>"   # the dev area conversation (legacy network)
-agentlink send         --to area:dev --body "<question>"       # the dev area conversation (legacy network), asks all members
-agentlink send         --chat <network-chat-id> --ask nikita --body "<question>" # ask a remote member in its shared chat
-agentlink send         --chat <local-chat-id> --ask-seat Codex --body "<question>" # ask a local seat in its local chat
-agentlink send         --reply-to <id> --body "<answer>"       # into the conversation of the message you answer
-agentlink send         --chat <id> --attach shot.png [--attach log.txt] [--body "<text>"]   # with files (see Attachments below)
+agentlink send         --project <network-project-id> --to nikita --body-file q.md # ask a remote member in its shared chat
+agentlink send         --to nikita --area dev --body-file q.md   # the dev area conversation (legacy network)
+agentlink send         --to area:dev --body-file q.md       # the dev area conversation (legacy network), asks all members
+agentlink send         --chat <network-chat-id> --ask nikita --body-file q.md # ask a remote member in its shared chat
+agentlink send         --chat <local-chat-id> --ask-seat Codex --body-file q.md # ask a local seat in its local chat
+agentlink send         --reply-to <id> --body-file answer.md # into the conversation of the message you answer
+agentlink send         --chat <id> --attach shot.png [--attach log.txt] [--body-file note.md]   # with files (see Attachments below)
 agentlink chat unread  [--folder <path>]                       # what this node has not read yet, oldest first
 agentlink chat ack     --ids <id,...> [--session <id>]         # mark read: the authors see «прочитано»
 agentlink chat reassign --id <id> --session <id> [--force]     # hand a reply that needs a person to a live session
@@ -107,7 +112,7 @@ agentlink chat list    [--archive] [--legacy]
 agentlink chat new     --with nikita[,olga] [--area dev]       # prints the chat id (the open one; created when missing)
 agentlink chat archive [--chat <id>]                           # clear the selected chat; network members receive its clear
 agentlink wait         [--chat <id>] --timeout 0               # blocks until the next message
-agentlink discuss      --with codex --body "Review this design" # ask local Codex in this folder's local chat, wait for reply
+agentlink discuss      --with codex --body-file q.md [--compact] # ask local Codex in this folder's local chat, wait for reply
 agentlink discuss      --with claude --prompt-file question.md --async # post to the local chat and return IDs
 ```
 
@@ -116,16 +121,18 @@ agentlink discuss      --with claude --prompt-file question.md --async # post to
 shared network project. Local messages never go to network peers; existing shared messages stay
 in the network chat. It creates a seat for the named
 provider if one does not exist (never the caller's own seat, nor one waiting upstream in the
-caller's chain of agents). `--folder <path>` selects the folder; `--body <text>` and
-`--prompt-file <path>` are alternatives. It returns JSON with `project`, `chat`, `id`, `seat`
-and, by default, waits up to 10 minutes for that seat's direct `reply`. `--timeout` accepts a
+caller's chain of agents). `--folder <path>` selects the folder; `--body-file <path>` (alias `--prompt-file`) or `--body <text>`
+carries the question. It returns JSON with `project`, `chat`, `id`, `seat` (`--compact`: `chat`, `id`,
+`reply` text, `reply_id`, `from`, `model`, `effort` and status only) and, by default, waits up to 10 minutes for that seat's direct `reply`. `--timeout` accepts a
 duration up to 15 minutes. Timeout returns the IDs with `timed_out: true` and CLI exit code 2;
 `--async` returns IDs immediately. During a global, project or seat pause it returns
 `queued: true` promptly; the request stays in the local chat for delivery after resume. When the
 seat's turns fail and it does not retry within the wait (e.g. a usage limit) it returns promptly
 with `held: true`, `hold_reason: seat_failed`, `seat_error` and `retry_at`; the request stays pending for it. The MCP
-`discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?, shared?}` tool has the same
-behavior.
+`discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?, shared?, full?}` tool has the same
+behavior, compact by default (`full: true`: the whole result). A reply's `agent.model` and
+`agent.effort` (compact: `model`, `effort`) name what the seat's turn ran with, as its agent
+reported them (Codex: thread model and reasoning effort; Claude: the model only).
 
 Local chats of `discuss` (one of `--chat`, `--topic`, `--temporary`; none = the default). An agent
 session (Claude Code, Codex) asks in its **own** chat: one per (project, session, topic), so its
@@ -206,7 +213,7 @@ member's computer has an agent session (Claude Code or Codex) open in the projec
    Code): it exits 0 with one JSON line per new message, 2 on `--timeout`, 1 on an error.
    It skips chat messages already handled on this node (taken by the worker or a session, or
    read by a session).
-3. Answer with `send --reply-to <its id> --body ...`: the asker sees «ответил».
+3. Answer with `send --reply-to <its id> --body-file <file>`: the asker sees «ответил».
 4. Leave the chat open: only a person closes it, in the app. `agentlink close` does nothing but
    say so. After a close, the next message of the conversation opens a new chat.
 
@@ -367,7 +374,7 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   (`hookSpecificOutput.additionalContext`): per message the sender and whether a person or an
   agent wrote it (`author_kind`), the chat id and members, the id, the full text (a body over
   2500 characters is cut, with `agentlink chat history --chat <id>` for the rest) and the answer
-  command `agentlink send --chat <id> --reply-to <id> --body "…"`. Your own person's messages
+  command `agentlink send --chat <id> --reply-to <id> --body-file <file>`. Your own person's messages
   (`own_human`) come as «Ваш человек написал всем …» — information, do not answer. A request
   the worker took (`assigned: "worker"`) says «не отвечайте»; one past the automatic chain
   limit (`paused`) is informational. A batch holds about 4500 characters; the rest stays unread and comes at the next

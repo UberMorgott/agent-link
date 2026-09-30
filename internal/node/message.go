@@ -281,11 +281,15 @@ type Message struct {
 }
 
 // AgentRef is the agent session of a node that wrote a message: its seat
-// (Seat, Label; empty for a session that is no seat) and Provider.
+// (Seat, Label; empty for a session that is no seat) and Provider. Model and
+// Effort are what a seat's turn ran with, as its agent reported them (Codex:
+// thread model and reasoning effort; Claude: the stream's model, no effort).
 type AgentRef struct {
 	Seat     string `json:"seat,omitempty"`
 	Label    string `json:"label,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Effort   string `json:"effort,omitempty"`
 }
 
 // IsRequest reports whether m is a request outside chats: neither a reply, a

@@ -42,9 +42,9 @@ import (
 const usage = `usage:
   agentlink [-config <settings.json>] [-no-tray] [-api <addr>]   (no command: the desktop app with its tray icon)
   agentlink serve --config <path>
-  agentlink send  --config <path> [--to <node|area:NAME>] [--area <name>] --body <text> [--reply-to <id>] [--ask <node,...>] [--project <id>]   (into the one open chat with them; no --to: the only peer; the area defaults to this folder's project)
-  agentlink send  --config <path> --chat <id> --body <text> [--ask <node,...>] [--ask-seat <label>] [--reply-to <id>] [--project <id>]   (to every chat participant; --ask: who must answer; --ask-seat: a local agent of this node, repeatable)
-  agentlink discuss --with <claude|codex> (--body <text> | --prompt-file <path>) [--folder <path>] [--chat <id> | --topic <name> | --temporary] [--shared] [--timeout 10m] [--async]   (ask in this session's own local agent chat, separate from network chats; --shared: the folder's shared project chat; --async returns IDs immediately; exit 2 on timeout)
+  agentlink send  --config <path> [--to <node|area:NAME>] [--area <name>] (--body-file <path|-> | --body <text>) [--reply-to <id>] [--ask <node,...>] [--project <id>]   (into the one open chat with them; no --to: the only peer; the area defaults to this folder's project)
+  agentlink send  --config <path> --chat <id> (--body-file <path|-> | --body <text>) [--ask <node,...>] [--ask-seat <label>] [--reply-to <id>] [--project <id>]   (to every chat participant; --ask: who must answer; --ask-seat: a local agent of this node, repeatable)
+  agentlink discuss --with <claude|codex> (--body-file <path|-> | --body <text>) [--folder <path>] [--chat <id> | --topic <name> | --temporary] [--shared] [--timeout 10m] [--async] [--compact]   (message text: a file, never a shell argument with quotes; ask in this session's own local agent chat, separate from network chats; --shared: the folder's shared project chat; --async returns IDs immediately; exit 2 on timeout)
   agentlink wait  --config <path> [--timeout 0] [--chat <id>] [--project <id>]   (seconds or duration; 0 = forever; exit 2 on timeout; --chat: only that chat)
   agentlink chat new     --config <path> --with <node,...> [--area <name>] [--project <id>]   (prints the chat id; you are added; in a project: its one active chat)
   agentlink chat archive --config <path> [--chat <id>] [--project <id>]   (the project's chat history goes to the archive; a fresh chat with the same members opens; prints its id)
@@ -146,7 +146,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		cmd = func(c config.Config) (int, error) { return 0, serve(c) }
 	case "send":
 		to := fs.String("to", "", "node name or area:NAME; empty sends to the only known peer (an error listing them when there are several)")
-		body := fs.String("body", "", "message text")
+		body := fs.String("body", "", "message text (short, plain text only: a shell mangles quotes; prefer --body-file)")
+		bodyFile := fs.String("body-file", "", "read message text from this file (UTF-8 or UTF-16 with BOM; - reads stdin)")
 		replyTo := fs.String("reply-to", "", "id of the message being answered (in a chat only a reference)")
 		chat := fs.String("chat", "", "chat id; default $"+envChatID+" when --to is empty")
 		ask := fs.String("ask", "", "chat participants who must answer, comma-separated; none: the message only informs")
@@ -156,12 +157,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fs.Var(&askSeat, "ask-seat", "a local agent (seat) of this node asked to answer: its label or id, or all (repeatable)")
 		fs.Var(&attach, "attach", "file to attach (repeatable): an image (png, jpeg, gif, webp), pdf or text file of at most 10 MB inside the project folder or the temp folder")
 		cmd = func(c config.Config) (int, error) {
-			return 0, send(c, sendArgs{to: *to, body: *body, replyTo: *replyTo, chat: *chat, ask: *ask, area: *area, project: proj(), session: *session, files: attach, askSeats: askSeat}, stdout)
+			text, err := messageText(*body, *bodyFile, "--body-file")
+			if err != nil {
+				return 1, err
+			}
+			return 0, send(c, sendArgs{to: *to, body: text, replyTo: *replyTo, chat: *chat, ask: *ask, area: *area, project: proj(), session: *session, files: attach, askSeats: askSeat, bodyFile: *bodyFile}, stdout)
 		}
 	case "discuss":
 		with := fs.String("with", "", "local agent to ask: claude or codex")
-		body := fs.String("body", "", "message text")
+		body := fs.String("body", "", "message text (short, plain text only: a shell mangles quotes; prefer --body-file)")
 		promptFile := fs.String("prompt-file", "", "read message text from this file")
+		bodyFile := fs.String("body-file", "", "read message text from this file (UTF-8 or UTF-16 with BOM; - reads stdin); same as --prompt-file")
 		folder := fs.String("folder", "", "project working folder (default: current folder)")
 		async := fs.Bool("async", false, "return after posting instead of waiting for the answer")
 		timeout := fs.String("timeout", "10m", "maximum time to wait for the answer (up to 15m)")
@@ -169,21 +175,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 		topic := fs.String("topic", "", "named chat: this session's own thread of that name (with --shared the project's persistent chat)")
 		temporary := fs.Bool("temporary", false, "start a new temporary chat (removed when its session ends)")
 		shared := fs.Bool("shared", false, "ask in the folder's shared project chat (or the topic's shared chat) instead of this session's own")
+		compact := fs.Bool("compact", false, "print the compact result (chat, id, reply text, reply_id, from, model, effort, status) instead of the whole one")
 		cmd = func(c config.Config) (int, error) {
-			prompt := *body
-			if *promptFile != "" {
-				if prompt != "" {
-					return 1, errors.New("--body and --prompt-file cannot be used together")
-				}
-				data, err := os.ReadFile(*promptFile)
-				if err != nil {
-					return 1, err
-				}
-				prompt = string(data)
+			if *promptFile != "" && *bodyFile != "" {
+				return 1, errors.New("--prompt-file and --body-file cannot be used together")
 			}
-			result, err := discussMessage(c, *with, prompt, *folder, *async, *timeout, discussPick{chat: *chat, topic: *topic, temporary: *temporary, shared: *shared, askKey: cliAskKey})
+			flagName := "--body-file"
+			if *promptFile != "" {
+				flagName = "--prompt-file"
+			}
+			prompt, err := messageText(*body, cmp.Or(*bodyFile, *promptFile), flagName)
+			if err != nil {
+				return 1, err
+			}
+			result, err := discussMessage(c, *with, prompt, *folder, *async, *timeout, discussPick{chat: *chat, topic: *topic, temporary: *temporary, shared: *shared, askKey: cliAskKey, bodyFile: cmp.Or(*bodyFile, *promptFile)})
 			if result.ID != "" {
-				if encodeErr := json.NewEncoder(stdout).Encode(result); encodeErr != nil {
+				var out any = result
+				if *compact {
+					out = compactDiscuss(result)
+				}
+				if encodeErr := json.NewEncoder(stdout).Encode(out); encodeErr != nil {
 					return 1, encodeErr
 				}
 			}
@@ -277,6 +288,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if err := fs.Parse(rest); err != nil {
+		return 1
+	}
+	if fs.NArg() > 0 {
+		// No command takes positional arguments: one here is a value the shell
+		// split (a quote inside --body), and ignoring it would cut the text.
+		_, _ = fmt.Fprintf(stderr, "agentlink %s: unexpected argument %q: the shell split a value (a quote inside --body?); pass message text with --body-file <file> or --body-file - (stdin)\n", name, fs.Arg(0))
 		return 1
 	}
 	cfg, err := loadConfig(name, *cfgPath)
@@ -392,6 +409,21 @@ type sendArgs struct {
 	// askKey finds the Claude Code subagent that sends (askOrigin): the stamp
 	// key of this call, cliAskKey for the CLI.
 	askKey string
+	// bodyFile is --body-file as given: a shell ask's command line holds it
+	// instead of the text (askNeedle).
+	bodyFile string
+}
+
+// askNeedle is what a shell ask's command line holds of its text: the text,
+// else the --body-file path it came from (stdin: nothing to match).
+func askNeedle(body, file string) string {
+	switch file {
+	case "":
+		return body
+	case "-":
+		return ""
+	}
+	return file
 }
 
 type discussResult struct {
@@ -436,6 +468,7 @@ type discussPick struct {
 	chat, topic       string
 	temporary, shared bool
 	askKey            string // as sendArgs.askKey
+	bodyFile          string // as sendArgs.bodyFile
 }
 
 func discussMessage(cfg config.Config, provider, body, folder string, async bool, timeout string, pick discussPick) (discussResult, error) {
@@ -464,7 +497,7 @@ func discussMessage(cfg config.Config, provider, body, folder string, async bool
 		}
 	}
 	session, source := agentSession()
-	agent, agentType := askOrigin(pick.askKey, body)
+	agent, agentType := askOrigin(pick.askKey, askNeedle(body, pick.bodyFile))
 	var result discussResult
 	err = apiJSON(http.MethodPost, apiURL(cfg, "/discuss", nil), map[string]any{
 		"folder": dir, "provider": provider, "body": body, "session_id": session,
@@ -580,7 +613,7 @@ func sendMessage(cfg config.Config, a sendArgs, ask []string) (node.Message, err
 	var agent, agentType string
 	if a.session == "" {
 		a.session, _ = agentSession()
-		agent, agentType = askOrigin(a.askKey, a.body) // the session's own subagent, if one sends
+		agent, agentType = askOrigin(a.askKey, askNeedle(a.body, a.bodyFile)) // the session's own subagent, if one sends
 	}
 	r := node.SendRequest{To: a.to, Body: a.body, ReplyTo: a.replyTo, ChatID: a.chat, Area: a.area, SessionID: a.session, AgentID: agent, AgentType: agentType, Ask: ask,
 		AskSeats: a.askSeats, Seat: os.Getenv(envSeat)}

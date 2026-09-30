@@ -101,7 +101,8 @@ func TestHookCLIAskStampAndAgentExpiry(t *testing.T) {
 
 // Never guess: identical asks of two subagents (they may run in either order)
 // take no stamp, and the ask stays the parent's; so does a CLI ask whose
-// body no stamp holds, or one sent from a file.
+// body no stamp holds, or one sent from stdin. One from a file is matched by
+// its path.
 func TestHookAskStampAmbiguityStaysWithParent(t *testing.T) {
 	c := newHookCase(t)
 	c.run(hookClaude, evSessionStart)
@@ -120,10 +121,14 @@ func TestHookAskStampAmbiguityStaysWithParent(t *testing.T) {
 	}
 
 	c.run(hookClaude, evPreTool, `,"agent_id":"a3","tool_name":"Bash","tool_input":{"command":"agentlink send --chat c1 --body-file q.txt"}`)
-	for _, body := range []string{"", "text the command does not hold"} {
+	for _, body := range []string{"", "text the command does not hold", askNeedle("", "-")} {
 		if agent, _ := takeAskStamp(c.env.dir, c.sid, cliAskKey, body, c.now); agent != "" {
 			t.Fatalf("unmatched CLI ask (%q) routed to %q", body, agent)
 		}
+	}
+	// A text file's ask is matched by its path on the command line.
+	if agent, _ := takeAskStamp(c.env.dir, c.sid, cliAskKey, askNeedle("", "q.txt"), c.now); agent != "a3" {
+		t.Fatalf("--body-file ask: %q", agent)
 	}
 }
 

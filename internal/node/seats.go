@@ -148,6 +148,9 @@ type seatStore struct {
 	gated, lent map[string]bool
 	// doing: what each running node turn does (its agent's stream: setSeatDoing).
 	doing map[string]agentDoing
+	// ran: the model and reasoning effort each seat's latest turn ran with, as
+	// its agent reported them (setSeatRan); stamped on the seat's messages.
+	ran map[string]AgentRef
 	// dirty: the last save failed; seatsDue saves again.
 	dirty bool
 	// pauseLogged: seats whose hop-limit pause seatsDue logged (once per pause).
@@ -166,7 +169,7 @@ func seatKey(seat, id string) string { return seat + "/" + id }
 func openSeats(dir string) (*seatStore, error) {
 	st := &seatStore{path: filepath.Join(dir, "seats.json"), run: map[string]context.CancelFunc{}, queued: map[string]bool{}, errs: map[string]string{},
 		busy: map[string]bool{}, quiet: map[string]bool{}, deferred: map[string]bool{}, marks: map[string]seatMark{}, pauseLogged: map[string]bool{},
-		handling: map[string][]Message{}, gated: map[string]bool{}, lent: map[string]bool{}, doing: map[string]agentDoing{}}
+		handling: map[string][]Message{}, gated: map[string]bool{}, lent: map[string]bool{}, doing: map[string]agentDoing{}, ran: map[string]AgentRef{}}
 	if err := readJSON(st.path, &st.seats); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -489,7 +492,8 @@ func (n *Node) senderAgent(req SendRequest) (*AgentRef, error) {
 			st.mu.Unlock()
 			return nil, fmt.Errorf("%w: %w (%s)", ErrBadRequest, ErrSeatSetup, s.Label)
 		}
-		ref = &AgentRef{Seat: s.ID, Label: s.Label, Provider: s.Provider}
+		ran := st.ran[s.ID]
+		ref = &AgentRef{Seat: s.ID, Label: s.Label, Provider: s.Provider, Model: ran.Model, Effort: ran.Effort}
 	}
 	st.mu.Unlock()
 	if ref != nil || req.SessionID == "" {
@@ -1332,7 +1336,8 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 	}
 	spec := LaunchSpec{Provider: seat.Provider, Folder: folder, ResumeID: seat.SessionID, Prompt: prompt.String(),
 		Seat: seat.ID, NoOpen: !open, Env: n.seatEnv(seat, chat),
-		Doing: func(kind string, subs int) { n.setSeatDoing(seat.ID, kind, subs) }}
+		Doing: func(kind string, subs int) { n.setSeatDoing(seat.ID, kind, subs) },
+		Ran:   func(model, effort string) { n.setSeatRan(seat.ID, model, effort) }}
 	n.log.Info("running a seat's turn", "seat", seat.ID, "provider", seat.Provider, "resume", seat.SessionID, "messages", len(msgs))
 	err := dl.Run(ctx, spec, func(id string) {
 		n.bindSeat(seat.ID, id)
@@ -1487,8 +1492,9 @@ func (n *Node) seatIntro(seat Seat, chat string, setup bool) string {
 	name := n.ProjectMeta().Name
 	intro := fmt.Sprintf("agent-link: вы — агент «%s» (%s) в разговоре проекта «%s» на машине %s, чат %s. "+
 		"Другие локальные агенты этого разговора: %s. Сообщения вам приходят сами. "+
-		"Спросить другого агента: agentlink send --chat %s --ask-seat <имя> --body \"<текст>\" "+
-		"(список агентов: agentlink seats). Ответить на сообщение: agentlink send --chat %s --reply-to <id> --body \"<текст>\". "+
+		"Спросить другого агента: agentlink send --chat %s --ask-seat <имя> --body-file <файл с текстом> "+
+		"(список агентов: agentlink seats). Ответить на сообщение: agentlink send --chat %s --reply-to <id> --body-file <файл с текстом> "+
+		ReplyTextNote+". "+
 		"Никогда не пишите в чат по своей инициативе (ни приветствий, ни представлений): только ответ на сообщение, "+
 		"которое просит ответа от вас, или вопрос, без которого эту работу не сделать. Ответ на ваш вопрос придёт сам.",
 		seat.Label, ProviderName(seat.Provider), name, n.cfg.Node, chat, with, chat, chat)
