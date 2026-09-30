@@ -1,26 +1,19 @@
-<!-- quality-gate -->
 ## Completion gate (mandatory)
 
-After changing files, run `qgate` from the repository root. Use `qgate -All` when
-dependencies, build configuration, generated files or several stacks changed.
+After changing files, run `aegis verify` from the repository root (owner decision
+2026-09-30: Aegis replaces qgate here). Exit 0 = done; anything else = NOT done —
+fix what it names and rerun. Never edit or disable the gate to pass. Include the
+command and its result in your final response.
 
-Exit code 0 means done. Anything else means NOT done: the output names the exact
-failures -- fix them and run it again. Do not report completion while the gate is
-failing, and never edit or disable the gate to make it pass. Include the command
-you ran and its pass/fail result in your final response.
+If Aegis is wrong — crashes, blames correct code, misses a stack, reports
+inconclusive with nothing failed, is slow — do not work around it: SendMessage the
+session "ЛОКАЛЬНЫЙ AEGIS" (command, expected, got, latency, `aegis version`), say so
+in your final response. `aegis verify` itself runs gofmt, go build, go vet,
+go test, aegis-lint and the web checks; run a check by hand only for what it
+reported as not established (e.g. vitest in internal/app/web) until it is fixed.
 
-If `qgate` is unavailable, report that as a blocker, do not skip it. It installs with
-`irm https://raw.githubusercontent.com/UberMorgott/quality-gate/main/bootstrap.ps1 | iex`
-
-If the gate itself is wrong -- it crashes, blames code that is provably correct,
-misses a whole stack, or cannot be satisfied at all -- do not work around it and do
-not disable it. Open an issue against the gate and say so in your final response:
-
-```powershell
-qgate where   # install path + commit, paste this into the issue
-gh issue create --repo UberMorgott/quality-gate --title "<what broke>" --body "<qgate output, the command you ran, the file it blamed, `qgate where` output>"
-```
-<!-- /quality-gate -->
+The pre-commit hook (`lefthook.yml`) still runs qgate until `aegis verify` can pass
+on this repo; then it switches to Aegis.
 
 ## Releases
 
