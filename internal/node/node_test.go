@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -367,13 +367,14 @@ func TestInboundHookGatesAck(t *testing.T) {
 	lnA, lnB := listen(t), listen(t)
 	a := newTestNode(t, "a", testSecret, nil, t.TempDir(), lnA, map[string]net.Listener{"b": lnB})
 	b := newTestNode(t, "b", testSecret, nil, t.TempDir(), lnB, map[string]net.Listener{"a": lnA})
-	var mu sync.Mutex
-	calls := 0
+	// A resend races a slow ACK (resendAfter), so the hook may see a copy more
+	// than once; it is idempotent by id. What counts: no ACK while it fails.
+	var calls atomic.Int32
+	var failing atomic.Bool
+	failing.Store(true)
 	b.SetInboundHook(func(m Message) error {
-		mu.Lock()
-		defer mu.Unlock()
-		calls++
-		if calls == 1 {
+		calls.Add(1)
+		if failing.Load() {
 			return errors.New("disk full")
 		}
 		return nil
@@ -383,12 +384,12 @@ func TestInboundHookGatesAck(t *testing.T) {
 	if _, err := a.Send("b", "hook me", ""); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, "ack after the hook succeeded", func() bool { p, _ := a.store.pending("b"); return len(p) == 0 })
-	mu.Lock()
-	defer mu.Unlock()
-	if calls != 2 {
-		t.Fatalf("hook calls = %d, want 2 (failed, then the resend)", calls)
+	eventually(t, "resent after the failed hook", func() bool { return calls.Load() >= 2 })
+	if p, _ := a.store.pending("b"); len(p) != 1 {
+		t.Fatalf("pending while the hook fails = %d, want 1 (no ACK)", len(p))
 	}
+	failing.Store(false)
+	eventually(t, "ack after the hook succeeded", func() bool { p, _ := a.store.pending("b"); return len(p) == 0 })
 }
 
 // Status updates are stored and deduplicated, never returned by wait, and
