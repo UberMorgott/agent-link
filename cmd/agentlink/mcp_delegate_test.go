@@ -113,7 +113,7 @@ func TestMCPCallsRunInUpdatedExecutable(t *testing.T) {
 // ok:false with the error, never ok:true.
 func TestMCPCallResultLine(t *testing.T) {
 	var out bytes.Buffer
-	if err := runMCPCall(config.Config{API: "127.0.0.1:1"}, "history", strings.NewReader(`{"chat":""}`), &out); err != nil {
+	if err := runMCPCall(t.Context(), config.Config{API: "127.0.0.1:1"}, "history", strings.NewReader(`{"chat":""}`), &out); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -121,7 +121,7 @@ func TestMCPCallResultLine(t *testing.T) {
 		t.Fatalf("mcp-call output: %q", out.String())
 	}
 	out.Reset()
-	if err := runMCPCall(config.Config{API: "127.0.0.1:1"}, "bogus", strings.NewReader(``), &out); err != nil || !strings.HasSuffix(strings.TrimSpace(out.String()), `{"ok":false,"error":"unknown tool bogus"}`) {
+	if err := runMCPCall(t.Context(), config.Config{API: "127.0.0.1:1"}, "bogus", strings.NewReader(``), &out); err != nil || !strings.HasSuffix(strings.TrimSpace(out.String()), `{"ok":false,"error":"unknown tool bogus"}`) {
 		t.Fatalf("unknown tool: %q %v", out.String(), err)
 	}
 }

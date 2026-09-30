@@ -46,7 +46,7 @@ func (h *hookSession) report(typ, text, phase string) {
 	for chat, replyTo := range h.st.Active {
 		req := node.ActivityRequest{SessionID: h.sid, ReplyTo: replyTo, Type: typ, Text: text, Phase: phase}
 		err := hookCall(h.env.api, http.MethodPost, "/chats/"+url.PathEscape(chat)+"/activity", nil, req, nil, hookHTTPTimeout)
-		var se *statusError
+		var se *apiError
 		switch {
 		case err == nil:
 			posted = true
@@ -103,7 +103,7 @@ func (h *hookSession) tellDoing(kind string) {
 	}
 	err := hookCall(h.env.api, http.MethodPost, "/sessions/"+url.PathEscape(h.sid)+"/doing", h.env.withProject(nil),
 		node.SessionDoingRequest{Doing: kind, Subagents: subs}, nil, hookDoingTimeout)
-	var se *statusError
+	var se *apiError
 	if err == nil || errors.As(err, &se) { // refused (an older node): not asked again until it changes
 		h.st.Doing, h.st.DoingSubs = kind, subs
 	}

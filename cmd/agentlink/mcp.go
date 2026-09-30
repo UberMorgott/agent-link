@@ -124,7 +124,7 @@ func runMCP(cfg config.Config) error {
 type mcpTools struct {
 	s     *mcp.Server
 	api   string // the local API the tools call
-	calls map[string]func(json.RawMessage) (any, error)
+	calls map[string]func(context.Context, json.RawMessage) (any, error)
 	// fresh, when set, names the executable that replaced this one at its
 	// path since it started ("" while none did): the calls run there.
 	fresh func() string
@@ -137,50 +137,56 @@ func newMCPServer(cfg config.Config) *mcp.Server { return newMCPTools(cfg, nil).
 // calls going to the fresh executable once there is one.
 func newMCPTools(cfg config.Config, fresh func() string) *mcpTools {
 	s := &mcpTools{s: mcp.NewServer(&mcp.Implementation{Name: mcpServerName, Version: selfupdate.Version}, nil),
-		api: cfg.API, calls: map[string]func(json.RawMessage) (any, error){}, fresh: fresh}
+		api: cfg.API, calls: map[string]func(context.Context, json.RawMessage) (any, error){}, fresh: fresh}
 	// proj is the project selector: the argument, else the agent's own project.
 	proj := func(p string) string { return cmp.Or(p, os.Getenv(envProjectID)) }
 	limit := func(n int) int { return cmp.Or(n, 50) }
 
-	addTool(s, "projects", "List the projects of the agentlink app; online/total count the other members, members lists this node too (self: true).", func(mcpNone) (any, error) {
-		return listProjects(cfg)
+	addTool(s, "projects", "List the projects of the agentlink app; online/total count the other members, members lists this node too (self: true).", func(ctx context.Context, _ mcpNone) (any, error) {
+		return listProjects(ctx, cfg)
 	})
-	addTool(s, "members", "List the members of a project, this node first.", func(in mcpProject) (any, error) {
-		return listMembers(cfg, proj(in.Project))
+	addTool(s, "members", "List the members of a project, this node first.", func(ctx context.Context, in mcpProject) (any, error) {
+		return listMembers(ctx, cfg, proj(in.Project))
 	})
-	addTool(s, "seats", "List the local agents (seats: Claude Code, Codex sessions) of this node in a project; ask one with send ask_seats.", func(in mcpProject) (any, error) {
-		return listSeats(cfg, proj(in.Project))
+	addTool(s, "seats", "List the local agents (seats: Claude Code, Codex sessions) of this node in a project; ask one with send ask_seats.", func(ctx context.Context, in mcpProject) (any, error) {
+		return listSeats(ctx, cfg, proj(in.Project))
 	})
-	addTool(s, "chats", "List chats, most recent first.", func(in mcpChats) (any, error) {
-		return listChats(cfg, in.Archive, in.Legacy, proj(in.Project))
+	addTool(s, "chats", "List chats, most recent first.", func(ctx context.Context, in mcpChats) (any, error) {
+		return listChats(ctx, cfg, in.Archive, in.Legacy, proj(in.Project))
 	})
-	addTool(s, "history", "Messages of a chat, oldest first.", func(in mcpHistory) (any, error) {
+	addTool(s, "history", "Messages of a chat, oldest first.", func(ctx context.Context, in mcpHistory) (any, error) {
 		if in.Chat == "" {
 			return nil, errors.New("chat is required")
 		}
-		return history(cfg, in.Chat, limit(in.Limit), in.BeforeSeq, in.AfterSeq, proj(""))
+		return history(ctx, cfg, in.Chat, limit(in.Limit), in.BeforeSeq, in.AfterSeq, proj(""))
 	})
-	addTool(s, "unread", "Unread messages for this node, oldest first; next is the cursor of the next page. Does not mark them read.", func(in mcpUnread) (any, error) {
+	addTool(s, "unread", "Unread messages for this node, oldest first; next is the cursor of the next page. Does not mark them read.", func(ctx context.Context, in mcpUnread) (any, error) {
 		session, _ := agentSession()
-		return unreadForSession(cfg, in.Folder, in.After, limit(in.Limit), proj(in.Project), session, true)
+		return unreadForSession(ctx, cfg, in.Folder, in.After, limit(in.Limit), proj(in.Project), session, true)
 	})
-	addToolArgs(s, "send", "Send a message: into a chat (chat), the open chat with a member (to), or a new chat (new_chat_with), optionally with file attachments. Returns {id, chat}, plus hold_reason when the message is held (no agent answers it automatically).", func(in mcpSend, args json.RawMessage) (any, error) {
+	addToolArgs(s, "send", "Send a message: into a chat (chat), the open chat with a member (to), or a new chat (new_chat_with), optionally with file attachments. Returns {id, chat}, plus hold_reason when the message is held (no agent answers it automatically).", func(ctx context.Context, in mcpSend, args json.RawMessage) (any, error) {
 		key, _ := mcpAskKey("send", args)
-		return mcpSendMessage(cfg, in, proj(""), key)
+		return mcpSendMessage(ctx, cfg, in, proj(""), key)
 	})
-	addToolArgs(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's private agent chat. Each session (and each subagent) has its own chat and thread with that agent, reused on every call and closed when the session ends; topic names another own thread, shared the folder's shared project chat, chat an earlier chat by id, temporary a new one. Local only, separate from any network project for the same folder, waits for the exact agent's reply (default 10m), and returns the reply compactly: chat, id (the question), reply (its text), reply_id, from, model and effort the agent ran with (full: the whole reply message and project). Use async to post without waiting; timed_out returns IDs for later history lookup; held with hold_reason seat_failed, seat_error and retry_at when the agent cannot answer (e.g. its usage limit), the question staying pending for it.", func(in mcpDiscuss, args json.RawMessage) (any, error) {
+	addToolArgs(s, "discuss", "Ask a local Claude Code or Codex agent in this folder's private agent chat. Each session (and each subagent) has its own chat and thread with that agent, reused on every call and closed when the session ends; topic names another own thread, shared the folder's shared project chat, chat an earlier chat by id, temporary a new one. Local only, separate from any network project for the same folder, waits for the exact agent's reply (default 10m), and returns the reply compactly: chat, id (the question), reply (its text), reply_id, from, model and effort the agent ran with (full: the whole reply message and project). Use async to post without waiting; timed_out returns IDs for later history lookup; held with hold_reason seat_failed, seat_error and retry_at when the agent cannot answer (e.g. its usage limit), the question staying pending for it.", func(ctx context.Context, in mcpDiscuss, args json.RawMessage) (any, error) {
 		key, _ := mcpAskKey("discuss", args)
 		timeout := in.Timeout
 		if timeout == "" {
 			timeout = "10m"
 		}
-		r, err := discussMessage(cfg, in.With, in.Body, in.Folder, in.Async, timeout, discussPick{chat: in.Chat, topic: in.Topic, temporary: in.Temporary, shared: in.Shared, askKey: key})
-		if err != nil || in.Full {
+		r, err := discussMessage(ctx, cfg, in.With, in.Body, in.Folder, in.Async, timeout, discussPick{chat: in.Chat, topic: in.Topic, temporary: in.Temporary, shared: in.Shared, askKey: key})
+		if err != nil {
 			return r, err
+		}
+		// The answer is on its way to the caller: its reply is read now (best
+		// effort; a failed ack leaves it for the hooks to deliver again).
+		_ = ackDiscussReply(ctx, cfg, r)
+		if in.Full {
+			return r, nil
 		}
 		return compactDiscuss(r), nil
 	})
-	addTool(s, "ack", "Mark messages read: their authors get read receipts.", func(in mcpAck) (any, error) {
+	addTool(s, "ack", "Mark messages read: their authors get read receipts.", func(ctx context.Context, in mcpAck) (any, error) {
 		if len(in.IDs) == 0 {
 			return nil, errors.New("ids is required")
 		}
@@ -188,7 +194,7 @@ func newMCPTools(cfg config.Config, fresh func() string) *mcpTools {
 		if session == "" {
 			session, _ = agentSession()
 		}
-		return ack(cfg, in.Chat, in.IDs, session, proj(in.Project))
+		return ack(ctx, cfg, in.Chat, in.IDs, session, proj(in.Project))
 	})
 	return s
 }
@@ -275,7 +281,7 @@ func (t *tailWriter) String() string { return string(t.b) }
 // runMCPCall runs one MCP tool, its arguments JSON on in, printing
 // mcpCallStarted before and its mcpCallResult after: what an MCP server
 // whose executable was updated calls.
-func runMCPCall(cfg config.Config, tool string, in io.Reader, out io.Writer) error {
+func runMCPCall(ctx context.Context, cfg config.Config, tool string, in io.Reader, out io.Writer) error {
 	raw, err := io.ReadAll(io.LimitReader(in, maxBodyFile+1))
 	if err != nil {
 		return err
@@ -286,7 +292,7 @@ func runMCPCall(cfg config.Config, tool string, in io.Reader, out io.Writer) err
 	var r mcpCallResult
 	if call := newMCPTools(cfg, nil).calls[tool]; call == nil {
 		r.Error = "unknown tool " + tool
-	} else if r.Text, err = mcpText(call(raw)); err != nil {
+	} else if r.Text, err = mcpText(call(ctx, raw)); err != nil {
 		r.Error = err.Error()
 	}
 	r.OK = r.Error == ""
@@ -313,7 +319,7 @@ func mcpText(v any, err error) (string, error) {
 }
 
 // mcpSendMessage validates the routing mode and sends.
-func mcpSendMessage(cfg config.Config, in mcpSend, project, askKey string) (any, error) {
+func mcpSendMessage(ctx context.Context, cfg config.Config, in mcpSend, project, askKey string) (any, error) {
 	modes := 0
 	for _, set := range []bool{in.Chat != "", in.To != "", len(in.NewChatWith) > 0} {
 		if set {
@@ -328,13 +334,13 @@ func mcpSendMessage(cfg config.Config, in mcpSend, project, askKey string) (any,
 	}
 	a := sendArgs{to: in.To, body: in.Body, replyTo: in.ReplyTo, chat: in.Chat, project: project, files: in.Attachments, askSeats: in.AskSeats, askKey: askKey}
 	if len(in.NewChatWith) > 0 {
-		info, err := createChat(cfg, in.NewChatWith, "", project)
+		info, err := createChat(ctx, cfg, in.NewChatWith, "", project)
 		if err != nil {
 			return nil, err
 		}
 		a.chat = info.ID
 	}
-	m, err := sendMessage(cfg, a, in.Ask)
+	m, err := sendMessage(ctx, cfg, a, in.Ask)
 	if err != nil {
 		return nil, err
 	}
@@ -385,21 +391,23 @@ func compactDiscuss(r discussResult) discussBrief {
 }
 
 // addTool registers a tool whose answer is the JSON of f's value as text.
-func addTool[In any](s *mcpTools, name, desc string, f func(In) (any, error)) {
-	addToolArgs(s, name, desc, func(in In, _ json.RawMessage) (any, error) { return f(in) })
+func addTool[In any](s *mcpTools, name, desc string, f func(context.Context, In) (any, error)) {
+	addToolArgs(s, name, desc, func(ctx context.Context, in In, _ json.RawMessage) (any, error) { return f(ctx, in) })
 }
 
-// addToolArgs is addTool whose f also gets the call's raw arguments. Once
-// the executable was updated, the call runs in the new one (delegateMCP).
-func addToolArgs[In any](s *mcpTools, name, desc string, f func(In, json.RawMessage) (any, error)) {
-	s.calls[name] = func(raw json.RawMessage) (any, error) {
+// addToolArgs is addTool whose f also gets the call's raw arguments. f's
+// context ends with the call (the client cancelled it, the session ended).
+// Once the executable was updated, the call runs in the new one
+// (delegateMCP).
+func addToolArgs[In any](s *mcpTools, name, desc string, f func(context.Context, In, json.RawMessage) (any, error)) {
+	s.calls[name] = func(ctx context.Context, raw json.RawMessage) (any, error) {
 		var in In
 		if len(bytes.TrimSpace(raw)) > 0 {
 			if err := json.Unmarshal(raw, &in); err != nil {
 				return nil, err
 			}
 		}
-		return f(in, raw)
+		return f(ctx, in, raw)
 	}
 	mcp.AddTool(s.s, &mcp.Tool{Name: name, Description: desc}, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
 		var args json.RawMessage
@@ -419,7 +427,7 @@ func addToolArgs[In any](s *mcpTools, name, desc string, f func(In, json.RawMess
 				}
 			}
 		}
-		text, err := mcpText(f(in, args))
+		text, err := mcpText(f(ctx, in, args))
 		if err != nil {
 			return nil, nil, err
 		}

@@ -484,7 +484,7 @@ func heartbeat(env hookEnv, st *hookState, client, sid, folder string, force, id
 		return !st.Unbound
 	}
 	err := hookCall(env.api, http.MethodPost, "/sessions", env.withProject(nil), sessionRequest(client, sid, folder, idle, liveAgentIDs(*st)), nil, hookHTTPTimeout)
-	var se *statusError
+	var se *apiError
 	switch {
 	case err == nil:
 		if st.Idle != idle || force {
@@ -757,7 +757,7 @@ func (h *hookSession) claim(page node.UnreadPage) (node.UnreadPage, error) {
 		}
 		var got []string
 		err := hookCall(h.env.api, http.MethodPost, "/claim", h.env.projectQuery(p), req, &got, hookHTTPTimeout)
-		var se *statusError
+		var se *apiError
 		switch {
 		case errors.As(err, &se) && (se.code == http.StatusNotFound || se.code == http.StatusMethodNotAllowed):
 			got = req.IDs
@@ -910,44 +910,12 @@ func plural(n int, one, few, many string) string {
 	return many
 }
 
-// statusError is a non-2xx answer of the node.
-type statusError struct {
-	code int
-	msg  string
-}
-
-func (e *statusError) Error() string { return fmt.Sprintf("node: %d %s", e.code, e.msg) }
-
-// hookCall calls the local API with a short timeout: a hook must not stall
-// the session when the node is down. body (when not nil) is sent as JSON, a
-// JSON answer is decoded into out (when not nil).
+// hookCall calls the local API (apiCall) with a short timeout: a hook must
+// not stall the session when the node is down.
 func hookCall(api, method, path string, q url.Values, body, out any, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	var rd io.Reader
-	if body != nil {
-		rd = bytes.NewReader(mustJSON(body))
-	}
-	req, err := http.NewRequestWithContext(ctx, method, apiURL(config.Config{API: api}, path, q), rd)
-	if err != nil {
-		return err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return &statusError{code: resp.StatusCode, msg: strings.TrimSpace(string(msg))}
-	}
-	if out == nil || resp.StatusCode == http.StatusNoContent {
-		return nil
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return apiCall(ctx, method, apiURL(config.Config{API: api}, path, q), body, out)
 }
 
 var sessionJunk = regexp.MustCompile(`[^A-Za-z0-9_-]`)
