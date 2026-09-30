@@ -286,7 +286,7 @@ describe('the open chat', () => {
   })
 
   it('renders ticks, authors, members, whom to ask and live activity', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
     const { api, inbox } = await openInbox()
     await inbox.selectChat(P, group, 'm204')
     await settle()
@@ -352,12 +352,12 @@ describe('the open chat', () => {
     expect(rows[1]!.className).toContain('stale')
     expect(text(rows[1]!)).toContain('inbox.activity.stale')
     const before = api.calls.length
-    vi.spyOn(Date, 'now').mockReturnValue(base + 246000)
+    vi.setSystemTime(base + 246000 - 1000) // the clock ticks to it
     vi.advanceTimersByTime(1000)
     await nextTick()
     // A running line's time is how long ago its agent was last heard of.
     expect(text(agentRows('activity')[0]!.querySelector('.agent-time'))).toBe('5 с назад')
-    vi.spyOn(Date, 'now').mockReturnValue(base + 306000)
+    vi.setSystemTime(base + 306000 - 1000) // the clock ticks to it
     vi.advanceTimersByTime(1000)
     await nextTick()
     expect(text(agentRows('activity')[0]!.querySelector('.agent-time'))).toBe('1 мин назад')

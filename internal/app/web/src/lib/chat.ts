@@ -220,10 +220,11 @@ function groupAgent(name: string, self: string, g: AgentGroup, several: boolean)
 }
 function groupText(g: AgentGroup): string { return g.job ? activityText(g.job) : t("inbox.activity.working") }
 
-export function workingLines(chat: ChatInfo, self: string): string[] {
+// workingLines: what a chat's agents do at now; a job expired by then is gone.
+export function workingLines(chat: ChatInfo, self: string, now: number): string[] {
   const out: string[] = []
   for (const m of chat.members || []) {
-    const groups = agentTree(m.jobs, Date.now())
+    const groups = agentTree(m.jobs, now)
     for (const g of groups) out.push(groupAgent(m.name, self, g, groups.length > 1) + ' ' + groupText(g))
   }
   return out

@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import UBadge from '@nuxt/ui/components/Badge.vue'
 import { authorLabel, chatName, clock, isUnread, preview, workingLines } from '@/lib/chat'
+import { useClock } from '@/lib/clock'
 import { openChat } from '@/lib/nav'
 import { t } from '@/lib/runtime'
 import { useAppStore } from '@/stores/app'
@@ -16,11 +17,12 @@ const props = defineProps<{ project: string; chat: ChatInfo; compact?: boolean }
 const app = useAppStore()
 const inbox = useInboxStore()
 const projects = useProjectsStore()
+const now = useClock()
 
 const row = computed(() => {
   const self = app.self
   const chat = props.chat
-  const working = workingLines(chat, self)
+  const working = workingLines(chat, self, now.value.getTime())
   const lm = chat.last_message
   const selected = inbox.openKey() === chatKey(props.project, chat.id)
   return {

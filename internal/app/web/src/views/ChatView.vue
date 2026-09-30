@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UChatPrompt from '@nuxt/ui/components/ChatPrompt.vue'
@@ -9,6 +9,7 @@ import AttachButton from '@/components/AttachButton.vue'
 import ChatTimeline from '@/components/ChatTimeline.vue'
 import ComposerAttachments from '@/components/ComposerAttachments.vue'
 import { isNarrow } from '@/layout/composables/layout'
+import { useClock } from '@/lib/clock'
 import { icon } from '@/lib/icons'
 import {
   activityLines, keepLastKnown, authorLabel, authorName, chatName, chatSessionList, clock, legacyPeerOld, others, preview,
@@ -69,11 +70,9 @@ const title = computed(() => {
 
 // --- live activity, one line per running or queued job ---
 
-const now = ref(Date.now())
-let ticker: ReturnType<typeof setInterval> | undefined
 // The elapsed timers advance locally, once a second; they never ask the app for anything.
-onMounted(() => { ticker = setInterval(() => { now.value = Date.now() }, 1000) })
-onBeforeUnmount(() => clearInterval(ticker))
+const clockNow = useClock()
+const now = computed(() => clockNow.value.getTime())
 
 // lastKnown: each connected member's last running line, kept (plain, not
 // reactive) so its row stays as idle after the job is gone.
