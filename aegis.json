@@ -1,0 +1,25 @@
+{
+  "verify": {
+    "version": 2,
+    "profiles": [
+      {
+        "profile": "standard",
+        "goos": [
+          "linux"
+        ]
+      },
+      {
+        "profile": "high-risk",
+        "goos": [
+          "linux"
+        ]
+      },
+      {
+        "profile": "release",
+        "goos": [
+          "linux"
+        ]
+      }
+    ]
+  }
+}
