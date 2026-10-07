@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -112,6 +113,21 @@ type LaunchSpec struct {
 	// none). A seat's turn posts it as the reply to the messages that asked
 	// it (answerSeatAsks).
 	Answer func(text string)
+	// Log, when set, gets what a direct turn notes on its way (a Codex thread
+	// it could not resume).
+	Log *slog.Logger
+}
+
+func (s LaunchSpec) logInfo(msg string, args ...any) {
+	if s.Log != nil {
+		s.Log.Info(msg, args...)
+	}
+}
+
+func (s LaunchSpec) logWarn(msg string, args ...any) {
+	if s.Log != nil {
+		s.Log.Warn(msg, args...)
+	}
 }
 
 // SessionLauncher opens a visible agent session.

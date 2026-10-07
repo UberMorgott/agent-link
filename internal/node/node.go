@@ -123,6 +123,9 @@ type Node struct {
 	leases *leaseBook
 	// directWG counts the desktop-app first turns running (runDirect).
 	directWG sync.WaitGroup
+	// arch: the closed seats' sessions waiting for archiveLoop
+	// (archiveSeatSessions).
+	arch archiveQueue
 	// occupied replaces folderOccupied, launchAck the ack of a desktop
 	// launch's messages (tests); nil: the real ones.
 	occupied  func(dir string, now time.Time) bool
@@ -419,6 +422,10 @@ func (n *Node) run(ctx context.Context, peerLn net.Listener, ready chan<- struct
 	n.wg.Go(func() { n.attachSweepLoop(ctx) })
 	if n.waker != nil || n.poster != nil || n.launcher != nil {
 		n.wg.Go(func() { n.wakeLoop(ctx) })
+	}
+	if ta, ok := n.launcher.(ThreadArchiver); ok {
+		// Not in wg: it finishes what a leaving node queued after the stop.
+		go n.archiveLoop(ctx, ta)
 	}
 	if n.netTag != "" && n.hub == nil { // under a Hub, its socket carries the beacons
 		n.wg.Go(func() { n.discoveryLoop(ctx) })

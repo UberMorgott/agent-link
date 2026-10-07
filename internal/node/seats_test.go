@@ -26,6 +26,8 @@ type seatLauncher struct {
 	during func(spec LaunchSpec)
 	// open: the seats' sessions are open in the agent's app (seatOccupied).
 	open atomic.Bool
+	// archived: "<provider>:<session>" of every archived session.
+	archived []string
 }
 
 func (l *seatLauncher) Direct(string) bool { return true }
@@ -53,6 +55,22 @@ func (l *seatLauncher) Run(_ context.Context, spec LaunchSpec, started func(stri
 		during(spec)
 	}
 	return err
+}
+
+// ArchiveSessions records the archived sessions (ThreadArchiver).
+func (l *seatLauncher) ArchiveSessions(_ context.Context, provider string, ids []string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, id := range ids {
+		l.archived = append(l.archived, provider+":"+id)
+	}
+	return nil
+}
+
+func (l *seatLauncher) archivedAll() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.archived)
 }
 
 func (l *seatLauncher) all() []LaunchSpec {
@@ -154,6 +172,58 @@ func TestSeatAddPersistRemove(t *testing.T) {
 	got := b.Seats()
 	if len(got) != 2 || got[0].SessionID != claude.SessionID || got[1].SessionID != codex.SessionID {
 		t.Fatalf("after restart %+v", got)
+	}
+}
+
+func waitArchives(t *testing.T, n *testNode) {
+	t.Helper()
+	if !n.WaitArchives(10 * time.Second) {
+		t.Fatal("an archival is still pending")
+	}
+}
+
+// A closed seat's Codex thread is archived (its chat is gone: the thread
+// would only pile up in the Codex app); a Claude session is left alone; a
+// project node that leaves archives its seats' threads.
+func TestSeatRemovedArchivesCodexThread(t *testing.T) {
+	l := &seatLauncher{}
+	a := seatNode(t, t.TempDir(), t.TempDir(), l)
+	claude, codex := addSeats(t, a)
+	if err := a.RemoveSeat(claude.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitArchives(t, a)
+	if got := l.archivedAll(); len(got) != 0 {
+		t.Fatalf("a Claude seat archived %v", got)
+	}
+	if err := a.RemoveSeat(codex.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitArchives(t, a)
+	if got := l.archivedAll(); !slices.Equal(got, []string{"codex:" + codex.SessionID}) {
+		t.Fatalf("archived %v, want the Codex seat's %s", got, codex.SessionID)
+	}
+	// A seat that never got a session archives nothing.
+	if _, err := a.AddSeat(SeatRequest{Provider: ProviderCodex, Defer: true}); err != nil {
+		t.Fatal(err)
+	}
+	fresh := seatByLabel(t, a, "Codex")
+	if err := a.RemoveSeat(fresh.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitArchives(t, a)
+	if got := l.archivedAll(); len(got) != 1 {
+		t.Fatalf("archived %v", got)
+	}
+
+	b := seatNode(t, t.TempDir(), t.TempDir(), l)
+	_, codex2 := addSeats(t, b)
+	if err := b.Leave(); err != nil {
+		t.Fatal(err)
+	}
+	waitArchives(t, b)
+	if got := l.archivedAll(); len(got) != 2 || got[1] != "codex:"+codex2.SessionID {
+		t.Fatalf("leave archived %v", got)
 	}
 }
 

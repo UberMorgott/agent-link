@@ -461,7 +461,8 @@ func (n *Node) StopSeat(id string) (SeatView, error) {
 	return n.seatView(id)
 }
 
-// RemoveSeat stops seat id and forgets it; its session stays the person's.
+// RemoveSeat stops seat id and forgets it; its session is archived in the
+// agent's desktop app (archiveSeatSessions: a person can unarchive it there).
 // Its messages not answered yet go back to the node's sessions (releaseSeat).
 func (n *Node) RemoveSeat(id string) error {
 	st := n.seats
@@ -474,6 +475,7 @@ func (n *Node) RemoveSeat(id string) error {
 	if cancel := st.run[id]; cancel != nil {
 		cancel()
 	}
+	gone := *st.seats[i]
 	pend := st.seats[i].Pending
 	st.seats = slices.Delete(st.seats, i, i+1)
 	delete(st.errs, id)
@@ -489,8 +491,175 @@ func (n *Node) RemoveSeat(id string) error {
 	err := st.saveLocked()
 	st.mu.Unlock()
 	n.releaseSeat(id, pend)
+	n.archiveSeatSessions([]Seat{gone})
 	n.changed("seats")
 	return err
+}
+
+// ThreadArchiver archives an agent's sessions in its desktop app
+// (DesktopLauncher: Codex threads).
+type ThreadArchiver interface {
+	ArchiveSessions(ctx context.Context, provider string, ids []string) error
+}
+
+const (
+	// archiveTurnWait bounds the wait for a closed seat's turn to end before
+	// its session is archived (the turn's app-server still writes it).
+	archiveTurnWait = 30 * time.Second
+	// archiveTimeout bounds one archival.
+	archiveTimeout = 3 * time.Minute
+)
+
+// archiveJob is one archival: the Codex threads ids of closed seats of.
+type archiveJob struct{ of, ids []string }
+
+// archiveQueue holds the archivals archiveLoop has not finished; pending
+// counts them (queued or running).
+type archiveQueue struct {
+	mu      sync.Mutex
+	jobs    []archiveJob
+	pending int
+	wake    chan struct{}
+}
+
+func (q *archiveQueue) wakeLocked() chan struct{} {
+	if q.wake == nil {
+		q.wake = make(chan struct{}, 1)
+	}
+	return q.wake
+}
+
+// archiveSeatSessions queues the archival of the Codex threads of seats that
+// leave this node (RemoveSeat, Leave): nothing resumes them any more, so they
+// would only pile up in the Codex app's sidebar. archiveLoop runs it. A Claude
+// session is left as it is; with a launcher that archives nothing, nothing is
+// queued.
+func (n *Node) archiveSeatSessions(seats []Seat) {
+	if _, ok := n.launcher.(ThreadArchiver); !ok {
+		return
+	}
+	var job archiveJob
+	for _, s := range seats {
+		if s.Provider == ProviderCodex && s.SessionID != "" {
+			job.ids = append(job.ids, s.SessionID)
+			job.of = append(job.of, s.ID)
+		}
+	}
+	if len(job.ids) == 0 {
+		return
+	}
+	q := &n.arch
+	q.mu.Lock()
+	q.jobs = append(q.jobs, job)
+	q.pending++
+	wake := q.wakeLocked()
+	q.mu.Unlock()
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
+// archiveLoop runs the queued archivals while the node runs, and those queued
+// by its stop (a leaving node stops right after Leave) once ctx ends. Each
+// waits for its seats' turns to end first (their app-server still writes the
+// thread), at most archiveTurnWait. Best effort: a failure is logged; what a
+// node that does not run queued is left to the app's orphan sweep.
+func (n *Node) archiveLoop(ctx context.Context, ta ThreadArchiver) {
+	q := &n.arch
+	q.mu.Lock()
+	wake := q.wakeLocked()
+	q.mu.Unlock()
+	for {
+		select {
+		case <-ctx.Done():
+			n.runArchives(ctx, ta)
+			return
+		case <-wake:
+			n.runArchives(ctx, ta)
+		}
+	}
+}
+
+func (n *Node) runArchives(ctx context.Context, ta ThreadArchiver) {
+	q := &n.arch
+	for {
+		q.mu.Lock()
+		if len(q.jobs) == 0 {
+			q.mu.Unlock()
+			return
+		}
+		job := q.jobs[0]
+		q.jobs = q.jobs[1:]
+		q.mu.Unlock()
+		n.waitTurnsOf(job.of, archiveTurnWait)
+		actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), archiveTimeout)
+		err := ta.ArchiveSessions(actx, ProviderCodex, job.ids)
+		cancel()
+		switch {
+		case errors.Is(err, ErrNoAgent):
+		case err != nil:
+			n.log.Warn("archive closed seats' Codex threads", "seats", job.of, "threads", job.ids, "err", err)
+		default:
+			n.log.Info("archived closed seats' Codex threads", "seats", job.of, "threads", job.ids)
+		}
+		q.mu.Lock()
+		q.pending--
+		q.mu.Unlock()
+	}
+}
+
+// waitTurnsOf waits up to d until no turn of seats runs.
+func (n *Node) waitTurnsOf(seats []string, d time.Duration) {
+	st := n.seats
+	for deadline := time.Now().Add(d); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		st.mu.Lock()
+		running := slices.ContainsFunc(seats, func(id string) bool { return st.run[id] != nil })
+		st.mu.Unlock()
+		if !running {
+			return
+		}
+	}
+}
+
+// seatList is a copy of the node's seats.
+func (n *Node) seatList() []Seat {
+	st := n.seats
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	out := make([]Seat, 0, len(st.seats))
+	for _, s := range st.seats {
+		out = append(out, *s)
+	}
+	return out
+}
+
+// SeatSessions are the sessions of the node's seats (they are resumed: kept
+// by the orphan sweep, ArchiveOrphanSessions).
+func (n *Node) SeatSessions() []string {
+	var out []string
+	for _, s := range n.seatList() {
+		if s.SessionID != "" {
+			out = append(out, s.SessionID)
+		}
+	}
+	return out
+}
+
+// WaitArchives waits up to d until no archival of closed seats' sessions is
+// queued or running (tests); it reports false when one still is.
+func (n *Node) WaitArchives(d time.Duration) bool {
+	for deadline := time.Now().Add(d); ; time.Sleep(10 * time.Millisecond) {
+		n.arch.mu.Lock()
+		pending := n.arch.pending
+		n.arch.mu.Unlock()
+		if pending == 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+	}
 }
 
 // releaseSeat hands the messages pend of removed seat back to normal routing:
@@ -1515,7 +1684,7 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 		Seat: seat.ID, NoOpen: !open, Env: n.seatEnv(seat, chat),
 		Doing:  func(kind string, subs int) { n.setSeatDoing(seat.ID, kind, subs) },
 		Ran:    func(model, effort string) { n.setSeatRan(seat.ID, model, effort) },
-		Answer: func(text string) { answer, reported = text, true }}
+		Answer: func(text string) { answer, reported = text, true }, Log: n.log.With("seat", seat.ID)}
 	n.log.Info("running a seat's turn", "seat", seat.ID, "provider", seat.Provider, "resume", seat.SessionID, "messages", len(msgs))
 	err := dl.Run(ctx, spec, func(id string) {
 		n.bindSeat(seat.ID, id)
@@ -1737,7 +1906,7 @@ func (n *Node) seatIntro(seat Seat, chat string, setup bool) string {
 		with = strings.Join(others, ", ")
 	}
 	name := n.ProjectMeta().Name
-	intro := fmt.Sprintf("agent-link: вы — агент «%s» (%s) в разговоре проекта «%s» на машине %s, чат %s. "+
+	intro := fmt.Sprintf(SeatIntroPrefix+"%s» (%s) в разговоре проекта «%s» на машине %s, чат %s. "+
 		"Другие локальные агенты этого разговора: %s. Сообщения вам приходят сами. "+
 		"Спросить другого агента: agentlink send --chat %s --ask-seat <имя> --body-file <файл с текстом> "+
 		"(список агентов: agentlink seats) "+ReplyTextNote+". "+

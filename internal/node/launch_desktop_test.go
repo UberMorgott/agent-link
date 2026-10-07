@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -99,6 +100,7 @@ func fakeAppServer(t *testing.T, r io.Reader, w io.Writer, status string, early 
 	t.Helper()
 	sc := bufio.NewScanner(r)
 	enc := json.NewEncoder(w)
+	archived := true // thread "arch", until unarchived
 	for sc.Scan() {
 		var m map[string]any
 		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
@@ -133,11 +135,22 @@ func fakeAppServer(t *testing.T, r io.Reader, w io.Writer, status string, early 
 				_ = enc.Encode(map[string]any{"id": id, "error": map[string]any{"code": -32600, "message": "already has an active writer"}})
 				continue
 			}
-			if params["threadId"] != "th-1" {
+			if params["threadId"] == "arch" && archived {
+				_ = enc.Encode(map[string]any{"id": id, "error": map[string]any{"code": -32600, "message": "session arch is archived"}})
+				continue
+			}
+			if params["threadId"] != "th-1" && params["threadId"] != "arch" {
 				t.Errorf("resume %v", params)
 			}
 			_ = enc.Encode(map[string]any{"id": id, "result": map[string]any{"thread": map[string]any{"id": "th-1"},
 				"model": "gpt-6.1-sol", "reasoningEffort": nil}})
+		case "thread/unarchive":
+			if params["threadId"] != "arch" || !archived {
+				_ = enc.Encode(map[string]any{"id": id, "error": map[string]any{"code": -32600, "message": "no archived rollout found"}})
+				continue
+			}
+			archived = false
+			_ = enc.Encode(map[string]any{"id": id, "result": map[string]any{"thread": map[string]any{"id": "arch"}}})
 		case "turn/start":
 			input, _ := params["input"].([]any)
 			var in map[string]any
@@ -167,7 +180,7 @@ func TestCodexTurn(t *testing.T) {
 	for _, c := range []struct {
 		resume, status string
 		early, wantErr bool
-	}{{"", "completed", false, false}, {"th-1", "completed", false, false}, {"busy", "completed", false, false}, {"", "failed", false, true},
+	}{{"", "completed", false, false}, {"th-1", "completed", false, false}, {"busy", "completed", false, false}, {"arch", "completed", false, false}, {"", "failed", false, true},
 		{"", "interrupted", false, true}, {"", "completed", true, false}, {"", "interrupted", true, true}} {
 		sr, cw := io.Pipe() // client -> server
 		cr, sw := io.Pipe() // server -> client
@@ -179,9 +192,10 @@ func TestCodexTurn(t *testing.T) {
 			_ = sw.Close()
 		}()
 		var started, ran []string
+		var logs strings.Builder
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		id, err := CodexTurn(ctx, cr, cw, LaunchSpec{Provider: ProviderCodex, Folder: `C:\p`, ResumeID: c.resume, Prompt: "line1\n\"q\"",
-			Ran: func(model, effort string) { ran = append(ran, model+"/"+effort) }},
+			Ran: func(model, effort string) { ran = append(ran, model+"/"+effort) }, Log: slog.New(slog.NewTextHandler(&logs, nil))},
 			"1.0", func(s string) { started = append(started, s) })
 		cancel()
 		_ = cw.Close()
@@ -191,8 +205,15 @@ func TestCodexTurn(t *testing.T) {
 		}
 		// The thread's model and effort, once (a resumed thread: the model's default effort).
 		wantRan := "gpt-6.1-sol/medium"
-		if c.resume == "th-1" {
+		if c.resume == "th-1" || c.resume == "arch" {
 			wantRan = "gpt-6.1-sol/"
+		}
+		// A refused resume is logged with its reason before the new thread;
+		// an archived thread is unarchived and resumed instead.
+		failed := strings.Contains(logs.String(), "thread/resume failed")
+		if failed != (c.resume == "busy") || (c.resume == "busy" && !strings.Contains(logs.String(), "active writer")) ||
+			(c.resume == "arch") != strings.Contains(logs.String(), "unarchived") {
+			t.Fatalf("%+v: logs %s", c, logs.String())
 		}
 		if !slices.Equal(ran, []string{wantRan}) {
 			t.Fatalf("%+v: ran %v", c, ran)
@@ -207,8 +228,10 @@ func TestCodexTurn(t *testing.T) {
 		switch c.resume {
 		case "th-1":
 			want[2] = "thread/resume"
-		case "busy": // refused: a new thread
-			want = slices.Insert(want, 2, "thread/resume")
+		case "busy": // refused, not archived: a new thread
+			want = slices.Insert(want, 2, "thread/resume", "thread/unarchive")
+		case "arch": // archived: unarchived and resumed
+			want = slices.Replace(want, 2, 3, "thread/resume", "thread/unarchive", "thread/resume")
 		}
 		if !slices.Equal(seen, want) {
 			t.Fatalf("%+v: requests %v", c, seen)
@@ -268,6 +291,105 @@ func TestCodexTurn(t *testing.T) {
 	}
 	_ = cw.Close()
 	<-done
+}
+
+// threadServer answers thread/list (two pages of threads) and thread/archive
+// (refused for "bad-arch") like codex app-server; the requests go to seen.
+func threadServer(t *testing.T, r io.Reader, w io.Writer, threads [][]map[string]any, seen *[]string) {
+	t.Helper()
+	sc := bufio.NewScanner(r)
+	enc := json.NewEncoder(w)
+	for sc.Scan() {
+		var m map[string]any
+		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
+			t.Errorf("bad json %q", sc.Text())
+			return
+		}
+		method, _ := m["method"].(string)
+		params, _ := m["params"].(map[string]any)
+		id := m["id"]
+		switch method {
+		case "initialize":
+			*seen = append(*seen, method)
+			_ = enc.Encode(map[string]any{"id": id, "result": map[string]any{}})
+		case "thread/list":
+			cursor, _ := params["cursor"].(string)
+			*seen = append(*seen, method+":"+cursor)
+			if params["searchTerm"] != "agent-link: вы — агент" {
+				t.Errorf("thread/list %v", params)
+			}
+			page, next := threads[0], any("p2")
+			if cursor == "p2" {
+				page, next = threads[1], nil
+			}
+			_ = enc.Encode(map[string]any{"id": id, "result": map[string]any{"data": page, "nextCursor": next}})
+		case "thread/archive":
+			tid, _ := params["threadId"].(string)
+			*seen = append(*seen, method+":"+tid)
+			if tid == "bad-arch" {
+				_ = enc.Encode(map[string]any{"id": id, "error": map[string]any{"code": -32600, "message": "no rollout"}})
+				continue
+			}
+			_ = enc.Encode(map[string]any{"id": id, "result": map[string]any{}})
+		}
+	}
+}
+
+// The orphan sweep archives only threads agent-link opened for seats (the
+// seat introduction first), idle long enough and not kept by a live seat; a
+// person's own thread is never touched.
+func TestCodexArchiveOrphans(t *testing.T) {
+	now := time.Now()
+	old, fresh := now.Add(-2*time.Hour).Unix(), now.Add(-time.Minute).Unix()
+	intro := SeatIntroPrefix + "Codex» (Codex) в разговоре проекта"
+	th := func(id, preview string, at int64) map[string]any {
+		return map[string]any{"id": id, "preview": preview, "updatedAt": at}
+	}
+	threads := [][]map[string]any{
+		{th("orphan-1", intro, old), th("live-1", intro, old), th("fresh-1", intro, fresh),
+			th("mine-1", "please fix agent-link: вы — агент «x»", old)},
+		{th("orphan-2", intro, old), th("bad-arch", intro, old), th("orphan-1", intro, old),
+			th("wake-1", "agent-link: новые сообщения (1).", old)},
+	}
+	sr, cw := io.Pipe()
+	cr, sw := io.Pipe()
+	var seen []string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		threadServer(t, sr, sw, threads, &seen)
+		_ = sw.Close()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	archived, err := CodexArchiveOrphans(ctx, cr, cw, "1.0", func(id string) bool { return id == "live-1" }, now.Add(-time.Hour))
+	cancel()
+	_ = cw.Close()
+	<-done
+	if err == nil || !strings.Contains(err.Error(), "bad-arch") || !slices.Equal(archived, []string{"orphan-1", "orphan-2"}) {
+		t.Fatalf("archived %v err %v", archived, err)
+	}
+	want := []string{"initialize", "thread/list:", "thread/list:p2", "thread/archive:orphan-1", "thread/archive:orphan-2", "thread/archive:bad-arch"}
+	if !slices.Equal(seen, want) {
+		t.Fatalf("requests %v", seen)
+	}
+
+	// CodexArchive archives the threads it is given; failures are joined.
+	sr, cw = io.Pipe()
+	cr, sw = io.Pipe()
+	seen = nil
+	done = make(chan struct{})
+	go func() {
+		defer close(done)
+		threadServer(t, sr, sw, nil, &seen)
+		_ = sw.Close()
+	}()
+	err = CodexArchive(context.Background(), cr, cw, "1.0", []string{"th-1", "bad-arch", "th-2"})
+	_ = cw.Close()
+	<-done
+	if err == nil || !strings.Contains(err.Error(), "bad-arch") ||
+		!slices.Equal(seen, []string{"initialize", "thread/archive:th-1", "thread/archive:bad-arch", "thread/archive:th-2"}) {
+		t.Fatalf("archive: %v %v", err, seen)
+	}
 }
 
 // A desktop launch's first turn runs headless: its session is not registered,

@@ -702,6 +702,8 @@ func (n *Node) Leave() error {
 	}
 	n.log.Info("left the project")
 	n.changed("members")
+	// Its seats go with it (its data leaves): their Codex threads are archived.
+	n.archiveSeatSessions(n.seatList())
 	deadline := time.Now().Add(lingerTimeout)
 	for time.Now().Before(deadline) {
 		n.mu.Lock()

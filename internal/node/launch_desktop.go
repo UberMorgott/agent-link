@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -279,22 +280,36 @@ func (l DesktopLauncher) runCodex(ctx context.Context, bin string, spec LaunchSp
 	cmd := exec.CommandContext(ctx, bin, CodexServerArgs(spec)...) //nolint:gosec // G204: the agent's CLI, arguments built by CodexServerArgs
 	cmd.Dir = spec.Folder
 	cmd.Env = append(LaunchEnv(os.Environ()), spec.Env...)
+	var id string
+	err := runAppServer(ctx, cmd, func(r io.Reader, w io.Writer) error {
+		var terr error
+		id, terr = CodexTurn(ctx, r, w, spec, l.Version, started)
+		return terr
+	})
+	return id, err
+}
+
+// runAppServer starts cmd (a `codex app-server`) and runs fn against its
+// output (r) and input (w); the server ends at the end of its input, else 10
+// seconds later with its process tree. fn's error carries the server's last
+// stderr.
+func runAppServer(ctx context.Context, cmd *exec.Cmd, fn func(r io.Reader, w io.Writer) error) error {
 	var stderr tailBuffer
 	cmd.Stderr = &stderr
 	hideWindow(cmd)
 	killTreeOnCancel(ctx, cmd)
 	in, err := cmd.StdinPipe()
 	if err != nil {
-		return "", err
+		return err
 	}
 	out, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", err
+		return err
 	}
 	if err := cmd.Start(); err != nil {
-		return "", err
+		return err
 	}
-	id, terr := CodexTurn(ctx, out, in, spec, l.Version, started)
+	ferr := fn(out, in)
 	_ = in.Close() // app-server ends at the end of its input
 	done := make(chan error, 1)
 	go func() {
@@ -307,10 +322,54 @@ func (l DesktopLauncher) runCodex(ctx context.Context, bin string, spec LaunchSp
 		_ = killTree(context.WithoutCancel(ctx), cmd.Process)
 		<-done
 	}
-	if terr != nil && stderr.Len() > 0 {
-		terr = fmt.Errorf("%w: %s", terr, stderr.String())
+	if ferr != nil && stderr.Len() > 0 {
+		ferr = fmt.Errorf("%w: %s", ferr, stderr.String())
 	}
-	return id, terr
+	return ferr
+}
+
+// codexMaintTimeout bounds one archival connection to codex app-server
+// (ArchiveSessions, ArchiveOrphanSessions).
+const codexMaintTimeout = 2 * time.Minute
+
+// codexServer runs fn against a plain `codex app-server` (no MCP server, no
+// turn): ErrNoAgent when Codex is not found.
+func (l DesktopLauncher) codexServer(ctx context.Context, fn func(ctx context.Context, r io.Reader, w io.Writer) error) error {
+	bin, err := exec.LookPath(l.program(ProviderCodex))
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrNoAgent, err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, codexMaintTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "app-server") //nolint:gosec // G204: the agent's CLI, fixed arguments
+	cmd.Env = LaunchEnv(os.Environ())
+	return runAppServer(ctx, cmd, func(r io.Reader, w io.Writer) error { return fn(ctx, r, w) })
+}
+
+// ArchiveSessions archives provider's sessions ids in its desktop app: Codex
+// threads (thread/archive), so the threads of closed seats leave the Codex
+// app's sidebar (a person can still unarchive them there). Other providers:
+// nothing.
+func (l DesktopLauncher) ArchiveSessions(ctx context.Context, provider string, ids []string) error {
+	if provider != ProviderCodex || len(ids) == 0 {
+		return nil
+	}
+	return l.codexServer(ctx, func(ctx context.Context, r io.Reader, w io.Writer) error {
+		return CodexArchive(ctx, r, w, l.Version, ids)
+	})
+}
+
+// ArchiveOrphanSessions archives the Codex threads agent-link opened for seats
+// (CodexArchiveOrphans) that keep does not keep and that were last updated
+// before before; it returns the archived ones.
+func (l DesktopLauncher) ArchiveOrphanSessions(ctx context.Context, keep func(id string) bool, before time.Time) ([]string, error) {
+	var archived []string
+	err := l.codexServer(ctx, func(ctx context.Context, r io.Reader, w io.Writer) error {
+		var err error
+		archived, err = CodexArchiveOrphans(ctx, r, w, l.Version, keep, before)
+		return err
+	})
+	return archived, err
 }
 
 // CodexServerArgs are the arguments of `codex app-server` for spec. Codex
@@ -401,104 +460,9 @@ type rpcMsg struct {
 func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, version string, started func(string)) (string, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel() // ends the reader
-	lines := make(chan []byte)
-	readErr := make(chan error, 1)
-	go func() {
-		sc := bufio.NewScanner(r)
-		sc.Buffer(make([]byte, 64*1024), 64*1024*1024)
-		for sc.Scan() {
-			select {
-			case lines <- append([]byte(nil), sc.Bytes()...):
-			case <-ctx.Done():
-				return
-			}
-		}
-		err := sc.Err()
-		if err == nil {
-			err = io.EOF
-		}
-		readErr <- err
-	}()
-	next := 0
-	send := func(m map[string]any) error {
-		b, err := json.Marshal(m)
-		if err != nil {
-			return err
-		}
-		_, err = w.Write(append(b, '\n'))
-		return err
-	}
-	// recv returns the next message, answering the server's own requests (an
-	// approval is declined: nobody is there to approve it).
-	recv := func() (rpcMsg, error) {
-		for {
-			select {
-			case <-ctx.Done():
-				return rpcMsg{}, ctx.Err()
-			case err := <-readErr:
-				return rpcMsg{}, fmt.Errorf("codex app-server: %w", err)
-			case b := <-lines:
-				var m rpcMsg
-				if json.Unmarshal(b, &m) != nil {
-					continue
-				}
-				if m.Method != "" && len(m.ID) > 0 {
-					var reply map[string]any
-					if strings.Contains(strings.ToLower(m.Method), "approval") {
-						reply = map[string]any{"id": m.ID, "result": map[string]any{"decision": "decline"}}
-					} else {
-						reply = map[string]any{"id": m.ID, "error": map[string]any{"code": -32601, "message": "not supported by agent-link"}}
-					}
-					if err := send(reply); err != nil {
-						return rpcMsg{}, err
-					}
-					continue
-				}
-				return m, nil
-			}
-		}
-	}
-	// backlog keeps the notifications that came while a call awaited its
-	// answer (turn/completed may come before turn/start's): the turn loop
-	// reads them first.
-	var backlog []rpcMsg
-	notification := func() (rpcMsg, error) {
-		if len(backlog) > 0 {
-			m := backlog[0]
-			backlog = backlog[1:]
-			return m, nil
-		}
-		return recv()
-	}
-	call := func(method string, params any, result any) error {
-		next++
-		id := next
-		if err := send(map[string]any{"id": id, "method": method, "params": params}); err != nil {
-			return err
-		}
-		for {
-			m, err := recv()
-			if err != nil {
-				return err
-			}
-			if m.Method != "" {
-				backlog = append(backlog, m)
-				continue
-			}
-			if string(m.ID) != fmt.Sprint(id) {
-				continue
-			}
-			if m.Error != nil {
-				return fmt.Errorf("codex %s: %s", method, m.Error.Message)
-			}
-			return json.Unmarshal(m.Result, result)
-		}
-	}
-	var none struct{}
-	if err := call("initialize", map[string]any{"clientInfo": map[string]any{"name": "agentlink", "title": "agent-link", "version": version}}, &none); err != nil {
-		return "", err
-	}
-	if err := send(map[string]any{"method": "initialized"}); err != nil {
+	c := newCodexConn(ctx, r, w)
+	call, notification := c.call, c.notification
+	if err := c.initialize(version); err != nil {
 		return "", err
 	}
 	var th struct {
@@ -517,9 +481,22 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 	}
 	err := errors.New("no thread")
 	if spec.ResumeID != "" {
-		// Refused while the desktop app has the thread open (it is its only
-		// writer): a new thread then.
 		err = call("thread/resume", full(map[string]any{"threadId": spec.ResumeID}), &th)
+		if err != nil {
+			// An archived thread (its seat's chat closed, or swept as an
+			// orphan) is unarchived and resumed: the seat keeps its memory. A
+			// thread that is not archived refuses the unarchive.
+			var none struct{}
+			if uerr := call("thread/unarchive", map[string]any{"threadId": spec.ResumeID}, &none); uerr == nil {
+				spec.logInfo("codex: unarchived the thread to resume it", "thread", spec.ResumeID, "resume_err", err)
+				err = call("thread/resume", full(map[string]any{"threadId": spec.ResumeID}), &th)
+			}
+		}
+		if err != nil {
+			// Refused while the desktop app has the thread open (it is its
+			// only writer), or gone: a new thread then.
+			spec.logWarn("codex: thread/resume failed; starting a new thread", "thread", spec.ResumeID, "err", err)
+		}
 	}
 	if err != nil {
 		err = call("thread/start", full(map[string]any{"cwd": spec.Folder}), &th)
@@ -610,6 +587,211 @@ func CodexTurn(ctx context.Context, r io.Reader, w io.Writer, spec LaunchSpec, v
 		}
 		return tid, fmt.Errorf("codex turn %s: %s", done.Turn.Status, trimMsg(msg))
 	}
+}
+
+// codexConn is a JSON-RPC connection to codex app-server (r: its output, w:
+// its input). Its reader ends with ctx.
+type codexConn struct {
+	ctx     context.Context
+	w       io.Writer
+	lines   chan []byte
+	readErr chan error
+	next    int
+	// backlog keeps the notifications that came while a call awaited its
+	// answer (turn/completed may come before turn/start's): notification
+	// returns them first.
+	backlog []rpcMsg
+}
+
+func newCodexConn(ctx context.Context, r io.Reader, w io.Writer) *codexConn {
+	c := &codexConn{ctx: ctx, w: w, lines: make(chan []byte), readErr: make(chan error, 1)}
+	go func() {
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 64*1024), 64*1024*1024)
+		for sc.Scan() {
+			select {
+			case c.lines <- append([]byte(nil), sc.Bytes()...):
+			case <-ctx.Done():
+				return
+			}
+		}
+		err := sc.Err()
+		if err == nil {
+			err = io.EOF
+		}
+		c.readErr <- err
+	}()
+	return c
+}
+
+func (c *codexConn) send(m map[string]any) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	_, err = c.w.Write(append(b, '\n'))
+	return err
+}
+
+// recv returns the next message, answering the server's own requests (an
+// approval is declined: nobody is there to approve it).
+func (c *codexConn) recv() (rpcMsg, error) {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return rpcMsg{}, c.ctx.Err()
+		case err := <-c.readErr:
+			return rpcMsg{}, fmt.Errorf("codex app-server: %w", err)
+		case b := <-c.lines:
+			var m rpcMsg
+			if json.Unmarshal(b, &m) != nil {
+				continue
+			}
+			if m.Method != "" && len(m.ID) > 0 {
+				var reply map[string]any
+				if strings.Contains(strings.ToLower(m.Method), "approval") {
+					reply = map[string]any{"id": m.ID, "result": map[string]any{"decision": "decline"}}
+				} else {
+					reply = map[string]any{"id": m.ID, "error": map[string]any{"code": -32601, "message": "not supported by agent-link"}}
+				}
+				if err := c.send(reply); err != nil {
+					return rpcMsg{}, err
+				}
+				continue
+			}
+			return m, nil
+		}
+	}
+}
+
+// notification returns the next notification (the backlog first).
+func (c *codexConn) notification() (rpcMsg, error) {
+	if len(c.backlog) > 0 {
+		m := c.backlog[0]
+		c.backlog = c.backlog[1:]
+		return m, nil
+	}
+	return c.recv()
+}
+
+// call sends request method and reads its answer into result.
+func (c *codexConn) call(method string, params any, result any) error {
+	c.next++
+	id := c.next
+	if err := c.send(map[string]any{"id": id, "method": method, "params": params}); err != nil {
+		return err
+	}
+	for {
+		m, err := c.recv()
+		if err != nil {
+			return err
+		}
+		if m.Method != "" {
+			c.backlog = append(c.backlog, m)
+			continue
+		}
+		if string(m.ID) != fmt.Sprint(id) {
+			continue
+		}
+		if m.Error != nil {
+			return fmt.Errorf("codex %s: %s", method, m.Error.Message)
+		}
+		return json.Unmarshal(m.Result, result)
+	}
+}
+
+// initialize opens the connection as agent-link of version.
+func (c *codexConn) initialize(version string) error {
+	var none struct{}
+	if err := c.call("initialize", map[string]any{"clientInfo": map[string]any{"name": "agentlink", "title": "agent-link", "version": version}}, &none); err != nil {
+		return err
+	}
+	return c.send(map[string]any{"method": "initialized"})
+}
+
+// SeatIntroPrefix begins the first prompt of every seat's session (seatIntro):
+// a Codex thread whose first message starts with it was opened by agent-link
+// for a seat, never by a person.
+const SeatIntroPrefix = "agent-link: вы — агент «"
+
+// CodexArchive archives threads ids through a codex app-server connection (r:
+// its output, w: its input); the failures are joined.
+func CodexArchive(ctx context.Context, r io.Reader, w io.Writer, version string, ids []string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	c := newCodexConn(ctx, r, w)
+	if err := c.initialize(version); err != nil {
+		return err
+	}
+	var errs []error
+	for _, id := range ids {
+		var none struct{}
+		if err := c.call("thread/archive", map[string]any{"threadId": id}, &none); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", id, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// orphanListPages bounds the thread/list pages CodexArchiveOrphans reads.
+const orphanListPages = 50
+
+// CodexArchiveOrphans archives, through a codex app-server connection, the
+// unarchived threads agent-link opened for seats (their first message starts
+// with SeatIntroPrefix) that keep does not keep (the live seats' sessions) and
+// that were last updated before before (a seat's turn may have opened one
+// whose id it has not stored yet). A person's own thread never starts with
+// the prefix. It returns the archived threads; the failures are joined.
+func CodexArchiveOrphans(ctx context.Context, r io.Reader, w io.Writer, version string, keep func(id string) bool, before time.Time) ([]string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	c := newCodexConn(ctx, r, w)
+	if err := c.initialize(version); err != nil {
+		return nil, err
+	}
+	// searchTerm narrows the list by title (the first message when the thread
+	// has no name); the prefix itself is checked on each.
+	search := strings.TrimSuffix(SeatIntroPrefix, " «")
+	var orphans []string
+	cursor := ""
+	for range orphanListPages {
+		params := map[string]any{"limit": 100, "searchTerm": search}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		var page struct {
+			Data []struct {
+				ID        string `json:"id"`
+				Preview   string `json:"preview"`
+				UpdatedAt int64  `json:"updatedAt"`
+			} `json:"data"`
+			NextCursor *string `json:"nextCursor"`
+		}
+		if err := c.call("thread/list", params, &page); err != nil {
+			return nil, err
+		}
+		for _, t := range page.Data {
+			if strings.HasPrefix(t.Preview, SeatIntroPrefix) && validSessionID(t.ID) && t.UpdatedAt > 0 &&
+				time.Unix(t.UpdatedAt, 0).Before(before) && !keep(t.ID) && !slices.Contains(orphans, t.ID) {
+				orphans = append(orphans, t.ID)
+			}
+		}
+		if page.NextCursor == nil || *page.NextCursor == "" || *page.NextCursor == cursor {
+			break
+		}
+		cursor = *page.NextCursor
+	}
+	var archived []string
+	var errs []error
+	for _, id := range orphans {
+		var none struct{}
+		if err := c.call("thread/archive", map[string]any{"threadId": id}, &none); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", id, err))
+			continue
+		}
+		archived = append(archived, id)
+	}
+	return archived, errors.Join(errs...)
 }
 
 // codexAnswer is the final answer of a Codex turn from its completed

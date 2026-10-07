@@ -246,7 +246,10 @@ func (a *App) Start(ctx context.Context) error {
 	err := a.startLocked(ctx)
 	a.syncHooksLocked()
 	a.mu.Unlock()
-	a.gcOnce.Do(func() { go a.gcLoop(ctx) })
+	a.gcOnce.Do(func() {
+		go a.gcLoop(ctx)
+		go a.threadSweepLoop(ctx)
+	})
 	a.events.publish("status", "participants")
 	return err
 }
