@@ -2,7 +2,7 @@
 // release, gated on the SHA-256 digest GitHub reports for the release asset.
 //
 // The release pipeline (.github/workflows/release.yml, scripts/release.ps1)
-// publishes one plain UPX-packed executable per platform to the public
+// publishes one plain stripped executable per platform to the public
 // repository UberMorgott/agent-link. A check never calls the REST API: the
 // unauthenticated API allows 60 requests an hour per IP address, shared by
 // everyone behind one NAT or VPN. Instead it reads the tag from the redirect

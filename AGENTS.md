@@ -180,9 +180,11 @@ qgate                                # quality gate; qgate -All when deps or bui
   describe every link as encrypted by agent-link.
 - Do not commit binaries (`bin/`, `*.exe`) or node data (`.data/`); release assets are built and
   attached, not tracked.
-- Release binaries are always stripped and UPX-packed and carry their version: build them only
-  with `scripts/release.ps1` (`-trimpath -ldflags "-s -w -X …/selfupdate.Version=<x.y.z>"`,
-  `upx --best --lzma`, `upx -t`), never attach a plain `go build` output. A release holds exactly
+- Release binaries are always stripped and carry their version: build them only
+  with `scripts/release.ps1` (`-trimpath -ldflags "-s -w -X …/selfupdate.Version=<x.y.z>"`),
+  never attach a plain `go build` output. Never UPX-pack them: a packed image unpacks into
+  private memory per process, so the 20+ concurrent agentlink processes (app, MCP servers,
+  hooks) stop sharing code pages (53 MB vs 7 MB private working set each). A release holds exactly
   one file per released OS; today only `agentlink.exe` (windows/amd64). A
   release is cut locally: push the `vX.Y.Z` tag, then `pwsh -File scripts/release.ps1 -Version
   <x.y.z> -Publish` builds it and publishes it with the notes of `scripts/release-notes.ps1`.

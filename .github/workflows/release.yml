@@ -3,7 +3,7 @@ name: Release
 # Started by hand only (Actions -> Release -> Run workflow, with an existing
 # v* tag): releases are normally built and published locally with
 # scripts/release.ps1 -Publish, so a pushed tag runs nothing here. Vet and
-# test, build the stripped UPX-packed agentlink.exe with scripts/release.ps1
+# test, build the stripped agentlink.exe with scripts/release.ps1
 # (the same script as a local release), attest its
 # build provenance and publish the GitHub release that self-update reads
 # (`gh attestation verify agentlink.exe --repo UberMorgott/agent-link`). The
@@ -54,10 +54,7 @@ jobs:
       - name: Test
         run: go test ./...
 
-      - name: Install UPX
-        run: choco install upx --no-progress -y
-
-      - name: Build agentlink.exe (stripped, trimpath, UPX-packed)
+      - name: Build agentlink.exe (stripped, trimpath)
         shell: pwsh
         run: ./scripts/release.ps1 -Version "$env:TAG"
 

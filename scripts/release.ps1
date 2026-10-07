@@ -1,4 +1,4 @@
-# Builds the stripped, UPX-packed release executable into dist/ and, with
+# Builds the stripped release executable into dist/ and, with
 # -Publish, creates the GitHub release (notes from scripts/release-notes.ps1)
 # or replaces its asset. Releases are built and published locally with this
 # script; .github/workflows/release.yml runs it only when started by hand.
@@ -31,15 +31,14 @@ if ($Publish) {
     $head = git -C $root rev-parse HEAD
     if ($head -ne $tagged) { throw "HEAD $head is not $tag ($tagged): check out the tagged commit" }
 }
-if (-not (Get-Command upx -ErrorAction SilentlyContinue)) { throw 'upx is not on PATH (winget install upx.upx)' }
 New-Item -ItemType Directory -Force $dist | Out-Null
 
 $ldVersion = "-X github.com/UberMorgott/agent-link/internal/selfupdate.Version=$Version"
 $exe = Join-Path $dist 'agentlink.exe'
 
 # dist/agentlink.exe is live: the tray app, MCP servers and hooks run it and
-# may start it at any moment, which locks the file (upx: Permission denied).
-# Build, pack and test in a private folder on the same volume, then swap the
+# may start it at any moment, which locks the file.
+# Build and test in a private folder on the same volume, then swap the
 # result in the way the self-updater does (swap.ps1).
 $work = Join-Path $dist ".build-$PID"
 $built = Join-Path $work 'agentlink.exe'
@@ -61,18 +60,17 @@ try {
     finally {
         foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
     }
-    $stripped = (Get-Item $built).Length
-    upx --best --lzma -q $built | Out-Null
-    if ($LASTEXITCODE) { throw "upx failed for $built" }
-    upx -t -q $built | Out-Null
-    if ($LASTEXITCODE) { throw "upx test failed for $built" }
-    '{0}: {1:N0} -> {2:N0} bytes' -f (Split-Path $exe -Leaf), $stripped, (Get-Item $built).Length | Write-Host
+    # Not UPX-packed: a packed image unpacks into private memory in every
+    # process, so the app, each MCP server and each hook (often 20+ at once)
+    # would hold its own ~45 MB copy of the code instead of sharing the
+    # mapped file's pages (measured: 53 MB vs 7 MB private working set).
+    '{0}: {1:N0} bytes' -f (Split-Path $exe -Leaf), (Get-Item $built).Length | Write-Host
 
-    # Smoke: the packed executable must start as the CLI, know its version and
+    # Smoke: the executable must start as the CLI, know its version and
     # report it on stdout with exit code 0.
     if ($IsWindows) {
         $got = & $built version
-        if ($LASTEXITCODE -or $got -ne $Version) { throw "packed $built reports '$got', want $Version" }
+        if ($LASTEXITCODE -or $got -ne $Version) { throw "built $built reports '$got', want $Version" }
     }
 
     Install-Built $built $exe
