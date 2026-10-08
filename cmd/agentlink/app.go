@@ -123,6 +123,9 @@ func runApp(args []string) error {
 	}
 	ln, err := listen(quitCtx, a.APIAddr(), *restarted)
 	if err != nil {
+		if runningApp(a.APIAddr()) {
+			return nil
+		}
 		return fmt.Errorf("agentlink is probably already running (%s is taken): %w", a.APIAddr(), err)
 	}
 	log.Info("start", "version", selfupdate.Version, "exe", exe)
@@ -207,6 +210,18 @@ func listen(ctx context.Context, addr string, restarted bool) (net.Listener, err
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+// runningApp distinguishes our already-running desktop app from another
+// program occupying the configured API address.
+func runningApp(addr string) bool {
+	client := http.Client{Timeout: time.Second}
+	resp, err := client.Get("http://" + addr + "/ui/api/status") //nolint:noctx // bounded local probe
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.Header.Get(app.VersionHeader) != ""
 }
 
 // relaunchArgs are this run's arguments for the updated executable, marked

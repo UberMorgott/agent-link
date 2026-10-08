@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,5 +90,29 @@ func TestDashboardURLUsesLauncher(t *testing.T) {
 	}
 	if got, want := dashboardURL(a), "http://127.0.0.1:7631/ui/open"; got != want {
 		t.Fatalf("dashboardURL() = %q, want %q", got, want)
+	}
+}
+
+func TestRunningApp(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		header bool
+		want   bool
+	}{
+		{"agentlink", true, true},
+		{"other program", false, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if c.header {
+					w.Header().Set(app.VersionHeader, "test")
+				}
+				w.WriteHeader(http.StatusForbidden)
+			}))
+			defer srv.Close()
+			if got := runningApp(strings.TrimPrefix(srv.URL, "http://")); got != c.want {
+				t.Fatalf("runningApp() = %v, want %v", got, c.want)
+			}
+		})
 	}
 }
