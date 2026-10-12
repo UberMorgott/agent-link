@@ -395,7 +395,9 @@ func TestLaunchHeldReasons(t *testing.T) {
 
 	a.SetStopped(false)
 	a.auto.mu.Lock()
-	a.auto.st = autonomyState{Paused: true, Reason: PauseTurns, PausedAt: time.Now()}
+	// A full hour: a turns pause with room in it ends by itself (autoPaused).
+	a.auto.st = autonomyState{Paused: true, Reason: PauseTurns, PausedAt: time.Now(),
+		Turns: slices.Repeat([]time.Time{time.Now()}, DefaultTurnsPerHour)}
 	a.auto.mu.Unlock()
 	a.launchDue(ctx, time.Now().Add(launchGrace+time.Second))
 	waitAttempts(t, b, m, AttemptHeld+":"+HoldStopped, AttemptHeld+":"+HoldPaused+PauseTurns)

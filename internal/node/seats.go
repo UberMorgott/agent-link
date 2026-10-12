@@ -1285,7 +1285,11 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 			return
 		}
 		id, intro := s.ID, s.SessionID == ""
-		n.wg.Go(func() { n.seatTurn(ctx, dl, id, intro, false) })
+		n.wg.Go(func() {
+			if !n.seatTurn(ctx, dl, id, intro, false) {
+				n.autoRefund(now) // no turn ran (nothing claimed): none spent
+			}
+		})
 	}
 }
 
@@ -1372,8 +1376,9 @@ func (n *Node) startSeatTurn(id string, intro, open bool) bool {
 }
 
 // seatTurn runs one turn of seat id unless one runs already or the seat is
-// gone or stopped; StopSeat and RemoveSeat end it.
-func (n *Node) seatTurn(ctx context.Context, dl DirectLauncher, id string, intro, open bool) {
+// gone or stopped; StopSeat and RemoveSeat end it. It reports whether a turn
+// ran (false: nothing was claimed for it, so it spent no autonomous turn).
+func (n *Node) seatTurn(ctx context.Context, dl DirectLauncher, id string, intro, open bool) bool {
 	st := n.seats
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1382,7 +1387,7 @@ func (n *Node) seatTurn(ctx context.Context, dl DirectLauncher, id string, intro
 	// Nothing runs while the node's agents are stopped (SetStopped).
 	if s == nil || s.Stopped || st.run[id] != nil || n.Stopped() {
 		st.mu.Unlock()
-		return
+		return false
 	}
 	st.run[id] = cancel
 	st.mu.Unlock()
@@ -1406,7 +1411,7 @@ func (n *Node) seatTurn(ctx context.Context, dl DirectLauncher, id string, intro
 			st.mu.Unlock()
 			n.changed("seats")
 			if !g.acquire(ctx) {
-				return
+				return false
 			}
 			st.mu.Lock()
 			delete(st.queued, id)
@@ -1432,12 +1437,12 @@ func (n *Node) seatTurn(ctx context.Context, dl DirectLauncher, id string, intro
 	s = st.getLocked(id)
 	if s == nil || s.Stopped {
 		st.mu.Unlock()
-		return
+		return false
 	}
 	seat := *s
 	seat.Pending = slices.Clone(s.Pending)
 	st.mu.Unlock()
-	n.runSeatTurn(ctx, dl, seat, intro, open)
+	return n.runSeatTurn(ctx, dl, seat, intro, open)
 }
 
 // MaxParallelTurns is the default cap of TurnGate: the node turns of seats
@@ -1608,7 +1613,9 @@ func (n *Node) endTurn(seat string, msgs []UnreadMessage, err error, stopped boo
 	}
 }
 
-func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, intro, open bool) {
+// runSeatTurn claims seat's pending messages and runs its turn with them; it
+// reports whether the turn ran (false: nothing to run it for).
+func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, intro, open bool) bool {
 	folder := n.folders.work
 	// A paused message (past MaxAutoDepth) waits for a person, never in a turn.
 	var msgs []UnreadMessage
@@ -1624,7 +1631,7 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 	msgs, ok := n.claimTurn(ctx, seat.ID, msgs, intro)
 	if !ok || (!intro && len(msgs) == 0) {
 		n.endTurnClaims(seat.ID, msgs)
-		return
+		return false
 	}
 	owner, now := seatOwner(seat.ID), time.Now()
 	var leased, refused []UnreadMessage
@@ -1658,7 +1665,7 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 	}
 	if !intro && len(msgs) == 0 {
 		n.endTurnClaims(seat.ID, nil)
-		return
+		return false
 	}
 	chat := ""
 	if len(msgs) > 0 {
@@ -1729,6 +1736,7 @@ func (n *Node) runSeatTurn(ctx context.Context, dl DirectLauncher, seat Seat, in
 		n.revokeLeases(owner, ids(msgs), "seat_turn_failed", false)
 	}
 	n.endTurn(seat.ID, msgs, err, stopped)
+	return true
 }
 
 // ErrNoReply: a seat's turn succeeded but gave no reply to a message that

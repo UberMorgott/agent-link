@@ -248,16 +248,26 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		if len(take) == 0 {
 			continue
 		}
-		if !n.autoTake(time.Now()) {
-			return // stopped, or a budget just paused autonomous delivery
-		}
 		byInbox := d.inbox.socket != ""
 		via := ViaQueue
 		if byInbox {
 			via = ViaInbox
 		}
-		msgs, token := n.wakeClaim(s.SessionID, via, take[:FitUnread(take)])
+		// A message in its backoff (or failed, or another owner's) is claimed
+		// by no wake: no turn is taken, and no budget state written, for it.
+		fit := take[:FitUnread(take)]
+		turn := time.Now()
+		if !slices.ContainsFunc(fit, func(m UnreadMessage) bool {
+			return m.ForSeat != "" || !n.leases.blocked(m.ID, s.SessionID, via, turn)
+		}) {
+			continue
+		}
+		if !n.autoTake(turn) {
+			return // stopped, or a budget just paused autonomous delivery
+		}
+		msgs, token := n.wakeClaim(s.SessionID, via, fit)
 		if len(msgs) == 0 {
+			n.autoRefund(turn) // nothing to wake with: no turn spent
 			continue
 		}
 		text := WakePrompt(msgs, len(take)-len(msgs)+page.Total-len(page.Messages), s.Folder, token)

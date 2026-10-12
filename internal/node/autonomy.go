@@ -23,9 +23,13 @@ import (
 //     turns (a wake, a launch, a seat's turn; autoTake): at most TurnsPerHour
 //     in any hour and at most MaxRun of continuous autonomous work (turns less
 //     than autoQuietGap apart). An exhausted budget pauses autonomous delivery
-//     (messages stay unread), the pause hook tells the owner once, and
-//     ResumeAutonomy goes on. The budget state is kept in autonomy.json, so a
-//     restart neither resumes a pause nor forgets it was told.
+//     (messages stay unread), the pause hook tells the owner once (of a turns
+//     pause, which comes and goes at the budget, once an hour), and
+//     ResumeAutonomy goes on; a TurnsPerHour pause also ends by itself once
+//     the hour has room for a turn again (autoPaused). While paused the node
+//     wakes no session, so a Claude session's waiter does (InboxWakes). The
+//     budget state is kept in autonomy.json, so a restart neither resumes a
+//     pause nor forgets it was told.
 //   - MaxDepth is the hop limit of an automatic chain (MaxAutoDepth by
 //     default, 0 = none): past it a request waits for a person (Paused).
 //   - Stopped: no wake, launch or seat turn, and no automatic lease at all
@@ -75,7 +79,14 @@ type autonomyState struct {
 	Turns    []time.Time `json:"turns,omitempty"` // autonomous turns of the last hour
 	RunStart time.Time   `json:"run_start,omitzero"`
 	LastTurn time.Time   `json:"last_turn,omitzero"`
+	// ToldAt is when the pause hook last told of a PauseTurns pause: such a
+	// pause ends and comes back by itself, and is told once per pauseToldEvery.
+	ToldAt time.Time `json:"told_at,omitzero"`
 }
+
+// pauseToldEvery bounds how often the pause hook tells of a PauseTurns pause
+// (at the budget every freed turn ends it and the next one pauses again).
+const pauseToldEvery = time.Hour
 
 // AutonomyStatus is a project's autonomy as the app shows it.
 type AutonomyStatus struct {
@@ -170,6 +181,7 @@ func (n *Node) Autonomy() Autonomy {
 // AutonomyStatus reports the autonomy setting with its budget state.
 func (n *Node) AutonomyStatus() AutonomyStatus {
 	now := time.Now()
+	n.autoPaused(now) // a turns pause that ran out shows as over
 	a := n.auto
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -184,7 +196,8 @@ func (n *Node) AutonomyStatus() AutonomyStatus {
 }
 
 // SetAutonomyPauseHook sets what is told of a pause of autonomous delivery
-// (once per pause). It must be set before Serve or Run.
+// (once per pause; of a turns pause at most once per pauseToldEvery). It must
+// be set before Serve or Run.
 func (n *Node) SetAutonomyPauseHook(f func(reason string)) { n.auto.onPause = f }
 
 // ResumeAutonomy ends a pause and starts the budgets over.
@@ -259,10 +272,31 @@ func (n *Node) autoOK() bool {
 	if n.Stopped() {
 		return false
 	}
+	paused, _ := n.autoPaused(time.Now())
+	return !paused
+}
+
+// autoPaused reports whether a budget pauses autonomous delivery at now, and
+// which. A PauseTurns pause ends by itself here once the hour before now has
+// room for a turn again (the budget is a rate: nothing is left to decide);
+// a PauseRun pause waits for ResumeAutonomy.
+func (n *Node) autoPaused(now time.Time) (bool, string) {
 	a := n.auto
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	return !a.st.Paused
+	if !a.st.Paused || a.st.Reason != PauseTurns || len(recentTurns(a.st.Turns, now)) >= a.cfg.TurnsPerHour {
+		defer a.mu.Unlock()
+		return a.st.Paused, a.st.Reason
+	}
+	a.st.Paused, a.st.Reason, a.st.PausedAt = false, "", time.Time{} // ToldAt stays
+	a.st.Turns = recentTurns(a.st.Turns, now)
+	err := a.saveLocked()
+	a.mu.Unlock()
+	if err != nil {
+		n.log.Warn("save autonomy", "err", err)
+	}
+	n.log.Info("autonomous delivery resumed: the hour has room for a turn again")
+	n.changed("autonomy")
+	return false, ""
 }
 
 // autoMode reports the autonomy mode.
@@ -275,11 +309,13 @@ func (n *Node) autoMode() string {
 
 // autoTake reports whether one autonomous turn may start now and, in full
 // mode, counts it against the budgets; an exhausted budget pauses autonomous
-// delivery (and tells the pause hook once) instead.
+// delivery instead and tells the pause hook: once per pause, and of a turns
+// pause, which ends and returns by itself, once per pauseToldEvery.
 func (n *Node) autoTake(now time.Time) bool {
 	if n.Stopped() {
 		return false
 	}
+	n.autoPaused(now) // ends a turns pause that ran out
 	a := n.auto
 	a.mu.Lock()
 	if a.st.Paused {
@@ -291,7 +327,7 @@ func (n *Node) autoTake(now time.Time) bool {
 		return true
 	}
 	a.st.Turns = recentTurns(a.st.Turns, now)
-	if a.st.LastTurn.IsZero() || now.Sub(a.st.LastTurn) >= autoQuietGap {
+	if a.st.LastTurn.IsZero() || a.st.RunStart.IsZero() || now.Sub(a.st.LastTurn) >= autoQuietGap {
 		a.st.RunStart = now
 	}
 	reason := ""
@@ -301,8 +337,12 @@ func (n *Node) autoTake(now time.Time) bool {
 	case now.Sub(a.st.RunStart) >= a.cfg.MaxRun:
 		reason = PauseRun
 	}
+	tell := false
 	if reason != "" {
 		a.st.Paused, a.st.Reason, a.st.PausedAt = true, reason, now
+		if tell = reason != PauseTurns || now.Sub(a.st.ToldAt) >= pauseToldEvery; tell && reason == PauseTurns {
+			a.st.ToldAt = now
+		}
 	} else {
 		a.st.Turns = append(a.st.Turns, now)
 		a.st.LastTurn = now
@@ -318,10 +358,42 @@ func (n *Node) autoTake(now time.Time) bool {
 	}
 	n.log.Warn("autonomous delivery paused: budget reached", "reason", reason)
 	n.changed("autonomy")
-	if hook != nil {
+	if hook != nil && tell {
 		hook(reason)
 	}
 	return false
+}
+
+// autoRefund gives back the turn autoTake counted at at: nothing ran for it
+// (its claim came back empty, another handler had the messages). Only a turn
+// that does work spends the budgets; the run it may have started ends with
+// it, unless another turn counted at the same instant (seatsDue takes every
+// seat's with one now) still stands for it.
+func (n *Node) autoRefund(at time.Time) {
+	a := n.auto
+	a.mu.Lock()
+	i := slices.IndexFunc(a.st.Turns, func(t time.Time) bool { return t.Equal(at) })
+	if a.cfg.Mode != AutonomyFull || i < 0 {
+		a.mu.Unlock()
+		return
+	}
+	a.st.Turns = slices.Delete(slices.Clone(a.st.Turns), i, i+1)
+	if a.st.LastTurn.Equal(at) && !slices.ContainsFunc(a.st.Turns, func(t time.Time) bool { return t.Equal(at) }) {
+		a.st.LastTurn = time.Time{}
+		for _, t := range a.st.Turns {
+			if t.After(a.st.LastTurn) {
+				a.st.LastTurn = t
+			}
+		}
+		if a.st.RunStart.Equal(at) {
+			a.st.RunStart = time.Time{}
+		}
+	}
+	err := a.saveLocked()
+	a.mu.Unlock()
+	if err != nil {
+		n.log.Warn("save autonomy", "err", err)
+	}
 }
 
 // recentTurns keeps the turns of the hour before now.

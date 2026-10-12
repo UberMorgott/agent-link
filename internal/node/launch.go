@@ -437,11 +437,8 @@ func (n *Node) holdReason() string {
 	if n.Stopped() {
 		return HoldStopped
 	}
-	a := n.auto
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.st.Paused {
-		return HoldPaused + a.st.Reason
+	if paused, reason := n.autoPaused(time.Now()); paused {
+		return HoldPaused + reason
 	}
 	return ""
 }
@@ -585,6 +582,7 @@ func (n *Node) startDirect(ctx context.Context, dl DirectLauncher, area string, 
 	}
 	msgs := n.launchClaim(area, eligible[:FitUnread(eligible)])
 	if len(msgs) == 0 {
+		n.autoRefund(now) // nothing to open a session for: no turn spent
 		return
 	}
 	spec.Prompt = WakePrompt(msgs, len(eligible)-len(msgs), spec.Folder, randomHex(8))
