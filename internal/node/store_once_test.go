@@ -28,9 +28,11 @@ func TestChatMessageStoredOnce(t *testing.T) {
 	a, b := deliveryPair(t, t.TempDir(), nil, nil)
 	m := ask(t, a, b, "the body lives in the chat store")
 
+	// The chat store has it first (ask), the inbox record follows.
 	var in inboxRecord
-	if err := readJSON(a.store.inboxPath(m.ID), &in); err != nil || !in.Slim || in.Message.Body != "" || in.Message.ChatID != m.ChatID {
-		t.Fatalf("inbox record %+v %v", in, err)
+	eventually(t, "a's inbox record", func() bool { return readJSON(a.store.inboxPath(m.ID), &in) == nil })
+	if !in.Slim || in.Message.Body != "" || in.Message.ChatID != m.ChatID {
+		t.Fatalf("inbox record %+v", in)
 	}
 	if rec, ok := a.chats.message(m.ID); !ok || rec.Message.Body != m.Body {
 		t.Fatalf("chat record %+v", rec)
@@ -40,10 +42,11 @@ func TestChatMessageStoredOnce(t *testing.T) {
 	}
 
 	sent := filepath.Join(b.cfg.DataDir, "sent", "a", m.ID+".json")
-	eventually(t, "b's copy acked", func() bool { _, err := os.Stat(sent); return err == nil })
+	// Readable, not only there: its writer may still hold the file.
 	var out Message
-	if err := readJSON(sent, &out); err != nil || out.Body != "" || out.ID != m.ID || out.To != "a" {
-		t.Fatalf("sent copy %+v %v", out, err)
+	eventually(t, "b's copy acked", func() bool { return readJSON(sent, &out) == nil })
+	if out.Body != "" || out.ID != m.ID || out.To != "a" {
+		t.Fatalf("sent copy %+v", out)
 	}
 	if b.store.delivery("a", m.ID) != "sent" {
 		t.Fatal("no delivery evidence")
