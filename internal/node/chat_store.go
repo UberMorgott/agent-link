@@ -81,6 +81,11 @@ type chatRecord struct {
 	// a live session (Reassign). Local only, never sent.
 	Orphaned   string    `json:"orphaned,omitempty"`
 	OrphanedAt time.Time `json:"orphaned_at,omitzero"`
+	// Reopened is the session whose end handed this request back, unread again
+	// (reopenStranded). It stays for good, also once that session is back and
+	// its Orphaned mark dropped: a request is handed back once. Local only,
+	// never sent.
+	Reopened string `json:"reopened,omitempty"`
 	// ReassignedTo is the session a person or agent handed this unread
 	// message to (Reassign): it waits for that session alone, live or not,
 	// like a reply for its asker (routeOf). Local only, never sent.
@@ -434,8 +439,74 @@ func (cs *chatStore) markOrphaned(ids []string, sid string) ([]string, error) {
 	return out, nil
 }
 
+// strandedLocked reports whether r is a request to self that a session read
+// and took (Ack: Assigned "session:<id>") since since and nobody of self
+// answered, not handed back before (Reopened). The caller holds cs.mu.
+func (cs *chatStore) strandedLocked(r chatRecord, self string, since time.Time) bool {
+	if !r.Unread || r.ReadAt.Before(since) || r.Reopened != "" || r.Orphaned != "" || r.Message.Kind != "" || r.Message.From == self ||
+		assignedSession(r) == "" || !r.Message.Asks(self) {
+		return false
+	}
+	_, answered := cs.replies[r.Message.ID][self]
+	return !answered
+}
+
+// stranded lists the sessions that hold a stranded request (strandedLocked)
+// read before until, each with when it read the first of them.
+func (cs *chatStore) stranded(self string, since, until time.Time) map[string]time.Time {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	out := map[string]time.Time{}
+	for _, st := range cs.chats {
+		for _, r := range st.msgs {
+			if !cs.strandedLocked(r, self, since) || !r.ReadAt.Before(until) {
+				continue
+			}
+			if at, ok := out[assignedSession(r)]; !ok || r.ReadAt.Before(at) {
+				out[assignedSession(r)] = r.ReadAt
+			}
+		}
+	}
+	return out
+}
+
+// reopenStranded hands back the stranded requests of session sid
+// (strandedLocked) that gone, given when sid read one, reports it gone for:
+// unread again and nobody's, so a live session, a wake or a launch takes
+// them, marked Orphaned (shown as needing a person until one does) and
+// Reopened (a request is handed back once, whoever takes it then). It returns
+// their ids.
+func (cs *chatStore) reopenStranded(sid, self string, since time.Time, gone func(readAt time.Time) bool) ([]string, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	now := time.Now().UTC()
+	var ids []string
+	for _, st := range cs.chats {
+		for _, r := range st.msgs {
+			if assignedSession(r) == sid && cs.strandedLocked(r, self, since) && gone(r.ReadAt) {
+				ids = append(ids, r.Message.ID)
+			}
+		}
+	}
+	var out []string
+	for _, id := range ids {
+		_, changed, err := cs.updateLocked(id, func(r *chatRecord) bool {
+			r.ReadAt, r.Assigned, r.Orphaned, r.OrphanedAt, r.Reopened = time.Time{}, "", sid, now, sid
+			return true
+		})
+		if err != nil {
+			return out, err
+		}
+		if changed {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
 // clearOrphaned drops the Orphaned mark of session sid (it is live again):
-// its replies are its own again. It returns the ids cleared.
+// its replies are its own again (Reopened stays: a request handed back is not
+// handed back again). It returns the ids cleared.
 func (cs *chatStore) clearOrphaned(sid string) ([]string, error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()

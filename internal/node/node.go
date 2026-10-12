@@ -111,6 +111,10 @@ type Node struct {
 	dormantEvery time.Duration
 	wakeKick     chan struct{}
 	wakeTicks    atomic.Int64
+	// orphanDue asks the wake loop for an orphan sweep at its next pass (a
+	// reply arrived); orphanSwept is when it last ran one (sessions.go).
+	orphanDue   atomic.Bool
+	orphanSwept time.Time
 	// poster wakes idle Claude sessions through their inbox (inbox.go);
 	// launcher opens a visible session when none is live (launch.go), as the
 	// project's autonomy allows (auto, autonomy.go). deliv is the delivery

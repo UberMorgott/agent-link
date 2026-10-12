@@ -596,6 +596,27 @@ func (b *leaseBook) forget(key string) error {
 	return b.saveLocked()
 }
 
+// reopen makes the acked records of ids leasable again (their request was
+// handed back, reopenStranded): pending, with the attempts they had.
+func (b *leaseBook) reopen(ids []string, reason string, now time.Time) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	changed := false
+	for _, id := range ids {
+		if l := b.m[id]; l != nil && l.State == LeaseAcked {
+			l.State, l.Owner, l.Token, l.Reason, l.At = LeasePending, "", "", reason, now
+			if l.Attempts > 0 {
+				l.State = LeaseRetry
+			}
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return b.saveLocked()
+}
+
 // all returns copies of every record.
 func (b *leaseBook) all() map[string]Lease {
 	b.mu.Lock()

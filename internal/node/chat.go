@@ -1311,6 +1311,9 @@ func (n *Node) postChat(c Chat, m Message) error {
 		if _, _, err := n.chats.markRead(m.ReplyTo, "", n.cfg.Node); err != nil {
 			n.log.Warn("mark replied message read", "id", m.ReplyTo, "err", err)
 		}
+		if unread {
+			n.orphanDue.Store(true) // a seat's reply for a session: is that one still there?
+		}
 	}
 	return n.fanout(c, m, false)
 }
@@ -1536,6 +1539,9 @@ func (n *Node) receiveChat(peer, peerID string, m Message) chatVerdict {
 		closed = c
 		if isNew {
 			n.assignToSeat(m, seat)
+			if m.ReplyTo != "" {
+				n.orphanDue.Store(true) // a reply: is the session that asked still there?
+			}
 			n.changed("messages")
 		}
 	}

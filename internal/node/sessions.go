@@ -183,6 +183,88 @@ type sessionRegistry struct {
 	// gone are the sessions saveLocked dropped as expired (TTL, no
 	// SessionEnd) whose orphaned replies expireSessions has not reported yet.
 	gone []string
+
+	// left are the sessions no longer registered here (memory only): ended by
+	// their SessionEnd hook, or dropped as expired with the LastSeen they had.
+	// awake is since when the node runs without a gap (its start, or the end of
+	// a sleep: noteAwake), passAt its last wake loop pass. A session that only
+	// expired counts as gone for good (absence.goneFor) after sessionGoneAfter of that
+	// time, not before: one heartbeat missed over a sleep or a restart is not
+	// an end.
+	left   map[string]leftSession
+	awake  time.Time
+	passAt time.Time
+	// elsewhere are the sessions the last reconciliation found live though not
+	// registered here (ReclaimReplies; another context of the process holds
+	// them): the orphan sweep leaves them until the next one (OrphanReplies).
+	elsewhere map[string]bool
+}
+
+// leftSession is a session that left the registry: ended (EndSession), else
+// last seen at seen; at is when it left.
+type leftSession struct {
+	ended bool
+	seen  time.Time
+	at    time.Time
+}
+
+// Gone for good (absence.goneFor).
+const (
+	// sessionGoneAfter: a session that expired without SessionEnd is gone for
+	// good once it went unseen this long while the node was awake.
+	sessionGoneAfter = time.Hour
+	// sleepGap: a wake loop pass this long after the one before means the
+	// machine slept (the loop's longest wait is wakeDormant).
+	sleepGap = 5 * time.Minute
+)
+
+// noteAwake records a wake loop pass at now: after a gap (the machine slept)
+// the sessions' time unseen starts over, they had no chance to report.
+func (r *sessionRegistry) noteAwake(now time.Time) {
+	now = now.Round(0) // wall clock: the monotonic one may stop in a sleep
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if now.Sub(r.passAt) >= sleepGap {
+		r.awake = now
+	}
+	r.passAt = now
+	maps.DeleteFunc(r.left, func(_ string, l leftSession) bool { return now.Sub(l.at) > strandedMax })
+}
+
+// absence is what the registry knows of session sid, which is not live: ended
+// (EndSession), else when it, or a node awake to hear of it, was last seen.
+type absence struct {
+	ended bool
+	seen  time.Time
+}
+
+func (r *sessionRegistry) absence(sid string) absence {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	l := r.left[sid]
+	a := absence{ended: l.ended, seen: latest(r.awake, l.seen)}
+	if s := r.sessions[sid]; s != nil {
+		a.seen = latest(a.seen, s.LastSeen)
+	}
+	return a
+}
+
+// goneFor reports whether the session is gone for good at now as far as a
+// message it read at readAt goes: it ended, or nothing was seen of it for
+// sessionGoneAfter while the node was awake.
+func (a absence) goneFor(readAt, now time.Time) bool {
+	return a.ended || now.Sub(latest(a.seen, readAt)) >= sessionGoneAfter
+}
+
+// latest is the latest of ts.
+func latest(ts ...time.Time) time.Time {
+	var out time.Time
+	for _, t := range ts {
+		if t.After(out) {
+			out = t
+		}
+	}
+	return out
 }
 
 // LastSession is the latest agent session registered for an area: a launch
@@ -213,7 +295,10 @@ func openSessions(dir string) (*sessionRegistry, error) {
 	r := &sessionRegistry{path: filepath.Join(dir, "sessions.json"), sessions: map[string]*Session{}, last: map[string]ActivityState{},
 		on: map[string]map[string]string{}, claims: map[string]hold{}, inbox: map[string]inboxAddr{},
 		recent: map[string]LastSession{}, recentPath: filepath.Join(dir, "last_sessions.json"),
-		pins: map[string]PinnedSession{}, pinsPath: filepath.Join(dir, "pinned_sessions.json")}
+		pins: map[string]PinnedSession{}, pinsPath: filepath.Join(dir, "pinned_sessions.json"),
+		left: map[string]leftSession{}, elsewhere: map[string]bool{}}
+	r.awake = time.Now().Round(0)
+	r.passAt = r.awake
 	var list []Session
 	if err := readJSON(r.path, &list); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -341,6 +426,7 @@ func (r *sessionRegistry) saveLocked(now time.Time) error {
 			delete(r.on, id)
 			delete(r.inbox, id)
 			r.gone = append(r.gone, id)
+			r.left[id] = leftSession{seen: s.LastSeen, at: now}
 			continue
 		}
 		c := *s
@@ -413,6 +499,8 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	r := n.sess
 	r.mu.Lock()
 	s := r.sessions[req.SessionID]
+	delete(r.left, req.SessionID)
+	delete(r.elsewhere, req.SessionID)
 	fresh := s == nil || !s.live(now) || s.Wake != req.Wake || s.Area != area
 	back := s == nil || !s.live(now)
 	if back {
@@ -500,7 +588,9 @@ func (n *Node) EndSession(id string) error {
 	delete(r.last, id)
 	delete(r.on, id)
 	delete(r.inbox, id)
-	err := r.saveLocked(time.Now())
+	now := time.Now()
+	r.left[id] = leftSession{ended: true, at: now}
+	err := r.saveLocked(now)
 	r.mu.Unlock()
 	n.clearPinnedSession(id)
 	// Its leases go back at once: another session or a launch takes them.
@@ -540,14 +630,17 @@ func (n *Node) clearPinnedSession(id string) {
 // sessionChanged hands a session that ended or expired (live false), or
 // registered anew (live true), to the session hook, else handles its
 // orphaned replies here (OrphanReplies, ReclaimReplies).
-func (n *Node) sessionChanged(sid string, live bool) {
+func (n *Node) sessionChanged(sid string, live bool) { n.sessionChangedAt(sid, live, time.Now()) }
+
+// sessionChangedAt is sessionChanged as of now.
+func (n *Node) sessionChangedAt(sid string, live bool, now time.Time) {
 	switch {
 	case n.onSession != nil:
 		n.onSession(sid, live)
 	case live:
 		n.ReclaimReplies(sid)
 	default:
-		n.OrphanReplies(sid)
+		n.orphanReplies(sid, now)
 	}
 }
 
@@ -564,11 +657,18 @@ func (n *Node) SessionLive(sid string) (Session, bool) {
 }
 
 // ReclaimReplies gives session sid, live again (resumed), back its orphaned
-// replies: they are its own, no longer waiting for a person.
+// replies: they are its own, no longer waiting for a person. Live though not
+// registered here (another context holds it), the orphan sweep leaves it
+// until its next reconciliation.
 func (n *Node) ReclaimReplies(sid string) {
 	r := n.sess
 	r.claimMu.Lock()
 	ids, err := n.chats.clearOrphaned(sid)
+	r.mu.Lock()
+	if s := r.sessions[sid]; s == nil || !s.live(time.Now()) {
+		r.elsewhere[sid] = true
+	}
+	r.mu.Unlock()
 	r.claimMu.Unlock()
 	if err != nil {
 		n.log.Warn("clear orphaned replies", "session", sid, "err", err)
@@ -607,7 +707,10 @@ func (n *Node) expireSessions(now time.Time) {
 	}
 }
 
-// OrphanReplies marks the unread replies that wait for session sid, which
+// OrphanReplies hands back the requests session sid read and never answered,
+// once it is gone for good (reopenStranded, goneFor: ended, or unseen for
+// sessionGoneAfter; one that only expired may come back and go on with them),
+// and marks the unread replies that wait for session sid, which
 // ended or expired, as needing a person (chatRecord.Orphaned: the app, the
 // unread API and the chat list show it) and tells their authors
 // (AttemptNeedsHuman; a peer's, this node's seats have none to tell). No
@@ -615,10 +718,16 @@ func (n *Node) expireSessions(now time.Time) {
 // them to a live session (Reassign). Nothing happens while sid is live here.
 // It runs under claimMu, like Reassign: a reply handed over meanwhile is not
 // marked, and only the replies it marks are reported.
-func (n *Node) OrphanReplies(sid string) {
+func (n *Node) OrphanReplies(sid string) { n.orphanReplies(sid, time.Now()) }
+
+// orphanReplies is OrphanReplies as of now.
+func (n *Node) orphanReplies(sid string, now time.Time) {
 	r := n.sess
 	r.claimMu.Lock()
-	if r.liveIDs(time.Now())[sid] {
+	r.mu.Lock()
+	delete(r.elsewhere, sid) // reconciled as live nowhere
+	r.mu.Unlock()
+	if r.liveIDs(now)[sid] {
 		r.claimMu.Unlock()
 		return
 	}
@@ -629,16 +738,81 @@ func (n *Node) OrphanReplies(sid string) {
 		}
 	}
 	marked, err := n.chats.markOrphaned(ids, sid)
+	// A request it read and took but never answered goes back to the node's
+	// sessions (a seat's session answers in its turns, never here).
+	var reopened []string
+	var rerr error
+	if n.seatOfSession(sid) == "" {
+		away := r.absence(sid)
+		gone := func(readAt time.Time) bool { return away.goneFor(readAt, now) }
+		if reopened, rerr = n.chats.reopenStranded(sid, n.cfg.Node, now.Add(-strandedMax), gone); len(reopened) > 0 {
+			rerr = errors.Join(rerr, n.leases.reopen(reopened, "assignee_gone", now))
+		}
+	}
 	r.claimMu.Unlock()
-	if err != nil {
-		n.log.Warn("mark orphaned replies", "session", sid, "err", err)
+	if err = errors.Join(err, rerr); err != nil {
+		n.log.Warn("mark orphaned messages", "session", sid, "err", err)
 	}
-	if len(marked) == 0 {
-		return
+	if len(reopened) > 0 {
+		n.log.Warn("requests read by a session that is gone were never answered; unread again", "session", sid, "messages", len(reopened))
 	}
-	n.log.Warn("replies wait for a session that is gone; a person decides", "session", sid, "messages", len(marked))
-	n.report(marked, AttemptNeedsHuman)
-	n.changed("messages")
+	if len(marked) > 0 {
+		n.log.Warn("replies wait for a session that is gone; a person decides", "session", sid, "messages", len(marked))
+		n.report(marked, AttemptNeedsHuman)
+	}
+	if len(marked)+len(reopened) > 0 {
+		n.changed("messages")
+	}
+}
+
+// The orphan sweep's pace and reach.
+const (
+	// orphanSweepEvery is how often the wake loop looks for messages that wait
+	// for a session that is gone (orphanSweep); a reply that arrives asks for
+	// one at once (Node.orphanDue).
+	orphanSweepEvery = 30 * time.Second
+	// strandedMax: a request read longer ago than this is not handed back
+	// (its session's end is old news; nothing replays the history).
+	strandedMax = 24 * time.Hour
+	// strandedGrace: the sweep leaves a request read this recently alone (its
+	// reader may register a moment later); a session's end hands it back at
+	// once, one that only expired after sessionGoneAfter.
+	strandedGrace = time.Minute
+)
+
+// orphanSweep finds what waits for a session that is not live here, whenever
+// that came about: an unread reply whose asker is gone (it arrived after the
+// session ended, when OrphanReplies had nothing to mark) and a request a
+// session read and took but never answered, once that session is gone for
+// good (goneFor). Each such session goes through sessionChanged as ended,
+// which decides by its liveness in every context (OrphanReplies, or
+// ReclaimReplies when it lives elsewhere: that one the sweep then leaves
+// until its next reconciliation, sessionRegistry.elsewhere).
+func (n *Node) orphanSweep(now time.Time) {
+	r := n.sess
+	live := r.liveIDs(now)
+	r.mu.Lock()
+	elsewhere := maps.Clone(r.elsewhere)
+	r.mu.Unlock()
+	var gone []string
+	note := func(sid string) {
+		if sid != "" && !live[sid] && !elsewhere[sid] && !slices.Contains(gone, sid) {
+			gone = append(gone, sid)
+		}
+	}
+	for _, u := range n.chats.unread() {
+		if u.rec.Message.Kind == "" && u.rec.Orphaned == "" {
+			note(n.replyTarget(u.rec))
+		}
+	}
+	for sid, readAt := range n.chats.stranded(n.cfg.Node, now.Add(-strandedMax), now.Add(-strandedGrace)) {
+		if n.seatOfSession(sid) == "" && r.absence(sid).goneFor(readAt, now) {
+			note(sid)
+		}
+	}
+	for _, sid := range gone {
+		n.sessionChangedAt(sid, false, now)
+	}
 }
 
 // replyTarget is the session unread message rec waits for, live or not: the

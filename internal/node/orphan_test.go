@@ -3,6 +3,7 @@ package node
 import (
 	"errors"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -235,5 +236,247 @@ func TestExpiredSessionBackBeforeSweep(t *testing.T) {
 	}
 	if slices.Contains(attemptsOf(b, r), AttemptNeedsHuman) {
 		t.Fatal("author told needs_human for a returned session")
+	}
+}
+
+// A request a session read and took (its ack) but never answered goes back
+// when that session ends: unread again, nobody's, shown as needing a person,
+// and a live session takes it. It is handed back once; an answered request,
+// and one read by a session that still lives, stay read.
+func TestStrandedRequestReopened(t *testing.T) {
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, nil, nil)
+	reg := func(id string) {
+		t.Helper()
+		if _, err := a.RegisterSession(SessionRequest{SessionID: id, Provider: ProviderClaude, Folder: dir}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	take := func(id, sid string) {
+		t.Helper()
+		if g, err := a.Claim(ClaimRequest{IDs: []string{id}, SessionID: sid}); err != nil || !slices.Equal(g, []string{id}) {
+			t.Fatalf("claim of %s by %s: %v %v", id, sid, g, err)
+		}
+		if res, err := a.Ack("", AckRequest{IDs: []string{id}, SessionID: sid}); err != nil || res[0].Assigned != "session:"+sid {
+			t.Fatalf("ack of %s by %s: %+v %v", id, sid, res, err)
+		}
+	}
+	reg("s-1")
+	m := ask(t, a, b, "do this")
+	done := ask(t, a, b, "and this")
+	take(m.ID, "s-1")
+	take(done.ID, "s-1")
+	if _, err := a.SendRequest(SendRequest{ChatID: done.ChatID, ReplyTo: done.ID, Body: "done", AuthorKind: AuthorAgent, SessionID: "s-1"}); err != nil {
+		t.Fatal(err)
+	}
+	// Its session lives: the sweep leaves it, however long ago it was read.
+	a.orphanSweep(time.Now().Add(30 * time.Minute))
+	if cm := chatMsg(t, a, m.ChatID, m.ID); cm.Unread || cm.NeedsHuman {
+		t.Fatalf("a live session's request handed back: %+v", cm)
+	}
+	reg("s-2")
+	if err := a.EndSession("s-1"); err != nil {
+		t.Fatal(err)
+	}
+	if cm := chatMsg(t, a, m.ChatID, m.ID); !cm.Unread || !cm.NeedsHuman || cm.OrphanedSession != "s-1" || cm.Assigned != "" {
+		t.Fatalf("unanswered request after its session ended: %+v", cm)
+	}
+	if cm := chatMsg(t, a, done.ChatID, done.ID); cm.Unread {
+		t.Fatalf("an answered request handed back: %+v", cm)
+	}
+	if v := leaseViewOf(t, a, m.ID); v.State == LeaseAcked || v.Owner != "" {
+		t.Fatalf("lease of the handed back request: %+v", v)
+	}
+	if p, _ := a.UnreadFor(dir, "s-2", "", 10); !slices.ContainsFunc(p.Messages, func(u UnreadMessage) bool { return u.ID == m.ID && u.AsksYou }) {
+		t.Fatalf("not offered to the live session: %+v", p.Messages)
+	}
+	take(m.ID, "s-2")
+	// Handed back once: the second session's end leaves it read.
+	if err := a.EndSession("s-2"); err != nil {
+		t.Fatal(err)
+	}
+	if cm := chatMsg(t, a, m.ChatID, m.ID); cm.Unread || cm.Assigned != "session:s-2" {
+		t.Fatalf("handed back twice: %+v", cm)
+	}
+
+	// A reader that went without SessionEnd (never registered here, or its
+	// end was missed): the periodic sweep finds it, past its grace.
+	lost := ask(t, a, b, "read by a ghost")
+	if _, err := a.Ack("", AckRequest{IDs: []string{lost.ID}, SessionID: "s-ghost"}); err != nil {
+		t.Fatal(err)
+	}
+	a.orphanSweep(time.Now())
+	if cm := chatMsg(t, a, lost.ChatID, lost.ID); cm.Unread {
+		t.Fatalf("handed back within its grace: %+v", cm)
+	}
+	// Past its grace, unseen for less than sessionGoneAfter: it may be back.
+	a.orphanSweep(time.Now().Add(strandedGrace + time.Second))
+	if cm := chatMsg(t, a, lost.ChatID, lost.ID); cm.Unread {
+		t.Fatalf("handed back before its reader is gone for good: %+v", cm)
+	}
+	a.orphanSweep(time.Now().Add(sessionGoneAfter + time.Second))
+	if cm := chatMsg(t, a, lost.ChatID, lost.ID); !cm.Unread || cm.OrphanedSession != "s-ghost" {
+		t.Fatalf("the sweep left a gone reader's request: %+v", cm)
+	}
+	// Old news is not replayed.
+	old := ask(t, a, b, "read long ago")
+	if _, err := a.Ack("", AckRequest{IDs: []string{old.ID}, SessionID: "s-ghost"}); err != nil {
+		t.Fatal(err)
+	}
+	a.orphanSweep(time.Now().Add(strandedMax + time.Minute))
+	if cm := chatMsg(t, a, old.ChatID, old.ID); cm.Unread {
+		t.Fatalf("a request read long ago handed back: %+v", cm)
+	}
+}
+
+// A session that only expired (a sleep, the node down: no heartbeat for a TTL)
+// and comes back keeps the request it works on: nothing hands it back, the
+// session is not given it a second time. One that ended is, once: the mark of
+// that outlives its return (ReclaimReplies), so its next end leaves the
+// request read.
+func TestExpiredSessionKeepsItsRequest(t *testing.T) {
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, nil, nil)
+	reg := func() {
+		t.Helper()
+		if _, err := a.RegisterSession(SessionRequest{SessionID: "s-1", Provider: ProviderClaude, Folder: dir}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	take := func(id string) {
+		t.Helper()
+		if g, err := a.Claim(ClaimRequest{IDs: []string{id}, SessionID: "s-1"}); err != nil || !slices.Equal(g, []string{id}) {
+			t.Fatalf("claim: %v %v", g, err)
+		}
+		if _, err := a.Ack("", AckRequest{IDs: []string{id}, SessionID: "s-1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	offered := func(id string) bool {
+		t.Helper()
+		p, err := a.UnreadFor(dir, "s-1", "", 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return slices.ContainsFunc(p.Messages, func(u UnreadMessage) bool { return u.ID == id })
+	}
+	expire := func() {
+		a.sess.mu.Lock()
+		a.sess.sessions["s-1"].LastSeen = time.Now().Add(-2 * time.Hour)
+		a.sess.mu.Unlock()
+		a.expireSessions(time.Now())
+	}
+	reg()
+	m := ask(t, a, b, "do this")
+	take(m.ID)
+	// Its heartbeats stopped two hours ago, as the clock has it; the node has
+	// been awake to hear one for a moment only.
+	expire()
+	a.orphanSweep(time.Now().Add(2 * strandedGrace))
+	if cm := chatMsg(t, a, m.ChatID, m.ID); cm.Unread || cm.NeedsHuman || cm.Assigned != "session:s-1" {
+		t.Fatalf("an expired session's request handed back: %+v", cm)
+	}
+	reg() // it is back
+	if offered(m.ID) {
+		t.Fatal("the session got its request a second time")
+	}
+	// Unseen for sessionGoneAfter with the node awake: gone for good.
+	other := ask(t, a, b, "and this")
+	take(other.ID)
+	a.orphanSweep(time.Now().Add(sessionGoneAfter + time.Minute))
+	for _, id := range []string{m.ID, other.ID} {
+		if cm := chatMsg(t, a, m.ChatID, id); !cm.Unread || cm.OrphanedSession != "s-1" || cm.Assigned != "" {
+			t.Fatalf("request of a session unseen for an hour: %+v", cm)
+		}
+	}
+	// It registers after all: the requests are its own again, taken again, and
+	// handed back no second time, whether it expires or ends.
+	expire()
+	reg()
+	if cm := chatMsg(t, a, m.ChatID, m.ID); cm.NeedsHuman || !cm.Unread || !offered(m.ID) {
+		t.Fatalf("after the session came back: %+v", cm)
+	}
+	take(m.ID)
+	take(other.ID)
+	a.orphanSweep(time.Now().Add(sessionGoneAfter + time.Minute))
+	if err := a.EndSession("s-1"); err != nil {
+		t.Fatal(err)
+	}
+	a.orphanSweep(time.Now().Add(2 * strandedGrace))
+	for _, id := range []string{m.ID, other.ID} {
+		if cm := chatMsg(t, a, m.ChatID, id); cm.Unread || cm.Assigned != "session:s-1" {
+			t.Fatalf("handed back twice: %+v", cm)
+		}
+	}
+}
+
+// A session live in another context of the process (the session hook finds
+// it there: ReclaimReplies) is reconciled once, not at every sweep, until the
+// next reconciliation says otherwise.
+func TestOrphanSweepReconcilesLiveElsewhereOnce(t *testing.T) {
+	a, b := deliveryPair(t, t.TempDir(), nil, nil)
+	var calls atomic.Int32
+	a.onSession = func(sid string, _ bool) {
+		calls.Add(1)
+		a.ReclaimReplies(sid)
+	}
+	m := ask(t, a, b, "read from another context")
+	if _, err := a.Ack("", AckRequest{IDs: []string{m.ID}, SessionID: "s-there"}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().Add(sessionGoneAfter + time.Minute)
+	for range 3 {
+		a.orphanSweep(at)
+	}
+	if cm := chatMsg(t, a, m.ChatID, m.ID); calls.Load() != 1 || cm.Unread {
+		t.Fatalf("reconciled %d times, message %+v", calls.Load(), cm)
+	}
+	// It ends there: reconciled as live nowhere, the sweep looks again.
+	a.onSession = func(string, bool) { calls.Add(1) }
+	a.OrphanReplies("s-there")
+	a.orphanSweep(at)
+	if calls.Load() != 2 {
+		t.Fatalf("reconciled %d times after it ended elsewhere", calls.Load())
+	}
+}
+
+// A reply that arrives after the session that asked ended has no session end
+// left to mark it: its arrival asks for a sweep, which marks it as needing a
+// person and tells its author.
+func TestLateReplyOrphanedBySweep(t *testing.T) {
+	a, b := pair(t, testSecret, testSecret)
+	dir := t.TempDir()
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-ask", Provider: ProviderClaude, Folder: dir}); err != nil {
+		t.Fatal(err)
+	}
+	q, err := a.SendRequest(SendRequest{To: "b", Body: "question", AuthorKind: AuthorAgent, SessionID: "s-ask"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "b has the request", func() bool { p, _ := b.Unread("", "", 10); return p.Total == 1 })
+	if err := a.EndSession("s-ask"); err != nil {
+		t.Fatal(err)
+	}
+	a.orphanDue.Store(false)
+	r, err := b.SendRequest(SendRequest{ChatID: q.ChatID, ReplyTo: q.ID, Body: "answer", AuthorKind: AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has the reply", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 1 })
+	eventually(t, "the reply asks for a sweep or got one", func() bool {
+		return a.orphanDue.Load() || chatMsg(t, a, q.ChatID, r.ID).NeedsHuman
+	})
+	a.orphanSweep(time.Now())
+	if m := chatMsg(t, a, q.ChatID, r.ID); !m.Unread || !m.NeedsHuman || m.OrphanedSession != "s-ask" {
+		t.Fatalf("late reply for an ended session: %+v", m)
+	}
+	eventually(t, "needs_human reaches the author", func() bool { return slices.Contains(attemptsOf(b, r), AttemptNeedsHuman) })
+	// The asker comes back: the reply is its own again, and the sweep leaves it.
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-ask", Provider: ProviderClaude, Folder: dir}); err != nil {
+		t.Fatal(err)
+	}
+	a.orphanSweep(time.Now())
+	if m := chatMsg(t, a, q.ChatID, r.ID); m.NeedsHuman || !m.Unread {
+		t.Fatalf("after the asker came back: %+v", m)
 	}
 }

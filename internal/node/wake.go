@@ -88,6 +88,11 @@ func (n *Node) wakeLoop(ctx context.Context) {
 			n.keepPinned(time.Now())
 		}
 		n.leaseSweep(time.Now())
+		n.sess.noteAwake(time.Now())
+		if now := time.Now(); n.orphanDue.Swap(false) || now.Sub(n.orphanSwept) >= orphanSweepEvery {
+			n.orphanSwept = now
+			n.orphanSweep(now)
+		}
 		// Stopped (SetStopped) or paused by the budgets (autonomy.go): no
 		// wake, seat turn or launch starts; messages wait unread, and
 		// launchDue tells their authors why (held:<reason>).
