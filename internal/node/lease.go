@@ -543,8 +543,9 @@ func (b *leaseBook) due(now time.Time, gone func(owner string) bool, active func
 			// The prompt is in the session's queue or inbox: it cannot be
 			// withdrawn, so a deadline never reassigns it (a slow turn is no
 			// failure). Proof, the session's end, a channel error or the
-			// session's silence for queuedOwnerMax ends it; a late proof still
-			// counts (start).
+			// session's silence for queuedOwnerMax ends it (failed: nothing
+			// queues an unproven prompt again); a late proof still counts
+			// (start).
 			since := l.At
 			if a := active(l.Owner); a.After(since) {
 				since = a

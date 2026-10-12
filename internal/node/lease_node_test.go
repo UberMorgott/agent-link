@@ -209,9 +209,10 @@ func TestLeaseQueuedStaysWithOwner(t *testing.T) {
 }
 
 // A queued wake whose session keeps heartbeating but does nothing for
-// queuedOwnerMax is revoked (its failure counted) and the message goes to
-// another idle session; activity since the lease keeps it. The first
-// session's late proof still counts.
+// queuedOwnerMax fails (its failure counted): the prompt was accepted and
+// never proven, so nothing queues it again, here or in another idle session;
+// its author hears needs_human and a hook still takes it. Activity since the
+// lease keeps it. The first session's late proof still counts.
 func TestLeaseQueuedOwnerCap(t *testing.T) {
 	p := &fakePoster{}
 	dir := t.TempDir()
@@ -253,13 +254,25 @@ func TestLeaseQueuedOwnerCap(t *testing.T) {
 	}
 	age(queuedOwnerMax+time.Minute, queuedOwnerMax+2*time.Minute)
 	a.leaseSweep(time.Now())
-	if v := leaseViewOf(t, a, m.ID); v.State != LeaseRetry || v.Reason != "queued_stale" || a.leases.fails(m.ID, "s-2") != 1 || a.leases.queuedOwner(m.ID) != "" {
+	if v := leaseViewOf(t, a, m.ID); v.State != LeaseFailed || v.Reason != "queued_stale" || a.leases.fails(m.ID, "s-2") != 1 || a.leases.queuedOwner(m.ID) != "" {
 		t.Fatalf("stale owner kept it: %+v", v)
 	}
+	waitAttempts(t, b, m, AttemptWakeRequested, AttemptNeedsHuman)
+	// No automatic requeue: neither the other idle session nor the same one.
+	posts := p.count()
 	backoffOver(a, m.ID)
+	for _, id := range []string{"s-1", "s-2"} {
+		a.sess.mu.Lock()
+		a.sess.sessions[id].Woken, a.sess.sessions[id].Wakes = false, 0
+		a.sess.mu.Unlock()
+	}
 	a.wakeIdle(context.Background())
-	if v := leaseViewOf(t, a, m.ID); v.Owner != "s-1" || !strings.HasPrefix(p.calls[len(p.calls)-1], testSocket+"|") {
-		t.Fatalf("not reassigned: %+v %v", v, p.calls)
+	a.leaseSweep(time.Now())
+	if v := leaseViewOf(t, a, m.ID); v.State != LeaseFailed || p.count() != posts {
+		t.Fatalf("an unproven queued prompt was queued again: %+v %v", v, p.calls)
+	}
+	if g, err := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-2", WakeToken: "0123456789abcdef"}); err != nil || len(g) != 0 {
+		t.Fatalf("a waiter woke with the failed message: %v %v", g, err)
 	}
 	if got := a.LeaseStart("s-2", "", []string{m.ID}); len(got) != 1 {
 		t.Fatalf("late proof refused: %v", got)

@@ -35,6 +35,8 @@ const (
 	// prompt sits in its queue or inbox while it shows no activity (active: its
 	// last hook event, not a heartbeat): a session whose waiter hit its wake cap
 	// but keeps heartbeating would hold it for as long as it stays registered.
+	// Past it the lease fails (queued_stale, needs_human): the prompt was
+	// accepted and never proven, so nothing queues it a second time.
 	queuedOwnerMax = 30 * time.Minute
 )
 

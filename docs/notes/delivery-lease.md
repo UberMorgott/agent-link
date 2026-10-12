@@ -35,6 +35,7 @@ Persisted in `leases.json` (data dir) next to `sessions.json`.
 | running(hold) -> failed | a launch's ack kept failing for `leaseHoldMax` (1 h): ack job and claim dropped |
 | running -> failed | a launch's first turn started and failed (may have acted in part: `needs_human`) |
 | retry -> failed | `attempts >= maxLeaseAttempts` (5): `needs_human` reported once |
+| leased -> failed | `queued_stale`: a queued/inbox/waiter wake its session stayed silent on for `queuedOwnerMax` (accepted, never proven: no automatic requeue, `needs_human`) |
 
 Rules:
 
@@ -48,7 +49,10 @@ Rules:
   event since the lease, heartbeats aside) loses it (`queued_stale`: a
   failure of that owner, the claim and token kept for a late proof), so a
   session whose waiter hit its wake cap but keeps heartbeating cannot hold it
-  for the whole registration.
+  for the whole registration. The lease is then `failed` (`needs_human`), not
+  `retry`: the prompt was accepted and never proven, and `codex queue` has no
+  idempotency key, so queuing it again may run it twice. A hook still shows
+  the message at a session's next event.
 - `failed` is terminal for automatic paths (`Lease.Failed`): a hook may still
   show the message to a live session, and its lapse returns to `failed`.
 - `hook` leases (a session in a turn claiming) do not count as attempts and
@@ -59,7 +63,7 @@ Rules:
   record's `waiter_wakes`, persisted); launches keep `launchDebounce`.
 - `failed` blocks every automatic delivery. The message stays unread: a
   session's hooks still deliver it at its next event (a person decides).
-- A revoke for a deadline or `queued_stale` keeps a lapsed wake claim's token (PR #16: a late
+- A revoke for a deadline and a `queued_stale` failure keep a lapsed wake claim's token (PR #16: a late
   proof acks instead of delivering twice); a revoke for a gone session drops
   the claim.
 

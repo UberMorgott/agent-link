@@ -137,8 +137,9 @@ const seatOwnerPrefix = "seat:"
 func seatOwner(seat string) string { return seatOwnerPrefix + seat }
 
 // leaseSweep ends the leases that lost their owner (a session that is not
-// live any more, or one silent on a queued wake for queuedOwnerMax) or passed
-// their deadline without proof, saves what is not saved and prunes the book.
+// live any more) or passed their deadline without proof, fails the ones whose
+// session stayed silent on a queued wake for queuedOwnerMax (queued_stale: a
+// person decides), saves what is not saved and prunes the book.
 func (n *Node) leaseSweep(now time.Time) {
 	live := n.sess.liveIDs(now)
 	active := n.sess.activeAts()
@@ -159,9 +160,23 @@ func (n *Node) leaseSweep(now time.Time) {
 	}
 	for g, list := range byGroup {
 		n.log.Info("delivery lease ended", "owner", g.owner, "reason", g.reason, "messages", len(list))
-		// A lapsed or stale wake keeps its claim (and token): a late proof
-		// acknowledges instead of delivering twice. A gone session's claims go.
-		n.revokeLeases(g.owner, list, g.reason, g.reason != "deadline" && g.reason != "queued_stale")
+		if g.reason == "queued_stale" {
+			// The session's queue or inbox accepted the prompt and nothing
+			// proves it ran: queuing it again, there or in another session,
+			// may run it twice. No automatic delivery any more, a person
+			// decides; the claim and token stay, so a late proof still
+			// acknowledges, and the hooks still show it at a next event.
+			if err := n.leases.fail(g.owner, list, g.reason, now); err != nil {
+				n.log.Warn("save leases", "err", err)
+			}
+			n.log.Warn("a queued wake was never proven; a person decides", "owner", g.owner, "messages", len(list))
+			n.report(list, AttemptNeedsHuman)
+			n.changed("leases")
+			continue
+		}
+		// A lapsed wake keeps its claim (and token): a late proof acknowledges
+		// instead of delivering twice. A gone session's claims go.
+		n.revokeLeases(g.owner, list, g.reason, g.reason != "deadline")
 	}
 	for _, e := range n.leases.staleHolds(now) {
 		n.releaseHold(e.owner, []string{e.id}, now)
