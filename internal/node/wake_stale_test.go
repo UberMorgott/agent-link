@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,13 +27,20 @@ func newStaleQueue(t *testing.T) *staleQueue {
 	q := &staleQueue{t: t, w: &fakeWaker{ready: true}, dir: t.TempDir(), home: t.TempDir()}
 	q.a, q.b = wakePair(t, q.w)
 	q.reg(true)
+	if _, err := q.a.PinSession(PinSessionRequest{SessionID: "s-q"}); err != nil {
+		t.Fatal(err)
+	}
 	return q
 }
+
+// staleQueueTTL is the registration TTL of a Codex session's hooks
+// (hookTTLCodex, cmd/agentlink): shorter than the last stale waits.
+const staleQueueTTL = 3600
 
 func (q *staleQueue) reg(idle bool) {
 	q.t.Helper()
 	if _, err := q.a.RegisterSession(SessionRequest{SessionID: "s-q", Provider: ProviderCodex, Folder: q.dir, Wake: WakeQueue,
-		Idle: idle, CodexHome: q.home, TTLSec: 86400}); err != nil {
+		Idle: idle, CodexHome: q.home, TTLSec: staleQueueTTL}); err != nil {
 		q.t.Fatal(err)
 	}
 }
@@ -43,8 +51,10 @@ func (q *staleQueue) send(body string) Message {
 	return ask(q.t, q.a, q.b, body)
 }
 
-// age makes the session's last wake, its activity, its leases and its wake
-// claims d old, then runs the lease sweep and the wake pass as the loop does.
+// age makes the session's last wake, its activity, its registration, its
+// leases and its wake claims d old, then runs the loop's pass. Nothing but the
+// node's own heartbeat of the pinned thread (keepPinned, as the loop ran it in
+// between) kept it registered meanwhile.
 func (q *staleQueue) age(d time.Duration) {
 	q.t.Helper()
 	a, past := q.a, time.Now().Add(-d)
@@ -63,12 +73,16 @@ func (q *staleQueue) age(d time.Duration) {
 	a.sess.claimMu.Unlock()
 	a.sess.mu.Lock()
 	s := a.sess.sessions["s-q"]
-	s.WokeAt, s.LastActive = past, past
+	s.WokeAt, s.LastActive, s.LastSeen = past, past, past
 	a.sess.mu.Unlock()
+	for at := past.Add(10 * time.Minute); at.Before(time.Now()); at = at.Add(10 * time.Minute) {
+		a.keepPinned(at)
+	}
 	q.pass()
 }
 
 func (q *staleQueue) pass() {
+	q.a.keepPinned(time.Now())
 	q.a.leaseSweep(time.Now())
 	q.a.wakeIdle(q.t.Context()) // ends the wake's rollout observer with the test
 }
@@ -438,8 +452,7 @@ func TestStaleQueueWakeCap(t *testing.T) {
 	if s := q.session(); s.WakeCapped || slices.Contains(attemptsOf(q.b, waiting), AttemptNeedsHuman) {
 		t.Fatalf("needs_human before the last wake was stale: %+v", s)
 	}
-	q.age(24 * time.Hour)
-	q.age(24 * time.Hour)
+	q.age(queuedOwnerMax + time.Second)
 	if s := q.session(); q.w.count() != limit || !s.WakeCapped {
 		t.Fatalf("past the cap: wakes %d %+v", q.w.count(), s)
 	}
@@ -448,19 +461,32 @@ func TestStaleQueueWakeCap(t *testing.T) {
 		t.Fatalf("the waiting message is not the next event's any more: %+v", l)
 	}
 	var saved []Session
-	if err := readJSON(q.a.sess.path, &saved); err != nil || len(saved) != 1 || !saved[0].WakeCapped || saved[0].Wakes != limit {
+	if err := readJSON(q.a.sess.path, &saved); err != nil || len(saved) != 1 || !saved[0].WakeCapped || saved[0].Wakes != limit ||
+		!slices.Contains(saved[0].CapNoted, waiting.ID) {
 		t.Fatalf("the cap is not saved: %v %+v", err, saved)
 	}
 
-	// Once: neither a later message nor a later pass reports again.
+	// A message that comes after the notice gets neither a wake nor silence:
+	// its author hears needs_human too. Each once, whatever passes later, also
+	// after a restart (the node's memory of what it reported is gone).
 	later := q.send("request after the notice")
-	q.age(24 * time.Hour)
+	q.pass()
+	waitAttempts(t, q.b, later, AttemptNeedsHuman)
+	q.a.deliv.mu.Lock()
+	clear(q.a.deliv.sent)
+	q.a.deliv.mu.Unlock()
+	q.pass()
 	time.Sleep(200 * time.Millisecond)
-	if got := attemptsOf(q.b, later); slices.Contains(got, AttemptNeedsHuman) || q.w.count() != limit {
-		t.Fatalf("after the notice: %v wakes %d", got, q.w.count())
+	for _, m := range []Message{waiting, later} {
+		if got := attemptsOf(q.b, m); !slices.Equal(got, []string{AttemptNeedsHuman}) || q.w.count() != limit {
+			t.Fatalf("after the notice: %v wakes %d", got, q.w.count())
+		}
 	}
-	if got := attemptsOf(q.b, waiting); !slices.Equal(got, []string{AttemptNeedsHuman}) {
-		t.Fatalf("needs_human repeated: %v", got)
+
+	// Its wakes spent, the thread is left to its TTL.
+	q.age(24 * time.Hour)
+	if _, ok := q.a.SessionLive("s-q"); ok || q.w.count() != limit {
+		t.Fatalf("a thread past its wake cap is kept registered: wakes %d", q.w.count())
 	}
 
 	// A new idle period (the thread took a turn) is woken again.
@@ -489,5 +515,217 @@ func TestStaleWakeOnlyForQueueSessions(t *testing.T) {
 	s.Wakes = maxIdleWakes + maxStaleWakes
 	if s.wakeDue(now) || !s.wakeSpent(now) {
 		t.Fatalf("queue session past the cap: %+v", s)
+	}
+}
+
+// The emergency stop takes nothing out of a thread's queue: a queued,
+// unproven message is not queued again once the agents may work again.
+func TestQueueWakeNotRepeatedAfterStop(t *testing.T) {
+	q := newStaleQueue(t)
+	m := q.send("only request")
+	q.pass()
+	if q.w.count() != 1 {
+		t.Fatalf("first wake: %v", q.w.calls)
+	}
+	q.a.SetStopped(true)
+	q.a.SetStopped(false)
+	if l, _ := q.a.leases.get(m.ID); l.State != LeaseRetry || l.Reason != "stopped" || l.Owner != "s-q" || l.Via != ViaQueue {
+		t.Fatalf("lease after stop and resume: %+v", l)
+	}
+	q.pass()
+	q.age(inboxWakeGrace + time.Second)
+	if got := q.wakesWith("only request"); got != 1 || q.w.count() != 1 {
+		t.Fatalf("queued %d times after stop and resume: %v", got, q.w.calls)
+	}
+	// A request that comes later is still woken for.
+	q.send("request after the stop")
+	q.reg(false)
+	q.reg(true)
+	q.pass()
+	if text := q.lastWake(); q.w.count() != 2 || !strings.Contains(text, "request after the stop") || strings.Contains(text, "only request") {
+		t.Fatalf("wake after the stop: %v", q.w.calls)
+	}
+}
+
+// A thread whose registration lapsed (Codex sends no heartbeat) and that
+// registers again still has the prompt in its queue: the unproven message is
+// not queued again.
+func TestQueueWakeNotRepeatedAfterSessionGone(t *testing.T) {
+	q := newStaleQueue(t)
+	m := q.send("only request")
+	q.pass()
+	q.a.sess.mu.Lock()
+	q.a.sess.sessions["s-q"].LastSeen = time.Now().Add(-48 * time.Hour)
+	q.a.sess.mu.Unlock()
+	q.a.leaseSweep(time.Now())
+	if l, _ := q.a.leases.get(m.ID); l.State != LeaseRetry || l.Reason != "session_gone" || l.Owner != "s-q" {
+		t.Fatalf("lease after the session expired: %+v", l)
+	}
+	q.reg(true)
+	backoffOver(q.a, m.ID)
+	q.pass()
+	q.age(inboxWakeGrace + time.Second)
+	if got := q.wakesWith("only request"); got != 1 || q.w.count() != 1 {
+		t.Fatalf("queued %d times after the session came back: %v", got, q.w.calls)
+	}
+}
+
+// A hand-off that failed put nothing into the queue: its message is woken
+// with again (the one retry reason handedTo does not count as handed).
+func TestQueueWakeFailedIsNotHanded(t *testing.T) {
+	b := newLeaseBook("")
+	now := time.Now()
+	for id, reason := range map[string]string{"m-failed": "wake_failed", "m-stopped": "stopped", "m-gone": "session_gone", "m-deadline": "deadline"} {
+		if ok, err := b.take(id, "", "s-q", ViaQueue, "tok", now.Add(time.Minute), now); err != nil || !ok {
+			t.Fatalf("take %s: %v %v", id, ok, err)
+		}
+		if _, err := b.revoke("s-q", []string{id}, reason, now); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := b.handedTo(id, "s-q", true), reason != "wake_failed"; got != want {
+			t.Fatalf("queue lease back in retry (%s): handed %v", reason, got)
+		}
+		// An inbox post may be dropped: only a turn that had it counts.
+		if got, want := b.handedTo(id, "s-q", false), reason == "deadline"; got != want {
+			t.Fatalf("inbox lease back in retry (%s): handed %v", reason, got)
+		}
+	}
+}
+
+// A seat's message has a lease of its own (leaseKey): the retry of the idle
+// period does not queue it into the seat's thread again.
+func TestSeatQueueWakeNotRepeated(t *testing.T) {
+	l := &seatLauncher{}
+	dir, home := t.TempDir(), t.TempDir()
+	w := &fakeWaker{ready: true}
+	a := newProjectNodeAt(t, "morgott", newTestProject(t), t.TempDir(), listen(t), nil)
+	a.SetFolders(dir, nil)
+	a.SetLauncher(l, ProviderClaude)
+	a.SetSessionWaker(w)
+	a.wakeEvery = time.Hour
+	a.seatBusy = l.busy
+	a.start(t)
+	_, codex := addSeats(t, a)
+	if _, err := a.RegisterSession(SessionRequest{SessionID: codex.SessionID, Provider: codex.Provider, Folder: dir, Wake: WakeQueue,
+		Idle: true, CodexHome: home, TTLSec: staleQueueTTL}); err != nil {
+		t.Fatal(err)
+	}
+	a.syncQueueWake()
+	chat, _ := a.NewProjectChat(nil)
+	m, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "review this seat", AuthorKind: AuthorHuman, AskSeats: []string{codex.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.wakeIdle(t.Context())
+	if lv, _ := a.leases.get(leaseKey(codex.ID, m.ID)); w.count() != 1 || lv.State != LeaseLeased || lv.Owner != codex.SessionID || lv.Via != ViaQueue {
+		t.Fatalf("the seat's message was not woken through the queue: %d %+v", w.count(), lv)
+	}
+	// The wake lapsed untaken: its mark and the session's wake are old.
+	past := time.Now().Add(-inboxWakeGrace - time.Second)
+	a.seats.mu.Lock()
+	for k, h := range a.seats.marks {
+		h.at = past
+		a.seats.marks[k] = h
+	}
+	a.seats.mu.Unlock()
+	a.sess.mu.Lock()
+	a.sess.sessions[codex.SessionID].WokeAt = past
+	a.sess.mu.Unlock()
+	a.wakeIdle(t.Context())
+	if lv, _ := a.leases.get(leaseKey(codex.ID, m.ID)); w.count() != 1 || lv.Attempts != 1 {
+		t.Fatalf("the seat's message was queued %d times: %+v", w.count(), lv)
+	}
+}
+
+// A pinned Codex thread whose hooks never fire stays registered through every
+// stale wait of its idle period, though they are longer than its TTL, until
+// its wakes are spent and that can be reported; then it is left to its TTL.
+func TestPinnedQueueSessionOutlivesStaleWaits(t *testing.T) {
+	q := newStaleQueue(t)
+	limit := maxIdleWakes + maxStaleWakes
+	if last := staleWakeWait(limit - 1); last <= staleQueueTTL*time.Second {
+		t.Fatalf("the last stale wait %v is inside the TTL: this test proves nothing", last)
+	}
+	const step = 5 * time.Minute
+	var t0, due time.Time
+	for wakes := maxIdleWakes; wakes <= limit; wakes++ {
+		wait := staleWakeWait(wakes)
+		if wakes == limit {
+			wait = queuedOwnerMax // wakeSpent
+		}
+		t0 = time.Now()
+		due = t0.Add(wait)
+		q.a.sess.mu.Lock()
+		s := q.a.sess.sessions["s-q"]
+		s.Woken, s.Wakes, s.WokeAt, s.LastSeen = true, wakes, t0, t0
+		q.a.sess.mu.Unlock()
+		for at := t0.Add(step); at.Before(due); at = at.Add(step) {
+			q.a.keepPinned(at)
+		}
+		q.a.sess.mu.Lock()
+		got := *s
+		q.a.sess.mu.Unlock()
+		if !got.live(due) {
+			t.Fatalf("after %d wakes the session expired %v before its next wake was due (%v)", wakes, due.Sub(got.LastSeen)-staleQueueTTL*time.Second, wait)
+		}
+		if wakes < limit && !got.wakeDue(due) || wakes == limit && !got.wakeSpent(due) {
+			t.Fatalf("after %d wakes nothing is due at %v: %+v", wakes, wait, got)
+		}
+	}
+	// Spent: no heartbeat of the node any more.
+	for at := due; at.Before(due.Add(2 * staleQueueTTL * time.Second)); at = at.Add(step) {
+		q.a.keepPinned(at)
+	}
+	if q.a.sess.liveIDs(due.Add(staleQueueTTL * time.Second))["s-q"] {
+		t.Fatal("a thread whose wakes are spent is still kept")
+	}
+}
+
+// After a restart the queue wakes still unproven are observed again: the
+// prompt the thread runs then proves and acknowledges its messages.
+func TestQueueObserversResumed(t *testing.T) {
+	q := newStaleQueue(t)
+	dir := filepath.Join(q.home, "sessions", "2026", "10", "13")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rollout := filepath.Join(dir, "rollout-x-s-q.jsonl")
+	if err := os.WriteFile(rollout, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := q.send("first request")
+	// The node stops right after the wake: its observer ends with it.
+	stopped, stop := context.WithCancel(t.Context())
+	stop()
+	q.a.wakeIdle(stopped)
+	page, _ := q.a.UnreadFor(q.dir, "s-q", "", 10)
+	if q.w.count() != 1 || len(page.Woken) != 1 {
+		t.Fatalf("first wake: %v %+v", q.w.calls, page)
+	}
+	if err := os.WriteFile(rollout, []byte(WakeMarker(page.Woken[0].WakeToken)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := q.a.leases.get(first.ID); l.State != LeaseLeased {
+		t.Fatalf("lease before the restart: %+v", l)
+	}
+	q.a.resumeQueueObservers(t.Context())
+	eventually(t, "the resumed observer proves the wake", func() bool {
+		l, _ := q.a.leases.get(first.ID)
+		s := q.session()
+		return l.State == LeaseAcked && !s.Woken && s.Wakes == 0
+	})
+	waitAttempts(t, q.b, first, AttemptWakeRequested, AttemptWokenConfirmed)
+}
+
+// The end of an activity (PhaseIdle) is no work on a request: it does not end
+// the wake count of the idle period.
+func TestIdleActivityKeepsWakeLatch(t *testing.T) {
+	q := newStaleQueue(t)
+	old := q.spend()
+	if _, err := q.a.SessionActivity(old.ChatID, ActivityRequest{SessionID: "s-q", ReplyTo: old.ID, Phase: PhaseIdle}); err != nil {
+		t.Fatal(err)
+	}
+	if s := q.session(); !s.Woken || s.Wakes != maxIdleWakes || s.WokeAt.IsZero() {
+		t.Fatalf("the end of an activity released the latch: %+v", s)
 	}
 }

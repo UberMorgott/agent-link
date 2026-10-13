@@ -87,6 +87,9 @@ func (n *Node) wakeLoop(ctx context.Context) {
 	}
 	t := time.NewTimer(every)
 	defer t.Stop()
+	if n.waker != nil {
+		n.resumeQueueObservers(ctx)
+	}
 	for {
 		if n.waker != nil {
 			n.waker.Check(ctx, false)
@@ -231,7 +234,7 @@ func (n *Node) wakeIdle(ctx context.Context) {
 			continue
 		}
 		if !s.wakeDue(now) {
-			if queue && !s.WakeCapped && s.wakeSpent(now) {
+			if queue && s.wakeSpent(now) {
 				capped = append(capped, *s)
 			}
 			continue
@@ -280,7 +283,8 @@ func (n *Node) wakeIdle(ctx context.Context) {
 			if m.ForSeat == "" && to != s.SessionID && (to != "" || active[s.Area] || n.pickIdle(m.ID, cands[s.Area]) != s.SessionID) {
 				continue
 			}
-			if m.OwnHuman || (m.ForSeat == "" && (n.leases.blocked(m.ID, s.SessionID, via, turn) || n.leases.handedTo(m.ID, s.SessionID, !byInbox))) {
+			key := leaseKey(m.ForSeat, m.ID) // a seat's message has its own lease
+			if m.OwnHuman || n.leases.blocked(key, s.SessionID, via, turn) || n.leases.handedTo(key, s.SessionID, !byInbox) {
 				skipped++
 				continue
 			}
@@ -293,7 +297,7 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		// by no wake: no turn is taken, and no budget state written, for it.
 		fit := take[:FitUnread(take)]
 		if !slices.ContainsFunc(fit, func(m UnreadMessage) bool {
-			return m.ForSeat != "" || !n.leases.blocked(m.ID, s.SessionID, via, turn)
+			return !n.leases.blocked(leaseKey(m.ForSeat, m.ID), s.SessionID, via, turn)
 		}) {
 			continue
 		}
@@ -415,6 +419,36 @@ func (n *Node) observeQueueStart(ctx context.Context, s Session, token string, i
 	}
 }
 
+// resumeQueueObservers watches the rollouts of the queue wakes still unproven
+// in the book again (leased, ViaQueue; one observer per wake token): the
+// observer of a wake ends with the node, and without one a prompt the thread
+// runs after a restart would prove and acknowledge nothing where the thread's
+// hooks do not fire.
+func (n *Node) resumeQueueObservers(ctx context.Context) {
+	type wake struct{ owner, token string }
+	byWake := map[wake][]string{}
+	for _, l := range n.leases.all() {
+		if l.State == LeaseLeased && l.Via == ViaQueue && l.Token != "" && sessionOwner(l.Owner) {
+			w := wake{l.Owner, l.Token}
+			byWake[w] = append(byWake[w], l.ID)
+		}
+	}
+	if len(byWake) == 0 {
+		return
+	}
+	r := n.sess
+	for w, list := range byWake {
+		s := Session{SessionID: w.owner}
+		r.mu.Lock()
+		if cur := r.sessions[w.owner]; cur != nil {
+			s = *cur
+		}
+		r.mu.Unlock()
+		go n.observeQueueStart(ctx, s, w.token, list)
+	}
+	n.log.Info("queued wakes observed again", "wakes", len(byWake))
+}
+
 // wakeProven ends the wake count of session's idle period on proof that it
 // took a wake (its rollout shows the queued turn): it is in a turn, whether
 // or not a hook event says so. A session whose hooks do not fire stays Idle
@@ -429,7 +463,7 @@ func (n *Node) wakeProven(session string) {
 	s := r.sessions[session]
 	ok := s != nil && s.Woken
 	if ok {
-		s.Woken, s.Wakes, s.WokeAt, s.WakeCapped = false, 0, time.Time{}, false
+		s.Woken, s.Wakes, s.WokeAt, s.WakeCapped, s.CapNoted = false, 0, time.Time{}, false, nil
 		if err := r.saveLocked(now); err != nil {
 			n.log.Warn("save sessions", "err", err)
 		}
@@ -478,8 +512,10 @@ func (s Session) wakeSpent(now time.Time) bool {
 
 // noteWakeCap tells the authors of the messages that wait for session s,
 // whose wakes of this idle period are spent (wakeSpent), that a person is
-// needed: once per idle period (Session.WakeCapped, saved, so a restart does
-// not repeat it). The messages stay unread for the session's next event.
+// needed: once per message (Session.CapNoted, saved with WakeCapped, so a
+// restart does not repeat it), also for one that comes after the first
+// notice, as nothing wakes the session for it either. The messages stay
+// unread for the session's next event.
 //
 // alone: no session of its area is in a turn or can be woken, so a message
 // for no session in particular waits for it too.
@@ -504,19 +540,30 @@ func (n *Node) noteWakeCap(s Session, alone bool) {
 	r := n.sess
 	r.mu.Lock()
 	cur := r.sessions[s.SessionID]
-	first := cur != nil && cur.Woken && !cur.WakeCapped
-	if first {
+	var fresh []string
+	if cur != nil && cur.Woken {
+		for _, id := range list {
+			if !slices.Contains(cur.CapNoted, id) {
+				fresh = append(fresh, id)
+			}
+		}
+	}
+	if len(fresh) > 0 {
 		cur.WakeCapped = true
+		cur.CapNoted = append(cur.CapNoted, fresh...)
+		if over := len(cur.CapNoted) - capNotedMax; over > 0 {
+			cur.CapNoted = slices.Clone(cur.CapNoted[over:])
+		}
 		if err := r.saveLocked(now); err != nil {
 			n.log.Warn("save sessions", "err", err)
 		}
 	}
 	r.mu.Unlock()
-	if !first {
+	if len(fresh) == 0 {
 		return
 	}
-	n.log.Warn("an idle session took none of its wakes; a person decides", "session", s.SessionID, "provider", s.Provider, "wakes", s.Wakes, "messages", len(list))
-	n.report(list, AttemptNeedsHuman)
+	n.log.Warn("an idle session took none of its wakes; a person decides", "session", s.SessionID, "provider", s.Provider, "wakes", s.Wakes, "messages", len(fresh))
+	n.report(fresh, AttemptNeedsHuman)
 	n.changed("sessions")
 }
 

@@ -88,6 +88,10 @@ const maxIdleWakes = 2
 // then hear needs_human, once (Session.WakeCapped).
 const maxStaleWakes = 3
 
+// capNotedMax bounds the message ids a session remembers as reported at its
+// wake cap (Session.CapNoted); an older one may then be reported again.
+const capNotedMax = 200
+
 // staleWakeWait is how long a WakeQueue session's last wake of wakes so far
 // must be unproven before the next stale wake: queuedOwnerMax (its leases
 // failed by then), doubled for each stale wake before it.

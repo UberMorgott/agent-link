@@ -104,11 +104,13 @@ type Session struct {
 	// is retried once its claim lapses (wakeIdle); a WakeQueue session is
 	// woken for newer messages after that too (maxStaleWakes). WakeCapped:
 	// every wake of the idle period is spent and the authors of what waits
-	// for the session heard needs_human (once per idle period).
+	// for the session heard needs_human, once per message (CapNoted: their
+	// ids, at most capNotedMax).
 	Woken      bool      `json:"woken,omitempty"`
 	Wakes      int       `json:"wakes,omitempty"`
 	WokeAt     time.Time `json:"woke_at,omitzero"`
 	WakeCapped bool      `json:"wake_capped,omitempty"`
+	CapNoted   []string  `json:"cap_noted,omitempty"`
 	// Inbox: the node holds a usable inbox of the session (InboxSocket) and
 	// wakes it there when idle. Not persisted: the address lives in memory.
 	Inbox bool `json:"inbox,omitempty"`
@@ -394,9 +396,11 @@ const pinKeepEvery = time.Minute
 // keepPinned keeps each area's pinned Codex thread registered while it is idle
 // and the node can wake it (WakeQueue): Codex sends no heartbeat, so an idle
 // UI thread would expire after its TTL though `codex queue` still wakes it. It
-// is a heartbeat (LastSeen), no activity. A thread in a turn, or one that let
-// every wake of its idle period lapse (maxIdleWakes), is left to its TTL:
-// then the launch ladder takes its messages.
+// is a heartbeat (LastSeen), no activity. It is kept through the stale wakes
+// of its idle period (maxStaleWakes; their waits are longer than its TTL)
+// until every wake is spent and the last one stale (wakeSpent: wakeIdle
+// reports the cap then). A thread in a turn, or one whose wakes are spent, is
+// left to its TTL: then the launch ladder takes its messages.
 func (n *Node) keepPinned(now time.Time) {
 	if !n.canQueue() {
 		return
@@ -407,8 +411,7 @@ func (n *Node) keepPinned(now time.Time) {
 	changed := false
 	for _, p := range r.pins {
 		s := r.sessions[p.SessionID]
-		if s == nil || !s.live(now) || !s.Idle || s.Wake != WakeQueue || now.Sub(s.LastSeen) < pinKeepEvery ||
-			(s.Woken && s.Wakes >= maxIdleWakes && now.Sub(s.WokeAt) >= inboxWakeGrace) {
+		if s == nil || !s.live(now) || !s.Idle || s.Wake != WakeQueue || now.Sub(s.LastSeen) < pinKeepEvery || s.wakeSpent(now) {
 			continue
 		}
 		s.LastSeen, changed = now, true
@@ -536,7 +539,7 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	// A new idle period (or none) may be woken again.
 	s.Woken = s.Woken && s.Idle && req.Idle
 	if !s.Woken {
-		s.Wakes, s.WokeAt, s.WakeCapped = 0, time.Time{}, false
+		s.Wakes, s.WokeAt, s.WakeCapped, s.CapNoted = 0, time.Time{}, false, nil
 	}
 	// A turn begins or ends (or the session is new): what it did is over.
 	if back || s.Idle != req.Idle {
@@ -1037,12 +1040,13 @@ func (n *Node) SessionActivity(chatID string, req ActivityRequest) (Message, err
 		r.mu.Lock()
 	} else {
 		s.LastSeen, s.LastActive = now, now
-		if s.Woken && req.AgentID == "" {
+		if s.Woken && req.AgentID == "" && req.Phase != PhaseIdle {
 			// It works on a request, so it took a turn since the node's last
 			// wake though no hook event said so (hooks that do not fire leave it
 			// Idle and woken for good): the wakes of that idle period are over,
-			// and what came since may wake it again.
-			s.Woken, s.Wakes, s.WokeAt, s.WakeCapped = false, 0, time.Time{}, false
+			// and what came since may wake it again. The end of an activity
+			// (PhaseIdle) is no work: it may be that of a turn before the wake.
+			s.Woken, s.Wakes, s.WokeAt, s.WakeCapped, s.CapNoted = false, 0, time.Time{}, false, nil
 			if err := r.saveLocked(now); err != nil {
 				n.log.Warn("save sessions", "err", err)
 			}

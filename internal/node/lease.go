@@ -133,7 +133,11 @@ func (b *leaseBook) queuedOwner(id string) string {
 // (running), or had it and never acknowledged it (running until its deadline:
 // retry, "deadline"; owner's hooks, another session or a launch take it); and,
 // when the channel keeps what it accepted (unproven: a queue), one still
-// leased or failed unproven (queued_stale).
+// leased, failed unproven (queued_stale) or back in retry for any reason but
+// a hand-off that failed ("wake_failed": the queue never had it). The
+// emergency stop ("stopped") and the owner's registration lapsing
+// ("session_gone") take nothing out of its queue. key is the book key
+// (leaseKey: a seat's message has its own record).
 func (b *leaseBook) handedTo(key, owner string, unproven bool) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -145,7 +149,7 @@ func (b *leaseBook) handedTo(key, owner string, unproven bool) bool {
 	case LeaseRunning:
 		return true
 	case LeaseRetry:
-		return l.Reason == "deadline"
+		return l.Reason == "deadline" || (unproven && l.Reason != "wake_failed")
 	case LeaseLeased, LeaseFailed:
 		return unproven
 	}

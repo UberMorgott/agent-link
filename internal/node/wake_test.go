@@ -120,21 +120,30 @@ func TestKeepPinnedCodexThread(t *testing.T) {
 	if got := a.Sessions(); len(got) != 2 {
 		t.Fatalf("keeping must not drop anyone now: %+v", got)
 	}
-	// Its wakes lapsed untaken: left to its TTL.
+	// The wakes of its idle period lapsed untaken: still kept, for the stale
+	// wakes (their waits are longer than a Codex session's TTL).
 	a.sess.mu.Lock()
 	s := a.sess.sessions["s-chef"]
 	s.Woken, s.Wakes, s.WokeAt = true, maxIdleWakes, t0
 	a.sess.mu.Unlock()
 	a.keepPinned(t0.Add(160 * time.Second))
-	if live(t0.Add(215 * time.Second))["s-chef"] {
-		t.Fatal("thread whose wakes lapsed still kept")
+	if !live(t0.Add(215 * time.Second))["s-chef"] {
+		t.Fatal("thread with stale wakes left is not kept")
+	}
+	// Every wake spent and the last one stale: left to its TTL.
+	a.sess.mu.Lock()
+	s.Wakes, s.WokeAt = maxIdleWakes+maxStaleWakes, t0.Add(-queuedOwnerMax)
+	a.sess.mu.Unlock()
+	a.keepPinned(t0.Add(230 * time.Second))
+	if live(t0.Add(285 * time.Second))["s-chef"] {
+		t.Fatal("thread whose wakes are spent still kept")
 	}
 	// In a turn: its own events keep it.
 	a.sess.mu.Lock()
 	s.Woken, s.Wakes, s.Idle = false, 0, false
 	a.sess.mu.Unlock()
-	a.keepPinned(t0.Add(160 * time.Second))
-	if live(t0.Add(215 * time.Second))["s-chef"] {
+	a.keepPinned(t0.Add(230 * time.Second))
+	if live(t0.Add(285 * time.Second))["s-chef"] {
 		t.Fatal("busy thread kept")
 	}
 }
