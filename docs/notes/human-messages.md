@@ -1,7 +1,7 @@
 # A person's message in a chat
 
 Owner report 2026-09-29: Morgott wrote in the Aegis network project chat
-(chat 52b4ba3f, message 26b0c0d6, 19:33:03Z) while KPECTIK's Codex was live.
+(message 26b0c0d6, 19:33:03Z) while KPECTIK's Codex was live.
 Nobody answered and the message had no ticks.
 
 ## Root causes
