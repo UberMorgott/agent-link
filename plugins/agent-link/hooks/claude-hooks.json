@@ -1,5 +1,6 @@
 {
   "description": "agent-link: deliver project chat messages to this Claude Code session; the same entries `agentlink hook install claude` writes, run through bin/agentlink.cmd",
+  "modules": ["./register.ts"],
   "hooks": {
     "SessionStart": [
       {

@@ -9,5 +9,6 @@
   "homepage": "https://github.com/UberMorgott/agent-link",
   "repository": "https://github.com/UberMorgott/agent-link",
   "keywords": ["agents", "messaging", "collaboration"],
-  "hooks": "./hooks/claude-hooks.json"
+  "hooks": "./hooks/claude-hooks.json",
+  "types": "./types/index.d.ts"
 }
