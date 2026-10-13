@@ -329,6 +329,9 @@ type AckResult struct {
 	// acking session ("session:<id>", "session" without an id), or "worker"
 	// when the worker took it first (the session must not answer it too).
 	Assigned string `json:"assigned,omitempty"`
+	// Note (a session's ack of a chat message the worker took first): the
+	// line that tells the session's model so (WorkerNote).
+	Note string `json:"note,omitempty"`
 }
 
 // Ack acknowledges messages for this node: they are read from now on. chat,
@@ -368,6 +371,9 @@ func (n *Node) Ack(chat string, req AckRequest) ([]AckResult, error) {
 			res.Found, res.WasUnread, res.Assigned = true, wasUnread, rec.Assigned
 			if seat[id] {
 				res.WasUnread, res.Assigned = true, owner
+			}
+			if res.Assigned == WorkerOwner && req.SessionID != "" && rec.Message.ChatID != "" {
+				res.Note = WorkerNote(id, rec.Message.ChatID)
 			}
 			if wasUnread && rec.Message.From != n.cfg.Node {
 				receipts[rec.Message.From] = append(receipts[rec.Message.From], id)

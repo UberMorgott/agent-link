@@ -255,6 +255,8 @@ func (a *App) controlAPI() http.Handler {
 		}
 	})
 	mux.HandleFunc("POST /claim", a.controlClaim)
+	mux.HandleFunc("POST /release", a.controlRelease)
+	mux.HandleFunc("POST /render", controlRender)
 	mux.HandleFunc("GET /sessions", a.controlSessions)
 	mux.HandleFunc("DELETE /sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -540,46 +542,85 @@ func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 	}
 	exact := maps.Clone(q)
 	exact.Set("exact", "1")
-	out := node.UnreadPage{Messages: []node.UnreadMessage{}}
-	more := false
-	for i, c := range ctxs {
-		query := q
-		if i >= from {
-			query = exact
-		}
-		page, err := c.n.UnreadQuery(query)
-		if err != nil {
-			if i < from {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
+	// Held like one context's (node.WaitUnread) until some context has a message.
+	out, err := node.WaitUnread(r.Context(), q, func() (node.UnreadPage, error) {
+		out := node.UnreadPage{Messages: []node.UnreadMessage{}}
+		more := false
+		for i, c := range ctxs {
+			query := q
+			if i >= from {
+				query = exact
 			}
-			continue // the extra context only adds; its failure hides nothing of the first
+			page, err := c.n.UnreadQuery(query)
+			if err != nil {
+				if i < from {
+					return out, err
+				}
+				continue // the extra context only adds; its failure hides nothing of the first
+			}
+			for _, m := range page.Messages {
+				m.Project = c.id
+				out.Messages = append(out.Messages, m)
+			}
+			for _, m := range page.Woken {
+				m.Project = c.id
+				out.Woken = append(out.Woken, m)
+			}
+			out.Total += page.Total
+			more = more || page.Next != ""
 		}
-		for _, m := range page.Messages {
-			m.Project = c.id
-			out.Messages = append(out.Messages, m)
+		slices.SortFunc(out.Messages, func(x, y node.UnreadMessage) int { return strings.Compare(x.Cursor, y.Cursor) })
+		if q.Get("waiter") != "1" { // a waiter reads only Total
+			limit, err := strconv.Atoi(q.Get("limit"))
+			if err != nil || limit < 1 {
+				limit = 50
+			}
+			if len(out.Messages) > limit {
+				out.Messages, more = out.Messages[:limit], true
+			}
+			if more && len(out.Messages) > 0 {
+				out.Next = out.Messages[len(out.Messages)-1].Cursor
+			}
 		}
-		for _, m := range page.Woken {
-			m.Project = c.id
-			out.Woken = append(out.Woken, m)
-		}
-		out.Total += page.Total
-		more = more || page.Next != ""
-	}
-	slices.SortFunc(out.Messages, func(x, y node.UnreadMessage) int { return strings.Compare(x.Cursor, y.Cursor) })
-	if q.Get("waiter") != "1" { // a waiter reads only Total
-		limit, err := strconv.Atoi(q.Get("limit"))
-		if err != nil || limit < 1 {
-			limit = 50
-		}
-		if len(out.Messages) > limit {
-			out.Messages, more = out.Messages[:limit], true
-		}
-		if more && len(out.Messages) > 0 {
-			out.Next = out.Messages[len(out.Messages)-1].Cursor
-		}
+		return out, nil
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	writeJSON(w, out)
+}
+
+// controlRelease serves POST /release: every context the session is
+// registered in gives back its claims of the ids (node.Release); a context
+// that holds none of them changes nothing.
+func (a *App) controlRelease(w http.ResponseWriter, r *http.Request) {
+	var req node.ReleaseRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	for _, c := range a.routeContexts() {
+		if err := c.n.Release(req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// controlRender serves POST /render: the text of a delivery (node.Render),
+// the same in every context.
+func controlRender(w http.ResponseWriter, r *http.Request) {
+	var req node.RenderRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	res, err := node.Render(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, res)
 }
 
 // controlClaim serves POST /claim: with a selector, or when the folder has one

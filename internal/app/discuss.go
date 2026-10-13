@@ -189,7 +189,20 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		// HoldReason: no seat answers it automatically (node.HoldAutoLimit):
 		// the caller returns at once instead of waiting for a reply.
 		HoldReason string `json:"hold_reason,omitempty"`
-	}{pid, chat.ID, message.ID, seat, discussQueued(c.n, seat), view.Scope, view.Topic, view.ExpiresAt, message.HoldReason})
+		// Held and Note say the same in words (node.HoldText), for a caller
+		// that words nothing itself (Claude Code's in-process module).
+		Held bool   `json:"held,omitempty"`
+		Note string `json:"note,omitempty"`
+	}{pid, chat.ID, message.ID, seat, discussQueued(c.n, seat), view.Scope, view.Topic, view.ExpiresAt, message.HoldReason,
+		message.HoldReason != "", holdNote(message.HoldReason)})
+}
+
+// holdNote is node.HoldText of a hold reason, "" for none.
+func holdNote(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return node.HoldText(reason)
 }
 
 // validAgentRef reports a subagent id of at most 128 printable ASCII

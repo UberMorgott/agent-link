@@ -116,6 +116,9 @@ type ClaimRequest struct {
 	// acknowledge them only at an event that shows the session got that wake
 	// (UnreadPage.Woken), else it lapses after inboxWakeGrace.
 	WakeToken string `json:"wake_token,omitempty"`
+	// Native: the claim of the session's in-process module
+	// (SessionRequest.Native); a session it registered grants no other.
+	Native bool `json:"native,omitempty"`
 }
 
 // liveIDs is the set of live session ids.
@@ -285,6 +288,9 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 		return nil, fmt.Errorf("%w: at most 1000 ids", ErrBadRequest)
 	case req.WakeToken != "" && !validWakeToken(req.WakeToken):
 		return nil, fmt.Errorf("%w: invalid wake_token", ErrBadRequest)
+	}
+	if !req.Native && n.sessionNative(req.SessionID) {
+		return []string{}, nil // its module delivers: the shell hooks stand down
 	}
 	n.auto.stopMu.RLock()
 	if n.Stopped() {

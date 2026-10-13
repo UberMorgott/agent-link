@@ -315,7 +315,8 @@ func TestSessionsGateWorker(t *testing.T) {
 	if ok, _, err := b.ClaimRun(q2); !ok || err != nil {
 		t.Fatalf("worker claim: %v %v", ok, err)
 	}
-	if res, _ := b.Ack(q.ChatID, AckRequest{IDs: []string{q2.ID}, SessionID: "late"}); res[0].Assigned != WorkerOwner || res[0].WasUnread {
+	if res, _ := b.Ack(q.ChatID, AckRequest{IDs: []string{q2.ID}, SessionID: "late"}); res[0].Assigned != WorkerOwner || res[0].WasUnread ||
+		res[0].Note != WorkerNote(q2.ID, q.ChatID) {
 		t.Fatalf("ack after the worker: %+v", res)
 	}
 	eventually(t, "the worker's claim reads it", func() bool { return deliveryOf(a, q.ChatID, q2.ID, "b") == StateRead })

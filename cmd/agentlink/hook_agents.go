@@ -28,7 +28,6 @@ import (
 	"maps"
 	"net/url"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -107,9 +106,6 @@ func liveAgentIDs(st hookState) []string {
 	return slices.Sorted(maps.Keys(st.Live))
 }
 
-// agentlinkAsk matches a shell command line that runs agentlink send or discuss.
-var agentlinkAsk = regexp.MustCompile(`(?i)agentlink(\.exe|\.cmd)?["']?\s+(send|discuss)\b`)
-
 // askKey is the stamp key of a tool call that asks through agent-link: the
 // agentlink MCP server's send or discuss tool (by its input), or a shell
 // command running agentlink send/discuss (cliAskKey, with its command line).
@@ -131,7 +127,10 @@ func askKey(tool string, input json.RawMessage) (key, cmd string, ok bool) {
 	var in struct {
 		Command string `json:"command"`
 	}
-	if json.Unmarshal(input, &in) != nil || !agentlinkAsk.MatchString(in.Command) {
+	if json.Unmarshal(input, &in) != nil {
+		return "", "", false
+	}
+	if _, ok := node.ShellAsk(in.Command); !ok {
 		return "", "", false
 	}
 	if len(in.Command) > askStampCmdMax {
@@ -312,7 +311,7 @@ func (h *hookSession) forMe(page node.UnreadPage) node.UnreadPage {
 			if h.st != nil && h.isLive(m.ForAgent) {
 				continue
 			}
-			m.Body = "[ответ для завершившегося субагента " + agentName(m.ForAgentType, m.ForAgent) + "]\n" + m.Body
+			m.Body = node.EndedAgentNote(m.ForAgentType, m.ForAgent) + "\n" + m.Body
 		}
 		kept = append(kept, m)
 	}
@@ -333,12 +332,4 @@ func (h *hookSession) forMe(page node.UnreadPage) node.UnreadPage {
 func (h *hookSession) isLive(id string) bool {
 	_, ok := h.st.Live[id]
 	return ok
-}
-
-// agentName is how a subagent is named to the model: type/id.
-func agentName(typ, id string) string {
-	if typ == "" {
-		return id
-	}
-	return typ + "/" + id
 }

@@ -517,7 +517,8 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 		}
 	})
 	mux.HandleFunc("GET /unread", func(w http.ResponseWriter, r *http.Request) {
-		page, err := n.UnreadQuery(r.URL.Query())
+		q := r.URL.Query()
+		page, err := WaitUnread(r.Context(), q, func() (UnreadPage, error) { return n.UnreadQuery(q) })
 		reply(w, page, err)
 	})
 	mux.HandleFunc("POST /claim", func(w http.ResponseWriter, r *http.Request) {
@@ -525,6 +526,23 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 		if decode(w, r, &req) {
 			ids, err := n.Claim(req)
 			reply(w, ids, err)
+		}
+	})
+	mux.HandleFunc("POST /release", func(w http.ResponseWriter, r *http.Request) {
+		var req ReleaseRequest
+		if decode(w, r, &req) {
+			if err := n.Release(req); err != nil {
+				http.Error(w, err.Error(), errorCode(err))
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+	mux.HandleFunc("POST /render", func(w http.ResponseWriter, r *http.Request) {
+		var req RenderRequest
+		if decode(w, r, &req) {
+			res, err := Render(req)
+			reply(w, res, err)
 		}
 	})
 	mux.HandleFunc("POST /reassign", func(w http.ResponseWriter, r *http.Request) {
@@ -589,6 +607,12 @@ func (n *Node) UnreadQuery(q url.Values) (UnreadPage, error) {
 		limit = v
 	}
 	if q.Get("agent") == "1" && n.Stopped() {
+		return UnreadPage{Messages: []UnreadMessage{}}, nil
+	}
+	// A session its in-process module delivers to (SessionRequest.Native,
+	// which asks with native=1): its shell hooks and their waiter have nothing
+	// to deliver or wake with. A tool's own listing (agent=1) is not theirs.
+	if q.Get("native") != "1" && q.Get("agent") != "1" && n.sessionNative(q.Get("session")) {
 		return UnreadPage{Messages: []UnreadMessage{}}, nil
 	}
 	// A Claude session's background waiter asks with waiter=1: while the

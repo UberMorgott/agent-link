@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -77,6 +78,13 @@ type SessionRequest struct {
 	// wake of the session takes it (claimLocked). Each registration replaces
 	// them.
 	Agents []string `json:"agents,omitempty"`
+	// Native: Claude Code's in-process hooks module registers the session
+	// (plugins/agent-link, hooks/register.ts) and is its only way in: it
+	// delivers, wakes and acknowledges by itself. From then on, while the
+	// session lives, its shell hooks and their waiter stand down: a
+	// registration without Native only keeps it live, and their unread
+	// queries and claims are answered with nothing (sessionNative).
+	Native bool `json:"native,omitempty"`
 }
 
 // Session is one registered live session.
@@ -125,6 +133,8 @@ type Session struct {
 	Doing   string    `json:"doing,omitempty"`
 	DoingAt time.Time `json:"doing_at,omitzero"`
 	Subs    int       `json:"subs,omitempty"`
+	// Native: its in-process module delivers to it (SessionRequest.Native).
+	Native bool `json:"native,omitempty"`
 }
 
 // maxSessionAgents bounds SessionRequest.Agents.
@@ -508,6 +518,21 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	s := r.sessions[req.SessionID]
 	delete(r.left, req.SessionID)
 	delete(r.elsewhere, req.SessionID)
+	if s != nil && s.live(now) && s.Native && !req.Native {
+		// The session's module has it: its shell hooks stand down. Their
+		// registration keeps it live and changes nothing (no inbox, no idle
+		// state, no subagents of theirs).
+		s.LastSeen = now
+		err := r.saveLocked(now)
+		out := r.withPrimaryLocked(*s, now)
+		r.mu.Unlock()
+		return out, err
+	}
+	if req.Native {
+		// The module wakes the session itself: the node posts to no inbox.
+		req.InboxSocket, req.InboxToken = "", ""
+		delete(r.inbox, req.SessionID)
+	}
 	fresh := s == nil || !s.live(now) || s.Wake != req.Wake || s.Area != area
 	back := s == nil || !s.live(now)
 	if back {
@@ -548,7 +573,7 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 			s.Subs = 0
 		}
 	}
-	s.Asked, s.Idle, s.CodexHome = asked, req.Idle, req.CodexHome
+	s.Asked, s.Idle, s.CodexHome, s.Native = asked, req.Idle, req.CodexHome, req.Native
 	if !req.Heartbeat {
 		// A keep-alive (the idle session's waiter) saw no subagent event: it
 		// neither changes nor refreshes them.
@@ -999,6 +1024,13 @@ type ActivityRequest struct {
 	Phase   string `json:"phase,omitempty"`
 	AgentID string `json:"agent_id,omitempty"`
 	Label   string `json:"label,omitempty"`
+	// Tool and Input (a tool call's name and input), or Event (ActThinking,
+	// ...), stand for Type and Text when Text is empty: the node words the
+	// activity itself (ToolActivity, EventActivity), paths relative to the
+	// session's folder. The input is read for a path and a program name only.
+	Tool  string          `json:"tool,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+	Event string          `json:"event,omitempty"`
 }
 
 // PhaseIdle ends a live session's activity on a request (ActivityRequest).
@@ -1019,6 +1051,24 @@ func (n *Node) SessionActivity(chatID string, req ActivityRequest) (Message, err
 	case PhaseRunning, PhaseDone, PhaseIdle:
 	default:
 		return Message{}, fmt.Errorf("%w: invalid phase %q", ErrBadRequest, req.Phase)
+	}
+	if req.Text == "" && (req.Tool != "" || req.Event != "") {
+		if len(req.Tool) > 128 {
+			return Message{}, fmt.Errorf("%w: activity too long", ErrBadRequest)
+		}
+		if req.Event != "" {
+			typ, text, ok := EventActivity(req.Event)
+			if !ok {
+				return Message{}, fmt.Errorf("%w: invalid event %q", ErrBadRequest, req.Event)
+			}
+			req.Type, req.Text = typ, text
+		} else {
+			folder := ""
+			if s, ok := n.SessionLive(req.SessionID); ok {
+				folder = s.Folder
+			}
+			req.Type, req.Text = ToolActivity(folder, req.Tool, req.Input)
+		}
 	}
 	if len(req.Text) > 500 || len(req.Type) > 32 || len(req.ID) > 128 || len(req.Label) > 128 ||
 		(req.AgentID != "" && !validSessionID(req.AgentID)) {

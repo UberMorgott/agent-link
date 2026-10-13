@@ -502,6 +502,65 @@ func TestControlAPIRoutes(t *testing.T) {
 	if code, body := reassign(again.ID, true); code != http.StatusOK || !strings.Contains(body, `"assigned":"session:s1"`) {
 		t.Fatalf("reassign an unread message: %d %s", code, body)
 	}
+	// The session's in-process module (native): its held unread query, the
+	// text of what it delivers and a release go through the control API, and
+	// the shell hooks of the same session get nothing from then on.
+	if code := sess(map[string]any{"session_id": "s1", "provider": "claude", "folder": p.Dir, "idle": true, "native": true}); code != http.StatusOK {
+		t.Fatalf("native registration: %d", code)
+	}
+	own := url.Values{"folder": {p.Dir}, "session": {"s1"}}
+	if code, body := call(t, srv, http.MethodGet, "/unread?"+own.Encode(), ""); code != http.StatusOK || strings.Contains(body, again.ID) {
+		t.Fatalf("the shell hooks' unread of a native session: %d %s", code, body)
+	}
+	own.Set("native", "1")
+	own.Set("wait", "1")
+	var page node.UnreadPage
+	if code, body := call(t, srv, http.MethodGet, "/unread?"+own.Encode(), ""); code != http.StatusOK || json.Unmarshal([]byte(body), &page) != nil ||
+		len(page.Messages) != 1 || page.Messages[0].ID != again.ID {
+		t.Fatalf("the module's unread: %d %s", code, body)
+	}
+	var text node.RenderResult
+	code, body = call(t, srv, http.MethodPost, "/render", jsonOf(t, node.RenderRequest{Messages: page.Messages, Mode: node.RenderWake, Token: "tok12345", Folder: p.Dir}))
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &text) != nil || len(text.Shown) != 1 ||
+		!strings.Contains(text.Text, "from bob again") || !strings.Contains(text.Text, node.WakeMarker("tok12345")) {
+		t.Fatalf("render: %d %s", code, body)
+	}
+	if code, body := call(t, srv, http.MethodPost, "/render", `{"mode":"other"}`); code != http.StatusBadRequest {
+		t.Fatalf("render with a bad mode: %d %s", code, body)
+	}
+	grant := func(native bool) string {
+		t.Helper()
+		code, body := call(t, srv, http.MethodPost, "/claim", jsonOf(t, node.ClaimRequest{IDs: []string{again.ID}, SessionID: "s1", Folder: p.Dir, Native: native, WakeToken: "tok12345"}))
+		if code != http.StatusOK {
+			t.Fatalf("claim: %d %s", code, body)
+		}
+		return strings.TrimSpace(body)
+	}
+	if got := grant(false); got != "[]" {
+		t.Fatalf("the shell waiter's claim of a native session: %s", got)
+	}
+	if got := grant(true); !strings.Contains(got, again.ID) {
+		t.Fatalf("the module's claim: %s", got)
+	}
+	own.Del("wait")
+	own.Set("waiter", "1")
+	held := func() string {
+		t.Helper()
+		_, body := call(t, srv, http.MethodGet, "/unread?"+own.Encode(), "")
+		return body
+	}
+	if body := held(); !strings.Contains(body, `"wake_token":"tok12345"`) || !strings.Contains(body, `"total":0`) {
+		t.Fatalf("while the wake holds: %s", body)
+	}
+	if code, body := call(t, srv, http.MethodPost, "/release", jsonOf(t, node.ReleaseRequest{IDs: []string{again.ID}, SessionID: "s1"})); code != http.StatusNoContent {
+		t.Fatalf("release: %d %s", code, body)
+	}
+	if body := held(); strings.Contains(body, "wake_token") || !strings.Contains(body, `"total":1`) {
+		t.Fatalf("after the release: %s", body)
+	}
+	if code, body := call(t, srv, http.MethodPost, "/release", `{"session_id":"s1"}`); code != http.StatusBadRequest {
+		t.Fatalf("release without ids: %d %s", code, body)
+	}
 	if code, _ := call(t, srv, http.MethodDelete, "/sessions/s1", ""); code != http.StatusNoContent {
 		t.Fatalf("end session: %d", code)
 	}

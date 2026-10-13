@@ -50,7 +50,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/UberMorgott/agent-link/internal/agenthook"
 	"github.com/UberMorgott/agent-link/internal/config"
@@ -465,9 +464,7 @@ func cliPath(dir string) string {
 }
 
 // cliHint is the one SessionStart line naming the CLI's absolute path.
-func cliHint(exe string) string {
-	return `agent-link CLI (если agentlink нет в PATH): "` + exe + `", в PowerShell: & "` + exe + `" <команда>`
-}
+func cliHint(exe string) string { return node.CLIHint(exe) }
 
 // hookFolder is the session's folder: its cwd, absolute and clean.
 func hookFolder(cwd string) string {
@@ -589,12 +586,7 @@ func joinNotice(a, b string) string {
 	return a + "\n" + b
 }
 
-func withNotes(notes []string, text string) string {
-	if len(notes) == 0 {
-		return text
-	}
-	return strings.TrimSpace(strings.Join(notes, "\n") + "\n\n" + text)
-}
+func withNotes(notes []string, text string) string { return node.WithNotes(notes, text) }
 
 // hookSession is one hook run of a session, with its state held under lock.
 type hookSession struct {
@@ -823,7 +815,7 @@ func (h *hookSession) accept(b hookBatch) {
 		for chat, id := range b.chats {
 			if id == r.ID {
 				delete(b.chats, chat)
-				h.st.Notes = append(h.st.Notes, fmt.Sprintf("agent-link: сообщение %s в чате %s уже взял агент-обработчик этого узла — не отвечайте на него.", r.ID, chat))
+				h.st.Notes = append(h.st.Notes, node.WorkerNote(r.ID, chat))
 			}
 		}
 	}
@@ -839,91 +831,31 @@ func (h *hookSession) accept(b hookBatch) {
 }
 
 // formatBatch turns an unread page into the text for the model and the line
-// for the person, within node.FormatBudget runes.
+// for the person, within node.FormatBudget runes (node.Render).
 func formatBatch(page node.UnreadPage, folder, sid string, stop bool) hookBatch {
 	b := hookBatch{chats: map[string]string{}}
-	if len(page.Messages) == 0 {
+	mode := node.RenderBatch
+	if stop {
+		mode = node.RenderStop
+	}
+	r, err := node.Render(node.RenderRequest{Messages: page.Messages, Total: page.Total, Mode: mode, Folder: folder, SessionID: sid})
+	if err != nil {
 		return b
 	}
-	var body strings.Builder
-	used := 0
-	var shown []node.UnreadMessage
-	for _, m := range page.Messages {
-		entry := node.FormatUnread(m)
-		n := utf8.RuneCountInString(entry)
-		if len(shown) > 0 && used+n > node.FormatBudget {
-			break
-		}
-		used += n
-		shown = append(shown, m)
-		body.WriteString("\n")
-		body.WriteString(entry)
-		b.add(m)
-		// Every chat the session reads from shows what it does next (its
-		// person's own messages and what it must not answer excepted).
-		if m.ChatID != "" && !m.OwnHuman && !m.Paused && m.Assigned != "worker" {
-			b.chats[m.ChatID] = m.ID
-		}
+	for _, m := range r.Shown {
+		var um node.UnreadMessage
+		um.ID, um.Project = m.ID, m.Project
+		b.add(um)
 	}
-	var t strings.Builder
-	if stop {
-		t.WriteString("Пока вы работали, пришли сообщения agent-link. Прочитайте их и, где просят ответа, ответьте; затем завершайте.\n")
-	} else {
-		fmt.Fprintf(&t, "agent-link: непрочитанные сообщения для этой папки (%d). Вся переписка остаётся в истории чата.\n", page.Total)
+	if r.Chats != nil {
+		b.chats = r.Chats
 	}
-	t.WriteString(body.String())
-	if rest := page.Total - len(shown); rest > 0 {
-		fmt.Fprintf(&t, "\nЕщё %d непрочитанных придут со следующим событием. Прочитать сейчас: agentlink chat unread --folder %q --after %s ; прочитанные подтвердить: agentlink chat ack --ids <id,...> --session %s\n",
-			rest, folder, shown[len(shown)-1].Cursor, sid)
-	}
-	b.text = strings.TrimRight(t.String(), "\n")
-	b.notice = batchNotice(shown)
+	b.text, b.notice = r.Text, r.Notice
 	return b
 }
 
-// batchNotice is the line the person sees: «agent-link: 2 сообщения от
-// KPECTIK — беру в работу». The person's own messages need no line.
-func batchNotice(msgs []node.UnreadMessage) string {
-	var from []string
-	n, mine, worker := 0, false, true
-	for _, m := range msgs {
-		if m.OwnHuman {
-			continue
-		}
-		n++
-		if !slices.Contains(from, m.From) {
-			from = append(from, m.From)
-		}
-		if m.Assigned != "worker" {
-			worker = false
-			if m.AsksYou && !m.Paused {
-				mine = true
-			}
-		}
-	}
-	if n == 0 {
-		return ""
-	}
-	what := "к сведению"
-	switch {
-	case mine:
-		what = "беру в работу"
-	case worker:
-		what = "отвечает агент-обработчик"
-	}
-	return fmt.Sprintf("agent-link: %d %s от %s — %s", n, plural(n, "сообщение", "сообщения", "сообщений"), strings.Join(from, ", "), what)
-}
-
-// plural picks the Russian form for n: 1 сообщение, 2 сообщения, 5 сообщений.
-func plural(n int, one, few, many string) string {
-	switch n10, n100 := n%10, n%100; {
-	case n10 == 1 && n100 != 11:
-		return one
-	case n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14):
-		return few
-	}
-	return many
-}
+// plural picks the Russian form for n (node.Plural).
+func plural(n int, one, few, many string) string { return node.Plural(n, one, few, many) }
 
 // hookCall calls the local API (apiCall) with a short timeout: a hook must
 // not stall the session when the node is down.

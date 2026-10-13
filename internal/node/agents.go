@@ -2,6 +2,7 @@ package node
 
 import (
 	"cmp"
+	"encoding/json"
 	"maps"
 	"slices"
 	"strings"
@@ -79,7 +80,7 @@ func ToolKind(tool string) string {
 	case "Read", "NotebookRead", "Grep", "Glob", "LS", "ToolSearch", "WebFetch", "WebSearch", "web_search", "webSearch":
 		return AgentReading
 	}
-	if strings.HasPrefix(tool, "mcp__") && strings.HasSuffix(tool, "__discuss") && strings.Contains(tool, "agentlink") {
+	if strings.HasPrefix(tool, "mcp__") && strings.HasSuffix(tool, "__discuss") && (strings.Contains(tool, "agentlink") || strings.Contains(tool, "agent-link")) {
 		return AgentWaiting
 	}
 	return AgentThinking
@@ -106,11 +107,18 @@ type agentDoing struct {
 type SessionDoingRequest struct {
 	Doing     string `json:"doing"`
 	Subagents int    `json:"subagents,omitempty"`
+	// Tool and Input (a tool call's name and input) stand for Doing when it
+	// is empty: the node reads the state itself (DoingOf).
+	Tool  string          `json:"tool,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // SessionDoing keeps what live session sid does now (memory only: no disk
 // write, no heartbeat). It tells peers and the page only when it changed.
 func (n *Node) SessionDoing(sid string, req SessionDoingRequest) error {
+	if req.Doing == "" && req.Tool != "" && len(req.Tool) <= 128 {
+		req.Doing = DoingOf(req.Tool, req.Input)
+	}
 	if !validDoing(req.Doing) || req.Subagents < 0 || req.Subagents > maxAgentSubagents {
 		return ErrBadRequest
 	}
