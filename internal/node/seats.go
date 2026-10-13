@@ -1132,6 +1132,24 @@ func (n *Node) seatClaim(session, id string, wake bool, token string) (handled, 
 	return true, true
 }
 
+// seatSameWake reports whether the wake that carries token holds message id
+// for session's seat (lapsed or not): seatClaim with that token again renews
+// it.
+func (n *Node) seatSameWake(session, id, token string) bool {
+	if n.cfg.DisableSeats || token == "" {
+		return false
+	}
+	st := n.seats
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	s := st.bySessionLocked(session)
+	if s == nil {
+		return false
+	}
+	m, ok := st.marks[seatKey(s.ID, id)]
+	return ok && m.kind == holdWake && m.token == token
+}
+
 // seatPendingFor is the seat of session when message id is pending for it
 // (seatClaim handles it then), else "".
 func (n *Node) seatPendingFor(session, id string) string {

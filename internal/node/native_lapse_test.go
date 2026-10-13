@@ -213,3 +213,107 @@ func TestWaitUnreadWakesOnChange(t *testing.T) {
 		t.Fatalf("a request whose client left: %v after %v", err, time.Since(start))
 	}
 }
+
+// A seat's message is held by its seat's mark, not by a session claim: the
+// wake that has it is renewed by its own token there too, past the wakes'
+// count (maxWaiterWakes), and is no new wake that needs a person.
+func TestSeatWakeRenewedBySameToken(t *testing.T) {
+	l := &seatLauncher{}
+	dir := t.TempDir()
+	a := seatNode(t, t.TempDir(), dir, l)
+	_, codex := addSeats(t, a)
+	if _, err := a.RegisterSession(SessionRequest{SessionID: codex.SessionID, Provider: codex.Provider, Folder: dir}); err != nil {
+		t.Fatal(err)
+	}
+	chat, _ := a.NewProjectChat(nil)
+	m, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "review this", AuthorKind: AuthorHuman, AskSeats: []string{codex.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := leaseKey(codex.ID, m.ID)
+	wake := func(token string) []string {
+		t.Helper()
+		got, err := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: codex.SessionID, WakeToken: token})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	// Its two wakes: the first lapsed, the second holds it.
+	if got := wake("tok11111"); !slices.Equal(got, []string{m.ID}) {
+		t.Fatalf("the first wake: %v", got)
+	}
+	a.seats.mu.Lock()
+	h := a.seats.marks[seatKey(codex.ID, m.ID)]
+	h.at = time.Now().Add(-inboxWakeGrace - time.Second)
+	a.seats.marks[seatKey(codex.ID, m.ID)] = h
+	a.seats.mu.Unlock()
+	a.leases.mu.Lock()
+	a.leases.m[key].Deadline = time.Now().Add(-time.Second)
+	a.leases.mu.Unlock()
+	if got := wake("tok22222"); !slices.Equal(got, []string{m.ID}) {
+		t.Fatalf("the second wake: %v", got)
+	}
+	if v, _ := a.leases.get(key); v.WaiterWakes != maxWaiterWakes {
+		t.Fatalf("waiter wakes %d, want %d", v.WaiterWakes, maxWaiterWakes)
+	}
+	// Kept alive by its owner: the same wake, held anew, no person asked for.
+	for i := range 3 {
+		if got := wake("tok22222"); !slices.Equal(got, []string{m.ID}) {
+			t.Fatalf("renewal %d of the seat's wake: %v", i, got)
+		}
+	}
+	if v, _ := a.leases.get(key); v.Failed || v.State != LeaseLeased || v.Token != "tok22222" {
+		t.Fatalf("the renewals changed the lease: %+v", v)
+	}
+	// A third wake is one too many, as for any message.
+	if got := wake("tok33333"); len(got) != 0 {
+		t.Fatalf("a third wake took it: %v", got)
+	}
+}
+
+// The lapse of a silent module drops its claims before the session is its
+// shell hooks' again: a hook's claim that follows the lapse is never among
+// those dropped.
+func TestNativeLapseKeepsTheHooksClaim(t *testing.T) {
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, nil, nil)
+	native := SessionRequest{SessionID: "s-n", Provider: ProviderClaude, Folder: dir, Wake: WakeRewake, Idle: true, Native: true}
+	m := ask(t, a, b, "claimed by the module, then by the hooks")
+	for i := range 300 {
+		if _, err := a.RegisterSession(native); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-n", Native: true}); len(got) != 1 {
+			t.Fatalf("round %d: the module's claim: %v", i, got)
+		}
+		moduleSilent(a, nativeSeenTTL+time.Second)
+		var granted atomic.Int32
+		done := make(chan struct{}, 4)
+		for range 2 {
+			go func() {
+				a.sessionNative("s-n")
+				done <- struct{}{}
+			}()
+			go func() {
+				if got, _ := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-n"}); len(got) == 1 {
+					granted.Add(1)
+				}
+				done <- struct{}{}
+			}()
+		}
+		for range 4 {
+			<-done
+		}
+		if granted.Load() == 0 {
+			t.Fatalf("round %d: the hooks' claim after the lapse was not granted", i)
+		}
+		a.sess.claimMu.Lock()
+		c, held := a.sess.claims[m.ID]
+		a.sess.claimMu.Unlock()
+		if !held || c.owner != "s-n" {
+			t.Fatalf("round %d: the lapse dropped the claim the hooks took after it", i)
+		}
+		a.unclaim("s-n", []string{m.ID})
+	}
+}

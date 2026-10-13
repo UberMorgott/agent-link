@@ -512,10 +512,16 @@ func (n *Node) unclaim(session string, ids []string) {
 
 // sameWake reports whether session holds message id by the wake that carries
 // token (lapsed or not): a claim of it with that token again renews the wake
-// (claimLocked). The caller holds claimMu.
+// (claimLocked). A message of session's seat is held by the seat's mark
+// instead (seatClaim). The caller holds claimMu.
 func (n *Node) sameWake(id, session, token string) bool {
-	c, ok := n.sess.claims[id]
-	return ok && token != "" && c.wake() && c.owner == session && c.token == token
+	if token == "" {
+		return false
+	}
+	if c, ok := n.sess.claims[id]; ok && c.wake() && c.owner == session && c.token == token {
+		return true
+	}
+	return n.seatSameWake(session, id, token)
 }
 
 // wokeWith reports whether id is held by a wake claim of session, and the

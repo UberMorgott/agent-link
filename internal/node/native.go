@@ -45,20 +45,32 @@ func (n *Node) sessionNative(sid string) bool {
 		r.mu.Unlock()
 		return true
 	}
-	s.Native = false
-	err := r.saveLocked(now)
 	r.mu.Unlock()
-	if err != nil {
-		n.log.Warn("save sessions", "err", err)
-	}
-	n.log.Warn("the session's in-process module fell silent; its shell hooks deliver again", "session", sid)
+	// The module's claims go before the session is its hooks' again, both
+	// under claimMu: a hook's claim follows the lapse and is never among them.
 	r.claimMu.Lock()
+	r.mu.Lock()
+	s = r.sessions[sid]
+	if s == nil || !s.Native || now.Sub(s.NativeSeen) < nativeSeenTTL {
+		// Lapsed already by another caller, or the module was heard meanwhile.
+		still := s != nil && s.Native && s.live(now)
+		r.mu.Unlock()
+		r.claimMu.Unlock()
+		return still
+	}
 	for id, c := range r.claims {
 		if c.owner == sid && c.kind == holdHook {
 			delete(r.claims, id)
 		}
 	}
+	s.Native = false
+	err := r.saveLocked(now)
+	r.mu.Unlock()
 	r.claimMu.Unlock()
+	if err != nil {
+		n.log.Warn("save sessions", "err", err)
+	}
+	n.log.Warn("the session's in-process module fell silent; its shell hooks deliver again", "session", sid)
 	n.changed("sessions")
 	return false
 }
