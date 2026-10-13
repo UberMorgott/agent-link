@@ -645,9 +645,26 @@ func (n *Node) UnreadQuery(q url.Values) (UnreadPage, error) {
 	if (af.Only != "" && !validSessionID(af.Only)) || len(af.Skip) > maxSessionAgents || slices.ContainsFunc(af.Skip, func(a string) bool { return !validSessionID(a) }) {
 		return UnreadPage{}, fmt.Errorf("%w: invalid for_agent or skip_agents", ErrBadRequest)
 	}
-	page, err := n.unreadHeld(q.Get("folder"), q.Get("session"), q.Get("after"), limit, held, q.Get("exact") == "1", af)
+	// A WakeQueue session's own listing (its MCP tool or CLI: agent=1 with its
+	// session) is its delivery (pointerFetch), of its own folder's messages as
+	// for its hooks; a listing of another folder stays a listing.
+	folder, fetch := q.Get("folder"), false
+	if q.Get("agent") == "1" && !waiter {
+		if s, ok := n.fetchSession(q.Get("session")); ok {
+			own, _ := n.FolderArea(s.Folder)
+			if folder == "" {
+				folder = s.Folder
+			}
+			area, bound := n.FolderArea(folder)
+			fetch = bound && area == own
+		}
+	}
+	page, err := n.unreadHeld(folder, q.Get("session"), q.Get("after"), limit, held, q.Get("exact") == "1", af)
 	if err == nil && waiter {
 		n.waiterSpent(&page)
+	}
+	if err == nil && fetch {
+		return n.pointerFetch(q.Get("session"), page)
 	}
 	return page, err
 }

@@ -9,12 +9,15 @@ import (
 // Waking idle sessions. The node wakes a live session that ended its turn
 // (Idle) and has actionable unread messages to take, once per idle period
 // plus one retry of a wake it never took (maxIdleWakes). What its own person
-// wrote to the others (OwnHuman) is no reason for a wake. A Codex thread gets
-// no message twice (its queue keeps what it accepted), and the node does not
-// depend on its hooks: the prompt in the thread's rollout acknowledges the
-// wake's messages and ends the wake count (observeQueueStart), activity it
-// reports ends it too (SessionActivity), and a wake that stays unproven lets
-// newer messages wake it later, bounded (maxStaleWakes, then needs_human).
+// wrote to the others (OwnHuman) is no reason for a wake. A Codex thread's
+// queue keeps what it accepted and runs it whenever it gets to it, so its
+// prompt is a pointer, no message (pointer.go): the turn fetches what waits
+// for the session then, and no message has two pointers in the queue at once
+// (leaseBook.handedTo). The node does not depend on the thread's hooks: the
+// prompt in its rollout ends the wake count and starts the fetch's grace
+// (observeQueueStart), its fetch or activity it reports ends the count too
+// (pointerFetch, SessionActivity), and a wake that stays unproven lets newer
+// messages wake it later, bounded (maxStaleWakes, then needs_human).
 // Nor does it take such a thread for idle on its hooks' word alone: while its
 // rollout shows a turn running, or a queued prompt of the node about to run,
 // it queues nothing (queueHeld, rollout_turn.go), and the messages that came
@@ -31,13 +34,16 @@ import (
 //     background waiter (asyncRewake, which defers to the node while it holds
 //     the inbox) wakes it instead.
 //
-// The prompt is the messages themselves (WakePrompt, as the hooks format
-// them), as many as fit FormatBudget. The node claims them for the session as
-// a wake claim first (wakeClaim): its hooks then do not deliver them again but
-// acknowledge them at that prompt (UnreadPage.Woken); a failed wake drops the
-// claim, and one the session never took lapses after inboxWakeGrace, and the
-// hooks deliver them as always. Each woken message's author hears of it
-// (AttemptWakeRequested, then AttemptWokenConfirmed at the ack).
+// A Claude session's prompt is the messages themselves (WakePrompt, as the
+// hooks format them), as many as fit FormatBudget. The node claims them for
+// the session as a wake claim first (wakeClaim): its hooks then do not deliver
+// them again but acknowledge them at that prompt (UnreadPage.Woken); a failed
+// wake drops the claim, and one the session never took lapses after
+// inboxWakeGrace, and the hooks deliver them as always. A pointer's messages
+// are claimed the same way and leased to the session, but held back from
+// nothing: its hooks deliver them at their next event, its fetch otherwise.
+// Each woken message's author hears of it (AttemptWakeRequested, then
+// AttemptWokenConfirmed at the ack).
 //
 // One recipient per message, by priority: a session in a turn (not Idle)
 // gets it through its hooks, so no idle session of its area is woken for a
@@ -66,12 +72,6 @@ type SessionWaker interface {
 	Ready() bool
 	// Wake queues text as the next prompt of session in the agent home home.
 	Wake(ctx context.Context, home, session, text string) error
-}
-
-// ImageWaker is a SessionWaker that can also hand the agent image files
-// with the prompt (`codex queue --image`).
-type ImageWaker interface {
-	WakeImages(ctx context.Context, home, session, text string, images []string) error
 }
 
 // SetSessionWaker sets the waker of WakeQueue sessions. It must be set before
@@ -314,8 +314,12 @@ func (n *Node) wakeIdle(ctx context.Context) {
 			}
 		}
 		// A message in its backoff (or failed, or another owner's) is claimed
-		// by no wake.
-		fit := take[:FitUnread(take)]
+		// by no wake. An inbox prompt carries what fits it; a pointer carries
+		// nothing, so it is for every one of them.
+		fit := take
+		if byInbox {
+			fit = take[:FitUnread(take)]
+		}
 		if !slices.ContainsFunc(fit, func(m UnreadMessage) bool {
 			return !n.leases.blocked(leaseKey(m.ForSeat, m.ID), s.SessionID, via, turn)
 		}) {
@@ -328,16 +332,12 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		if len(msgs) == 0 {
 			continue
 		}
-		text := WakePrompt(msgs, skipped+len(take)-len(msgs)+page.Total-len(page.Messages), s.Folder, token)
-		images := wakeImages(msgs)
-		iw, withImages := n.waker.(ImageWaker)
-		switch {
-		case byInbox:
+		if byInbox {
+			text := WakePrompt(msgs, skipped+len(take)-len(msgs)+page.Total-len(page.Messages), s.Folder, token)
 			err = n.poster.Post(ctx, d.inbox.socket, d.inbox.token, text)
-		case withImages && len(images) > 0:
-			err = iw.WakeImages(ctx, s.CodexHome, s.SessionID, text, images)
-		default:
-			err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, text)
+		} else {
+			// No message, no image of one: the turn fetches them (pointer.go).
+			err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, PointerPrompt(len(msgs), s.Folder, s.SessionID, token, cliExecutable()))
 		}
 		if err != nil {
 			// Its hooks, another session or a launch deliver them instead.
@@ -435,12 +435,15 @@ func (n *Node) noteBusyTurn(s Session, msgs []UnreadMessage) {
 }
 
 // observeQueueStart watches the rollout of session s for the prompt of the
-// queue wake token (one observer per wake, Node.observed) and, once it is
-// there, starts and acknowledges the wake's messages ids. It ends when no
-// lease of the wake is open any more, unless one failed unproven
-// (queued_stale) while the thread is in a turn: the prompt waits behind that
-// turn, and its late start is still proven (observeLateStarts runs it again
-// for a turn that begins later).
+// queue wake token (one observer per wake, Node.observed). Once it is there
+// the wake count ends (wakeProven), and a pointer's messages ids stay the
+// session's for pointerFetchGrace (pointerShown): the prompt proves the
+// pointer was shown, the fetch delivers them. A prompt of a node before
+// pointers (its token is none, pointerToken) carried the messages: it starts
+// and acknowledges them. It ends when no lease of the wake is open any more,
+// unless one failed unproven (queued_stale) while the thread is in a turn: the
+// prompt waits behind that turn, and its late start is still proven
+// (observeLateStarts runs it again for a turn that begins later).
 func (n *Node) observeQueueStart(ctx context.Context, s Session, token string, ids []string) {
 	key := s.SessionID + "\x00" + token
 	if _, dup := n.observed.LoadOrStore(key, struct{}{}); dup {
@@ -456,12 +459,16 @@ func (n *Node) observeQueueStart(ctx context.Context, s Session, token string, i
 	defer tick.Stop()
 	for {
 		if rolloutContains(path, WakeMarker(token)) {
-			// The thread's rollout has the prompt: its turn started with the
-			// messages in it. That is the proof the session's hook acknowledges
-			// them on (UnreadPage.Woken), and the node acknowledges them itself:
-			// a thread whose hooks do not run (not loaded, stale) would leave
-			// them unread and their lease to lapse though it read them.
-			if got := n.LeaseStart(s.SessionID, token, ids); len(got) > 0 {
+			if pointerToken(token) {
+				// The thread's rollout has the pointer: its turn started and is to
+				// fetch. Nothing is read by that alone.
+				n.pointerShown(s.SessionID, token, ids)
+			} else if got := n.LeaseStart(s.SessionID, token, ids); len(got) > 0 {
+				// A prompt queued before pointers: its turn started with the
+				// messages in it. That is the proof the session's hook acknowledges
+				// them on (UnreadPage.Woken), and the node acknowledges them itself:
+				// a thread whose hooks do not run (not loaded, stale) would leave
+				// them unread and their lease to lapse though it read them.
 				if _, err := n.Ack("", AckRequest{IDs: got, SessionID: s.SessionID}); err != nil {
 					n.log.Warn("acknowledge a proven queued wake", "session", s.SessionID, "err", err)
 				}
@@ -690,18 +697,3 @@ func (n *Node) noteWakeCap(s Session, alone bool) {
 
 // hookBatchIDs bounds the unread messages one wake looks at.
 const hookBatchIDs = 50
-
-// wakeImages are the image attachments of msgs, by absolute path: a waker that
-// can (ImageWaker, `codex queue --image`) hands them to the agent with the
-// prompt, which lists every attachment's path (FormatUnread).
-func wakeImages(msgs []UnreadMessage) []string {
-	var images []string
-	for _, m := range msgs {
-		for _, a := range m.Attachments {
-			if !a.Failed && a.Path != "" && a.IsImage() {
-				images = append(images, a.Path)
-			}
-		}
-	}
-	return images
-}

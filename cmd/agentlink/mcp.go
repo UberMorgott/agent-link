@@ -159,6 +159,10 @@ func newMCPTools(cfg config.Config, fresh func() string) *mcpTools {
 		return history(ctx, cfg, in.Chat, limit(in.Limit), in.BeforeSeq, in.AfterSeq, proj(in.Project))
 	})
 	addTool(s, "unread", "Unread messages for this node, oldest first; next is the cursor of the next page. Does not mark them read.", func(ctx context.Context, in mcpUnread) (any, error) {
+		// But for a Codex session the node wakes by a pointer: its own listing is
+		// the delivery (node.UnreadPage.Delivered), as the pointer's prompt says.
+		// The description is shared with Claude Code's native tools
+		// (tools.gen.ts), where no listing reads anything.
 		session, _ := agentSessionCtx(ctx)
 		return unreadForSession(ctx, cfg, in.Folder, in.After, limit(in.Limit), proj(in.Project), session, true)
 	})

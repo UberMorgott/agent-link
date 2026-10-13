@@ -191,6 +191,30 @@ func TestChatCommands(t *testing.T) {
 	}
 }
 
+// The command a pointer wake names for a Codex thread without the MCP tool
+// (node.PointerPrompt) asks as that session, like the tool: the node delivers
+// to a session it wakes by pointers on exactly this request.
+func TestChatUnreadAsSession(t *testing.T) {
+	f := newFakeAPI(t)
+	dir := t.TempDir()
+	prompt := node.PointerPrompt(1, dir, "thread-1", "p-0123456789abcdef", "agentlink.exe")
+	_, line, ok := strings.Cut(prompt, `"agentlink.exe" `)
+	if !ok {
+		t.Fatalf("the pointer names no CLI command: %s", prompt)
+	}
+	line, _, _ = strings.Cut(line, "\n")
+	if want := `chat unread --session thread-1 --folder "` + dir + `"`; line != want {
+		t.Fatalf("the pointer's command: %q, want %q", line, want)
+	}
+	if out := f.run("chat", "unread", "--session", "thread-1", "--folder", dir); !strings.Contains(out, `"cursor":"1-m1"`) {
+		t.Fatalf("chat unread --session printed %q", out)
+	}
+	want := "GET /unread?" + url.Values{"agent": {"1"}, "cwd": {cwd(t)}, "folder": {dir}, "limit": {"50"}, "session": {"thread-1"}}.Encode()
+	if len(f.reqs) != 1 || f.reqs[0] != want {
+		t.Fatalf("requests %q, want %q", f.reqs, want)
+	}
+}
+
 // chat reassign hands one unread message to a live session in its project.
 func TestChatReassign(t *testing.T) {
 	f := newFakeAPI(t)

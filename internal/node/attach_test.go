@@ -441,9 +441,8 @@ func TestAttachmentEndToEnd(t *testing.T) {
 	if err != nil || !bytes.Equal(onDisk, img) {
 		t.Fatalf("materialized file: %v", err)
 	}
-	text, images := WakePrompt([]UnreadMessage{got}, 0, workA, "t"), wakeImages([]UnreadMessage{got})
-	if !strings.Contains(text, att.Path) || !slices.Equal(images, []string{att.Path}) {
-		t.Fatalf("wake prompt %q images %v", text, images)
+	if text := WakePrompt([]UnreadMessage{got}, 0, workA, "t"); !strings.Contains(text, att.Path) {
+		t.Fatalf("wake prompt %q", text)
 	}
 	// The author sees its own attachment; the reader's history shows it too.
 	for _, n := range []*testNode{a, b} {

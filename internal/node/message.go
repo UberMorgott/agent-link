@@ -81,7 +81,8 @@ const (
 	// anything from being woken or opened for the message now (HoldStopped,
 	// HoldAutonomyOff), or no live session can be woken
 	// for it (HoldNextEvent), or its session is in a turn and is woken after
-	// it (HoldBusyTurn); it waits unread.
+	// it (HoldBusyTurn), or its session's turn did not fetch it
+	// (HoldUnfetched); it waits unread.
 	AttemptHeld = "held"
 )
 
@@ -98,6 +99,10 @@ const (
 	// did not report (a Codex thread, by its rollout); it is woken for the
 	// message once that turn ends.
 	HoldBusyTurn = "busy_turn"
+	// HoldUnfetched: the session was woken for the message (a pointer wake,
+	// pointer.go), its turn ran and did not fetch it within pointerFetchGrace;
+	// it is unread again for a hook, another session or the next wake.
+	HoldUnfetched = "wake_unfetched"
 )
 
 // Attempt limits: events per KindReceipt message, kept per recipient of one

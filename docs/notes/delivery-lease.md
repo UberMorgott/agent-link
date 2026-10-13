@@ -36,6 +36,8 @@ Persisted in `leases.json` (data dir) next to `sessions.json`.
 | running -> failed | a launch's first turn started and failed (may have acted in part: `needs_human`) |
 | retry -> failed | `attempts >= maxLeaseAttempts` (5): `needs_human` reported once |
 | leased -> failed | `queued_stale`: a queued/inbox/waiter wake its session stayed silent on for `queuedOwnerMax` (accepted, never proven: no automatic requeue, `needs_human`) |
+| leased(queue pointer) -> leased(hook) -> acked | the session's fetch (`pointerFetch`: its own `unread` listing claims as a hook and acks at once) or its hook's delivery |
+| leased(queue pointer, `shown`) -> retry | `pointer_unfetched`: the pointer's marker was in the rollout for `pointerFetchGrace` (2 min) and nothing fetched; `held:wake_unfetched`, a new pointer may follow (`handedTo` no more) |
 
 Rules:
 
@@ -69,6 +71,17 @@ Rules:
   (`queuedTurns`), and a prompt that failed `queued_stale` is observed again
   while the thread is in a turn (`observeLateStarts`): its late start is
   proven and acknowledged.
+- A `queue` prompt is a pointer (`pointer.go`, token `p-…`), no message: the
+  queue cannot be inspected or cancelled, so a prompt consumed late must not
+  present what was read meanwhile. Its marker in the rollout proves the
+  pointer ran (`Lease.Shown`, wake count ended), never a read; the session's
+  fetch delivers what is unread for it then. "Handed" (`handedTo`) for a queue
+  = a pointer was queued for the message and is not known consumed, or its
+  fetch grace runs: no message has two prompts in a queue at once, and one
+  whose pointer ran unfetched may get a new one (its attempts and backoff as
+  ever). A token without `p-` is a prompt of v0.6.75 or older, which carried
+  the messages: its marker still starts and acknowledges them, and its
+  messages stay `woken` for the hooks.
 - `failed` is terminal for automatic paths (`Lease.Failed`): a hook may still
   show the message to a live session, and its lapse returns to `failed`.
 - `hook` leases (a session in a turn claiming) do not count as attempts and

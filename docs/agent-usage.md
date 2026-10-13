@@ -102,7 +102,7 @@ agentlink send         --chat <network-chat-id> --ask nikita --body-file q.md # 
 agentlink send         --chat <local-chat-id> --ask-seat Codex --body-file q.md # ask a local seat in its local chat
 agentlink send         --reply-to <id> --body-file answer.md # into the conversation of the message you answer
 agentlink send         --chat <id> --attach shot.png [--attach log.txt] [--body-file note.md]   # with files (see Attachments below)
-agentlink chat unread  [--folder <path>]                       # what this node has not read yet, oldest first
+agentlink chat unread  [--folder <path>] [--session <id>]      # what this node has not read yet, oldest first; --session: for that agent session (a woken Codex session takes them, read, by this call)
 agentlink chat ack     --ids <id,...> [--session <id>]         # mark read: the authors see «прочитано»
 agentlink chat reassign --id <id> --session <id> [--force]     # hand a reply that needs a person to a live session
 agentlink session pin   --session <codex-thread-id> [--project <id>] # prefer that Codex chat for new untargeted project messages
@@ -175,8 +175,8 @@ extension), at most 10 MB each, 10 files and 50 MB per message; `--attach` (MCP 
 `attachments: [path]`) takes only files inside the project folder or the temp folder. Received
 files are copied to `<project folder>/.agentlink/attachments/<sha8>-<name>` (git-ignored) and
 listed by absolute path in unread messages and wake prompts: open images and PDFs with your file
-viewer, text by reading the file. A Codex session woken by the node also gets the images with
-the prompt (`codex queue --image`). Peers older than attachments see a line
+viewer, text by reading the file. A Codex session woken by the node fetches its messages
+(the queued prompt is a pointer) and opens the images by those paths too. Peers older than attachments see a line
 `[attachment: <name>]` in the text instead.
 
 A project has exactly one active chat, shown under the project's name. For a network project,
@@ -308,7 +308,7 @@ error whose text is the API's message.
 | `members` | `project?` | `members` |
 | `chats` | `project?`, `archive?`, `legacy?` | `chat list` |
 | `history` | `chat`, `limit?` (50), `before_seq?`, `after_seq?` | `chat history` |
-| `unread` | `folder?`, `project?`, `limit?` (50), `after?` | `chat unread`, as one `{messages, total, next}` object; never marks read |
+| `unread` | `folder?`, `project?`, `limit?` (50), `after?` | `chat unread`, as one `{messages, total, next}` object; never marks read, but for a Codex session the node wakes (`wake: "queue"`): its own call is the delivery (`delivered: true`, read) |
 | `send` | exactly one of `chat` / `to` / `new_chat_with[]`, `body`, `ask?[]`, `ask_seats?[]`, `reply_to?` | `send` (`new_chat_with`: `chat new` first); `ask` addresses network members, `ask_seats` local agents; answers `{id, chat}` |
 | `discuss` | `with` (`claude` or `codex`), `body`, `folder?`, `timeout?`, `async?`, one of `chat?` / `topic?` / `temporary?`, `shared?` | uses or creates the calling session's own local chat (a person's or `shared`: the folder's project chat; or the named or temporary chat) and seat; returns IDs, `scope`, `expires_at?` and the direct reply, `queued`, or `timed_out` |
 | `ack` | `ids[]`, `chat?`, `project?`, `session?` (default: this session) | `chat ack` |
@@ -428,11 +428,29 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   when its next event comes (`idle: false`). While the node finds a codex 0.149 or later (on
   `PATH`, the npm package's native `codex.exe`, a standalone install, or the copy the desktop
   app runs from `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>`), it checks every 2 s: an idle live session with unread
-  messages it may take gets one `codex queue --thread <session_id> --message "<the messages>"`
+  messages it may take gets one `codex queue --thread <session_id> --message "<a pointer>"`
   per idle period. A Codex app-server that holds that thread
   loaded and idle (the CLI, the desktop app sharing that `CODEX_HOME`) starts a turn with it
   within about 10 s. A thread nobody has open keeps the prompt until it is opened.
-  The wake prompt (Codex queue and Claude inbox alike) is the messages themselves, formatted
+  The Codex prompt is a **pointer**, never the messages: a queue keeps what it accepted and
+  runs it whenever it gets to it (minutes or hours later, behind other turns), and nothing can
+  look into it or take a prompt back. The pointer carries the wake marker
+  `[agent-link wake p-<token>]` and one instruction: fetch now with the agentlink MCP tool
+  `unread`, or without it `"<agentlink.exe>" chat unread --session <id> --folder "<folder>"`;
+  if that returns nothing, answer one short line and stop. For a session that registered
+  `wake: "queue"` that listing (`GET /unread?agent=1&session=<id>`) **is the delivery**: what it
+  lists is claimed for the session as for its hooks and read at once (`delivered: true`, no ack
+  needed), so it returns what waits for the session at that moment (a message newer than the
+  pointer too, never one read or taken meanwhile) and a pointer that runs with nothing pending
+  costs one trivial turn and changes nothing. The pointer's marker in the thread's rollout
+  proves only that the pointer ran: the wake count ends, and its messages stay the session's
+  for 2 more minutes (`pointerFetchGrace`); no fetch by then releases them (lease reason
+  `pointer_unfetched`, the author sees `held:wake_unfetched`, `needs_human` after 5 leases) for
+  a hook, another session or a new pointer. No message has two pointers in a queue at once. A
+  pointer holds nothing back from the session's own hooks: where they fire, they inject the
+  messages as ever and the fetch finds the rest. A prompt queued by a node before pointers
+  (its token has no `p-`) carried its messages and is still acknowledged by its marker.
+  The Claude inbox prompt is the messages themselves, formatted
   as the hooks inject them (sender, chat, id, body, reply command), as many as fit 4500 runes,
   then «Ещё N непрочитанных: agentlink chat unread --folder …». The node claims exactly those
   for the session first: its hooks leave them out (`GET /unread?session=` lists them under

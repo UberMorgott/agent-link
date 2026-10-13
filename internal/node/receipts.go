@@ -139,6 +139,10 @@ type UnreadPage struct {
 	// carried (wakeIdle), kept out of Messages and Total: its hook acknowledges
 	// them at that prompt instead of delivering them again.
 	Woken []UnreadMessage `json:"woken,omitempty"`
+	// Delivered: this listing was the delivery of Messages to the session that
+	// asked (a WakeQueue session's own listing, pointerFetch): they are read
+	// now and need no ack.
+	Delivered bool `json:"delivered,omitempty"`
 }
 
 // Unread lists this node's unread messages, oldest first, of every age:
@@ -229,10 +233,11 @@ func (n *Node) unreadHeld(folder, session, after string, limit int, held heldPic
 	// lapsed is listed in both, so a hook that sees the session got it after
 	// all acknowledges it instead of delivering it twice.
 	// A held request left out (listed false) is still Woken for the session a
-	// waiter woke with it, so its hook acknowledges it.
+	// waiter woke with it, so its hook acknowledges it. A pointer wake
+	// (pointerToken) carried no message: its messages are listed as any other.
 	add := func(um UnreadMessage, listed bool) {
 		if session != "" {
-			if c, ok := n.sess.claims[um.ID]; ok && c.wake() && c.owner == session && c.token != "" {
+			if c, ok := n.sess.claims[um.ID]; ok && c.wake() && c.owner == session && c.token != "" && !pointerToken(c.token) {
 				w := um
 				w.WakeToken = c.token
 				woken = append(woken, w)

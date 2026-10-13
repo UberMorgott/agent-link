@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -311,38 +309,30 @@ func TestExhaustedWakeStateOnDisk(t *testing.T) {
 	}
 }
 
-// A queued turn the rollout shows started is proof the session took the wake:
-// the wakes of that idle period are over though no hook event said so, its
-// messages are its turn's (not queued again), and a request that comes later
-// wakes it at once.
+// A queued pointer the rollout shows started is proof the session took the
+// wake: the wakes of that idle period are over though no hook event said so.
+// Nothing is read by that alone: its messages stay the session's, unread, for
+// its fetch (not queued again meanwhile), and a request that comes later wakes
+// it at once.
 func TestProvenQueueWakeReleasesLatch(t *testing.T) {
 	q := newStaleQueue(t)
-	dir := filepath.Join(q.home, "sessions", "2026", "10", "13")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	rollout := filepath.Join(dir, "rollout-x-s-q.jsonl")
-	if err := os.WriteFile(rollout, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	rollout := q.rollout("")
 	first := q.send("first request")
 	q.pass()
-	page, _ := q.a.UnreadFor(q.dir, "s-q", "", 10)
-	if q.w.count() != 1 || len(page.Woken) != 1 || !q.session().Woken {
-		t.Fatalf("first wake: %v %+v", q.w.calls, page)
+	token := wakeTokenOf(q.lastWake())
+	if q.w.count() != 1 || !pointerToken(token) || !q.session().Woken {
+		t.Fatalf("first wake: %v", q.w.calls)
 	}
-	if err := os.WriteFile(rollout, []byte(WakeMarker(page.Woken[0].WakeToken)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	q.wrote(rollout, WakeMarker(token))
 	eventually(t, "the proven wake ends the wake count", func() bool { s := q.session(); return !s.Woken && s.Wakes == 0 })
-	// No hook ran: the rollout's proof alone acknowledged the message.
-	if l, _ := q.a.leases.get(first.ID); l.State != LeaseAcked {
+	// No hook ran, nothing fetched: the pointer in the rollout read nothing.
+	if l, _ := q.a.leases.get(first.ID); l.State != LeaseLeased || l.Owner != "s-q" || l.Shown.IsZero() {
 		t.Fatalf("lease after the proof: %+v", l)
 	}
-	if page, _ := q.a.UnreadFor(q.dir, "s-q", "", 10); page.Total != 0 || len(page.Woken) != 0 {
-		t.Fatalf("the proven message is still unread: %+v", page)
+	if page, _ := q.a.UnreadFor(q.dir, "s-q", "", 10); page.Total != 1 {
+		t.Fatalf("the pointer's marker read its message: %+v", page)
 	}
-	waitAttempts(t, q.b, first, AttemptWakeRequested, AttemptWokenConfirmed)
+	waitAttempts(t, q.b, first, AttemptWakeRequested)
 	q.pass()
 	if q.w.count() != 1 {
 		t.Fatalf("the proven message was queued again: %v", q.w.calls)
@@ -409,26 +399,26 @@ func TestActivityReleasesWakeLatch(t *testing.T) {
 	}
 }
 
-// A message whose wake failed for good does not keep the newer ones out of the
-// prompt: it is left out before the prompt is fitted.
+// A message whose wake failed for good is not what a later pointer is for: it
+// neither counts in it nor keeps a newer message from its wake.
 func TestWakeFitSkipsFailedMessages(t *testing.T) {
 	q := newStaleQueue(t)
 	long := strings.Repeat("x", 1500)
 	m0, m1 := q.send("m0 "+long), q.send("m1 "+long)
-	q.send("m2 " + long)
 	q.pass()
-	if text := q.lastWake(); q.w.count() != 1 || !strings.Contains(text, "m0 ") || !strings.Contains(text, "m1 ") || strings.Contains(text, "m2 ") {
+	if text := q.lastWake(); q.w.count() != 1 || !strings.Contains(text, "[pointer for] m0 ") || !strings.Contains(text, "[pointer for] m1 ") {
 		t.Fatalf("first wake: %v", q.w.calls)
 	}
 	if err := q.a.leases.fail("s-q", []string{m0.ID, m1.ID}, "queued_stale", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	// A new idle period: the failed ones are the oldest unread and would fill
-	// the prompt.
+	// A new idle period: the failed ones are the oldest unread.
+	q.send("m2 " + long)
 	q.reg(false)
 	q.reg(true)
 	q.pass()
-	if text := q.lastWake(); q.w.count() != 2 || !strings.Contains(text, "m2 ") || strings.Contains(text, "m0 ") || strings.Contains(text, "m1 ") {
+	if text := q.lastWake(); q.w.count() != 2 || !strings.Contains(text, "[pointer for] m2 ") || strings.Contains(text, "m0 ") || strings.Contains(text, "m1 ") ||
+		!strings.Contains(text, "новые сообщения (1)") {
 		t.Fatalf("the failed messages kept the newer one out: %v", q.w.calls)
 	}
 }
@@ -705,38 +695,40 @@ func TestPinnedQueueSessionOutlivesStaleWaits(t *testing.T) {
 }
 
 // After a restart the queue wakes still unproven are observed again: the
-// prompt the thread runs then proves and acknowledges its messages.
+// pointer the thread runs then is proven shown, its fetch grace runs from
+// then, and the fetch delivers.
 func TestQueueObserversResumed(t *testing.T) {
 	q := newStaleQueue(t)
-	dir := filepath.Join(q.home, "sessions", "2026", "10", "13")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	rollout := filepath.Join(dir, "rollout-x-s-q.jsonl")
-	if err := os.WriteFile(rollout, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	rollout := q.rollout("")
 	first := q.send("first request")
 	// The node stops right after the wake: its observer ends with it.
 	stopped, stop := context.WithCancel(t.Context())
 	stop()
 	q.a.wakeIdle(stopped)
-	page, _ := q.a.UnreadFor(q.dir, "s-q", "", 10)
-	if q.w.count() != 1 || len(page.Woken) != 1 {
-		t.Fatalf("first wake: %v %+v", q.w.calls, page)
+	token := wakeTokenOf(q.lastWake())
+	if q.w.count() != 1 || !pointerToken(token) {
+		t.Fatalf("first wake: %v", q.w.calls)
 	}
-	if err := os.WriteFile(rollout, []byte(WakeMarker(page.Woken[0].WakeToken)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if l, _ := q.a.leases.get(first.ID); l.State != LeaseLeased {
+	q.wrote(rollout, WakeMarker(token))
+	if l, _ := q.a.leases.get(first.ID); l.State != LeaseLeased || !l.Shown.IsZero() {
 		t.Fatalf("lease before the restart: %+v", l)
 	}
 	q.a.resumeQueueObservers(t.Context())
 	eventually(t, "the resumed observer proves the wake", func() bool {
 		l, _ := q.a.leases.get(first.ID)
 		s := q.session()
-		return l.State == LeaseAcked && !s.Woken && s.Wakes == 0
+		return l.State == LeaseLeased && !l.Shown.IsZero() && !s.Woken && s.Wakes == 0
 	})
+	shown, _ := q.a.leases.get(first.ID)
+	// A second restart does not start the grace again.
+	eventually(t, "the observer ended", func() bool { _, on := q.a.observed.Load("s-q\x00" + token); return !on })
+	q.a.observeQueueStart(t.Context(), q.session(), token, []string{first.ID})
+	if l, _ := q.a.leases.get(first.ID); !l.Shown.Equal(shown.Shown) {
+		t.Fatalf("the grace started again: %v then %v", shown.Shown, l.Shown)
+	}
+	if page := q.fetch(); !page.Delivered || len(page.Messages) != 1 || page.Messages[0].ID != first.ID {
+		t.Fatalf("the fetch after the restart: %+v", page)
+	}
 	waitAttempts(t, q.b, first, AttemptWakeRequested, AttemptWokenConfirmed)
 }
 

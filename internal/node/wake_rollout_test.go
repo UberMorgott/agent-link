@@ -183,9 +183,10 @@ func TestQueuedPromptBehindLiveTurnIsNotStale(t *testing.T) {
 	}
 }
 
-// A prompt whose lease failed unproven still starts once the thread gets to
+// A pointer whose lease failed unproven still starts once the thread gets to
 // it: while the rollout shows a turn, the wake is observed again, and its
-// prompt in the rollout starts and acknowledges its message.
+// prompt in the rollout ends the wake count; its fetch delivers the message,
+// failed or not.
 func TestLateStartOfStalePromptIsProven(t *testing.T) {
 	q := newStaleQueue(t)
 	path := q.rollout("")
@@ -205,15 +206,44 @@ func TestLateStartOfStalePromptIsProven(t *testing.T) {
 		t.Fatal("no late start expected of a thread in a turn")
 	}
 	q.a.observeLateStarts(t.Context(), time.Now())
-	eventually(t, "the late start acknowledged", func() bool {
-		got, _ := q.a.leases.get(m.ID)
-		p, _ := q.a.Unread("", "", 100)
-		return got.State == LeaseAcked && !slices.ContainsFunc(p.Messages, func(u UnreadMessage) bool { return u.ID == m.ID })
-	})
 	// The proof ends the wake count, and the observer with it.
 	eventually(t, "the observer ended", func() bool {
 		_, on := q.a.observed.Load("s-q\x00" + l.Token)
 		return !on && !q.session().Woken
+	})
+	// The pointer's prompt read nothing; the turn's fetch does.
+	if got, _ := q.a.leases.get(m.ID); got.State != LeaseFailed {
+		t.Fatalf("lease after the late pointer's prompt: %+v", got)
+	}
+	if page := q.fetch(); !page.Delivered || len(page.Messages) != 1 || page.Messages[0].ID != m.ID {
+		t.Fatalf("the late pointer's fetch: %+v", page)
+	}
+	got, _ := q.a.leases.get(m.ID)
+	if p, _ := q.a.Unread("", "", 100); got.State != LeaseAcked || slices.ContainsFunc(p.Messages, func(u UnreadMessage) bool { return u.ID == m.ID }) {
+		t.Fatalf("after the late fetch: %+v", got)
+	}
+}
+
+// The same for a prompt of a node before pointers, which carried its message:
+// its late start still starts and acknowledges it.
+func TestLateStartOfOldPromptAcknowledges(t *testing.T) {
+	q := newStaleQueue(t)
+	path := q.rollout("")
+	m := q.send("request the old prompt carries")
+	const token = "0123456789abcdef"
+	now := time.Now()
+	if ok, err := q.a.leases.take(m.ID, "", "s-q", ViaQueue, token, now.Add(inboxWakeGrace), now); err != nil || !ok {
+		t.Fatalf("take: %v %v", ok, err)
+	}
+	if err := q.a.leases.fail("s-q", []string{m.ID}, "queued_stale", now); err != nil {
+		t.Fatal(err)
+	}
+	q.wrote(path, turnLine("task_started", time.Now())+WakeMarker(token)+"\n")
+	q.a.observeLateStarts(t.Context(), time.Now())
+	eventually(t, "the late start acknowledged", func() bool {
+		got, _ := q.a.leases.get(m.ID)
+		p, _ := q.a.Unread("", "", 100)
+		return got.State == LeaseAcked && !slices.ContainsFunc(p.Messages, func(u UnreadMessage) bool { return u.ID == m.ID })
 	})
 }
 

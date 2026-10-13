@@ -1049,7 +1049,7 @@ func (n *Node) seatUnread(sid string, filter bool, area string, actionable bool)
 		switch {
 		case turn:
 			continue // the node's turn of the seat has it
-		case woke:
+		case woke && !pointerToken(token): // a pointer's prompt has no message: listed
 			um.WakeToken = token
 			woken = append(woken, um)
 			continue
@@ -1119,8 +1119,12 @@ func (n *Node) seatClaim(session, id string, wake bool, token string) (handled, 
 	// (then a wake does not take it too).
 	now := time.Now()
 	if m, ok := st.marks[k]; ok && m.holds(now, true) && (m.kind != holdHook || wake) {
-		// But the wake that has it, kept alive by its owner (the same token).
-		if !wake || m.kind != holdWake || token == "" || m.token != token {
+		switch {
+		case !wake && m.kind == holdWake && pointerToken(m.token):
+			// A pointer wake has no message in its prompt: the hook, or the
+			// session's fetch, delivers it.
+		case !wake || m.kind != holdWake || token == "" || m.token != token:
+			// But the wake that has it, kept alive by its owner (the same token).
 			return true, false
 		}
 	}

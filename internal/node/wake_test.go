@@ -20,7 +20,12 @@ type fakeWaker struct {
 	mu    sync.Mutex
 	ready bool
 	err   error
-	calls []string // "home|session|text"
+	// calls: "home|session|text", then what the pointer was queued for (note);
+	// texts: the prompts alone, as the thread gets them.
+	calls []string
+	texts []string
+	// note, when set, names what a queued prompt is for (pointerFor).
+	note func(text string) string
 }
 
 func (w *fakeWaker) Check(context.Context, bool) {}
@@ -34,8 +39,56 @@ func (w *fakeWaker) Ready() bool {
 func (w *fakeWaker) Wake(_ context.Context, home, session, text string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.calls = append(w.calls, home+"|"+session+"|"+text)
+	call := home + "|" + session + "|" + text
+	if w.note != nil {
+		call += w.note(text)
+	}
+	w.calls = append(w.calls, call)
+	w.texts = append(w.texts, text)
 	return w.err
+}
+
+// wakeTokenOf is the wake token of a queued prompt ("" when it has none).
+func wakeTokenOf(text string) string {
+	_, rest, ok := strings.Cut(text, "[agent-link wake ")
+	if !ok {
+		return ""
+	}
+	token, _, _ := strings.Cut(rest, "]")
+	return token
+}
+
+// pointerFor notes, for a test's waker, the messages a pointer of n was queued
+// for: a "[pointer for] <body>" line for each lease of the prompt's token. The
+// prompt names none of them, and the tests tell the wakes apart by them.
+func pointerFor(n *Node) func(string) string {
+	return func(text string) string {
+		token := wakeTokenOf(text)
+		if !pointerToken(token) {
+			return ""
+		}
+		var bodies []string
+		for _, l := range n.leases.all() {
+			if l.Token != token {
+				continue
+			}
+			if rec, ok := n.chats.message(l.ID); ok {
+				bodies = append(bodies, rec.Message.Body)
+				continue
+			}
+			for _, p := range n.store.unreadPlain() {
+				if p.Message.ID == l.ID {
+					bodies = append(bodies, p.Message.Body)
+				}
+			}
+		}
+		slices.Sort(bodies)
+		var b strings.Builder
+		for _, body := range bodies {
+			b.WriteString("\n[pointer for] " + body)
+		}
+		return b.String()
+	}
 }
 
 func (w *fakeWaker) count() int {
@@ -80,6 +133,9 @@ func wakePair(t *testing.T, w SessionWaker) (*testNode, *testNode) {
 	lnA, lnB := listen(t), listen(t)
 	a := newTestNode(t, "a", testSecret, nil, t.TempDir(), lnA, map[string]net.Listener{"b": lnB})
 	b := newTestNode(t, "b", testSecret, []string{"dev"}, t.TempDir(), lnB, map[string]net.Listener{"a": lnA})
+	if fw, ok := w.(*fakeWaker); ok {
+		fw.note = pointerFor(a.Node)
+	}
 	a.SetSessionWaker(w)
 	a.wakeEvery = time.Hour
 	a.start(t)
@@ -195,9 +251,10 @@ func TestWakeIdleQueueSession(t *testing.T) {
 	}
 	reg(true)
 	first, _ := a.Unread("", "", 10)
-	if s := wake(); !s.Woken || w.count() != 1 || !strings.HasPrefix(w.calls[0], home+"|s-q|agent-link: новые сообщения (1).") ||
-		!strings.Contains(w.calls[0], "wake up") || !strings.Contains(w.calls[0], "id "+first.Messages[0].ID) ||
-		!strings.Contains(w.calls[0], "Просит ответа от вас") || strings.Contains(w.calls[0], "прочитай их") {
+	// The prompt is a pointer: where to fetch, no message of its own.
+	if s := wake(); !s.Woken || w.count() != 1 || !strings.HasPrefix(w.calls[0], home+"|s-q|agent-link: для этой сессии есть новые сообщения (1); их текста здесь нет. [agent-link wake p-") ||
+		!strings.Contains(w.calls[0], "[pointer for] wake up") || strings.Contains(w.texts[0], "wake up") || strings.Contains(w.texts[0], first.Messages[0].ID) ||
+		!strings.Contains(w.texts[0], "инструмент unread MCP-сервера agentlink") || !strings.Contains(w.texts[0], ` chat unread --session s-q --folder "`+dir+`"`) {
 		t.Fatalf("idle session: %+v %v", s, w.calls)
 	}
 	reg(true) // a heartbeat of the same idle period
@@ -217,21 +274,14 @@ func TestWakeIdleQueueSession(t *testing.T) {
 	if w.count() != 2 || !strings.Contains(w.calls[1], "second one") || strings.Contains(w.calls[1], "wake up") {
 		t.Fatalf("new idle period: %v", w.calls)
 	}
-	if page, _ := a.UnreadFor(dir, "s-q", "", 10); page.Total != 0 || len(page.Woken) != 2 {
-		t.Fatalf("hooks would deliver the woken again: %+v", page)
-	}
-	// The session acknowledges them at the prompt (its hook): read.
-	var all []string
-	for _, m := range first.Messages {
-		all = append(all, m.ID)
-	}
+	// A pointer carried none of them: they are the session's hooks' to deliver
+	// (or its fetch's), not woken with.
 	p2, _ := a.UnreadFor(dir, "s-q", "", 10)
-	for _, m := range p2.Woken {
-		if !slices.Contains(all, m.ID) {
-			all = append(all, m.ID)
-		}
+	if p2.Total != 2 || len(p2.Woken) != 0 {
+		t.Fatalf("a pointer's messages are held back from the hooks: %+v", p2)
 	}
-	if _, err := a.Ack("", AckRequest{IDs: all, SessionID: "s-q"}); err != nil {
+	// The session's hook delivers and acknowledges them: read.
+	if _, err := a.Ack("", AckRequest{IDs: ids(p2.Messages), SessionID: "s-q"}); err != nil {
 		t.Fatal(err)
 	}
 	if page, _ := a.UnreadFor(dir, "s-q", "", 10); page.Total != 0 || len(page.Woken) != 0 {
@@ -348,9 +398,10 @@ func TestWaiterGetsGuardedMessage(t *testing.T) {
 	}
 }
 
-// A wake carries as many messages as fit FormatBudget and points at the rest;
-// only those it carries are claimed. Its claim lapses after inboxWakeGrace
-// (the session never took the prompt) and the hooks get them again.
+// A pointer is for every message that waits for the session, whatever their
+// size (it carries none): they are leased to it, another session cannot take
+// them, its own hooks can. A wake it never took is retried only for what no
+// pointer was queued for yet.
 func TestWakePromptCapAndLapse(t *testing.T) {
 	w := &fakeWaker{ready: true}
 	a, b := wakePair(t, w)
@@ -370,22 +421,33 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 		t.Fatalf("wakes %v", w.calls)
 	}
 	text := w.calls[0]
-	if !strings.Contains(text, "новые сообщения (2)") || !strings.Contains(text, "m0 ") || !strings.Contains(text, "m1 ") ||
-		strings.Contains(text, "m2 ") || !strings.Contains(text, "Ещё 2 непрочитанных: agentlink chat unread --folder") {
+	if !strings.Contains(text, "новые сообщения (4)") || strings.Contains(w.texts[0], long) {
 		t.Fatalf("text %q", text)
 	}
-	page, _ := a.UnreadFor(dir, "s-q", "", 10)
-	if page.Total != 2 || len(page.Woken) != 2 {
-		t.Fatalf("claimed %+v", page)
-	}
-	// Another session cannot take the woken ones either.
-	if granted, _ := a.Claim(ClaimRequest{SessionID: "s-q", IDs: ids(page.Woken)}); len(granted) != 0 {
-		t.Fatalf("hook re-claimed woken: %v", granted)
-	}
-	for _, m := range page.Woken {
-		if m.WakeToken == "" || !strings.Contains(text, WakeMarker(m.WakeToken)) {
-			t.Fatalf("woken %s without the prompt's token %q", m.ID, m.WakeToken)
+	for i := range 4 {
+		if !strings.Contains(text, fmt.Sprintf("[pointer for] m%d ", i)) {
+			t.Fatalf("the pointer is not for m%d: %q", i, text)
 		}
+	}
+	page, _ := a.UnreadFor(dir, "s-q", "", 10)
+	if page.Total != 4 || len(page.Woken) != 0 {
+		t.Fatalf("listed for the session %+v", page)
+	}
+	token := wakeTokenOf(w.texts[0])
+	for _, m := range page.Messages {
+		if l, _ := a.leases.get(m.ID); l.State != LeaseLeased || l.Owner != "s-q" || l.Via != ViaQueue || l.Token != token || !pointerToken(token) {
+			t.Fatalf("lease of %s: %+v (prompt token %q)", m.ID, l, token)
+		}
+	}
+	// Another session cannot take them.
+	if _, err := a.RegisterSession(SessionRequest{SessionID: "s-other", Provider: "codex", Folder: dir, Wake: WakeNextEvent, Idle: true}); err != nil {
+		t.Fatal(err)
+	}
+	if granted, _ := a.Claim(ClaimRequest{SessionID: "s-other", IDs: ids(page.Messages)}); len(granted) != 0 {
+		t.Fatalf("another session took a pointer's messages: %v", granted)
+	}
+	if err := a.EndSession("s-other"); err != nil {
+		t.Fatal(err)
 	}
 	lapse := func() {
 		t.Helper()
@@ -401,16 +463,22 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 		a.sess.mu.Unlock()
 	}
 	lapse()
-	// Unread again; still listed as woken, for a hook that sees the prompt
-	// arrived after all.
-	if page, _ := a.UnreadFor(dir, "s-q", "", 10); page.Total != 4 || len(page.Woken) != 2 {
+	if page, _ := a.UnreadFor(dir, "s-q", "", 10); page.Total != 4 || len(page.Woken) != 0 {
 		t.Fatalf("after the lapse: %+v", page)
 	}
-	// Still idle, never took it: one more wake in this idle period, for the
-	// messages its queue does not hold yet (none is queued twice), then no more.
+	// Still idle, never took it: no second pointer for the same messages.
 	a.wakeIdle(context.Background())
-	if w.count() != 2 || !strings.Contains(w.calls[1], "m2 ") || !strings.Contains(w.calls[1], "m3 ") ||
-		strings.Contains(w.calls[1], "m0 ") || strings.Contains(w.calls[1], "m1 ") {
+	if w.count() != 1 {
+		t.Fatalf("a second pointer for the same messages: %v", w.calls)
+	}
+	// One more wake in this idle period, for a message no pointer was queued
+	// for yet (none has two), then no more.
+	if _, err := b.SendRequest(SendRequest{To: "a", Body: "m4 " + long, AuthorKind: AuthorAgent}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has 5", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 5 })
+	a.wakeIdle(context.Background())
+	if w.count() != 2 || !strings.Contains(w.calls[1], "[pointer for] m4 ") || strings.Contains(w.calls[1], "m0 ") || !strings.Contains(w.calls[1], "новые сообщения (1)") {
 		t.Fatalf("no second wake after the lapse: %v", w.calls)
 	}
 	a.wakeIdle(context.Background())
@@ -420,11 +488,11 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 	if w.count() != 2 {
 		t.Fatalf("more than %d wakes in one idle period: %d", maxIdleWakes, w.count())
 	}
-	// A new idle period may be woken again, for what its queue does not hold.
-	if _, err := b.SendRequest(SendRequest{To: "a", Body: "m4 " + long, AuthorKind: AuthorAgent}); err != nil {
+	// A new idle period may be woken again, for what no pointer is queued for.
+	if _, err := b.SendRequest(SendRequest{To: "a", Body: "m5 " + long, AuthorKind: AuthorAgent}); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, "a has 5", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 5 })
+	eventually(t, "a has 6", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 6 })
 	// Inside the wait of the first stale wake (staleWakeWait): nothing yet.
 	a.sess.mu.Lock()
 	a.sess.sessions["s-q"].WokeAt = time.Now().Add(time.Minute - staleWakeWait(maxIdleWakes))
@@ -439,8 +507,13 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 		}
 	}
 	a.wakeIdle(context.Background())
-	if w.count() != 3 || !strings.Contains(w.calls[2], "m4 ") || strings.Contains(w.calls[2], "m0 ") {
+	if w.count() != 3 || !strings.Contains(w.calls[2], "[pointer for] m5 ") || strings.Contains(w.calls[2], "m4 ") || strings.Contains(w.calls[2], "m0 ") {
 		t.Fatalf("new idle period not woken: %d", w.count())
+	}
+	// Its own hooks deliver what a pointer was queued for.
+	page, _ = a.UnreadFor(dir, "s-q", "", 10)
+	if granted, _ := a.Claim(ClaimRequest{SessionID: "s-q", IDs: ids(page.Messages)}); len(granted) != 6 {
+		t.Fatalf("its hook cannot take a pointer's messages: %v", granted)
 	}
 }
 

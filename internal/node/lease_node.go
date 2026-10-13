@@ -210,6 +210,11 @@ func (n *Node) leaseSweep(now time.Time) {
 		// A lapsed wake keeps its claim (and token): a late proof acknowledges
 		// instead of delivering twice. A gone session's claims go.
 		n.revokeLeases(g.owner, list, g.reason, g.reason != "deadline")
+		if g.reason == reasonUnfetched {
+			// Its turn ran and took none of them: their authors hear why they
+			// wait (one that used up its leases heard needs_human above).
+			n.report(n.unfailed(list), AttemptHeld+":"+HoldUnfetched)
+		}
 	}
 	for _, e := range n.leases.staleHolds(now) {
 		n.releaseHold(e.owner, []string{e.id}, now)

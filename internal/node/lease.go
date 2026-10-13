@@ -84,8 +84,12 @@ type Lease struct {
 	Hold bool `json:"hold,omitempty"`
 	// Failed: the message failed once (maxLeaseAttempts, a failed turn); it
 	// stays so for every automatic path, whatever a hook does with it later.
-	Failed bool      `json:"failed,omitempty"`
-	At     time.Time `json:"at"`
+	Failed bool `json:"failed,omitempty"`
+	// Shown (a pointer wake's lease, pointerToken): when the owner's rollout
+	// showed the pointer's prompt; it keeps the lease for pointerFetchGrace
+	// from then (due). A node without pointer wakes ignores it.
+	Shown time.Time `json:"shown,omitzero"`
+	At    time.Time `json:"at"`
 }
 
 // LeaseView is the lease state of one unread message (GET /leases).
@@ -138,6 +142,12 @@ func (b *leaseBook) queuedOwner(id string) string {
 // emergency stop ("stopped") and the owner's registration lapsing
 // ("session_gone") take nothing out of its queue. key is the book key
 // (leaseKey: a seat's message has its own record).
+//
+// A queue prompt is a pointer (pointer.go): it names no message, and "handed"
+// means a pointer was queued for the message and is not known consumed, or
+// its fetch grace still runs (leased). So no message has two prompts in a
+// queue at once; one whose pointer ran and fetched nothing (reasonUnfetched)
+// is handed no more, and a new pointer may be queued for it.
 func (b *leaseBook) handedTo(key, owner string, unproven bool) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -149,7 +159,7 @@ func (b *leaseBook) handedTo(key, owner string, unproven bool) bool {
 	case LeaseRunning:
 		return true
 	case LeaseRetry:
-		return l.Reason == "deadline" || (unproven && l.Reason != "wake_failed")
+		return l.Reason == "deadline" || (unproven && l.Reason != "wake_failed" && l.Reason != reasonUnfetched)
 	case LeaseLeased, LeaseFailed:
 		return unproven
 	}
@@ -325,8 +335,26 @@ func (b *leaseBook) take(id, seat, owner, via, token string, deadline, now time.
 		l.WaiterWakes++
 		l.WaiterAt = now
 	}
-	l.State, l.Owner, l.Via, l.Token, l.Deadline, l.NextAt, l.Hold, l.At = LeaseLeased, owner, via, token, deadline, time.Time{}, false, now
+	l.State, l.Owner, l.Via, l.Token, l.Deadline, l.NextAt, l.Hold, l.Shown, l.At = LeaseLeased, owner, via, token, deadline, time.Time{}, false, time.Time{}, now
 	return true, b.touchLocked(l)
+}
+
+// shown marks owner's leased leases of ids by the pointer wake token as shown
+// at now (its rollout has the pointer's prompt): they stay owner's for
+// pointerFetchGrace from the first time (due). It reports whether any changed.
+func (b *leaseBook) shown(owner, token string, ids []string, now time.Time) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	changed := false
+	for _, l := range b.m {
+		if l.Owner == owner && l.Token == token && l.State == LeaseLeased && l.Shown.IsZero() && slices.Contains(ids, l.ID) {
+			l.Shown, changed = now, true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	return true, b.saveLocked()
 }
 
 // start moves owner's leases of ids to running on proof its turn has them
@@ -421,7 +449,7 @@ func (b *leaseBook) revokeLocked(l *Lease, reason string, now time.Time) bool {
 	if l.State != LeaseLeased && l.State != LeaseRunning {
 		return false
 	}
-	l.Reason, l.Deadline, l.Hold, l.At = reason, time.Time{}, false, now
+	l.Reason, l.Deadline, l.Hold, l.Shown, l.At = reason, time.Time{}, false, time.Time{}, now
 	if l.Failed {
 		// Failed is terminal: a hook's delivery of it that lapsed leaves it
 		// failed (reported already), never back in retry.
@@ -482,7 +510,7 @@ func (b *leaseBook) stop(now time.Time) ([]leaseEnd, error) {
 		if (l.State != LeaseLeased && l.State != LeaseRunning) || l.Hold || !automatic(l.Via) {
 			continue
 		}
-		l.State, l.Reason, l.Deadline, l.NextAt, l.At = LeaseRetry, "stopped", time.Time{}, now, now
+		l.State, l.Reason, l.Deadline, l.NextAt, l.Shown, l.At = LeaseRetry, "stopped", time.Time{}, now, time.Time{}, now
 		if l.Attempts > 0 {
 			l.Attempts--
 		}
@@ -568,6 +596,12 @@ func (b *leaseBook) due(now time.Time, gone func(owner string) bool, active func
 		switch {
 		case gone(l.Owner):
 			out = append(out, leaseEnd{l.Owner, l.ID, "session_gone"})
+		case l.State == LeaseLeased && !l.Shown.IsZero():
+			// A pointer the session's turn was shown: it fetches at once or not
+			// at all, and what it did not fetch is free again.
+			if now.Sub(l.Shown) >= pointerFetchGrace {
+				out = append(out, leaseEnd{l.Owner, l.ID, reasonUnfetched})
+			}
 		case l.State == LeaseLeased && contentVia(l.Via):
 			// The prompt is in the session's queue or inbox: it cannot be
 			// withdrawn, so a deadline never reassigns it (a slow turn is no

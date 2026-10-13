@@ -50,7 +50,7 @@ const usage = `usage:
   agentlink chat archive --config <path> [--chat <id>] [--project <id>]   (the project's chat history goes to the archive; a fresh chat with the same members opens; prints its id)
   agentlink chat list    --config <path> [--archive] [--legacy] [--project <id>]   (one JSON line per chat; without a project: every project's)
   agentlink chat history --config <path> --chat <id> [--limit 50] [--before <seq>] [--after <seq>] [--project <id>]   (one JSON line per message, oldest first)
-  agentlink chat unread  --config <path> [--folder <path>] [--limit 50] [--after <cursor>] [--project <id>]   (unread messages for this node, oldest first, one JSON line each; a last line {"next":...} when more follow)
+  agentlink chat unread  --config <path> [--folder <path>] [--limit 50] [--after <cursor>] [--session <id>] [--project <id>]   (unread messages for this node, oldest first, one JSON line each; a last line {"next":...} when more follow; --session: those for that agent session, which a woken Codex session takes, read, by this call)
   agentlink chat ack     --config <path> [--chat <id>] --ids <id,...> [--session <id>] [--project <id>]   (mark read: the authors get read receipts)
   agentlink chat reassign --config <path> --id <id> --session <id> [--force] [--project <id>]   (hand a reply whose session ended (needs_human) to a live session; --force also moves one a live session waits for)
   agentlink session pin --config <path> --session <id> [--project <id>]   (prefer this Codex thread for new untargeted project messages)
@@ -233,8 +233,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		folder := fs.String("folder", "", "only messages for a session in this folder (default: all)")
 		limit := fs.Int("limit", 50, "maximum messages")
 		after := fs.String("after", "", "cursor of the last message of the previous page")
+		session := fs.String("session", "", "the asking session's id: its own messages; a Codex session the node wakes takes them by this (they are read then)")
 		cmd = func(c config.Config) (int, error) {
-			return 0, chatUnread(ctx, c, *folder, *after, *limit, proj(), stdout)
+			return 0, chatUnread(ctx, c, *folder, *after, *limit, proj(), *session, stdout)
 		}
 	case "chat ack":
 		chat := fs.String("chat", "", "chat id (default: any chat, and plain messages)")
@@ -833,9 +834,12 @@ func history(ctx context.Context, cfg config.Config, chat string, limit int, bef
 }
 
 // chatUnread prints this node's unread messages, one JSON line each, and a
-// last line {"next": cursor, "total": n} when more pages follow.
-func chatUnread(ctx context.Context, cfg config.Config, folder, after string, limit int, project string, stdout io.Writer) error {
-	page, err := unread(ctx, cfg, folder, after, limit, project)
+// last line {"next": cursor, "total": n} when more pages follow. With session
+// it asks as that agent session, like the MCP tool: the messages for it, which
+// a Codex session the node wakes by a pointer takes by this call
+// (node.PointerPrompt names this command).
+func chatUnread(ctx context.Context, cfg config.Config, folder, after string, limit int, project, session string, stdout io.Writer) error {
+	page, err := unreadForSession(ctx, cfg, folder, after, limit, project, session, session != "")
 	if err != nil {
 		return err
 	}
@@ -848,11 +852,10 @@ func chatUnread(ctx context.Context, cfg config.Config, folder, after string, li
 	return encodeLines(stdout, []map[string]any{{"next": page.Next, "total": page.Total}})
 }
 
-// unread reads one page of unread messages; it never marks them read.
-func unread(ctx context.Context, cfg config.Config, folder, after string, limit int, project string) (node.UnreadPage, error) {
-	return unreadForSession(ctx, cfg, folder, after, limit, project, "", false)
-}
-
+// unreadForSession reads one page of unread messages: this node's, or with
+// session the ones for that session; agent marks an agent's own listing (its
+// MCP tool, its CLI). It marks none read, but for a WakeQueue session's own
+// listing, which is its delivery (node.UnreadPage.Delivered).
 func unreadForSession(ctx context.Context, cfg config.Config, folder, after string, limit int, project, session string, agent bool) (node.UnreadPage, error) {
 	q := inFolder(url.Values{"limit": {strconv.Itoa(limit)}}, project)
 	if folder != "" {

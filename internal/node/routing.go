@@ -451,8 +451,10 @@ func (n *Node) claimLocked(session string, want []string, via, token string, liv
 			}
 			continue
 		}
-		if _, woke := n.wokeWith(id, session, live); woke {
-			continue // the wake prompt has it: not delivered again
+		if tok, woke := n.wokeWith(id, session, live); woke && (wake || !pointerToken(tok)) {
+			// The wake prompt has it: not delivered again. A pointer's prompt
+			// has no message: a hook, or the session's fetch, delivers it.
+			continue
 		}
 		if c, ok := r.claims[id]; wake && ok && !c.wake() && c.held(live) {
 			continue // a hook is delivering it: waking with it too delivers it twice
@@ -476,7 +478,8 @@ func (n *Node) claimLocked(session string, want []string, via, token string, liv
 }
 
 // wakeClaim claims msgs for the wake prompt of session (claimLocked) under a
-// new wake token and returns the ones granted, in order, with the token.
+// new wake token and returns the ones granted, in order, with the token. A
+// queue wake's is a pointer's (pointerToken).
 func (n *Node) wakeClaim(session, via string, msgs []UnreadMessage) ([]UnreadMessage, string) {
 	r := n.sess
 	r.claimMu.Lock()
@@ -486,6 +489,9 @@ func (n *Node) wakeClaim(session, via string, msgs []UnreadMessage) ([]UnreadMes
 		return nil, ""
 	}
 	token := randomHex(8)
+	if via == ViaQueue {
+		token = pointerTokenPrefix + token
+	}
 	granted := n.claimLocked(session, ids(msgs), via, token, live)
 	var out []UnreadMessage
 	for _, m := range msgs {

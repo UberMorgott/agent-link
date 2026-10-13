@@ -38,6 +38,12 @@ const (
 	// Past it the lease fails (queued_stale, needs_human): the prompt was
 	// accepted and never proven, so nothing queues it a second time.
 	queuedOwnerMax = 30 * time.Minute
+	// pointerFetchGrace is how long a WakeQueue session keeps the messages of a
+	// pointer wake (pointer.go) after its rollout showed the pointer's prompt:
+	// the turn is to fetch them at once. Past it without a fetch their leases
+	// are released (pointer_unfetched; held:wake_unfetched to their authors)
+	// and a hook, another session or a new pointer takes them.
+	pointerFetchGrace = 2 * time.Minute
 )
 
 // Lease budgets (lease.go).
