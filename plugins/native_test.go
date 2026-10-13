@@ -13,7 +13,8 @@ var nativeFiles = []string{
 	"agent-link/.claude-plugin/plugin.json", "agent-link/hooks/claude-hooks.json",
 	"agent-link/hooks/register.ts", "agent-link/hooks/node.ts", "agent-link/hooks/tools.ts", "agent-link/hooks/tools.gen.ts",
 	"agent-link/types/index.d.ts",
-	"agent-link/tests/node.ts", "agent-link/tests/tools.test.ts",
+	"agent-link/tests/node.ts", "agent-link/tests/agents.test.ts", "agent-link/tests/delivery.test.ts",
+	"agent-link/tests/session.test.ts", "agent-link/tests/tools.test.ts",
 }
 
 // TestNativeModule runs the checks of Claude Code's in-process hooks module
