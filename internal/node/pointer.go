@@ -15,14 +15,25 @@ import (
 // instruction to fetch what waits for the session now.
 //
 //   - The fetch is the session's own unread listing: the agentlink MCP tool
-//     `unread`, or `agentlink chat unread --session <id>` (UnreadQuery with
-//     agent=1 and its session). For a session that asked for WakeQueue that
-//     call is the delivery (pointerFetch): what it lists is claimed by the
-//     rules of a hook's delivery (Claim) and acknowledged at once (Ack), as a
-//     hook does with what it injects. So it returns what is unread for the
-//     session at that moment, a message that came after the prompt was queued
-//     too, and never one that was acknowledged or taken meanwhile; a pointer
-//     that runs when nothing waits lists nothing and changes nothing.
+//     `unread` (called with the session's id, which the prompt names), or
+//     `agentlink chat unread --session <id>` (UnreadQuery with agent=1 and its
+//     session). For a session that asked for WakeQueue that call is the
+//     delivery (pointerFetch): what it answers with is claimed by the rules of
+//     a hook's delivery (Claim) and acknowledged at once (Ack), as a hook does
+//     with what it injects. So it returns what is unread for the session at
+//     that moment, a message that came after the prompt was queued too, and
+//     never one that was acknowledged or taken meanwhile; a pointer that runs
+//     when nothing waits lists nothing and changes nothing.
+//   - One answer carries what a hook's batch does (FetchCut), and only what it
+//     carries is acknowledged: the rest stays unread behind Next, and the
+//     answer says so (UnreadPage.Note). The control API, which merges the
+//     listings of several contexts, cuts first and delivers what it returns,
+//     each message in its own context (UnreadListing, Deliver, FetchDone).
+//   - One pointer at a time (pointerPending): while one is in the session's
+//     queue and its rollout has not shown it, the node queues no other. What a
+//     wake is due for meanwhile is leased to the session under that pointer's
+//     token (wakeIdle), with the schedule, count and bounds of a wake queued
+//     anew (staleWakeWait, maxStaleWakes, queued_stale, needs_human).
 //   - The pointer's prompt in the rollout (observeQueueStart) proves the
 //     pointer was shown, not that a message was read: it ends the wake count
 //     (wakeProven) and starts pointerFetchGrace on the wake's leases
@@ -51,23 +62,24 @@ func pointerToken(t string) bool { return strings.HasPrefix(t, pointerTokenPrefi
 const reasonUnfetched = "pointer_unfetched"
 
 // PointerPrompt is the prompt that wakes an idle WakeQueue session for total
-// messages: no message itself, only where to get them (the MCP tool, else the
-// CLI exe with the session's id and folder) and the wake's token (WakeMarker).
-func PointerPrompt(total int, folder, session, token, exe string) string {
+// messages: no message itself, only where to get them (the MCP tool, called
+// with the session's id, as a client's call may not name its thread; else the
+// CLI exe with that id) and the wake's token (WakeMarker). The command names
+// no folder: the node takes the session's own (UnreadListing), and a path in
+// a prompt would be text the agent's shell expands.
+func PointerPrompt(total int, session, token, exe string) string {
 	cmd := "agentlink"
 	if exe != "" {
 		cmd = `"` + exe + `"`
 	}
 	cmd += " chat unread --session " + session
-	if folder != "" {
-		cmd += ` --folder "` + folder + `"`
-	}
 	return fmt.Sprintf("agent-link: для этой сессии есть новые сообщения (%d); их текста здесь нет. %s\n"+
-		"Получите их сейчас: вызовите инструмент unread MCP-сервера agentlink (без аргументов). "+
+		"Получите их сейчас: вызовите инструмент unread MCP-сервера agentlink с одним аргументом session: \"%s\". "+
 		"Если такого инструмента нет, выполните команду (в PowerShell начните её с &): %s\n"+
 		"Вызов выдаёт сообщения, которые ждут эту сессию сейчас, и сразу отмечает их прочитанными: прочитайте их и, где просят ответа, ответьте. "+
+		"Если в ответе есть note, выдана только часть: повторяйте тот же вызов, пока note не исчезнет. "+
 		"Если он ничего не вернул и сообщений agent-link нет в контексте этого хода, делать нечего: ответьте одной короткой строкой и завершите ход.",
-		total, WakeMarker(token), cmd)
+		total, WakeMarker(token), session, cmd)
 }
 
 // fetchSession is the live session whose own unread listing is its delivery:
@@ -87,41 +99,124 @@ func (n *Node) fetchSession(session string) (Session, bool) {
 	return *s, true
 }
 
+// FetchFolder is the folder of session when its own unread listing is its
+// delivery here (fetchSession): the control API asks for that folder's
+// messages when the call names none.
+func (n *Node) FetchFolder(session string) (string, bool) {
+	s, ok := n.fetchSession(session)
+	return s.Folder, ok
+}
+
 // pointerFetch delivers page, the unread listing a WakeQueue session asked for
-// itself, to that session: the messages the node grants it (Claim, as for its
-// hooks) are acknowledged and stay listed, the others are left out. The call
-// also proves the session takes its wakes (wakeProven).
+// itself, to that session: as much of it as one answer carries (FetchCut), of
+// which the messages the node grants it are acknowledged and stay listed
+// (Deliver, FetchDone).
 func (n *Node) pointerFetch(session string, page UnreadPage) (UnreadPage, error) {
-	if len(page.Messages) > 0 {
-		granted, err := n.Claim(ClaimRequest{IDs: ids(page.Messages), SessionID: session})
-		if err != nil {
-			return UnreadPage{}, err
+	more := FetchCut(&page)
+	granted, err := n.Deliver(session, ids(page.Messages))
+	if err != nil {
+		return UnreadPage{}, err
+	}
+	FetchDone(&page, granted, more)
+	return page, nil
+}
+
+// FetchCut cuts a fetch's listing to what one answer carries: what a hook's
+// batch does (FitUnread, FormatBudget), so one tool result is never a whole
+// page of full bodies, and nothing is acknowledged that the answer does not
+// show. It reports whether more wait behind it (a next page, or the cut).
+func FetchCut(page *UnreadPage) bool {
+	more := page.Next != ""
+	if fit := FitUnread(page.Messages); fit < len(page.Messages) {
+		page.Messages, more = page.Messages[:fit], true
+	}
+	return more
+}
+
+// Deliver is the delivery of a fetch's messages ids to session: the ones the
+// node grants it (Claim, as for its hooks; to a session of another context of
+// this process the replies to its own messages) are acknowledged at once
+// (Ack), as a hook does with what it injects, and returned. The call also
+// proves the session takes its wakes (wakeProven).
+func (n *Node) Deliver(session string, ids []string) ([]string, error) {
+	var granted []string
+	if len(ids) > 0 {
+		var err error
+		if granted, err = n.Claim(ClaimRequest{IDs: ids, SessionID: session}); err != nil {
+			return nil, err
 		}
-		listed := len(page.Messages)
-		page.Messages = slices.DeleteFunc(page.Messages, func(m UnreadMessage) bool { return !slices.Contains(granted, m.ID) })
-		page.Total -= listed - len(page.Messages)
 		if len(granted) > 0 {
 			if _, err := n.Ack("", AckRequest{IDs: granted, SessionID: session}); err != nil {
-				return UnreadPage{}, err // still claimed by it: the next call lists them again
+				return nil, err // still claimed by it: the next call lists them again
 			}
-			page.Delivered = true
 			n.log.Info("session fetched its messages", "session", session, "messages", len(granted))
 		}
 	}
 	n.wakeProven(session)
-	return page, nil
+	return granted, nil
 }
 
-// pointerShown starts pointerFetchGrace on the leases of ids session holds by
-// the pointer wake token: its rollout showed the pointer's prompt.
-func (n *Node) pointerShown(session, token string, ids []string) {
-	changed, err := n.leases.shown(session, token, ids, time.Now())
+// fetchMore is UnreadPage.Note of a fetch that left messages behind; with
+// their number when it is known.
+const (
+	fetchMore      = "Это не все сообщения: остальные ждут эту сессию и не отмечены прочитанными. Повторите этот же вызов, чтобы получить следующие."
+	fetchMoreCount = "Это не все сообщения: ещё %d ждут эту сессию и не отмечены прочитанными. Повторите этот же вызов, чтобы получить следующие."
+)
+
+// FetchDone makes page, the listing a fetch asked Deliver for, its answer:
+// the messages granted (read now, Delivered), the others left out, and, when
+// more wait behind them, Next and the plain word to call again (Note).
+func FetchDone(page *UnreadPage, granted []string, more bool) {
+	listed, last := len(page.Messages), ""
+	if listed > 0 {
+		last = page.Messages[listed-1].Cursor
+	}
+	page.Messages = slices.DeleteFunc(page.Messages, func(m UnreadMessage) bool { return !slices.Contains(granted, m.ID) })
+	page.Total -= listed - len(page.Messages)
+	page.Delivered = len(page.Messages) > 0
+	page.Next, page.Note = "", ""
+	if !more {
+		return
+	}
+	page.Next = last
+	if page.Delivered {
+		// An answer with nothing in it asks for no further call: what is left
+		// is not this session's to take.
+		page.Note = fetchMore
+		if left := page.Total - len(page.Messages); left > 0 {
+			page.Note = fmt.Sprintf(fetchMoreCount, left)
+		}
+	}
+}
+
+// pointerShown records that session's rollout showed the prompt of the
+// pointer wake token: fetch grace starts on its leases (leaseBook.shown).
+func (n *Node) pointerShown(session, token string) {
+	changed, err := n.leases.shown(session, token, time.Now())
 	if err != nil {
 		n.log.Warn("save leases", "err", err)
 	}
 	if changed {
 		n.changed("leases")
 	}
+}
+
+// pointerPending is the wake token of the pointer queued for s that its
+// rollout has not shown yet ("" when none): while there is one, no other is
+// queued for it (owner decision, issue #40) and what comes meanwhile is
+// leased to it under that token (wakeIdle), as that pointer's turn fetches
+// everything that waits then. A pointer the rollout shows meanwhile, though
+// no observer of it ran, is recorded shown here.
+func (n *Node) pointerPending(s Session) string {
+	token := n.leases.pendingPointer(s.SessionID)
+	if token == "" {
+		return ""
+	}
+	if path := codexRollout(codexHomeOf(s), s.SessionID); path != "" && rolloutContains(path, WakeMarker(token)) {
+		n.pointerShown(s.SessionID, token)
+		return ""
+	}
+	return token
 }
 
 // unfailed are the ids whose lease did not fail.

@@ -141,8 +141,13 @@ type UnreadPage struct {
 	Woken []UnreadMessage `json:"woken,omitempty"`
 	// Delivered: this listing was the delivery of Messages to the session that
 	// asked (a WakeQueue session's own listing, pointerFetch): they are read
-	// now and need no ack.
+	// now and need no ack. One answer carries what a hook's batch does
+	// (FetchCut); the rest stays unread behind Next.
 	Delivered bool `json:"delivered,omitempty"`
+	// Note (a delivery that left messages behind): the plain word, for the
+	// agent that reads the answer, that more wait and the call is to be
+	// repeated.
+	Note string `json:"note,omitempty"`
 }
 
 // Unread lists this node's unread messages, oldest first, of every age:

@@ -478,9 +478,10 @@ func (n *Node) claimLocked(session string, want []string, via, token string, liv
 }
 
 // wakeClaim claims msgs for the wake prompt of session (claimLocked) under a
-// new wake token and returns the ones granted, in order, with the token. A
-// queue wake's is a pointer's (pointerToken).
-func (n *Node) wakeClaim(session, via string, msgs []UnreadMessage) ([]UnreadMessage, string) {
+// new wake token, or under pending, the token of the pointer already in its
+// queue that covers them too (pointerPending), and returns the ones granted,
+// in order, with the token. A queue wake's is a pointer's (pointerToken).
+func (n *Node) wakeClaim(session, via string, msgs []UnreadMessage, pending string) ([]UnreadMessage, string) {
 	r := n.sess
 	r.claimMu.Lock()
 	defer r.claimMu.Unlock()
@@ -489,7 +490,10 @@ func (n *Node) wakeClaim(session, via string, msgs []UnreadMessage) ([]UnreadMes
 		return nil, ""
 	}
 	token := randomHex(8)
-	if via == ViaQueue {
+	switch {
+	case pending != "":
+		token = pending
+	case via == ViaQueue:
 		token = pointerTokenPrefix + token
 	}
 	granted := n.claimLocked(session, ids(msgs), via, token, live)

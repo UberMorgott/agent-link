@@ -436,13 +436,29 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   runs it whenever it gets to it (minutes or hours later, behind other turns), and nothing can
   look into it or take a prompt back. The pointer carries the wake marker
   `[agent-link wake p-<token>]` and one instruction: fetch now with the agentlink MCP tool
-  `unread`, or without it `"<agentlink.exe>" chat unread --session <id> --folder "<folder>"`;
+  `unread {session: "<id>"}` (the argument, because a client's tool call may name no thread;
+  `_meta.threadId` wins when present), or without the tool
+  `"<agentlink.exe>" chat unread --session <id>` (no folder in the prompt: the node takes the
+  session's own, and a path would be text the agent's shell expands);
   if that returns nothing, answer one short line and stop. For a session that registered
   `wake: "queue"` that listing (`GET /unread?agent=1&session=<id>`) **is the delivery**: what it
-  lists is claimed for the session as for its hooks and read at once (`delivered: true`, no ack
+  returns is claimed for the session as for its hooks and read at once (`delivered: true`, no ack
   needed), so it returns what waits for the session at that moment (a message newer than the
   pointer too, never one read or taken meanwhile) and a pointer that runs with nothing pending
-  costs one trivial turn and changes nothing. The pointer's marker in the thread's rollout
+  costs one trivial turn and changes nothing. One answer carries what a hook's batch does
+  (4500 runes of formatted messages, at least one message): only those are read, the rest
+  stays unread behind `next`, and `note` says in plain words that more wait and the call is to
+  be repeated. Over several contexts of the folder (its network project, the local project,
+  the session's local chats) the listings are merged and cut first and only the returned
+  messages are delivered, each in its own context. Any other listing (no session, a session
+  that is not a queue-woken one, another folder) reads nothing.
+  **One pointer at a time**: while a pointer is in the thread's queue and its rollout has not
+  shown it, nothing more is queued for that thread. Messages that come meanwhile are leased
+  to the session under that pointer on the schedule of the idle period's wakes (their authors
+  see "woken"); its turn fetches them all. A pointer that is never consumed keeps the bounds
+  of every queue wake: each lease fails `queued_stale` after 30 min (`needs_human`), the wakes
+  of the idle period are spent (2 + 3 stale), and what waits past them is reported
+  `needs_human` once. The pointer's marker in the thread's rollout
   proves only that the pointer ran: the wake count ends, and its messages stay the session's
   for 2 more minutes (`pointerFetchGrace`); no fetch by then releases them (lease reason
   `pointer_unfetched`, the author sees `held:wake_unfetched`, `needs_human` after 5 leases) for

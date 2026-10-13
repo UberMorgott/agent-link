@@ -254,7 +254,7 @@ func TestWakeIdleQueueSession(t *testing.T) {
 	// The prompt is a pointer: where to fetch, no message of its own.
 	if s := wake(); !s.Woken || w.count() != 1 || !strings.HasPrefix(w.calls[0], home+"|s-q|agent-link: для этой сессии есть новые сообщения (1); их текста здесь нет. [agent-link wake p-") ||
 		!strings.Contains(w.calls[0], "[pointer for] wake up") || strings.Contains(w.texts[0], "wake up") || strings.Contains(w.texts[0], first.Messages[0].ID) ||
-		!strings.Contains(w.texts[0], "инструмент unread MCP-сервера agentlink") || !strings.Contains(w.texts[0], ` chat unread --session s-q --folder "`+dir+`"`) {
+		!strings.Contains(w.texts[0], "инструмент unread MCP-сервера agentlink") || !strings.Contains(w.texts[0], " chat unread --session s-q\n") || strings.Contains(w.texts[0], dir) {
 		t.Fatalf("idle session: %+v %v", s, w.calls)
 	}
 	reg(true) // a heartbeat of the same idle period
@@ -263,7 +263,8 @@ func TestWakeIdleQueueSession(t *testing.T) {
 		t.Fatalf("woken twice in one idle period: %v", w.calls)
 	}
 	// Its next turn did not acknowledge it yet, and a new message came: the
-	// next idle period's wake carries the new one only.
+	// next idle period's wake is for the new one only, and no second prompt:
+	// the pointer in the queue, not shown yet, covers it (one at a time).
 	if _, err := b.SendRequest(SendRequest{To: "a", Body: "second one", AuthorKind: AuthorAgent}); err != nil {
 		t.Fatal(err)
 	}
@@ -271,8 +272,11 @@ func TestWakeIdleQueueSession(t *testing.T) {
 	reg(false)
 	reg(true)
 	wake()
-	if w.count() != 2 || !strings.Contains(w.calls[1], "second one") || strings.Contains(w.calls[1], "wake up") {
-		t.Fatalf("new idle period: %v", w.calls)
+	both, _ := a.Unread("", "", 10)
+	l1, _ := a.leases.get(both.Messages[0].ID)
+	l2, _ := a.leases.get(both.Messages[1].ID)
+	if w.count() != 1 || l2.State != LeaseLeased || l2.Token != wakeTokenOf(w.texts[0]) || l2.Attempts != 1 || l1.Attempts != 1 {
+		t.Fatalf("new idle period: %v %+v %+v", w.calls, l1, l2)
 	}
 	// A pointer carried none of them: they are the session's hooks' to deliver
 	// (or its fetch's), not woken with.
@@ -478,15 +482,29 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 	}
 	eventually(t, "a has 5", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 5 })
 	a.wakeIdle(context.Background())
-	if w.count() != 2 || !strings.Contains(w.calls[1], "[pointer for] m4 ") || strings.Contains(w.calls[1], "m0 ") || !strings.Contains(w.calls[1], "новые сообщения (1)") {
-		t.Fatalf("no second wake after the lapse: %v", w.calls)
+	leasedTo := func(body string) Lease {
+		t.Helper()
+		p, _ := a.Unread("", "", 10)
+		for _, m := range p.Messages {
+			if strings.HasPrefix(m.Body, body) {
+				l, _ := a.leases.get(m.ID)
+				return l
+			}
+		}
+		t.Fatalf("no unread message %q", body)
+		return Lease{}
+	}
+	// The pointer is in the queue still: the wake is a lease under it, no
+	// second prompt.
+	if l := leasedTo("m4 "); w.count() != 1 || l.State != LeaseLeased || l.Token != token || l.Attempts != 1 {
+		t.Fatalf("no second wake after the lapse: %v %+v", w.calls, l)
 	}
 	a.wakeIdle(context.Background())
 	lapse()
 	a.wakeIdle(context.Background())
 	a.wakeIdle(context.Background())
-	if w.count() != 2 {
-		t.Fatalf("more than %d wakes in one idle period: %d", maxIdleWakes, w.count())
+	if s, _ := a.SessionLive("s-q"); w.count() != 1 || s.Wakes != maxIdleWakes {
+		t.Fatalf("more than %d wakes in one idle period: %+v", maxIdleWakes, s)
 	}
 	// A new idle period may be woken again, for what no pointer is queued for.
 	if _, err := b.SendRequest(SendRequest{To: "a", Body: "m5 " + long, AuthorKind: AuthorAgent}); err != nil {
@@ -498,8 +516,8 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 	a.sess.sessions["s-q"].WokeAt = time.Now().Add(time.Minute - staleWakeWait(maxIdleWakes))
 	a.sess.mu.Unlock()
 	a.wakeIdle(context.Background())
-	if w.count() != 2 {
-		t.Fatalf("more than %d wakes in one idle period: %d", maxIdleWakes, w.count())
+	if _, ok := a.leases.get(func() string { p, _ := a.Unread("", "", 10); return p.Messages[len(p.Messages)-1].ID }()); ok {
+		t.Fatalf("more than %d wakes in one idle period", maxIdleWakes)
 	}
 	for _, idle := range []bool{false, true} {
 		if _, err := a.RegisterSession(SessionRequest{SessionID: "s-q", Provider: "codex", Folder: dir, Wake: WakeQueue, Idle: idle}); err != nil {
@@ -507,8 +525,8 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 		}
 	}
 	a.wakeIdle(context.Background())
-	if w.count() != 3 || !strings.Contains(w.calls[2], "[pointer for] m5 ") || strings.Contains(w.calls[2], "m4 ") || strings.Contains(w.calls[2], "m0 ") {
-		t.Fatalf("new idle period not woken: %d", w.count())
+	if l := leasedTo("m5 "); w.count() != 1 || l.State != LeaseLeased || l.Token != token || l.Attempts != 1 {
+		t.Fatalf("new idle period not woken: %d %+v", w.count(), l)
 	}
 	// Its own hooks deliver what a pointer was queued for.
 	page, _ = a.UnreadFor(dir, "s-q", "", 10)
@@ -568,7 +586,7 @@ func TestWakeSkipsHookClaimed(t *testing.T) {
 	if w.count() != 0 {
 		t.Fatalf("woke with a hook-claimed message: %v", w.calls)
 	}
-	if msgs, _ := a.wakeClaim("s-q", ViaQueue, page.Messages); len(msgs) != 0 {
+	if msgs, _ := a.wakeClaim("s-q", ViaQueue, page.Messages, ""); len(msgs) != 0 {
 		t.Fatalf("wake claim over a hook claim: %v", msgs)
 	}
 }

@@ -132,18 +132,20 @@ func TestTurnEndsDoNotStarveNewerMessage(t *testing.T) {
 	path := q.rollout("")
 	q.send("request the prompt carries")
 	q.pass()
+	token := wakeTokenOf(q.lastWake())
 	if q.w.count() != 1 {
 		t.Fatalf("first wake: %v", q.w.calls)
 	}
-	q.send("request behind the prompt")
+	behind := q.send("request behind the prompt")
 	q.wrote(path, turnLine("task_complete", time.Now().Add(-90*time.Second)))
 	q.age(3 * time.Minute) // the first end after the wake: its grace is waited for
-	if q.w.count() != 1 {
-		t.Fatalf("a second prompt inside the grace of the turn's end: %v", q.w.calls)
+	if _, ok := q.a.leases.get(behind.ID); ok || q.w.count() != 1 {
+		t.Fatalf("a second wake inside the grace of the turn's end: %v", q.w.calls)
 	}
 	q.wrote(path, turnLine("task_complete", time.Now().Add(-90*time.Second)))
 	q.age(3 * time.Minute) // a later end holds nothing
-	if s := q.session(); q.w.count() != 2 || s.Wakes != 2 || q.wakesWith("request behind the prompt") != 1 {
+	// The wake is a lease under the pointer still in the queue (one at a time).
+	if s := q.session(); q.w.count() != 1 || s.Wakes != 2 || !q.covers(token, behind) {
 		t.Fatalf("the newer message waits behind a second turn end: %v %+v", q.w.calls, s)
 	}
 	// The wakes of a thread that goes on like that run out as a silent one's.
@@ -154,7 +156,7 @@ func TestTurnEndsDoNotStarveNewerMessage(t *testing.T) {
 			q.wrote(path, turnLine("task_complete", time.Now().Add(-90*time.Second)))
 			q.age(staleWakeWait(i) + time.Second)
 		}
-		if s := q.session(); q.w.count() != i+1 || s.Wakes != i+1 {
+		if s := q.session(); q.w.count() != 1 || s.Wakes != i+1 {
 			t.Fatalf("wake %d of the thread: %d %+v", i+1, q.w.count(), s)
 		}
 	}
@@ -297,12 +299,12 @@ func TestQueuedPromptStaleAfterTurn(t *testing.T) {
 	path := q.rollout("")
 	first := q.send("request the prompt carries")
 	q.pass()
-	q.send("request behind the prompt")
+	behind := q.send("request behind the prompt")
 	q.wrote(path, turnLine("task_complete", time.Now().Add(-inboxWakeGrace-time.Minute)))
 	q.age(inboxWakeGrace + 3*time.Minute)
-	text := q.lastWake()
-	if q.w.count() != 2 || !strings.Contains(text, "request behind the prompt") || strings.Contains(text, "request the prompt carries") {
-		t.Fatalf("wake after the silent thread's grace: %v", q.w.calls)
+	// No second prompt beside the pending one: a lease under it.
+	if s := q.session(); q.w.count() != 1 || s.Wakes != 2 || !q.covers(wakeTokenOf(q.lastWake()), behind) {
+		t.Fatalf("wake after the silent thread's grace: %v %+v", q.w.calls, s)
 	}
 	if v := leaseViewOf(t, q.a, first.ID); v.Attempts != 1 {
 		t.Fatalf("the pending prompt's message was leased again: %+v", v)
@@ -392,14 +394,14 @@ func TestDeadTurnReachesNeedsHuman(t *testing.T) {
 			wait = staleWakeWait(i)
 		}
 		q.age(wait + time.Second)
-		if s := q.session(); q.w.count() != i+1 || s.Wakes != i+1 {
+		if s := q.session(); q.w.count() != 1 || s.Wakes != i+1 {
 			t.Fatalf("wake %d of the dead thread: %d %+v", i+1, q.w.count(), s)
 		}
 	}
 	waiting := q.send("request past the cap")
 	q.age(queuedOwnerMax + time.Second)
-	if s := q.session(); q.w.count() != limit || !s.WakeCapped {
-		t.Fatalf("past the cap: wakes %d %+v", q.w.count(), s)
+	if s := q.session(); q.w.count() != 1 || s.Wakes != limit || !s.WakeCapped {
+		t.Fatalf("past the cap: prompts %d %+v", q.w.count(), s)
 	}
 	waitAttempts(t, q.b, waiting, AttemptNeedsHuman)
 	if got := q.wakesWith("request during the turn"); got != 1 {

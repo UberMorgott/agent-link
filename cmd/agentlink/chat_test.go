@@ -77,7 +77,11 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		case r.URL.Path == "/wait" && r.URL.Query().Get("timeout") == "2s":
 			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == "/unread":
-			_ = json.NewEncoder(w).Encode(node.UnreadPage{Messages: []node.UnreadMessage{{Cursor: "1-m1"}}, Total: 3, Next: "1-m1"})
+			page := node.UnreadPage{Messages: []node.UnreadMessage{{Cursor: "1-m1"}}, Total: 3, Next: "1-m1"}
+			if r.URL.Query().Get("session") == "thread-cut" { // a delivery that left messages behind
+				page.Delivered, page.Note = true, "call again"
+			}
+			_ = json.NewEncoder(w).Encode(page)
 		case strings.HasSuffix(r.URL.Path, "/messages"):
 			_ = json.NewEncoder(w).Encode([]node.ChatMessage{{Seq: 1}, {Seq: 2}})
 		default:
@@ -197,21 +201,36 @@ func TestChatCommands(t *testing.T) {
 func TestChatUnreadAsSession(t *testing.T) {
 	f := newFakeAPI(t)
 	dir := t.TempDir()
-	prompt := node.PointerPrompt(1, dir, "thread-1", "p-0123456789abcdef", "agentlink.exe")
+	prompt := node.PointerPrompt(1, "thread-1", "p-0123456789abcdef", "agentlink.exe")
 	_, line, ok := strings.Cut(prompt, `"agentlink.exe" `)
 	if !ok {
 		t.Fatalf("the pointer names no CLI command: %s", prompt)
 	}
 	line, _, _ = strings.Cut(line, "\n")
-	if want := `chat unread --session thread-1 --folder "` + dir + `"`; line != want {
+	if want := `chat unread --session thread-1`; line != want {
 		t.Fatalf("the pointer's command: %q, want %q", line, want)
 	}
-	if out := f.run("chat", "unread", "--session", "thread-1", "--folder", dir); !strings.Contains(out, `"cursor":"1-m1"`) {
+	// The command as the prompt gives it: no folder (the node knows the
+	// session's).
+	out := f.run(strings.Fields(line)...)
+	if !strings.Contains(out, `"cursor":"1-m1"`) || strings.Contains(out, "note") {
 		t.Fatalf("chat unread --session printed %q", out)
 	}
-	want := "GET /unread?" + url.Values{"agent": {"1"}, "cwd": {cwd(t)}, "folder": {dir}, "limit": {"50"}, "session": {"thread-1"}}.Encode()
+	want := "GET /unread?" + url.Values{"agent": {"1"}, "cwd": {cwd(t)}, "limit": {"50"}, "session": {"thread-1"}}.Encode()
 	if len(f.reqs) != 1 || f.reqs[0] != want {
 		t.Fatalf("requests %q, want %q", f.reqs, want)
+	}
+	f.reqs = nil
+	f.run("chat", "unread", "--session", "thread-1", "--folder", dir)
+	want = "GET /unread?" + url.Values{"agent": {"1"}, "cwd": {cwd(t)}, "folder": {dir}, "limit": {"50"}, "session": {"thread-1"}}.Encode()
+	if len(f.reqs) != 1 || f.reqs[0] != want {
+		t.Fatalf("requests %q, want %q", f.reqs, want)
+	}
+	// A delivery that left messages behind says so in the last line.
+	lines := strings.Split(strings.TrimSpace(f.run("chat", "unread", "--session", "thread-cut")), "\n")
+	var last map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &last); err != nil || len(lines) != 2 || last["note"] != "call again" || last["next"] != "1-m1" {
+		t.Fatalf("the last line of a cut delivery: %q (%v)", lines, err)
 	}
 }
 

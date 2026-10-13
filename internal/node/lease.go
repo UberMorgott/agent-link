@@ -339,15 +339,68 @@ func (b *leaseBook) take(id, seat, owner, via, token string, deadline, now time.
 	return true, b.touchLocked(l)
 }
 
-// shown marks owner's leased leases of ids by the pointer wake token as shown
-// at now (its rollout has the pointer's prompt): they stay owner's for
-// pointerFetchGrace from the first time (due). It reports whether any changed.
-func (b *leaseBook) shown(owner, token string, ids []string, now time.Time) (bool, error) {
+// pointerQueued reports whether l is a message a pointer wake was queued for
+// that is not known shown: the pointer is in its owner's queue still, as far
+// as the node knows (leased; failed unproven; back in retry for a reason that
+// takes nothing out of a queue, handedTo). Not one whose pointer ran
+// (Shown, reasonUnfetched), was never queued (wake_failed), or that something
+// else delivered meanwhile (acked).
+func (l *Lease) pointerQueued() bool {
+	if l.Via != ViaQueue || !pointerToken(l.Token) || !l.Shown.IsZero() {
+		return false
+	}
+	switch l.State {
+	case LeaseLeased:
+		return true
+	case LeaseFailed:
+		return l.Reason == "queued_stale"
+	case LeaseRetry:
+		return l.Reason == "stopped" || l.Reason == "session_gone"
+	}
+	return false
+}
+
+// pendingPointer is the wake token of the pointer in owner's queue that is
+// not known shown ("" when none is): the latest one a message is still held
+// by (pointerQueued). While there is one the node queues no other for owner
+// (wakeIdle): that pointer's turn fetches everything that waits then.
+func (b *leaseBook) pendingPointer(owner string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	token, at := "", time.Time{}
+	for _, l := range b.m {
+		if l.Owner == owner && l.pointerQueued() && (token == "" || l.At.After(at) || (l.At.Equal(at) && l.Token > token)) {
+			token, at = l.Token, l.At
+		}
+	}
+	return token
+}
+
+// withToken is the ids of owner's leases by the wake token.
+func (b *leaseBook) withToken(owner, token string) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []string
+	for _, l := range b.m {
+		if l.Owner == owner && l.Token == token {
+			out = append(out, l.ID)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// shown marks owner's leases by the pointer wake token that wait for that
+// pointer (pointerQueued) as shown at now (its rollout has the pointer's
+// prompt): the leased ones stay owner's for pointerFetchGrace from the first
+// time (due), and none of them keeps a new pointer out of the queue any more
+// (pendingPointer). It reports whether any changed.
+func (b *leaseBook) shown(owner, token string, now time.Time) (bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	changed := false
 	for _, l := range b.m {
-		if l.Owner == owner && l.Token == token && l.State == LeaseLeased && l.Shown.IsZero() && slices.Contains(ids, l.ID) {
+		if l.Owner == owner && l.Token == token && l.pointerQueued() {
 			l.Shown, changed = now, true
 		}
 	}

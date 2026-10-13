@@ -61,6 +61,7 @@ type (
 		Project string `json:"project,omitempty" jsonschema:"project id (or legacy); default: $AGENTLINK_PROJECT_ID, else this folder's project"`
 		Limit   int    `json:"limit,omitempty" jsonschema:"maximum messages (default 50)"`
 		After   string `json:"after,omitempty" jsonschema:"cursor of the last message of the previous page (next of the previous answer)"`
+		Session string `json:"session,omitempty" jsonschema:"the calling agent session's id, when a wake prompt of agent-link names it: the call then takes that session's messages (default: the calling session, where the client names it)"`
 	}
 	mcpSend struct {
 		Chat        string   `json:"chat,omitempty" jsonschema:"chat id to write in; exactly one of chat, to, new_chat_with"`
@@ -158,13 +159,12 @@ func newMCPTools(cfg config.Config, fresh func() string) *mcpTools {
 		}
 		return history(ctx, cfg, in.Chat, limit(in.Limit), in.BeforeSeq, in.AfterSeq, proj(in.Project))
 	})
-	addTool(s, "unread", "Unread messages for this node, oldest first; next is the cursor of the next page. Does not mark them read.", func(ctx context.Context, in mcpUnread) (any, error) {
-		// But for a Codex session the node wakes by a pointer: its own listing is
-		// the delivery (node.UnreadPage.Delivered), as the pointer's prompt says.
+	addTool(s, "unread", "Unread messages for this node, oldest first; next is the cursor of the next page. A plain listing does not mark them read. "+
+		"Only for a Codex session agent-link woke through its queue, called as that session (session, or the calling thread), the call is the delivery: "+
+		"what it returns is marked read (delivered: true), and note says when more wait: call again.", func(ctx context.Context, in mcpUnread) (any, error) {
 		// The description is shared with Claude Code's native tools
 		// (tools.gen.ts), where no listing reads anything.
-		session, _ := agentSessionCtx(ctx)
-		return unreadForSession(ctx, cfg, in.Folder, in.After, limit(in.Limit), proj(in.Project), session, true)
+		return unreadForSession(ctx, cfg, in.Folder, in.After, limit(in.Limit), proj(in.Project), unreadSession(ctx, in.Session), true)
 	})
 	addToolArgs(s, "send", "Send a message: into a chat (chat), the open chat with a member (to), or a new chat (new_chat_with), optionally with file attachments. Returns {id, chat}, plus hold_reason when the message is held (no agent answers it automatically).", func(ctx context.Context, in mcpSend, args json.RawMessage) (any, error) {
 		key, _ := mcpAskKey("send", args)
@@ -420,9 +420,29 @@ func mcpCallSession(meta map[string]any) string {
 		tm, _ := meta["x-codex-turn-metadata"].(map[string]any)
 		id, _ = tm["thread_id"].(string)
 	}
+	return sessionArg(id)
+}
+
+// sessionArg is a session id a call gave, or "" when it cannot be one.
+func sessionArg(id string) string {
 	if len(id) > 128 || strings.IndexFunc(id, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0 {
 		return ""
 	}
+	return id
+}
+
+// unreadSession is the session an `unread` call asks as: the Codex thread the
+// call's _meta names, else the one its argument names (a pointer's prompt
+// gives it, node.PointerPrompt: a client that sends no thread id would
+// otherwise list without taking, and the pointer would repeat), else the
+// process's own (agentSession). A worker's job is no session.
+func unreadSession(ctx context.Context, named string) string {
+	if callSession(ctx) == "" && os.Getenv(envJobID) == "" {
+		if id := sessionArg(named); id != "" {
+			return id
+		}
+	}
+	id, _ := agentSessionCtx(ctx)
 	return id
 }
 

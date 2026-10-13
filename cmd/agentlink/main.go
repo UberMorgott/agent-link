@@ -50,7 +50,7 @@ const usage = `usage:
   agentlink chat archive --config <path> [--chat <id>] [--project <id>]   (the project's chat history goes to the archive; a fresh chat with the same members opens; prints its id)
   agentlink chat list    --config <path> [--archive] [--legacy] [--project <id>]   (one JSON line per chat; without a project: every project's)
   agentlink chat history --config <path> --chat <id> [--limit 50] [--before <seq>] [--after <seq>] [--project <id>]   (one JSON line per message, oldest first)
-  agentlink chat unread  --config <path> [--folder <path>] [--limit 50] [--after <cursor>] [--session <id>] [--project <id>]   (unread messages for this node, oldest first, one JSON line each; a last line {"next":...} when more follow; --session: those for that agent session, which a woken Codex session takes, read, by this call)
+  agentlink chat unread  --config <path> [--folder <path>] [--limit 50] [--after <cursor>] [--session <id>] [--project <id>]   (unread messages for this node, oldest first, one JSON line each, not marked read; a last line {"next":...} when more follow; --session: those for that agent session; a Codex session agent-link woke through its queue takes them by this call: they are marked read, and a "note" in the last line says to call again for the rest)
   agentlink chat ack     --config <path> [--chat <id>] --ids <id,...> [--session <id>] [--project <id>]   (mark read: the authors get read receipts)
   agentlink chat reassign --config <path> --id <id> --session <id> [--force] [--project <id>]   (hand a reply whose session ended (needs_human) to a live session; --force also moves one a live session waits for)
   agentlink session pin --config <path> --session <id> [--project <id>]   (prefer this Codex thread for new untargeted project messages)
@@ -834,7 +834,8 @@ func history(ctx context.Context, cfg config.Config, chat string, limit int, bef
 }
 
 // chatUnread prints this node's unread messages, one JSON line each, and a
-// last line {"next": cursor, "total": n} when more pages follow. With session
+// last line {"next": cursor, "total": n} when more pages follow (with "note"
+// when the call delivered and left messages behind). With session
 // it asks as that agent session, like the MCP tool: the messages for it, which
 // a Codex session the node wakes by a pointer takes by this call
 // (node.PointerPrompt names this command).
@@ -849,7 +850,11 @@ func chatUnread(ctx context.Context, cfg config.Config, folder, after string, li
 	if page.Next == "" {
 		return nil
 	}
-	return encodeLines(stdout, []map[string]any{{"next": page.Next, "total": page.Total}})
+	last := map[string]any{"next": page.Next, "total": page.Total}
+	if page.Note != "" {
+		last["note"] = page.Note // a delivery that left messages behind: call again
+	}
+	return encodeLines(stdout, []map[string]any{last})
 }
 
 // unreadForSession reads one page of unread messages: this node's, or with

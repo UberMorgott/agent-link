@@ -253,7 +253,7 @@ export const TOOLS: readonly ToolSpec[] = [
   },
   {
     "name": "unread",
-    "description": "Unread messages for this node, oldest first; next is the cursor of the next page. Does not mark them read.",
+    "description": "Unread messages for this node, oldest first; next is the cursor of the next page. A plain listing does not mark them read. Only for a Codex session agent-link woke through its queue, called as that session (session, or the calling thread), the call is the delivery: what it returns is marked read (delivered: true), and note says when more wait: call again.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -271,6 +271,10 @@ export const TOOLS: readonly ToolSpec[] = [
         },
         "project": {
           "description": "project id (or legacy); default: $AGENTLINK_PROJECT_ID, else this folder's project",
+          "type": "string"
+        },
+        "session": {
+          "description": "the calling agent session's id, when a wake prompt of agent-link names it: the call then takes that session's messages (default: the calling session, where the client names it)",
           "type": "string"
         }
       },

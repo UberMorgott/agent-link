@@ -345,10 +345,52 @@ func TestMCPCodexCallMetaIsSession(t *testing.T) {
 	if len(f.reqs) != 1 || !strings.Contains(f.reqs[0], "session=thread-sub") {
 		t.Fatalf("unread requests %q", f.reqs)
 	}
+	// The thread the call names wins over a session argument.
+	f.reqs = nil
+	call("unread", map[string]any{"session": "thread-arg"})
+	if len(f.reqs) != 1 || !strings.Contains(f.reqs[0], "session=thread-sub") {
+		t.Fatalf("unread requests %q", f.reqs)
+	}
 	t.Setenv(envJobID, "job-1")
 	call("send", map[string]any{"chat": "c1", "body": "hi"})
 	if f.send.SessionID != "" {
 		t.Fatalf("a job's send named session %q", f.send.SessionID)
+	}
+}
+
+// A client whose tool calls name no thread (no _meta.threadId) would list
+// without taking, and a pointer wake would repeat until needs_human for
+// messages the agent read: the pointer's prompt names the session, and
+// `unread` asks as it (node.PointerPrompt). No session at all stays a plain
+// listing; a worker's job is none.
+func TestMCPUnreadSessionArgument(t *testing.T) {
+	f := newFakeAPI(t)
+	cleanAgentEnv(t)
+	cs := mcpClient(t, f.api)
+	for _, c := range []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"session": "019f-thread"}, "session=019f-thread"},
+		{nil, ""},
+		{map[string]any{"session": "a b"}, ""},
+	} {
+		f.reqs = nil
+		if text, isErr := callTool(t, cs, "unread", c.args); isErr {
+			t.Fatalf("unread %v: %s", c.args, text)
+		}
+		if len(f.reqs) != 1 || !strings.Contains(f.reqs[0], "agent=1") || strings.Contains(f.reqs[0], "session=") != (c.want != "") || !strings.Contains(f.reqs[0], c.want) {
+			t.Fatalf("unread %v asked %q, want %q", c.args, f.reqs, c.want)
+		}
+	}
+	t.Setenv(envJobID, "job-1")
+	f.reqs = nil
+	if text, isErr := callTool(t, cs, "unread", map[string]any{"session": "019f-thread"}); isErr || len(f.reqs) != 1 || strings.Contains(f.reqs[0], "session=") {
+		t.Fatalf("a job's unread: %s %q", text, f.reqs)
+	}
+	// The prompt's own words name the argument and its value.
+	if p := node.PointerPrompt(2, "019f-thread", "p-0123456789abcdef", ""); !strings.Contains(p, `session: "019f-thread"`) {
+		t.Fatalf("the pointer names no session argument: %s", p)
 	}
 }
 

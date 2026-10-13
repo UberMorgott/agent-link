@@ -600,24 +600,37 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 
 // UnreadQuery answers GET /unread for its query (folder, session, after,
 // limit, actionable, exact, agent, waiter); the control API merges the answers of
-// several contexts with it.
+// several contexts with it (UnreadListing, Deliver). A WakeQueue session's own
+// listing is its delivery (pointerFetch).
 func (n *Node) UnreadQuery(q url.Values) (UnreadPage, error) {
+	page, fetch, err := n.UnreadListing(q)
+	if err != nil || !fetch {
+		return page, err
+	}
+	return n.pointerFetch(q.Get("session"), page)
+}
+
+// UnreadListing is the listing of UnreadQuery, which reads nothing. fetch
+// reports that the query is a WakeQueue session's own listing, its delivery:
+// the caller delivers what it answers with (Deliver), and nothing it leaves
+// out.
+func (n *Node) UnreadListing(q url.Values) (page UnreadPage, fetch bool, err error) {
 	limit := 50
 	if s := q.Get("limit"); s != "" {
 		v, err := strconv.Atoi(s)
 		if err != nil || v < 1 || v > 1000 {
-			return UnreadPage{}, fmt.Errorf("%w: invalid limit", ErrBadRequest)
+			return UnreadPage{}, false, fmt.Errorf("%w: invalid limit", ErrBadRequest)
 		}
 		limit = v
 	}
 	if q.Get("agent") == "1" && n.Stopped() {
-		return UnreadPage{Messages: []UnreadMessage{}}, nil
+		return UnreadPage{Messages: []UnreadMessage{}}, false, nil
 	}
 	// A session its in-process module delivers to (SessionRequest.Native,
 	// which asks with native=1): its shell hooks and their waiter have nothing
 	// to deliver or wake with. A tool's own listing (agent=1) is not theirs.
 	if q.Get("native") != "1" && q.Get("agent") != "1" && n.sessionNative(q.Get("session")) {
-		return UnreadPage{Messages: []UnreadMessage{}}, nil
+		return UnreadPage{Messages: []UnreadMessage{}}, false, nil
 	}
 	// A Claude session's background waiter asks with waiter=1: while the
 	// node wakes that session through its inbox, the waiter has only the
@@ -643,12 +656,12 @@ func (n *Node) UnreadQuery(q url.Values) (UnreadPage, error) {
 		af.Skip = strings.Split(s, ",")
 	}
 	if (af.Only != "" && !validSessionID(af.Only)) || len(af.Skip) > maxSessionAgents || slices.ContainsFunc(af.Skip, func(a string) bool { return !validSessionID(a) }) {
-		return UnreadPage{}, fmt.Errorf("%w: invalid for_agent or skip_agents", ErrBadRequest)
+		return UnreadPage{}, false, fmt.Errorf("%w: invalid for_agent or skip_agents", ErrBadRequest)
 	}
 	// A WakeQueue session's own listing (its MCP tool or CLI: agent=1 with its
 	// session) is its delivery (pointerFetch), of its own folder's messages as
 	// for its hooks; a listing of another folder stays a listing.
-	folder, fetch := q.Get("folder"), false
+	folder := q.Get("folder")
 	if q.Get("agent") == "1" && !waiter {
 		if s, ok := n.fetchSession(q.Get("session")); ok {
 			own, _ := n.FolderArea(s.Folder)
@@ -659,14 +672,11 @@ func (n *Node) UnreadQuery(q url.Values) (UnreadPage, error) {
 			fetch = bound && area == own
 		}
 	}
-	page, err := n.unreadHeld(folder, q.Get("session"), q.Get("after"), limit, held, q.Get("exact") == "1", af)
+	page, err = n.unreadHeld(folder, q.Get("session"), q.Get("after"), limit, held, q.Get("exact") == "1", af)
 	if err == nil && waiter {
 		n.waiterSpent(&page)
 	}
-	if err == nil && fetch {
-		return n.pointerFetch(q.Get("session"), page)
-	}
-	return page, err
+	return page, fetch && err == nil, err
 }
 
 func writeJSONResponse(w http.ResponseWriter, v any) {

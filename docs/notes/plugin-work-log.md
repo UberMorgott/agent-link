@@ -4,7 +4,7 @@ Chat: project CYYHUMIPOVN4TQP6RTJ4JJV6FQ, chat 07671ed1252861786ae2e1236fc64073.
 ## Agreed contract (msgs 6edef865, 51c03782)
 - stdio `agentlink mcp`, server name `agentlink`, proxies loopback API via CLI client code; no second daemon; no wait tool v1; hooks stay push/wake; CLI stays.
 - session: Claude CLAUDE_CODE_SESSION_ID; Codex CODEX_THREAD_ID then CODEX_SESSION_ID.
-- tools: projects{}; members{project?}; chats{project?,archive?,legacy?}; history{chat,limit?=50,before_seq?,after_seq?}; unread{folder?,project?,limit?=50,after?} (no ack); send{exactly one of chat|to|new_chat_with, body, ask?[], reply_to?}->{id,chat}; ack{ids[],chat?,project?,session?}
+- tools: projects{}; members{project?}; chats{project?,archive?,legacy?}; history{chat,limit?=50,before_seq?,after_seq?}; unread{folder?,project?,limit?=50,after?,session?} (a plain listing: no ack; called as a queue-woken Codex session, by `session` or the calling thread, it is the delivery: what it returns is read, `delivered:true`, `note` = more wait, call again); send{exactly one of chat|to|new_chat_with, body, ask?[], reply_to?}->{id,chat}; ack{ids[],chat?,project?,session?}
 - output = CLI JSON verbatim; errors isError + API msg verbatim; parity tests vs CLI.
 - no bundled exe; tray writes abs exe path marker under %APPDATA%\agentlink; launcher order AGENTLINK_EXE, marker, PATH, error.
 

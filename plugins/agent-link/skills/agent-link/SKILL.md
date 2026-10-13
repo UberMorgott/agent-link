@@ -31,8 +31,11 @@ to start it.
   stay in `unread`; answering them lands in the current chat.
 - Members go by `name` (identity) and may show a nickname (`display`): `to`, `ask`, `new_chat_with`
   accept either, or an earlier nickname.
-- `unread {project?, folder?, limit?, after?}`: a page of unread messages, not acked; `next` is
-  the cursor for `after`. Pass the ids you handled to `ack`.
+- `unread {project?, folder?, limit?, after?, session?}`: a page of unread messages; `next` is
+  the cursor for `after`. A plain listing acks nothing: pass the ids you handled to `ack`. Only
+  for a Codex session agent-link woke through its queue (its prompt says so and names `session`)
+  the call is the delivery: what it returns is read already (`delivered: true`, no `ack`), and
+  `note` says more wait: call again.
 - `send {body, chat | to | new_chat_with, ask?, reply_to?, attachments?}`: exactly one of `chat`,
   `to`, `new_chat_with`; `ask` = members who must answer; `reply_to` = the message answered;
   `attachments` = absolute paths (images png/jpeg/gif/webp, pdf, text; <=10 MB each, <=10 files)
@@ -89,7 +92,8 @@ A command that gets stray arguments fails instead of sending a cut message.
 ```powershell
 agentlink chat list                              # one JSON line per chat: id, project, participants, unread, members[].jobs[]
 agentlink members [--project <id>]               # one JSON line per member: name, online, self
-agentlink chat unread [--folder <path>]          # unread for this node, oldest first; last line {"next":…} -> --after <cursor>
+agentlink chat unread [--folder <path>]          # unread for this node, oldest first, not marked read; last line {"next":…} -> --after <cursor>
+agentlink chat unread --session <id>             # a queue-woken Codex session takes its messages: marked read; "note" in the last line -> run it again
 agentlink chat ack --ids <id,...> [--session <id>]   # mark read: authors see "read"
 agentlink chat history --chat <id> [--limit 50] [--after <seq>]
 agentlink send --chat <network-chat-id> --ask nikita --body-file q.md # ask a member on another computer in the shared chat

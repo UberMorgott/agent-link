@@ -36,7 +36,8 @@ Persisted in `leases.json` (data dir) next to `sessions.json`.
 | running -> failed | a launch's first turn started and failed (may have acted in part: `needs_human`) |
 | retry -> failed | `attempts >= maxLeaseAttempts` (5): `needs_human` reported once |
 | leased -> failed | `queued_stale`: a queued/inbox/waiter wake its session stayed silent on for `queuedOwnerMax` (accepted, never proven: no automatic requeue, `needs_human`) |
-| leased(queue pointer) -> leased(hook) -> acked | the session's fetch (`pointerFetch`: its own `unread` listing claims as a hook and acks at once) or its hook's delivery |
+| leased(queue pointer) -> leased(hook) -> acked | the session's fetch (`pointerFetch`: its own `unread` listing claims as a hook and acks at once what its answer returns) or its hook's delivery |
+| (none) -> leased(queue pointer) without a prompt | a message that came while a pointer is in the session's queue, not shown yet: leased under that pointer's token (one pointer at a time) |
 | leased(queue pointer, `shown`) -> retry | `pointer_unfetched`: the pointer's marker was in the rollout for `pointerFetchGrace` (2 min) and nothing fetched; `held:wake_unfetched`, a new pointer may follow (`handedTo` no more) |
 
 Rules:
@@ -82,6 +83,40 @@ Rules:
   ever). A token without `p-` is a prompt of v0.6.75 or older, which carried
   the messages: its marker still starts and acknowledges them, and its
   messages stay `woken` for the hooks.
+- One pointer at a time (owner decision, issue #40). While a pointer is in a
+  session's queue and its rollout has not shown it (`pendingPointer`: a lease
+  of the session by a `p-` token, not `shown`, that is `leased`, `failed`
+  `queued_stale`, or `retry` `stopped`/`session_gone`; `pointerPending` also
+  reads the rollout for the marker when no observer ran), `wakeIdle` queues
+  nothing more for it: the messages a wake is due for are leased under that
+  pointer's token (`wakeClaim` with `pending`), counted as a wake of the idle
+  period, reported `wake_requested`. Bounds are those of a queued wake: each
+  lease fails `queued_stale` after `queuedOwnerMax`, `maxIdleWakes` +
+  `maxStaleWakes` on `staleWakeWait`, then `noteWakeCap` (`needs_human`).
+  The marker covers every lease of the token (`leaseBook.shown`), whenever it
+  was taken. A pointer whose messages were all delivered some other way
+  (acked) is not pending: a later message gets a new pointer, and the old one
+  costs a trivial turn when the thread gets to it. A pointer lost by Codex
+  (never run) keeps its unread messages `needs_human` and new ones leased to
+  it until a person or a hook reads them.
+- The fetch (`UnreadListing` + `Deliver`, `pointerFetch`; over several
+  contexts `controlUnread` → `deliverUnread`) lists, cuts to one answer
+  (`FetchCut`: the page limit, then `FitUnread`/`FormatBudget`, as a hook's
+  batch) and only then claims and acks what it returns; `UnreadPage.Note`
+  tells the agent that more wait. In a context the session is not registered
+  in, `Claim` grants the replies to its own messages, so the fetch reads
+  those too and they are not listed again.
+- Accepted, not changed (review of issue #40):
+  - The ack precedes the transport: the fetch marks read before the HTTP
+    answer, the MCP result or the CLI's stdout reached the agent, so an
+    answer lost on the way (process killed, tool result dropped) is read
+    and unseen. Same risk class as a hook's ack before its injected text is
+    shown, which is accepted; the message stays in `history`, and its
+    author's request stays visible as unanswered.
+  - `session` (query parameter of `GET /unread`, argument of the MCP tool,
+    `--session` of the CLI) is not authenticated: any local process that
+    reaches the loopback API can fetch as a session, as it can `POST /ack`
+    as one. The API is local-only by design; no new exposure.
 - `failed` is terminal for automatic paths (`Lease.Failed`): a hook may still
   show the message to a live session, and its lapse returns to `failed`.
 - `hook` leases (a session in a turn claiming) do not count as attempts and

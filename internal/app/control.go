@@ -538,9 +538,30 @@ func (discardResponse) WriteHeader(int)             {}
 // controlUnread serves GET /unread: for a session, the unread messages of every
 // context of its folder (sessionContexts), merged in cursor order, each naming
 // its project when there are several.
+//
+// A session the node wakes by pointers takes its messages by this call
+// (node.UnreadListing's fetch). Over several contexts each lists only: the
+// listings are merged and cut to the one answer, and then exactly the
+// messages of that answer are delivered, each in its own context
+// (node.Deliver), also in one the session is not registered in (the replies
+// to its own messages there). So nothing is read that the answer does not
+// show, and nothing it shows is listed again.
 func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	ctxs, from, rerr := a.sessionContexts(selector{project: q.Get("project"), folder: q.Get("folder"), cwd: q.Get("cwd")}, q.Get("session"))
+	session := q.Get("session")
+	if q.Get("agent") == "1" && session != "" && q.Get("folder") == "" && q.Get("project") == "" {
+		// Its own listing that names no folder is of its own folder's
+		// messages, whatever directory the call came from (a pointer's CLI
+		// command names none).
+		for _, c := range a.routeContexts() {
+			if folder, ok := c.n.FetchFolder(session); ok && folder != "" {
+				q.Set("folder", folder)
+				r.URL.RawQuery = q.Encode()
+				break
+			}
+		}
+	}
+	ctxs, from, rerr := a.sessionContexts(selector{project: q.Get("project"), folder: q.Get("folder"), cwd: q.Get("cwd")}, session)
 	if rerr != nil {
 		rerr.write(w)
 		return
@@ -556,15 +577,18 @@ func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 	for _, c := range ctxs {
 		changed = append(changed, c.n.UnreadChanged)
 	}
+	fetch := false // the session's own listing is its delivery (in a context it is registered in)
 	out, err := node.WaitUnread(r.Context(), q, func() (node.UnreadPage, error) {
 		out := node.UnreadPage{Messages: []node.UnreadMessage{}}
 		more := false
+		fetch = false
 		for i, c := range ctxs {
 			query := q
 			if i >= from {
 				query = exact
 			}
-			page, err := c.n.UnreadQuery(query)
+			page, own, err := c.n.UnreadListing(query)
+			fetch = fetch || own
 			if err != nil {
 				if i < from {
 					return out, err
@@ -597,11 +621,39 @@ func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 		}
 		return out, nil
 	}, changed...)
+	if err == nil && fetch {
+		err = deliverUnread(ctxs, session, &out)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	writeJSON(w, out)
+}
+
+// deliverUnread makes page, the merged listing of ctxs a session asked for as
+// its delivery, that delivery: what one answer carries of it (node.FetchCut),
+// each message delivered in its own context (UnreadMessage.Project).
+func deliverUnread(ctxs []routeCtx, session string, page *node.UnreadPage) error {
+	more := node.FetchCut(page)
+	var granted []string
+	for _, c := range ctxs {
+		var ids []string
+		for _, m := range page.Messages {
+			if m.Project == c.id {
+				ids = append(ids, m.ID)
+			}
+		}
+		// With nothing of this context too: the call proves the session takes
+		// its wakes there.
+		got, err := c.n.Deliver(session, ids)
+		if err != nil {
+			return err
+		}
+		granted = append(granted, got...)
+	}
+	node.FetchDone(page, granted, more)
+	return nil
 }
 
 // controlRelease serves POST /release: every context the session is

@@ -22,7 +22,13 @@ type staleQueue struct {
 
 func newStaleQueue(t *testing.T) *staleQueue {
 	t.Helper()
-	q := &staleQueue{t: t, w: &fakeWaker{ready: true}, dir: t.TempDir(), home: t.TempDir()}
+	return newStaleQueueIn(t, t.TempDir())
+}
+
+// newStaleQueueIn is newStaleQueue with the thread working in dir.
+func newStaleQueueIn(t *testing.T, dir string) *staleQueue {
+	t.Helper()
+	q := &staleQueue{t: t, w: &fakeWaker{ready: true}, dir: dir, home: t.TempDir()}
 	q.a, q.b = wakePair(t, q.w)
 	q.reg(true)
 	if _, err := q.a.PinSession(PinSessionRequest{SessionID: "s-q"}); err != nil {
@@ -117,9 +123,17 @@ func (q *staleQueue) wakesWith(body string) int {
 	return n
 }
 
+// covers reports whether m is leased to the session under the pointer of
+// token: the one queued for it, or the one in its queue when m came.
+func (q *staleQueue) covers(token string, m Message) bool {
+	q.t.Helper()
+	l, ok := q.a.leases.get(m.ID)
+	return ok && l.State == LeaseLeased && l.Owner == "s-q" && l.Via == ViaQueue && l.Token == token && l.Attempts == 1
+}
+
 // spend uses up the wakes of the idle period before the stale ones
-// (maxIdleWakes), each for a request of its own, none proven. It returns the
-// first request.
+// (maxIdleWakes), each for a request of its own, none proven: one pointer in
+// the queue, the later requests leased to it. It returns the first request.
 func (q *staleQueue) spend() Message {
 	q.t.Helper()
 	first := q.send("spent request 0")
@@ -128,7 +142,7 @@ func (q *staleQueue) spend() Message {
 		q.send(fmt.Sprintf("spent request %d", i))
 		q.age(inboxWakeGrace + time.Second)
 	}
-	if s := q.session(); q.w.count() != maxIdleWakes || !s.Woken || s.Wakes != maxIdleWakes {
+	if s := q.session(); q.w.count() != 1 || !s.Woken || s.Wakes != maxIdleWakes {
 		q.t.Fatalf("wakes of the idle period: %d %+v", q.w.count(), s)
 	}
 	if v := leaseViewOf(q.t, q.a, first.ID); v.State != LeaseLeased || v.Owner != "s-q" || v.Via != ViaQueue || v.Attempts != 1 {
@@ -143,29 +157,27 @@ func (q *staleQueue) spend() Message {
 // A Codex thread woken through its queue that never proves the wake (its app
 // is closed: no turn, no hook event) is not latched for the rest of its
 // registration: once the wake is stale its unproven message fails (a person
-// decides, it is never queued again) and a newer message gets a wake of its
-// own.
+// decides, it is never queued again) and a newer message gets its wake: no
+// prompt of its own (one pointer is in the queue), a lease under that pointer.
 func TestStaleQueueWakeReleasesNewerMessages(t *testing.T) {
 	q := newStaleQueue(t)
 	old := q.spend()
+	token := wakeTokenOf(q.lastWake())
 
-	// Unproven, but not stale yet: nothing more is queued.
+	// Unproven, but not stale yet: nothing more is woken for.
 	early := q.send("early request")
 	q.age(staleWakeWait(maxIdleWakes) - time.Minute)
-	if q.w.count() != maxIdleWakes {
-		t.Fatalf("woken before the wake was stale: %v", q.w.calls)
+	if _, ok := q.a.leases.get(early.ID); ok || q.session().Wakes != maxIdleWakes {
+		t.Fatalf("woken before the wake was stale: %+v", q.session())
 	}
 
 	// Stale: the newer message is woken for, long before the unproven one's
 	// lease fails.
 	q.age(staleWakeWait(maxIdleWakes) + time.Second)
-	text := q.lastWake()
-	if q.w.count() != maxIdleWakes+1 || !strings.Contains(text, "early request") || strings.Contains(text, "spent request") {
-		t.Fatalf("no wake of its own for the newer message: %v", q.w.calls)
+	if s := q.session(); q.w.count() != 1 || s.Wakes != maxIdleWakes+1 || !q.covers(token, early) {
+		t.Fatalf("no wake for the newer message: %v %+v", q.w.calls, s)
 	}
-	if v := leaseViewOf(t, q.a, early.ID); v.State != LeaseLeased || v.Owner != "s-q" || v.Attempts != 1 {
-		t.Fatalf("lease of the newer message: %+v", v)
-	}
+	waitAttempts(t, q.b, early, AttemptWakeRequested)
 	if v := leaseViewOf(t, q.a, old.ID); v.State != LeaseLeased {
 		t.Fatalf("the unproven message's lease ended with the stale wake: %+v", v)
 	}
@@ -173,33 +185,27 @@ func TestStaleQueueWakeReleasesNewerMessages(t *testing.T) {
 	if v := leaseViewOf(t, q.a, old.ID); v.State != LeaseFailed || v.Reason != "queued_stale" {
 		t.Fatalf("stale unproven message: %+v", v)
 	}
-	if q.w.count() != maxIdleWakes+1 {
-		t.Fatalf("woken with nothing new: %v", q.w.calls)
+	if s := q.session(); q.w.count() != 1 || s.Wakes != maxIdleWakes+1 {
+		t.Fatalf("woken with nothing new: %v %+v", q.w.calls, s)
 	}
 	waitAttempts(t, q.b, old, AttemptWakeRequested, AttemptNeedsHuman)
 
 	// The next one waits for the backoff of the last wake, not longer.
 	late := q.send("late request")
 	q.age(staleWakeWait(maxIdleWakes+1) - time.Minute)
-	if q.w.count() != maxIdleWakes+1 {
-		t.Fatalf("woken inside the backoff: %v", q.w.calls)
+	if _, ok := q.a.leases.get(late.ID); ok {
+		t.Fatal("woken inside the backoff")
 	}
 	q.age(staleWakeWait(maxIdleWakes+1) + time.Second)
-	text = q.lastWake()
-	if q.w.count() != maxIdleWakes+2 || !strings.Contains(text, "late request") || strings.Contains(text, "early request") || strings.Contains(text, "spent request") {
-		t.Fatalf("stale wake: %v", q.w.calls)
+	if s := q.session(); q.w.count() != 1 || s.Wakes != maxIdleWakes+2 || !q.covers(token, late) {
+		t.Fatalf("stale wake: %v %+v", q.w.calls, s)
 	}
-	if v := leaseViewOf(t, q.a, late.ID); v.State != LeaseLeased || v.Owner != "s-q" {
-		t.Fatalf("lease of the late message: %+v", v)
-	}
-	// No message id was queued twice, and the unproven one stays failed.
+	// No message was leased twice, and the unproven one stays failed.
 	if v := leaseViewOf(t, q.a, old.ID); v.State != LeaseFailed || v.Attempts != 1 {
 		t.Fatalf("the unproven message was leased again: %+v", v)
 	}
-	for _, body := range []string{"spent request 0", "spent request 1", "early request", "late request"} {
-		if got := q.wakesWith(body); got != 1 {
-			t.Fatalf("%q was queued %d times: %v", body, got, q.w.calls)
-		}
+	if v := leaseViewOf(t, q.a, early.ID); v.Attempts != 1 {
+		t.Fatalf("the early message was leased again: %+v", v)
 	}
 	// Its late proof still counts.
 	if got := q.a.LeaseStart("s-q", "", []string{old.ID}); len(got) != 1 {
@@ -379,10 +385,11 @@ func TestRunningQueueMessageNotQueuedAgain(t *testing.T) {
 func TestActivityReleasesWakeLatch(t *testing.T) {
 	q := newStaleQueue(t)
 	old := q.spend()
+	token := wakeTokenOf(q.lastWake())
 	newer := q.send("newer request")
 	q.pass()
-	if q.w.count() != maxIdleWakes {
-		t.Fatalf("woken past the cap: %v", q.w.calls)
+	if _, ok := q.a.leases.get(newer.ID); ok || q.session().Wakes != maxIdleWakes {
+		t.Fatalf("woken past the cap: %+v", q.session())
 	}
 	if _, err := q.a.SessionActivity(old.ChatID, ActivityRequest{SessionID: "s-q", ReplyTo: old.ID, Type: "command", Text: "go test"}); err != nil {
 		t.Fatal(err)
@@ -390,12 +397,10 @@ func TestActivityReleasesWakeLatch(t *testing.T) {
 	if s := q.session(); s.Woken || s.Wakes != 0 || !s.WokeAt.IsZero() {
 		t.Fatalf("activity kept the latch: %+v", s)
 	}
+	// The pointer is in its queue still: the wake is a lease under it.
 	q.pass()
-	if text := q.lastWake(); q.w.count() != maxIdleWakes+1 || !strings.Contains(text, "newer request") || strings.Contains(text, "spent request") {
-		t.Fatalf("no wake after activity: %v", q.w.calls)
-	}
-	if v := leaseViewOf(t, q.a, newer.ID); v.State != LeaseLeased || v.Owner != "s-q" {
-		t.Fatalf("lease of the newer message: %+v", v)
+	if s := q.session(); q.w.count() != 1 || s.Wakes != 1 || !q.covers(token, newer) {
+		t.Fatalf("no wake after activity: %v %+v", q.w.calls, s)
 	}
 }
 
@@ -403,6 +408,7 @@ func TestActivityReleasesWakeLatch(t *testing.T) {
 // neither counts in it nor keeps a newer message from its wake.
 func TestWakeFitSkipsFailedMessages(t *testing.T) {
 	q := newStaleQueue(t)
+	path := q.rollout("")
 	long := strings.Repeat("x", 1500)
 	m0, m1 := q.send("m0 "+long), q.send("m1 "+long)
 	q.pass()
@@ -412,7 +418,9 @@ func TestWakeFitSkipsFailedMessages(t *testing.T) {
 	if err := q.a.leases.fail("s-q", []string{m0.ID, m1.ID}, "queued_stale", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	// A new idle period: the failed ones are the oldest unread.
+	// A new idle period (the thread ran the pointer and fetched nothing): the
+	// failed ones are the oldest unread.
+	q.wrote(path, WakeMarker(wakeTokenOf(q.lastWake()))+"\n")
 	q.send("m2 " + long)
 	q.reg(false)
 	q.reg(true)
@@ -434,11 +442,11 @@ func TestStaleQueueWakeCap(t *testing.T) {
 	for i := maxIdleWakes; i < limit; i++ {
 		q.send(fmt.Sprintf("stale request %d", i))
 		q.age(staleWakeWait(i) - time.Minute)
-		if q.w.count() != i {
-			t.Fatalf("wake %d inside its backoff: %d", i+1, q.w.count())
+		if s := q.session(); s.Wakes != i {
+			t.Fatalf("wake %d inside its backoff: %+v", i+1, s)
 		}
 		q.age(staleWakeWait(i) + time.Second)
-		if s := q.session(); q.w.count() != i+1 || s.Wakes != i+1 || s.WakeCapped {
+		if s := q.session(); q.w.count() != 1 || s.Wakes != i+1 || s.WakeCapped {
 			t.Fatalf("stale wake %d: %d %+v", i+1, q.w.count(), s)
 		}
 	}
@@ -454,8 +462,8 @@ func TestStaleQueueWakeCap(t *testing.T) {
 		t.Fatalf("needs_human before the last wake was stale: %+v", s)
 	}
 	q.age(queuedOwnerMax + time.Second)
-	if s := q.session(); q.w.count() != limit || !s.WakeCapped {
-		t.Fatalf("past the cap: wakes %d %+v", q.w.count(), s)
+	if s := q.session(); q.w.count() != 1 || s.Wakes != limit || !s.WakeCapped {
+		t.Fatalf("past the cap: prompts %d %+v", q.w.count(), s)
 	}
 	waitAttempts(t, q.b, waiting, AttemptNeedsHuman)
 	if l, ok := q.a.leases.get(waiting.ID); ok {
@@ -479,25 +487,25 @@ func TestStaleQueueWakeCap(t *testing.T) {
 	q.pass()
 	time.Sleep(200 * time.Millisecond)
 	for _, m := range []Message{waiting, later} {
-		if got := attemptsOf(q.b, m); !slices.Equal(got, []string{AttemptNeedsHuman}) || q.w.count() != limit {
-			t.Fatalf("after the notice: %v wakes %d", got, q.w.count())
+		if got := attemptsOf(q.b, m); !slices.Equal(got, []string{AttemptNeedsHuman}) || q.w.count() != 1 {
+			t.Fatalf("after the notice: %v prompts %d", got, q.w.count())
 		}
 	}
 
 	// Its wakes spent, the thread is left to its TTL.
 	q.age(24 * time.Hour)
-	if _, ok := q.a.SessionLive("s-q"); ok || q.w.count() != limit {
-		t.Fatalf("a thread past its wake cap is kept registered: wakes %d", q.w.count())
+	if _, ok := q.a.SessionLive("s-q"); ok || q.w.count() != 1 {
+		t.Fatalf("a thread past its wake cap is kept registered: prompts %d", q.w.count())
 	}
 
-	// A new idle period (the thread took a turn) is woken again.
+	// A new idle period (the thread took a turn) is woken again: for what no
+	// pointer was queued for, under the one its queue still has.
+	token := wakeTokenOf(q.lastWake())
 	q.reg(false)
 	q.reg(true)
 	q.pass()
-	text := q.lastWake()
-	if s := q.session(); q.w.count() != limit+1 || s.Wakes != 1 || s.WakeCapped ||
-		!strings.Contains(text, "request past the cap") || !strings.Contains(text, "request after the notice") || strings.Contains(text, "spent request") {
-		t.Fatalf("new idle period: %d %+v %q", q.w.count(), s, text)
+	if s := q.session(); q.w.count() != 1 || s.Wakes != 1 || s.WakeCapped || !q.covers(token, waiting) || !q.covers(token, later) {
+		t.Fatalf("new idle period: %d %+v", q.w.count(), s)
 	}
 }
 
@@ -538,12 +546,13 @@ func TestQueueWakeNotRepeatedAfterStop(t *testing.T) {
 	if got := q.wakesWith("only request"); got != 1 || q.w.count() != 1 {
 		t.Fatalf("queued %d times after stop and resume: %v", got, q.w.calls)
 	}
-	// A request that comes later is still woken for.
-	q.send("request after the stop")
+	// A request that comes later is still woken for: by that pointer, which
+	// the stop took out of no queue.
+	later := q.send("request after the stop")
 	q.reg(false)
 	q.reg(true)
 	q.pass()
-	if text := q.lastWake(); q.w.count() != 2 || !strings.Contains(text, "request after the stop") || strings.Contains(text, "only request") {
+	if q.w.count() != 1 || !q.covers(wakeTokenOf(q.lastWake()), later) {
 		t.Fatalf("wake after the stop: %v", q.w.calls)
 	}
 }

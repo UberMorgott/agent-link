@@ -12,12 +12,15 @@ import (
 // wrote to the others (OwnHuman) is no reason for a wake. A Codex thread's
 // queue keeps what it accepted and runs it whenever it gets to it, so its
 // prompt is a pointer, no message (pointer.go): the turn fetches what waits
-// for the session then, and no message has two pointers in the queue at once
-// (leaseBook.handedTo). The node does not depend on the thread's hooks: the
-// prompt in its rollout ends the wake count and starts the fetch's grace
-// (observeQueueStart), its fetch or activity it reports ends the count too
-// (pointerFetch, SessionActivity), and a wake that stays unproven lets newer
-// messages wake it later, bounded (maxStaleWakes, then needs_human).
+// for the session then, no message has two pointers in the queue at once
+// (leaseBook.handedTo), and no thread has two pointers its rollout has not
+// shown (pointerPending): a wake that is due meanwhile leases its messages to
+// the session under the pointer already queued. The node does not depend on
+// the thread's hooks: the prompt in its rollout ends the wake count and starts
+// the fetch's grace (observeQueueStart), its fetch or activity it reports ends
+// the count too (Deliver, SessionActivity), and a wake that stays unproven
+// lets newer messages wake it later, bounded (maxStaleWakes, then
+// needs_human).
 // Nor does it take such a thread for idle on its hooks' word alone: while its
 // rollout shows a turn running, or a queued prompt of the node about to run,
 // it queues nothing (queueHeld, rollout_turn.go), and the messages that came
@@ -328,16 +331,28 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		if n.Stopped() {
 			return
 		}
-		msgs, token := n.wakeClaim(s.SessionID, via, fit)
+		// One pointer at a time: while one is queued for the thread and its
+		// rollout has not shown it, nothing more goes into that queue. That
+		// pointer's turn fetches everything that waits then, so these messages
+		// are leased to the session under its token (pointerPending); the
+		// wake's schedule, count and bounds are those of a wake queued anew.
+		pending := ""
+		if !byInbox {
+			pending = n.pointerPending(s)
+		}
+		msgs, token := n.wakeClaim(s.SessionID, via, fit, pending)
 		if len(msgs) == 0 {
 			continue
 		}
-		if byInbox {
+		switch {
+		case byInbox:
 			text := WakePrompt(msgs, skipped+len(take)-len(msgs)+page.Total-len(page.Messages), s.Folder, token)
 			err = n.poster.Post(ctx, d.inbox.socket, d.inbox.token, text)
-		} else {
+		case pending != "":
+			// Covered by the pointer in its queue: no prompt.
+		default:
 			// No message, no image of one: the turn fetches them (pointer.go).
-			err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, PointerPrompt(len(msgs), s.Folder, s.SessionID, token, cliExecutable()))
+			err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, PointerPrompt(len(msgs), s.SessionID, token, cliExecutable()))
 		}
 		if err != nil {
 			// Its hooks, another session or a launch deliver them instead.
@@ -367,7 +382,7 @@ func (n *Node) wakeIdle(ctx context.Context) {
 			n.changed("sessions")
 			continue
 		}
-		n.log.Info("idle session woken", "session", s.SessionID, "provider", s.Provider, "inbox", byInbox, "messages", len(msgs), "unread", page.Total)
+		n.log.Info("idle session woken", "session", s.SessionID, "provider", s.Provider, "inbox", byInbox, "queued_pointer", pending != "", "messages", len(msgs), "unread", page.Total)
 		n.noteWoken(msgs)
 		if !byInbox {
 			// After the wake is counted: the proof ends that count (wakeProven).
@@ -458,11 +473,17 @@ func (n *Node) observeQueueStart(ctx context.Context, s Session, token string, i
 	tick := time.NewTicker(wakePoll)
 	defer tick.Stop()
 	for {
+		if pointerToken(token) {
+			// A pointer is for what came after it was queued too (wakeIdle).
+			if cur := n.leases.withToken(s.SessionID, token); len(cur) > 0 {
+				ids = cur
+			}
+		}
 		if rolloutContains(path, WakeMarker(token)) {
 			if pointerToken(token) {
 				// The thread's rollout has the pointer: its turn started and is to
 				// fetch. Nothing is read by that alone.
-				n.pointerShown(s.SessionID, token, ids)
+				n.pointerShown(s.SessionID, token)
 			} else if got := n.LeaseStart(s.SessionID, token, ids); len(got) > 0 {
 				// A prompt queued before pointers: its turn started with the
 				// messages in it. That is the proof the session's hook acknowledges

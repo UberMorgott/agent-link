@@ -2,12 +2,17 @@ package node
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/UberMorgott/agent-link/internal/humantime"
 )
@@ -28,7 +33,7 @@ func (q *staleQueue) fetch() UnreadPage {
 func (q *staleQueue) consumed(path, token string, ids ...string) {
 	q.t.Helper()
 	q.wrote(path, WakeMarker(token)+"\n")
-	q.a.observeQueueStart(q.t.Context(), q.session(), token, ids) // unless the wake's own observer still runs
+	q.a.observeQueueStart(q.t.Context(), q.session(), token, ids) // unless the wake's own observer still runs (ids: none = the token's)
 	eventually(q.t, "the pointer's observer ended", func() bool { _, on := q.a.observed.Load("s-q\x00" + token); return !on })
 }
 
@@ -94,8 +99,8 @@ func TestPointerAfterEarlierFetchChangesNothing(t *testing.T) {
 }
 
 // A pointer consumed late fetches what waits for the session then: a message
-// that came after it was queued too, never one read meanwhile, though its own
-// lease failed unproven long before.
+// that came after it was queued too (leased to it, no pointer of its own),
+// never one read meanwhile, though its own lease failed unproven long before.
 func TestPointerConsumedLateFetchesCurrent(t *testing.T) {
 	q := newStaleQueue(t)
 	path := q.rollout("")
@@ -110,16 +115,15 @@ func TestPointerConsumedLateFetchesCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	newer := q.send("request newer than the pointer")
-	q.age(queuedOwnerMax + time.Second) // hours pass: the thread ran nothing
+	q.age(queuedOwnerMax + time.Second) // a long time passes: the thread ran nothing
 	if l, _ := q.a.leases.get(kept.ID); l.State != LeaseFailed || l.Reason != "queued_stale" {
 		t.Fatalf("lease of the unconsumed pointer's message: %+v", l)
 	}
-	second := wakeTokenOf(q.lastWake())
-	if q.w.count() != 2 || second == first || !strings.Contains(q.lastWake(), "[pointer for] "+newer.Body) || strings.Contains(q.lastWake(), kept.Body) {
-		t.Fatalf("the newer message's own pointer: %v", q.w.calls)
+	if l, _ := q.a.leases.get(newer.ID); q.w.count() != 1 || l.State != LeaseLeased || l.Token != first {
+		t.Fatalf("the newer message is not the queued pointer's: %v %+v", q.w.calls, l)
 	}
 
-	q.consumed(path, first, answered.ID, kept.ID)
+	q.consumed(path, first)
 	page := q.fetch()
 	if got := ids(page.Messages); !page.Delivered || !slices.Equal(got, []string{kept.ID, newer.ID}) {
 		t.Fatalf("the late pointer's fetch: %v delivered %v, want %v", got, page.Delivered, []string{kept.ID, newer.ID})
@@ -132,18 +136,17 @@ func TestPointerConsumedLateFetchesCurrent(t *testing.T) {
 	if p, _ := q.a.Unread("", "", 100); p.Total != 0 {
 		t.Fatalf("still unread after the fetch: %+v", p.Messages)
 	}
-	// The second pointer runs after it: one trivial turn.
+	// A second call of that turn: nothing, and nothing changes.
 	leases, sess, unread := q.state()
-	q.consumed(path, second, newer.ID)
 	if late := q.fetch(); late.Delivered || len(late.Messages) != 0 {
-		t.Fatalf("the second pointer presented something again: %+v", late)
+		t.Fatalf("the second call presented something again: %+v", late)
 	}
 	l2, s2, u2 := q.state()
 	if !reflect.DeepEqual(leases, l2) || !reflect.DeepEqual(sess, s2) || !slices.Equal(unread, u2) {
-		t.Fatalf("the second pointer changed state: %+v -> %+v, %+v -> %+v", leases, l2, sess, s2)
+		t.Fatalf("a fetch of nothing changed state: %+v -> %+v, %+v -> %+v", leases, l2, sess, s2)
 	}
 	q.pass()
-	if q.w.count() != 2 {
+	if q.w.count() != 1 {
 		t.Fatalf("queued again with nothing unread: %v", q.w.calls)
 	}
 }
@@ -239,10 +242,10 @@ func TestPointerUnfetchedHandedAndBounded(t *testing.T) {
 	if !b.handedTo("m", "s-q", true) {
 		t.Fatal("a queued pointer's message is not handed")
 	}
-	if ch, _ := b.shown("s-q", pointerTokenPrefix+"0000000000000001", []string{"m"}, now); !ch {
+	if ch, _ := b.shown("s-q", pointerTokenPrefix+"0000000000000001", now); !ch {
 		t.Fatal("the pointer's prompt did not start the grace")
 	}
-	if ch, _ := b.shown("s-q", pointerTokenPrefix+"0000000000000001", []string{"m"}, now.Add(time.Minute)); ch {
+	if ch, _ := b.shown("s-q", pointerTokenPrefix+"0000000000000001", now.Add(time.Minute)); ch {
 		t.Fatal("the grace started twice")
 	}
 	none := func(string) bool { return false }
@@ -369,15 +372,18 @@ func TestFetchOnlyForQueueSessions(t *testing.T) {
 	}
 }
 
-// The pointer names the MCP tool and, for a thread without it, the exact CLI
-// command with the node's own executable, the session and its folder.
+// The pointer names the MCP tool with the session's id as its argument (a
+// client's call may name no thread) and, for a thread without the tool, the
+// exact CLI command with the node's own executable and that id. No folder: a
+// path would be text the agent's shell expands.
 func TestPointerPromptText(t *testing.T) {
-	got := PointerPrompt(3, `C:\work dir`, "019f-thread", "p-0123456789abcdef", `C:\Program Files\agentlink\agentlink.exe`)
+	got := PointerPrompt(3, "019f-thread", "p-0123456789abcdef", `C:\Program Files\agentlink\agentlink.exe`)
 	want := "agent-link: для этой сессии есть новые сообщения (3); их текста здесь нет. [agent-link wake p-0123456789abcdef]\n" +
-		"Получите их сейчас: вызовите инструмент unread MCP-сервера agentlink (без аргументов). " +
+		"Получите их сейчас: вызовите инструмент unread MCP-сервера agentlink с одним аргументом session: \"019f-thread\". " +
 		"Если такого инструмента нет, выполните команду (в PowerShell начните её с &): " +
-		`"C:\Program Files\agentlink\agentlink.exe" chat unread --session 019f-thread --folder "C:\work dir"` + "\n" +
+		`"C:\Program Files\agentlink\agentlink.exe" chat unread --session 019f-thread` + "\n" +
 		"Вызов выдаёт сообщения, которые ждут эту сессию сейчас, и сразу отмечает их прочитанными: прочитайте их и, где просят ответа, ответьте. " +
+		"Если в ответе есть note, выдана только часть: повторяйте тот же вызов, пока note не исчезнет. " +
 		"Если он ничего не вернул и сообщений agent-link нет в контексте этого хода, делать нечего: ответьте одной короткой строкой и завершите ход."
 	if got != want {
 		t.Fatalf("pointer prompt:\n%s\nwant:\n%s", got, want)
@@ -385,8 +391,8 @@ func TestPointerPromptText(t *testing.T) {
 	if !validWakeToken("p-0123456789abcdef") || pointerToken(randomHex(8)) || !pointerToken(pointerTokenPrefix+randomHex(8)) {
 		t.Fatal("pointer tokens are not told from the others")
 	}
-	if got := PointerPrompt(1, "", "s", "p-0123456789abcdef", ""); !strings.Contains(got, "&): agentlink chat unread --session s\n") {
-		t.Fatalf("without an executable or folder: %s", got)
+	if got := PointerPrompt(1, "s", "p-0123456789abcdef", ""); !strings.Contains(got, "&): agentlink chat unread --session s\n") {
+		t.Fatalf("without an executable: %s", got)
 	}
 	// The node queues it with its own executable (cliExecutable, as Render's CLI line).
 	old := cliExecutable
@@ -395,8 +401,266 @@ func TestPointerPromptText(t *testing.T) {
 	q := newStaleQueue(t)
 	q.send("request")
 	q.pass()
-	if text := q.w.texts[0]; !strings.Contains(text, `&): "C:\apps\agentlink.exe" chat unread --session s-q --folder "`+q.session().Folder+`"`+"\n") {
+	if text := q.w.texts[0]; !strings.Contains(text, `&): "C:\apps\agentlink.exe" chat unread --session s-q`+"\n") || !strings.Contains(text, `session: "s-q". `) {
 		t.Fatalf("the queued pointer's CLI line: %s", text)
+	}
+}
+
+// A folder's name is no part of the prompt: one a shell would expand
+// (PowerShell's $(...) and backtick, quotes, spaces) reaches no agent's shell
+// through it, and the call that names no folder still takes the session's
+// messages (the node knows its folder).
+func TestPointerPromptHasNoFolder(t *testing.T) {
+	name := "it's $(Start-Process calc) `whoami` & a b"
+	if runtime.GOOS != "windows" {
+		name += ` "q" $(touch pwned)`
+	}
+	dir := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	q := newStaleQueueIn(t, dir)
+	m := q.send("request for a session in an odd folder")
+	q.pass()
+	if q.w.count() != 1 {
+		t.Fatalf("no pointer: %v", q.w.calls)
+	}
+	text := q.w.texts[0]
+	for _, bad := range []string{name, dir, "$(", "`", "'", "--folder", "Start-Process"} {
+		if strings.Contains(text, bad) {
+			t.Fatalf("the pointer's prompt carries %q of its folder: %s", bad, text)
+		}
+	}
+	if !strings.Contains(text, " chat unread --session s-q\n") {
+		t.Fatalf("the pointer's command: %s", text)
+	}
+	// The command as the prompt gives it: a session, no folder.
+	if page := q.fetch(); !page.Delivered || len(page.Messages) != 1 || page.Messages[0].ID != m.ID {
+		t.Fatalf("the fetch without a folder: %+v", page)
+	}
+}
+
+// One answer of a fetch carries what a hook's batch does (FitUnread), and only
+// that is acknowledged: the rest stays unread behind next, the answer says so
+// in plain words, and the calls that follow take it, each message once.
+func TestFetchFitsBudget(t *testing.T) {
+	q := newStaleQueue(t)
+	q.rollout("")
+	const total = 12
+	var sent []string
+	for i := range total {
+		sent = append(sent, q.send(strings.Repeat("я", 2400)+" "+string(rune('a'+i))).ID)
+	}
+	var got []string
+	for call := 1; len(got) < total; call++ {
+		page := q.fetch()
+		left, _ := q.a.Unread("", "", 100)
+		runes := 0
+		for _, m := range page.Messages {
+			runes += utf8.RuneCountInString(FormatUnread(m))
+		}
+		if !page.Delivered || len(page.Messages) == 0 || len(page.Messages) != FitUnread(page.Messages) || runes > FormatBudget {
+			t.Fatalf("call %d: %d messages, %d runes (budget %d), delivered %v", call, len(page.Messages), runes, FormatBudget, page.Delivered)
+		}
+		got = append(got, ids(page.Messages)...)
+		if left.Total != total-len(got) {
+			t.Fatalf("call %d: %d unread after %d delivered of %d", call, left.Total, len(got), total)
+		}
+		for _, m := range left.Messages {
+			if slices.Contains(got, m.ID) {
+				t.Fatalf("call %d: %s is in an answer and still unread", call, m.ID)
+			}
+		}
+		more := len(got) < total
+		if (page.Next != "") != more || (page.Note != "") != more {
+			t.Fatalf("call %d: next %q note %q with %d left", call, page.Next, page.Note, total-len(got))
+		}
+		if more && !strings.Contains(page.Note, fmt.Sprintf("ещё %d ждут", total-len(got))) {
+			t.Fatalf("call %d: the note does not say what is left: %q", call, page.Note)
+		}
+		if call > total {
+			t.Fatal("the fetch never ends")
+		}
+	}
+	if !slices.Equal(got, sent) {
+		t.Fatalf("delivered %v, want each of %v once, in order", got, sent)
+	}
+	if page := q.fetch(); page.Delivered || len(page.Messages) != 0 || page.Note != "" || page.Next != "" {
+		t.Fatalf("a fetch with nothing left: %+v", page)
+	}
+}
+
+// One pointer at a time. While a pointer is in the thread's queue and its
+// rollout has not shown it, nothing more is queued for that thread: the
+// messages that come meanwhile are leased to it under that pointer (their
+// authors hear of the wake, on the schedule of the idle period's wakes), and
+// the pointer's turn fetches them all.
+func TestOnePointerAtATime(t *testing.T) {
+	q := newStaleQueue(t)
+	path := q.rollout("")
+	first := q.send("first request")
+	q.pass()
+	token := wakeTokenOf(q.lastWake())
+	if q.w.count() != 1 || !pointerToken(token) || q.a.leases.pendingPointer("s-q") != token {
+		t.Fatalf("first pointer: %v", q.w.calls)
+	}
+	second := q.send("second request")
+	q.pass() // inside the wait of the idle period's next wake: not leased yet
+	if _, ok := q.a.leases.get(second.ID); ok || q.w.count() != 1 {
+		t.Fatalf("leased before a wake was due: %v", q.w.calls)
+	}
+	q.age(inboxWakeGrace + time.Second)
+	third := q.send("third request")
+	q.age(staleWakeWait(maxIdleWakes) + time.Second)
+	if q.w.count() != 1 {
+		t.Fatalf("a second prompt beside the unconsumed pointer: %v", q.w.calls)
+	}
+	if s := q.session(); !s.Woken || s.Wakes != 3 {
+		t.Fatalf("the wakes of the idle period are not counted: %+v", s)
+	}
+	for _, m := range []Message{first, second, third} {
+		if l, _ := q.a.leases.get(m.ID); l.State != LeaseLeased || l.Owner != "s-q" || l.Via != ViaQueue || l.Token != token || l.Attempts != 1 {
+			t.Fatalf("lease of %q: %+v, want the first pointer's %s", m.Body, l, token)
+		}
+		waitAttempts(t, q.b, m, AttemptWakeRequested)
+	}
+
+	// The pointer runs: its marker covers all three, its fetch delivers them.
+	q.consumed(path, token)
+	for _, m := range []Message{first, second, third} {
+		if l, _ := q.a.leases.get(m.ID); l.State != LeaseLeased || l.Shown.IsZero() {
+			t.Fatalf("lease of %q after the pointer's prompt: %+v", m.Body, l)
+		}
+	}
+	if q.a.leases.pendingPointer("s-q") != "" {
+		t.Fatal("a pointer the rollout shows still keeps the queue closed")
+	}
+	page := q.fetch()
+	if got := ids(page.Messages); !page.Delivered || !slices.Equal(got, []string{first.ID, second.ID, third.ID}) || page.Note != "" {
+		t.Fatalf("the pointer's fetch: %v delivered %v note %q", got, page.Delivered, page.Note)
+	}
+	for _, m := range []Message{first, second, third} {
+		if l, _ := q.a.leases.get(m.ID); l.State != LeaseAcked {
+			t.Fatalf("lease of %q after the fetch: %+v", m.Body, l)
+		}
+		waitAttempts(t, q.b, m, AttemptWakeRequested, AttemptWokenConfirmed)
+	}
+	// Consumed: the next message gets a pointer of its own.
+	q.send("fourth request")
+	q.pass()
+	if next := wakeTokenOf(q.lastWake()); q.w.count() != 2 || next == token || !strings.Contains(q.lastWake(), "[pointer for] fourth request") {
+		t.Fatalf("no new pointer after the first was consumed: %v", q.w.calls)
+	}
+}
+
+// A pointer that stays unconsumed keeps the bounds of every queue wake: what
+// was leased to it fails unproven after queuedOwnerMax (needs_human), the
+// wakes of the idle period are spent on the same schedule, and what waits
+// past them is reported once. Nothing more was queued meanwhile, and a
+// pointer the rollout shows though no observer saw it opens the queue again.
+func TestUnconsumedPointerKeepsBounds(t *testing.T) {
+	q := newStaleQueue(t)
+	path := q.rollout("")
+	first := q.spend()
+	token := wakeTokenOf(q.lastWake())
+	limit := maxIdleWakes + maxStaleWakes
+	var covered []Message
+	for i := maxIdleWakes; i < limit; i++ {
+		covered = append(covered, q.send(fmt.Sprintf("stale request %d", i)))
+		q.age(staleWakeWait(i) + time.Second)
+	}
+	waiting := q.send("request past the cap")
+	q.age(queuedOwnerMax + time.Second)
+	if s := q.session(); q.w.count() != 1 || s.Wakes != limit || !s.WakeCapped {
+		t.Fatalf("past the cap: prompts %d %+v", q.w.count(), s)
+	}
+	for _, m := range append([]Message{first}, covered...) {
+		l, _ := q.a.leases.get(m.ID)
+		if l.State != LeaseFailed || l.Reason != "queued_stale" || l.Token != token {
+			t.Fatalf("lease of %q: %+v", m.Body, l)
+		}
+		waitAttempts(t, q.b, m, AttemptWakeRequested, AttemptNeedsHuman)
+	}
+	waitAttempts(t, q.b, waiting, AttemptNeedsHuman)
+	if q.a.leases.pendingPointer("s-q") != token {
+		t.Fatal("the unconsumed pointer is forgotten with its leases' failure")
+	}
+
+	// The thread runs it at last, with no observer of the node watching: a
+	// new idle period's message is the next pointer's.
+	q.wrote(path, WakeMarker(token)+"\n")
+	q.reg(false)
+	q.reg(true)
+	late := q.send("request after the pointer ran")
+	q.pass()
+	if next := wakeTokenOf(q.lastWake()); q.w.count() != 2 || next == token || !strings.Contains(q.lastWake(), "[pointer for] "+late.Body) {
+		t.Fatalf("no new pointer after the old one ran: %v", q.w.calls)
+	}
+}
+
+// A seat's message a pointer was queued for is delivered by the seat
+// session's fetch, once: listed (a pointer's prompt has no message), claimed
+// through its wake mark, read by the seat; no second pointer follows.
+func TestPointerFetchDeliversSeatMessage(t *testing.T) {
+	l := &seatLauncher{}
+	dir, home := t.TempDir(), t.TempDir()
+	w := &fakeWaker{ready: true}
+	a := newProjectNodeAt(t, "morgott", newTestProject(t), t.TempDir(), listen(t), nil)
+	a.SetFolders(dir, nil)
+	a.SetLauncher(l, ProviderClaude)
+	a.SetSessionWaker(w)
+	a.wakeEvery = time.Hour
+	a.seatBusy = l.busy
+	a.start(t)
+	_, codex := addSeats(t, a)
+	if _, err := a.RegisterSession(SessionRequest{SessionID: codex.SessionID, Provider: codex.Provider, Folder: dir, Wake: WakeQueue,
+		Idle: true, CodexHome: home, TTLSec: staleQueueTTL}); err != nil {
+		t.Fatal(err)
+	}
+	a.syncQueueWake()
+	chat, _ := a.NewProjectChat(nil)
+	m, err := a.SendRequest(SendRequest{ChatID: chat.ID, Body: "review this seat", AuthorKind: AuthorHuman, AskSeats: []string{codex.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.wakeIdle(t.Context())
+	token := wakeTokenOf(w.texts[0])
+	key := leaseKey(codex.ID, m.ID)
+	if lv, _ := a.leases.get(key); w.count() != 1 || !pointerToken(token) || strings.Contains(w.texts[0], m.Body) ||
+		lv.State != LeaseLeased || lv.Owner != codex.SessionID || lv.Via != ViaQueue || lv.Token != token {
+		t.Fatalf("the seat's pointer: %v %+v", w.calls, lv)
+	}
+	fetch := url.Values{"agent": {"1"}, "session": {codex.SessionID}}
+	page, err := a.UnreadQuery(fetch)
+	if err != nil || !page.Delivered || len(page.Messages) != 1 || page.Messages[0].ID != m.ID || page.Messages[0].ForSeat != codex.ID || len(page.Woken) != 0 {
+		t.Fatalf("the seat session's fetch: %+v %v", page, err)
+	}
+	if lv, _ := a.leases.get(key); lv.State != LeaseAcked {
+		t.Fatalf("the seat's lease after the fetch: %+v", lv)
+	}
+	if again, err := a.UnreadQuery(fetch); err != nil || again.Delivered || len(again.Messages) != 0 || len(again.Woken) != 0 {
+		t.Fatalf("the seat's message was delivered twice: %+v %v", again, err)
+	}
+	if left, _ := a.UnreadFor(dir, codex.SessionID, "", 10); len(left.Messages) != 0 || len(left.Woken) != 0 {
+		t.Fatalf("still the seat session's after its fetch: %+v", left)
+	}
+	// Nothing waits for the seat: no second pointer, whatever lapses.
+	past := time.Now().Add(-staleWakeWait(maxIdleWakes) - time.Second)
+	a.seats.mu.Lock()
+	for k, h := range a.seats.marks {
+		h.at = past
+		a.seats.marks[k] = h
+	}
+	a.seats.mu.Unlock()
+	a.sess.mu.Lock()
+	if s := a.sess.sessions[codex.SessionID]; s.Woken {
+		s.WokeAt = past
+	}
+	a.sess.mu.Unlock()
+	a.leaseSweep(time.Now())
+	a.wakeIdle(t.Context())
+	if w.count() != 1 {
+		t.Fatalf("a second pointer for a delivered seat message: %v", w.calls)
 	}
 }
 
