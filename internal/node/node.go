@@ -179,6 +179,9 @@ type Node struct {
 	beaconEvery  time.Duration
 	beaconIfaces func() []net.Interface
 
+	// unreadSig wakes the held GET /unread requests at every change (changed).
+	unreadSig changeSignal
+
 	onInbound    func(Message) error
 	onChange     func(topic string)
 	onLocalReply func(requestID string)
@@ -362,6 +365,7 @@ func (n *Node) SetChangeHook(fn func(topic string)) { n.onChange = fn }
 
 func (n *Node) changed(topic string) {
 	n.kickWake()
+	n.unreadSig.fire()
 	if n.onChange != nil {
 		n.onChange(topic)
 	}

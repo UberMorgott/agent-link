@@ -1119,7 +1119,10 @@ func (n *Node) seatClaim(session, id string, wake bool, token string) (handled, 
 	// (then a wake does not take it too).
 	now := time.Now()
 	if m, ok := st.marks[k]; ok && m.holds(now, true) && (m.kind != holdHook || wake) {
-		return true, false
+		// But the wake that has it, kept alive by its owner (the same token).
+		if !wake || m.kind != holdWake || token == "" || m.token != token {
+			return true, false
+		}
 	}
 	kind := holdHook
 	if wake {

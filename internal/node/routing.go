@@ -319,7 +319,7 @@ func (n *Node) Claim(req ClaimRequest) ([]string, error) {
 	}
 	want, spent, via := ids, []string(nil), ViaHook
 	if req.WakeToken != "" {
-		want, spent = n.waiterWakesLeft(req.SessionID, ids, now)
+		want, spent = n.waiterWakesLeft(req.SessionID, ids, req.WakeToken, now)
 		via = ViaWaiter
 	}
 	granted := n.claimLocked(req.SessionID, want, via, req.WakeToken, live)
@@ -342,8 +342,12 @@ func (n *Node) waiterSpentMsg(key string, now time.Time) bool {
 
 // waiterWakesLeft splits ids into those the waiter of session may still wake
 // with and those that used up maxWaiterWakes (their lease counts them).
-func (n *Node) waiterWakesLeft(session string, ids []string, now time.Time) (left, spent []string) {
+func (n *Node) waiterWakesLeft(session string, ids []string, token string, now time.Time) (left, spent []string) {
 	for _, id := range ids {
+		if n.sameWake(id, session, token) {
+			left = append(left, id) // the wake it has, kept alive: no new one
+			continue
+		}
 		if n.waiterSpentMsg(leaseKey(n.seatPendingFor(session, id), id), now) {
 			spent = append(spent, id)
 		} else {
@@ -436,6 +440,17 @@ func (n *Node) claimLocked(session string, want []string, via, token string, liv
 		if to != "" && to != session {
 			continue
 		}
+		if n.sameWake(id, session, token) {
+			// The wake's owner keeps it alive (its prompt waits behind a running
+			// turn): the same wake for another inboxWakeGrace, no new attempt.
+			if took, err := n.leases.take(id, "", session, via, token, deadline, now); err != nil {
+				n.log.Warn("save leases", "err", err)
+			} else if took {
+				r.claims[id] = hold{owner: session, kind: holdWake, token: token, at: now}
+				granted = append(granted, id)
+			}
+			continue
+		}
 		if _, woke := n.wokeWith(id, session, live); woke {
 			continue // the wake prompt has it: not delivered again
 		}
@@ -493,6 +508,14 @@ func (n *Node) unclaim(session string, ids []string) {
 			delete(r.claims, id)
 		}
 	}
+}
+
+// sameWake reports whether session holds message id by the wake that carries
+// token (lapsed or not): a claim of it with that token again renews the wake
+// (claimLocked). The caller holds claimMu.
+func (n *Node) sameWake(id, session, token string) bool {
+	c, ok := n.sess.claims[id]
+	return ok && token != "" && c.wake() && c.owner == session && c.token == token
 }
 
 // wokeWith reports whether id is held by a wake claim of session, and the

@@ -518,7 +518,7 @@ func (n *Node) sessionRoutes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("GET /unread", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		page, err := WaitUnread(r.Context(), q, func() (UnreadPage, error) { return n.UnreadQuery(q) })
+		page, err := WaitUnread(r.Context(), q, func() (UnreadPage, error) { return n.UnreadQuery(q) }, n.UnreadChanged)
 		reply(w, page, err)
 	})
 	mux.HandleFunc("POST /claim", func(w http.ResponseWriter, r *http.Request) {

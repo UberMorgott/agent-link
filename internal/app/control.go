@@ -543,6 +543,10 @@ func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 	exact := maps.Clone(q)
 	exact.Set("exact", "1")
 	// Held like one context's (node.WaitUnread) until some context has a message.
+	changed := make([]func() <-chan struct{}, 0, len(ctxs))
+	for _, c := range ctxs {
+		changed = append(changed, c.n.UnreadChanged)
+	}
 	out, err := node.WaitUnread(r.Context(), q, func() (node.UnreadPage, error) {
 		out := node.UnreadPage{Messages: []node.UnreadMessage{}}
 		more := false
@@ -583,7 +587,7 @@ func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		return out, nil
-	})
+	}, changed...)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

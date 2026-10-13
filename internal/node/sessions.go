@@ -83,7 +83,9 @@ type SessionRequest struct {
 	// delivers, wakes and acknowledges by itself. From then on, while the
 	// session lives, its shell hooks and their waiter stand down: a
 	// registration without Native only keeps it live, and their unread
-	// queries and claims are answered with nothing (sessionNative).
+	// queries and claims are answered with nothing (sessionNative). Only while
+	// the module is heard: one silent for nativeSeenTTL (refused at a reload,
+	// disabled, crashed) gives the session back to its shell hooks.
 	Native bool `json:"native,omitempty"`
 }
 
@@ -133,8 +135,11 @@ type Session struct {
 	Doing   string    `json:"doing,omitempty"`
 	DoingAt time.Time `json:"doing_at,omitzero"`
 	Subs    int       `json:"subs,omitempty"`
-	// Native: its in-process module delivers to it (SessionRequest.Native).
-	Native bool `json:"native,omitempty"`
+	// Native: its in-process module delivers to it (SessionRequest.Native),
+	// last heard at NativeSeen (a registration or heartbeat of the module: the
+	// shell hooks' never count).
+	Native     bool      `json:"native,omitempty"`
+	NativeSeen time.Time `json:"native_seen,omitzero"`
 }
 
 // maxSessionAgents bounds SessionRequest.Agents.
@@ -512,6 +517,11 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	if ttl == 0 {
 		ttl = int(SessionTTL / time.Second)
 	}
+	if !req.Native {
+		// A module that fell silent has the session no more (sessionNative
+		// gives it back): this registration is then the hooks' own again.
+		n.sessionNative(req.SessionID)
+	}
 	now := time.Now().UTC()
 	r := n.sess
 	r.mu.Lock()
@@ -574,6 +584,9 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 		}
 	}
 	s.Asked, s.Idle, s.CodexHome, s.Native = asked, req.Idle, req.CodexHome, req.Native
+	if req.Native {
+		s.NativeSeen = now
+	}
 	if !req.Heartbeat {
 		// A keep-alive (the idle session's waiter) saw no subagent event: it
 		// neither changes nor refreshes them.
