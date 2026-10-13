@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { AGENT_STATUS_VERSION, SESSIONS, SUBAGENTS, activityDot, agentDot, agentName, agentStateText, agentTime, counted, countsText, duration, groupAgents, groupStateText, olderPeerRow, worstState } from '@/lib/agents'
 import { runtime } from '@/lib/runtime'
 import { readFileSync } from 'node:fs'
@@ -123,6 +123,9 @@ describe('agent rows', () => {
 
   it('show an older peer on the line with its counts and what to update', () => {
     const now = Date.parse('2026-09-29T22:37:00Z')
+    // The title's clock shows the date on another day than today: pin today.
+    vi.useFakeTimers({ now, toFake: ['Date'] })
+    onTestFinished(() => { vi.useRealTimers() })
     const on = olderPeerRow({ name: 'KPECTIK', counts: { codex: 3 }, online: true, seen: '2026-09-29T22:34:30Z', app: '0.6.41' }, now)
     expect(on).toMatchObject({ dot: 'idle', state: '3 агента Codex · на связи', time: '2 мин', noteTitle: 'у KPECTIK сейчас agent-link 0.6.41' })
     expect(on.title).toMatch(/^на связи с \d\d:\d\d/)
