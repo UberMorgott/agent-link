@@ -6,6 +6,13 @@ function hooks are early access). It does, through the engine's `$` alone, what
 `agentlink mcp` process. The classic plugin is untouched; do not enable both in
 one session (each would deliver the same messages).
 
+Superseded by the module of `plugins/agent-link` (`hooks/register.ts` there),
+which is what ships; this folder is kept only as the record of the spike. It is
+in no marketplace and nothing installs it: it loads only when someone names it
+with `--plugin-dir`. Never load it in a session that has `plugins/agent-link`
+(or the installed `agent-link` plugin): both would register the same session
+with the node as its only way in and each would hand over the same messages.
+
 - `hooks/register.ts` — the module: registers the session (`POST /sessions`),
   polls `GET /unread?waiter=1`, wakes an idle session with `$.prompt.submit`,
   appends to a running turn with `$.session.append`, acknowledges (`POST /ack`)

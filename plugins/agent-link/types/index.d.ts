@@ -6,7 +6,9 @@
  * the prompt, so the turn it starts is known by it). `append`: appended to
  * the running turn `turnId` while its step `afterStep` was in flight, so the
  * first later step carries it. `prompt`: attached to the person's own prompt,
- * carried by the turn that prompt starts.
+ * carried by the turn that prompt starts (and no other: while the prompt is on
+ * its way in, the turn that starts is its own; once it entered behind another
+ * turn, the one that starts with the text `entered`).
  */
 export type Delivery = {
   token: string
@@ -17,6 +19,8 @@ export type Delivery = {
   chats: Record<string, string>
   /** The turn that carries it; absent until that turn started. */
   turnId?: string
+  /** `prompt` only: the text the prompt entered with, when no turn had started for it yet. */
+  entered?: string
   /** `append` only: the step index in flight when it was appended (-1: none). */
   afterStep?: number
   /** How the node holds it: a wake claim (by `token`) or a turn's claim. */

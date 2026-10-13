@@ -37,6 +37,24 @@ or an older executable. A node that does not know `native` (older than this
 change) has no `POST /render`: the module then hands nothing over and the shell
 hooks deliver as before.
 
+Only the module's own registrations and keep-alives keep a session `native`
+(`Session.NativeSeen`); the shell hooks' never do. A module that says nothing
+for three of its keep-alives (`nativeSeenTTL`: refused at a reload, disabled,
+crashed) has the session no more: the shell hooks deliver again, and what the
+module had claimed for a turn and never acknowledged is theirs to hand over.
+When the module registers again they stand down again.
+
+## Handed over, not read yet
+
+A message the module handed over stays claimed at the node until a model
+request read it: a turn's claim is taken again every half minute, and so is a
+wake's (with the wake's own token, which renews that wake and counts as no new
+one) while its prompt waits behind a running turn or is still on its way in. A
+wake is given up only when its prompt entered an idle session and no turn
+started with it for two minutes. What the person's prompt carried is
+acknowledged by the turn that prompt started and by no other; a prompt a hook
+beneath dropped gives its messages back at once.
+
 ## Checks
 
 ```

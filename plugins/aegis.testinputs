@@ -8,5 +8,6 @@ agent-link/types/index.d.ts
 agent-link/tests/node.ts
 agent-link/tests/agents.test.ts
 agent-link/tests/delivery.test.ts
+agent-link/tests/handover.test.ts
 agent-link/tests/session.test.ts
 agent-link/tests/tools.test.ts

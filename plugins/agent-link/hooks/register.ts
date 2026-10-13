@@ -15,7 +15,12 @@
 //     subagent's tool call the replies to what it asked (tool.call).
 //   - The node hears the acknowledgement (POST /ack) only when a model request
 //     of the turn that carries the messages has started to answer (turn.step);
-//     a turn that ended without one gives them back (POST /release).
+//     a turn that ended without one gives them back (POST /release), and so
+//     does a prompt that never entered (a hook beneath dropped it).
+//   - What was handed over and waits for its turn stays this session's at the
+//     node: its claim is taken again while it waits (a wake's with the wake's
+//     own token), so the node hands it to nobody else, this session's running
+//     turn included.
 //   - What the model reads is the node's text (POST /render): this module
 //     words no message.
 //   - Tool calls tell the node what the session does (POST /sessions/{id}/doing,
@@ -56,9 +61,15 @@ const HEARTBEAT_MS = 60_000
 const TTL_SEC = 900
 /** A node that is down or refuses the folder is asked again this often. */
 const RETRY_MS = 10_000
-/** node.inboxWakeGrace: a wake no turn took lapses after it. */
+/**
+ * node.inboxWakeGrace: a prompt that entered an idle session and started no
+ * turn in this time is given up (counted from when the session went idle).
+ */
 const WAKE_GRACE_MS = 120_000
-/** node.claimTTL is a minute: a turn's claim not yet acknowledged is taken again. */
+/**
+ * A claim not yet acknowledged is taken again this often: node.claimTTL (a
+ * turn's) is a minute, node.inboxWakeGrace (a wake's) two.
+ */
 const CLAIM_REFRESH_MS = 30_000
 /** cmd/agentlink liveAgentTTL, maxLiveAgents, hookMinActivity, hookSameActivity. */
 const AGENT_TTL_MS = 30 * 60_000
@@ -106,6 +117,13 @@ const mem: {
   agentChats: {},
   notes: [],
 }
+
+/**
+ * The deliveries (by token) whose prompt is on its way into the session: a
+ * wake's `$.prompt.submit`, or the person's own prompt going down the chain,
+ * not yet resolved. Such a one is neither given up nor another turn's.
+ */
+const entering = new Set<string>()
 
 let timer: { cancel: () => void } | undefined
 let isPolling = false
@@ -387,11 +405,19 @@ async function drop($: Engine, link: Link, token: string, isGivenBack: boolean):
 
 /** Submits a wake's prompt; a prompt that did not enter gives its messages back. */
 async function submit($: Engine, link: Link, token: string, text: string): Promise<void> {
+  entering.add(token)
   try {
     const res = await $.prompt.submit({ text })
-    if (res.drop === undefined) return
+    if (res.drop === undefined) {
+      // Entered: its turn started, or its time to start one counts from now.
+      const d = mem.deliveries.find(x => x.token === token && x.turnId === undefined)
+      if (d !== undefined) d.at = await $.clock.now()
+      return
+    }
   } catch {
     // refused: given back below
+  } finally {
+    entering.delete(token)
   }
   await drop($, link, token, true)
 }
@@ -696,14 +722,24 @@ async function poll($: Engine): Promise<boolean> {
     $.ui.status(undefined)
     return false
   }
-  // What no turn took is the node's again; a turn's claim is kept alive.
-  const lapsed = mem.deliveries.filter(d => d.turnId === undefined && started - d.at >= WAKE_GRACE_MS)
+  // A prompt that entered the idle session and started no turn is given up,
+  // and what it carried is the node's again. Never while a turn runs (the
+  // prompt waits behind it, however long it takes) or while the prompt is
+  // still on its way in: forgetting it then hands its messages over twice.
+  const lapsed =
+    mem.turn.id === ''
+      ? mem.deliveries.filter(d => d.turnId === undefined && !entering.has(d.token) && started - d.at >= WAKE_GRACE_MS)
+      : []
   for (const d of lapsed) await drop($, link, d.token, d.claim === 'turn')
+  // What waits for its turn is kept this session's at the node. A turn's
+  // claim always; a wake's (by the wake's own token: the same wake, no new
+  // one) while its prompt cannot start a turn yet, so that it lapses at the
+  // node when it is given up here, not later.
   for (const d of mem.deliveries) {
-    if (d.claim === 'turn' && started - d.claimedAt >= CLAIM_REFRESH_MS) {
-      await claim($, link, d.keys, '')
-      d.claimedAt = started
-    }
+    if (started - d.claimedAt < CLAIM_REFRESH_MS) continue
+    if (d.claim === 'wake' && mem.turn.id === '' && !entering.has(d.token)) continue
+    await claim($, link, d.keys, d.claim === 'wake' ? d.token : '')
+    d.claimedAt = started
   }
   const page = parse<UnreadPage>(
     await call($, link.api, 'GET', '/unread', unreadQuery(link, mem.turn.id === '' ? 'wake' : 'turn', started, '', LONG_POLL_SEC)),
@@ -847,7 +883,7 @@ export const register: Register = on => {
       if (mem.link?.isAttended === true && timer === undefined) startLoop($)
     }
     return next(e)
-  })
+  }).catch((_$, e, next) => next(e)) // this hook failing never holds a session's start back
 
   // The person's own prompt carries what waits for the session.
   on('prompt.submit', async ($, e, next) => {
@@ -859,38 +895,86 @@ export const register: Register = on => {
     const now = await $.clock.now()
     const page = parse<UnreadPage>(await call($, link.api, 'GET', '/unread', unreadQuery(link, 'turn', now)))
     if (page === undefined) return next(e)
-    const got = await exclusive(async () => {
-      const pending = new Set(mem.deliveries.flatMap(d => d.keys))
-      const fresh = page.messages.filter(m => !pending.has(keyOf(m)))
-      const taken = await take($, link, fresh, page.total - (page.messages.length - fresh.length), { mode: '', now })
-      if (taken !== undefined && taken.keys.length > 0) {
-        mem.deliveries.push({
-          token: newToken(now),
-          mode: 'prompt',
-          keys: taken.keys,
-          chats: taken.chats,
-          claim: 'turn',
-          at: now,
-          claimedAt: now,
-        })
-        await saveDeliveries($)
+    const token = newToken(now)
+    const before = { notes: [...mem.notes], isGreeted: link.isGreeted }
+    let got: Taken | undefined
+    // The prompt did not enter (a hook beneath, a UserPromptSubmit settings
+    // hook dropped it, or the chain failed): nothing of this text was read.
+    // Its messages go back to the node and its notes wait on.
+    const undo = async (): Promise<void> => {
+      entering.delete(token)
+      await drop($, link, token, true)
+      if (got === undefined) return
+      mem.notes = [...before.notes, ...mem.notes]
+      await saveNotes($)
+      if (link.isGreeted !== before.isGreeted) {
+        link.isGreeted = before.isGreeted
+        await saveLink($)
       }
-      return taken
-    })
-    if (got === undefined) return next(e)
+    }
+    let res: Awaited<ReturnType<typeof next>>
+    try {
+      got = await exclusive(async () => {
+        const pending = new Set(mem.deliveries.flatMap(d => d.keys))
+        const fresh = page.messages.filter(m => !pending.has(keyOf(m)))
+        const taken = await take($, link, fresh, page.total - (page.messages.length - fresh.length), { mode: '', now })
+        if (taken !== undefined) {
+          // On its way in from here on: no other turn's, and not given up.
+          entering.add(token)
+          mem.deliveries.push({
+            token,
+            mode: 'prompt',
+            keys: taken.keys,
+            chats: taken.chats,
+            claim: 'turn',
+            at: now,
+            claimedAt: now,
+          })
+          await saveDeliveries($)
+        }
+        return taken
+      })
+      if (got === undefined) return await next(e)
+      res = await next({ ...e, context: [...(e.context ?? []), got.text] })
+    } catch (err) {
+      await undo()
+      throw err
+    }
+    if (res.drop !== undefined) {
+      await undo()
+      return res
+    }
+    entering.delete(token)
+    // Entered. Its turn has started by now (turn.start took it), or it waits
+    // behind another: then the turn that starts with this text is its own.
+    const d = mem.deliveries.find(x => x.token === token)
+    if (d !== undefined && d.keys.length === 0) {
+      await drop($, link, token, false) // only notes: nothing to acknowledge
+    } else if (d !== undefined && d.turnId === undefined) {
+      d.entered = res.text
+      await saveDeliveries($)
+    }
     if (got.notice !== '') $.ui.log(got.notice)
-    return next({ ...e, context: [...(e.context ?? []), got.text] })
-  })
+    return res
+  }).catch((_$, e, next) => next(e)) // this hook failing never holds the person's prompt back
 
   on('turn.start', async ($, e, next) => {
     await hydrate($)
     mem.turn = { id: e.turnId, step: -1 }
     await saveTurn($)
-    // A wake's turn is known by its token; what a prompt carried is its turn's.
+    // A wake's turn is known by its token. What the person's prompt carried is
+    // the turn's that prompt started, and no other's: the one that starts
+    // while the prompt goes in, or (queued behind another) with its text. A
+    // wake's turn is never it.
+    const isWake = mem.deliveries.some(d => d.mode === 'wake' && e.text.includes(d.token))
     let isBound = false
     for (const d of mem.deliveries) {
       if (d.turnId !== undefined) continue
-      if (d.mode === 'prompt' || (d.mode === 'wake' && e.text.includes(d.token))) {
+      const isIts =
+        d.mode === 'wake'
+          ? e.text.includes(d.token)
+          : d.mode === 'prompt' && !isWake && (entering.has(d.token) || d.entered === e.text)
+      if (isIts) {
         d.turnId = e.turnId
         isBound = true
       }
@@ -937,6 +1021,10 @@ export const register: Register = on => {
     const link = mem.link
     if (link === undefined || !link.isAttended) return next(e)
     const now = await $.clock.now()
+    // A prompt that waited behind this turn runs now: its time counts from here.
+    for (const d of mem.deliveries) {
+      if (d.turnId === undefined) d.at = now
+    }
     const late = mem.deliveries.filter(d => d.turnId === e.turnId)
     if (late.length > 0) {
       if (e.reason === 'answer') {
@@ -970,7 +1058,7 @@ export const register: Register = on => {
       await reportAgent($, link, e.agent_id, await agentChats($, e.agent_id), { event: 'agent' })
     }
     return next(e)
-  })
+  }).catch((_$, e, next) => next(e)) // this hook failing never holds a subagent's start back
 
   on('classic.SubagentStop', async ($, e, next) => {
     await hydrate($)
@@ -988,7 +1076,7 @@ export const register: Register = on => {
       }
     }
     return next(e)
-  })
+  }).catch((_$, e, next) => next(e)) // this hook failing never holds a subagent's end back
 
   on('tool.call', async ($, e, next) => {
     await hydrate($)

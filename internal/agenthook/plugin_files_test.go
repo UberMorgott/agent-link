@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -132,9 +133,17 @@ func TestPluginHooksMatchInstall(t *testing.T) {
 // plugin cache on.
 const codexManifest = ".codex-plugin/plugin.json"
 
+// claudeManifest is the Claude Code plugin manifest; it names the same
+// version as the Codex one (TestClaudePluginVersionIsTheCodexOne).
+const claudeManifest = ".claude-plugin/plugin.json"
+
+// manifestVersionValue is the "version" member of a plugin manifest.
+var manifestVersionValue = regexp.MustCompile(`"version"\s*:\s*"[^"]*"`)
+
 // pluginHash is the content of the plugin (every file but the Codex manifest,
-// line endings as LF so every checkout agrees): the first 12 hex digits of
-// its sha256 over the sorted paths and contents.
+// the Claude manifest without the value of its "version", which names this
+// hash; line endings as LF so every checkout agrees): the first 12 hex digits
+// of its sha256 over the sorted paths and contents.
 func pluginHash(t *testing.T) string {
 	t.Helper()
 	sum := sha256.New()
@@ -159,6 +168,9 @@ func pluginHash(t *testing.T) string {
 			t.Fatal(err)
 		}
 		data = bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+		if rel == claudeManifest {
+			data = manifestVersionValue.ReplaceAll(data, []byte(`"version": ""`))
+		}
 		_, _ = fmt.Fprintf(sum, "%s\x00%d\x00", rel, len(data))
 		_, _ = sum.Write(data)
 	}
@@ -180,5 +192,25 @@ func TestCodexPluginVersionTracksContent(t *testing.T) {
 	base, build, _ := strings.Cut(m.Version, "+codex.")
 	if want := pluginHash(t); build != want {
 		t.Fatalf(`plugins/agent-link changed: set "version": %q in plugins/agent-link/%s so Codex reloads the plugin`, base+"+codex."+want, codexManifest)
+	}
+}
+
+// Claude Code runs the copy of a plugin it installed until the manifest's
+// version changes (with none it goes by the commit, and `claude plugin
+// validate` warns): it names the Codex manifest's version, which follows the
+// plugin's content, so no change of the plugin is ever served stale.
+func TestClaudePluginVersionIsTheCodexOne(t *testing.T) {
+	version := func(manifest string) string {
+		var m struct {
+			Version string `json:"version"`
+		}
+		data, err := os.ReadFile(filepath.Join(pluginDir, filepath.FromSlash(manifest)))
+		if err != nil || json.Unmarshal(data, &m) != nil {
+			t.Fatalf("%s: %v", manifest, err)
+		}
+		return m.Version
+	}
+	if got, want := version(claudeManifest), version(codexManifest); got != want || want == "" {
+		t.Fatalf(`set "version": %q in plugins/agent-link/%s (it has %q): the version of %s`, want, claudeManifest, got, codexManifest)
 	}
 }

@@ -54,6 +54,10 @@ export type World = {
   answer: Map<string, (c: Call) => Reply>
   /** What a submitted prompt answers: its drop reason, when set. */
   dropPrompts: string | undefined
+  /** A submitted prompt enters only once this resolves (the engine is busy). */
+  promptGate: Promise<void> | undefined
+  /** Whether a wake holds message `id` at the node now (it lapses WAKE_GRACE_MS after its last claim). */
+  wakeHeld: (id: string) => boolean
   /** The ids of every POST /ack, and of every POST /release, so far. */
   acked: () => string[]
   released: () => string[]
@@ -65,15 +69,25 @@ export const SESSION = 'sess-1'
 export const FOLDER = 'C:\\work\\demo'
 export const API = '127.0.0.1:1'
 export const TOOL = 'mcp__agent-link__'
+/** node.inboxWakeGrace: how long a wake claim holds a message after it was last taken. */
+export const WAKE_GRACE_MS = 120_000
 
 export function world(on: On, unread: Message[] = [], env: Record<string, string> = {}): World {
   const calls: Call[] = []
   const prompts: string[] = []
   const logged: string[] = []
   const tools: World['tools'] = []
-  const wakes = new Map<string, string>()
+  // The wake claims, as the node keeps them: a message a wake holds is listed
+  // for nobody, and granted only to that wake again (its token), which renews
+  // it; a wake not taken again for WAKE_GRACE_MS lapsed, and the message is
+  // listed and granted as any other.
+  const wakes = new Map<string, { token: string; at: number }>()
   let status: string | undefined
   const clock = mock.clock(on)
+  const wakeHeld = (id: string): boolean => {
+    const k = wakes.get(id)
+    return k !== undefined && clock.now() - k.at < WAKE_GRACE_MS
+  }
   const session = mock.session(on)
   // Attended as the interactive CLI is, unless a test says else.
   mock.env(on, { AGENTLINK_API: API, CLAUDE_CODE_SESSION_ATTENDED: '1', ...env })
@@ -94,6 +108,8 @@ export function world(on: On, unread: Message[] = [], env: Record<string, string
     sessionId: SESSION,
     answer: new Map(),
     dropPrompts: undefined,
+    promptGate: undefined,
+    wakeHeld,
     acked: () => of('POST', '/ack').flatMap(c => c.body.ids as string[]),
     released: () => of('POST', '/release').flatMap(c => c.body.ids as string[]),
     of,
@@ -116,7 +132,8 @@ export function world(on: On, unread: Message[] = [], env: Record<string, string
     logged.push(e.text)
     return { value: undefined }
   })
-  on('prompt.submit', (_$, e) => {
+  on('prompt.submit', async (_$, e) => {
+    if (w.promptGate !== undefined) await w.promptGate
     if (w.dropPrompts !== undefined) return { drop: w.dropPrompts }
     prompts.push([e.text, ...(e.context ?? [])].join('\n'))
     return { text: e.text }
@@ -153,15 +170,19 @@ export function world(on: On, unread: Message[] = [], env: Record<string, string
     if (path === '/unread') {
       const skip = (query.skip_agents ?? '').split(',')
       const list = unread.filter(m => {
-        if (wakes.has(m.id)) return false // a wake holds it
+        if (wakeHeld(m.id)) return false // a wake holds it
         if (query.for_agent !== undefined) return m.for_agent === query.for_agent
         return m.for_agent === undefined || !skip.includes(m.for_agent)
       })
       answer = { messages: list, total: list.length }
     }
     if (path === '/claim') {
-      const granted = ids.filter(id => !w.taken.has(id) && unread.some(m => m.id === id))
-      if (typeof body.wake_token === 'string') for (const id of granted) wakes.set(id, body.wake_token)
+      const token = typeof body.wake_token === 'string' ? body.wake_token : ''
+      const granted = ids.filter(id => {
+        if (w.taken.has(id) || !unread.some(m => m.id === id)) return false
+        return !wakeHeld(id) || wakes.get(id)?.token === token
+      })
+      if (token !== '') for (const id of granted) wakes.set(id, { token, at: clock.now() })
       answer = granted
     }
     if (path === '/release') for (const id of ids) wakes.delete(id)
