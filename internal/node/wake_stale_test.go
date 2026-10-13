@@ -34,7 +34,7 @@ func newStaleQueue(t *testing.T) *staleQueue {
 }
 
 // staleQueueTTL is the registration TTL of a Codex session's hooks
-// (hookTTLCodex, cmd/agentlink): shorter than the last stale waits.
+// (hookTTLCodex, cmd/agentlink): shorter than the stale waits together.
 const staleQueueTTL = 3600
 
 func (q *staleQueue) reg(idle bool) {
@@ -153,21 +153,30 @@ func TestStaleQueueWakeReleasesNewerMessages(t *testing.T) {
 
 	// Unproven, but not stale yet: nothing more is queued.
 	early := q.send("early request")
-	q.age(queuedOwnerMax - time.Minute)
+	q.age(staleWakeWait(maxIdleWakes) - time.Minute)
 	if q.w.count() != maxIdleWakes {
 		t.Fatalf("woken before the wake was stale: %v", q.w.calls)
 	}
 
-	q.age(queuedOwnerMax + time.Second)
-	if v := leaseViewOf(t, q.a, old.ID); v.State != LeaseFailed || v.Reason != "queued_stale" {
-		t.Fatalf("stale unproven message: %+v", v)
-	}
+	// Stale: the newer message is woken for, long before the unproven one's
+	// lease fails.
+	q.age(staleWakeWait(maxIdleWakes) + time.Second)
 	text := q.lastWake()
 	if q.w.count() != maxIdleWakes+1 || !strings.Contains(text, "early request") || strings.Contains(text, "spent request") {
 		t.Fatalf("no wake of its own for the newer message: %v", q.w.calls)
 	}
 	if v := leaseViewOf(t, q.a, early.ID); v.State != LeaseLeased || v.Owner != "s-q" || v.Attempts != 1 {
 		t.Fatalf("lease of the newer message: %+v", v)
+	}
+	if v := leaseViewOf(t, q.a, old.ID); v.State != LeaseLeased {
+		t.Fatalf("the unproven message's lease ended with the stale wake: %+v", v)
+	}
+	q.age(queuedOwnerMax + time.Second)
+	if v := leaseViewOf(t, q.a, old.ID); v.State != LeaseFailed || v.Reason != "queued_stale" {
+		t.Fatalf("stale unproven message: %+v", v)
+	}
+	if q.w.count() != maxIdleWakes+1 {
+		t.Fatalf("woken with nothing new: %v", q.w.calls)
 	}
 	waitAttempts(t, q.b, old, AttemptWakeRequested, AttemptNeedsHuman)
 
@@ -443,8 +452,10 @@ func TestStaleQueueWakeCap(t *testing.T) {
 			t.Fatalf("stale wake %d: %d %+v", i+1, q.w.count(), s)
 		}
 	}
-	if d := staleWakeWait(limit - 1); d != queuedOwnerMax<<(maxStaleWakes-1) {
-		t.Fatalf("last backoff %v", d)
+	for i, want := range []time.Duration{2 * time.Minute, 15 * time.Minute, time.Hour} {
+		if d := staleWakeWait(maxIdleWakes + i); d != want {
+			t.Fatalf("stale wake %d waits %v, want %v", i+1, d, want)
+		}
 	}
 
 	waiting := q.send("request past the cap")
@@ -643,21 +654,30 @@ func TestSeatQueueWakeNotRepeated(t *testing.T) {
 func TestPinnedQueueSessionOutlivesStaleWaits(t *testing.T) {
 	q := newStaleQueue(t)
 	limit := maxIdleWakes + maxStaleWakes
-	if last := staleWakeWait(limit - 1); last <= staleQueueTTL*time.Second {
-		t.Fatalf("the last stale wait %v is inside the TTL: this test proves nothing", last)
+	total := queuedOwnerMax // wakeSpent, after the last wake
+	for wakes := maxIdleWakes; wakes < limit; wakes++ {
+		total += staleWakeWait(wakes)
 	}
+	if total <= staleQueueTTL*time.Second {
+		t.Fatalf("the stale waits (%v together) are inside the TTL: this test proves nothing", total)
+	}
+	// Its hooks fired last at start: nothing but keepPinned refreshes it since.
 	const step = 5 * time.Minute
-	var t0, due time.Time
+	start := time.Now()
+	due := start
+	q.a.sess.mu.Lock()
+	q.a.sess.sessions["s-q"].LastSeen = start
+	q.a.sess.mu.Unlock()
 	for wakes := maxIdleWakes; wakes <= limit; wakes++ {
 		wait := staleWakeWait(wakes)
 		if wakes == limit {
 			wait = queuedOwnerMax // wakeSpent
 		}
-		t0 = time.Now()
+		t0 := due
 		due = t0.Add(wait)
 		q.a.sess.mu.Lock()
 		s := q.a.sess.sessions["s-q"]
-		s.Woken, s.Wakes, s.WokeAt, s.LastSeen = true, wakes, t0, t0
+		s.Woken, s.Wakes, s.WokeAt = true, wakes, t0
 		q.a.sess.mu.Unlock()
 		for at := t0.Add(step); at.Before(due); at = at.Add(step) {
 			q.a.keepPinned(at)
@@ -671,6 +691,9 @@ func TestPinnedQueueSessionOutlivesStaleWaits(t *testing.T) {
 		if wakes < limit && !got.wakeDue(due) || wakes == limit && !got.wakeSpent(due) {
 			t.Fatalf("after %d wakes nothing is due at %v: %+v", wakes, wait, got)
 		}
+	}
+	if !due.After(start.Add(staleQueueTTL * time.Second)) {
+		t.Fatalf("the idle period ended at %v, inside the TTL", due.Sub(start))
 	}
 	// Spent: no heartbeat of the node any more.
 	for at := due; at.Before(due.Add(2 * staleQueueTTL * time.Second)); at = at.Add(step) {

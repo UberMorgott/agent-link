@@ -425,6 +425,10 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "a has 5", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 5 })
+	// Inside the wait of the first stale wake (staleWakeWait): nothing yet.
+	a.sess.mu.Lock()
+	a.sess.sessions["s-q"].WokeAt = time.Now().Add(time.Minute - staleWakeWait(maxIdleWakes))
+	a.sess.mu.Unlock()
 	a.wakeIdle(context.Background())
 	if w.count() != 2 {
 		t.Fatalf("more than %d wakes in one idle period: %d", maxIdleWakes, w.count())

@@ -92,11 +92,16 @@ const maxStaleWakes = 3
 // wake cap (Session.CapNoted); an older one may then be reported again.
 const capNotedMax = 200
 
+// staleWakeWaits are the waits before the stale wakes of one idle period, each
+// counted from the session's last wake: a newer message is tried soon, then
+// ever more rarely. They do not wait for the leases of the last wake to fail
+// (queuedOwnerMax): a stale wake carries only what no wake carried yet.
+var staleWakeWaits = [maxStaleWakes]time.Duration{2 * time.Minute, 15 * time.Minute, time.Hour}
+
 // staleWakeWait is how long a WakeQueue session's last wake of wakes so far
-// must be unproven before the next stale wake: queuedOwnerMax (its leases
-// failed by then), doubled for each stale wake before it.
+// must be unproven before the next stale wake (staleWakeWaits).
 func staleWakeWait(wakes int) time.Duration {
-	return queuedOwnerMax << min(max(wakes-maxIdleWakes, 0), maxStaleWakes)
+	return staleWakeWaits[min(max(wakes-maxIdleWakes, 0), maxStaleWakes-1)]
 }
 
 // launchTries bounds the launches of one desktop launch's messages (a new

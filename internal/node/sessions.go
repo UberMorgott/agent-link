@@ -397,7 +397,7 @@ const pinKeepEvery = time.Minute
 // and the node can wake it (WakeQueue): Codex sends no heartbeat, so an idle
 // UI thread would expire after its TTL though `codex queue` still wakes it. It
 // is a heartbeat (LastSeen), no activity. It is kept through the stale wakes
-// of its idle period (maxStaleWakes; their waits are longer than its TTL)
+// of its idle period (maxStaleWakes; together their waits outlast its TTL)
 // until every wake is spent and the last one stale (wakeSpent: wakeIdle
 // reports the cap then). A thread in a turn, or one whose wakes are spent, is
 // left to its TTL: then the launch ladder takes its messages.
