@@ -101,10 +101,14 @@ type Session struct {
 	CodexHome string `json:"codex_home,omitempty"`
 	// Woken: the node queued a wake in this idle period; Wakes of them (at
 	// most maxIdleWakes), the last at WokeAt. A wake the session never took
-	// is retried once its claim lapses (wakeIdle).
-	Woken  bool      `json:"woken,omitempty"`
-	Wakes  int       `json:"wakes,omitempty"`
-	WokeAt time.Time `json:"woke_at,omitzero"`
+	// is retried once its claim lapses (wakeIdle); a WakeQueue session is
+	// woken for newer messages after that too (maxStaleWakes). WakeCapped:
+	// every wake of the idle period is spent and the authors of what waits
+	// for the session heard needs_human (once per idle period).
+	Woken      bool      `json:"woken,omitempty"`
+	Wakes      int       `json:"wakes,omitempty"`
+	WokeAt     time.Time `json:"woke_at,omitzero"`
+	WakeCapped bool      `json:"wake_capped,omitempty"`
 	// Inbox: the node holds a usable inbox of the session (InboxSocket) and
 	// wakes it there when idle. Not persisted: the address lives in memory.
 	Inbox bool `json:"inbox,omitempty"`
@@ -532,7 +536,7 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 	// A new idle period (or none) may be woken again.
 	s.Woken = s.Woken && s.Idle && req.Idle
 	if !s.Woken {
-		s.Wakes, s.WokeAt = 0, time.Time{}
+		s.Wakes, s.WokeAt, s.WakeCapped = 0, time.Time{}, false
 	}
 	// A turn begins or ends (or the session is new): what it did is over.
 	if back || s.Idle != req.Idle {
@@ -1033,6 +1037,16 @@ func (n *Node) SessionActivity(chatID string, req ActivityRequest) (Message, err
 		r.mu.Lock()
 	} else {
 		s.LastSeen, s.LastActive = now, now
+		if s.Woken && req.AgentID == "" {
+			// It works on a request, so it took a turn since the node's last
+			// wake though no hook event said so (hooks that do not fire leave it
+			// Idle and woken for good): the wakes of that idle period are over,
+			// and what came since may wake it again.
+			s.Woken, s.Wakes, s.WokeAt, s.WakeCapped = false, 0, time.Time{}, false
+			if err := r.saveLocked(now); err != nil {
+				n.log.Warn("save sessions", "err", err)
+			}
+		}
 	}
 	prev, had := r.last[req.SessionID]
 	a := ActivityState{ID: req.ID, Type: req.Type, Text: req.Text, Phase: req.Phase, StartedAt: now, Seq: uint64(now.UnixNano()),

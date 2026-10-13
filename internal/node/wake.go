@@ -8,7 +8,13 @@ import (
 
 // Waking idle sessions. The node wakes a live session that ended its turn
 // (Idle) and has actionable unread messages to take, once per idle period
-// plus one retry of a wake it never took (maxIdleWakes):
+// plus one retry of a wake it never took (maxIdleWakes). What its own person
+// wrote to the others (OwnHuman) is no reason for a wake. A Codex thread gets
+// no message twice (its queue keeps what it accepted), and the node does not
+// depend on its hooks: the prompt in the thread's rollout acknowledges the
+// wake's messages and ends the wake count (observeQueueStart), activity it
+// reports ends it too (SessionActivity), and a wake that stays unproven lets
+// newer messages wake it later, bounded (maxStaleWakes, then needs_human).
 //
 //   - Codex (WakeQueue): it queues one prompt in the session's agent
 //     (`codex queue`, SessionWaker); the agent starts a turn with it. A session
@@ -208,6 +214,7 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		inbox inboxAddr
 	}
 	var list []due
+	var capped []Session // every wake of their idle period is spent (noteWakeCap)
 	// active: areas with a live session in a turn (its hooks deliver);
 	// cands: per area, the wakeable idle sessions, among which pickIdle picks
 	// the one a message for no session in particular wakes.
@@ -220,7 +227,13 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		}
 	}
 	for _, s := range r.sessions {
-		if !s.Idle || !s.live(now) || !s.wakeDue(now) {
+		if !s.Idle || !s.live(now) {
+			continue
+		}
+		if !s.wakeDue(now) {
+			if queue && !s.WakeCapped && s.wakeSpent(now) {
+				capped = append(capped, *s)
+			}
 			continue
 		}
 		if a, ok := r.inbox[s.SessionID]; ok && n.poster != nil {
@@ -233,24 +246,13 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		cands[s.Area] = append(cands[s.Area], *s)
 	}
 	r.mu.Unlock()
+	for _, s := range capped {
+		n.noteWakeCap(s, !active[s.Area] && len(cands[s.Area]) == 0)
+	}
 	for _, d := range list {
 		s := d.s
 		page, err := n.unreadFor(s.Folder, s.SessionID, "", hookBatchIDs, true, false, AgentFilter{Skip: s.liveAgents(time.Now())})
 		if err != nil || len(page.Messages) == 0 {
-			continue
-		}
-		// One recipient per message: the session it is routed to (its claim,
-		// assignment or chat), else, while no session of the area is in a turn,
-		// the area's idle session pickIdle picks for it.
-		mine := n.routedTo(ids(page.Messages))
-		take := page.Messages[:0:0]
-		for _, m := range page.Messages {
-			to := mine[m.ID]
-			if m.ForSeat != "" || to == s.SessionID || (to == "" && !active[s.Area] && n.pickIdle(m.ID, cands[s.Area]) == s.SessionID) {
-				take = append(take, m)
-			}
-		}
-		if len(take) == 0 {
 			continue
 		}
 		byInbox := d.inbox.socket != ""
@@ -258,10 +260,38 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		if byInbox {
 			via = ViaInbox
 		}
+		turn := time.Now()
+		// One recipient per message: the session it is routed to (its claim,
+		// assignment or chat), else, while no session of the area is in a turn,
+		// the area's idle session pickIdle picks for it. A message no wake may
+		// claim now (failed, in its backoff, another owner's) is left out before
+		// the prompt is fitted, so it never keeps the newer ones out of every
+		// wake; so is one the session's turn has from an earlier wake, one an
+		// earlier wake put into its queue (handedTo: a queue keeps its prompts,
+		// so no message is queued twice; an inbox post may be dropped and is
+		// retried), and what this node's own person wrote to the others
+		// (OwnHuman: information for the session's next event, no reason to
+		// start a turn, and no wake of the idle period is spent on it).
+		mine := n.routedTo(ids(page.Messages))
+		take := page.Messages[:0:0]
+		skipped := 0
+		for _, m := range page.Messages {
+			to := mine[m.ID]
+			if m.ForSeat == "" && to != s.SessionID && (to != "" || active[s.Area] || n.pickIdle(m.ID, cands[s.Area]) != s.SessionID) {
+				continue
+			}
+			if m.OwnHuman || (m.ForSeat == "" && (n.leases.blocked(m.ID, s.SessionID, via, turn) || n.leases.handedTo(m.ID, s.SessionID, !byInbox))) {
+				skipped++
+				continue
+			}
+			take = append(take, m)
+		}
+		if len(take) == 0 {
+			continue
+		}
 		// A message in its backoff (or failed, or another owner's) is claimed
 		// by no wake: no turn is taken, and no budget state written, for it.
 		fit := take[:FitUnread(take)]
-		turn := time.Now()
 		if !slices.ContainsFunc(fit, func(m UnreadMessage) bool {
 			return m.ForSeat != "" || !n.leases.blocked(m.ID, s.SessionID, via, turn)
 		}) {
@@ -275,7 +305,7 @@ func (n *Node) wakeIdle(ctx context.Context) {
 			n.autoRefund(turn) // nothing to wake with: no turn spent
 			continue
 		}
-		text := WakePrompt(msgs, len(take)-len(msgs)+page.Total-len(page.Messages), s.Folder, token)
+		text := WakePrompt(msgs, skipped+len(take)-len(msgs)+page.Total-len(page.Messages), s.Folder, token)
 		images := wakeImages(msgs)
 		iw, withImages := n.waker.(ImageWaker)
 		switch {
@@ -289,8 +319,6 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		if err != nil {
 			// Its hooks, another session or a launch deliver them instead.
 			n.revokeLeases(s.SessionID, ids(msgs), "wake_failed", true)
-		} else if !byInbox {
-			go n.observeQueueStart(ctx, s, token, ids(msgs))
 		}
 		r.mu.Lock()
 		if cur := r.sessions[s.SessionID]; cur != nil {
@@ -318,6 +346,10 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		}
 		n.log.Info("idle session woken", "session", s.SessionID, "provider", s.Provider, "inbox", byInbox, "messages", len(msgs), "unread", page.Total)
 		n.noteWoken(msgs)
+		if !byInbox {
+			// After the wake is counted: the proof ends that count (wakeProven).
+			go n.observeQueueStart(ctx, s, token, ids(msgs))
+		}
 	}
 }
 
@@ -359,7 +391,17 @@ func (n *Node) observeQueueStart(ctx context.Context, s Session, token string, i
 	defer tick.Stop()
 	for {
 		if rolloutContains(path, WakeMarker(token)) {
-			n.LeaseStart(s.SessionID, token, ids)
+			// The thread's rollout has the prompt: its turn started with the
+			// messages in it. That is the proof the session's hook acknowledges
+			// them on (UnreadPage.Woken), and the node acknowledges them itself:
+			// a thread whose hooks do not run (not loaded, stale) would leave
+			// them unread and their lease to lapse though it read them.
+			if got := n.LeaseStart(s.SessionID, token, ids); len(got) > 0 {
+				if _, err := n.Ack("", AckRequest{IDs: got, SessionID: s.SessionID}); err != nil {
+					n.log.Warn("acknowledge a proven queued wake", "session", s.SessionID, "err", err)
+				}
+			}
+			n.wakeProven(s.SessionID)
 			return
 		}
 		select {
@@ -370,6 +412,31 @@ func (n *Node) observeQueueStart(ctx context.Context, s Session, token string, i
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// wakeProven ends the wake count of session's idle period on proof that it
+// took a wake (its rollout shows the queued turn): it is in a turn, whether
+// or not a hook event says so. A session whose hooks do not fire stays Idle
+// for the node; without this it would stay woken, its wakes spent, for as
+// long as it is registered, and nothing would wake it for a later message.
+// The messages of the proven wake are its turn's (leaseBook.handedTo): no
+// later wake carries them.
+func (n *Node) wakeProven(session string) {
+	r := n.sess
+	now := time.Now()
+	r.mu.Lock()
+	s := r.sessions[session]
+	ok := s != nil && s.Woken
+	if ok {
+		s.Woken, s.Wakes, s.WokeAt, s.WakeCapped = false, 0, time.Time{}, false
+		if err := r.saveLocked(now); err != nil {
+			n.log.Warn("save sessions", "err", err)
+		}
+	}
+	r.mu.Unlock()
+	if ok {
+		n.changed("sessions")
 	}
 }
 
@@ -386,11 +453,71 @@ func (n *Node) queueLeaseActive(owner, token string, ids []string) bool {
 // wakeDue reports whether the node may wake the idle session now: not woken
 // in this idle period yet, or its last wake lapsed untaken (a session that
 // took it left the idle period) and a retry is left.
+//
+// A WakeQueue session has no waiter and, with its app closed, no hook event
+// that would end the idle period: past maxIdleWakes it is woken again once
+// its last wake stayed unproven for staleWakeWait (as every queue wake, for
+// messages no wake of it carried yet), maxStaleWakes times.
 func (s Session) wakeDue(now time.Time) bool {
-	if !s.Woken {
+	switch {
+	case !s.Woken:
 		return true
+	case s.Wakes < maxIdleWakes:
+		return now.Sub(s.WokeAt) >= inboxWakeGrace
+	case s.Wake == WakeQueue && s.Wakes < maxIdleWakes+maxStaleWakes:
+		return now.Sub(s.WokeAt) >= staleWakeWait(s.Wakes)
 	}
-	return s.Wakes < maxIdleWakes && now.Sub(s.WokeAt) >= inboxWakeGrace
+	return false
+}
+
+// wakeSpent reports whether a WakeQueue session used up every wake of its
+// idle period and the last one stayed unproven for queuedOwnerMax.
+func (s Session) wakeSpent(now time.Time) bool {
+	return s.Woken && s.Wake == WakeQueue && s.Wakes >= maxIdleWakes+maxStaleWakes && now.Sub(s.WokeAt) >= queuedOwnerMax
+}
+
+// noteWakeCap tells the authors of the messages that wait for session s,
+// whose wakes of this idle period are spent (wakeSpent), that a person is
+// needed: once per idle period (Session.WakeCapped, saved, so a restart does
+// not repeat it). The messages stay unread for the session's next event.
+//
+// alone: no session of its area is in a turn or can be woken, so a message
+// for no session in particular waits for it too.
+func (n *Node) noteWakeCap(s Session, alone bool) {
+	page, err := n.unreadFor(s.Folder, s.SessionID, "", hookBatchIDs, true, false, AgentFilter{Skip: s.liveAgents(time.Now())})
+	if err != nil || len(page.Messages) == 0 {
+		return
+	}
+	mine := n.routedTo(ids(page.Messages))
+	now := time.Now()
+	var list []string
+	for _, m := range page.Messages {
+		to := mine[m.ID]
+		if m.ForSeat == "" && !m.OwnHuman && (to == s.SessionID || (to == "" && alone)) &&
+			!n.leases.blocked(m.ID, s.SessionID, ViaQueue, now) && !n.leases.handedTo(m.ID, s.SessionID, true) {
+			list = append(list, m.ID)
+		}
+	}
+	if len(list) == 0 {
+		return
+	}
+	r := n.sess
+	r.mu.Lock()
+	cur := r.sessions[s.SessionID]
+	first := cur != nil && cur.Woken && !cur.WakeCapped
+	if first {
+		cur.WakeCapped = true
+		if err := r.saveLocked(now); err != nil {
+			n.log.Warn("save sessions", "err", err)
+		}
+	}
+	r.mu.Unlock()
+	if !first {
+		return
+	}
+	n.log.Warn("an idle session took none of its wakes; a person decides", "session", s.SessionID, "provider", s.Provider, "wakes", s.Wakes, "messages", len(list))
+	n.report(list, AttemptNeedsHuman)
+	n.changed("sessions")
 }
 
 // hookBatchIDs bounds the unread messages one wake looks at.

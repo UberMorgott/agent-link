@@ -128,6 +128,30 @@ func (b *leaseBook) queuedOwner(id string) string {
 	return ""
 }
 
+// handedTo reports whether a wake put message key into owner's queue or inbox
+// and a new wake of owner must not carry it again: owner's turn has it
+// (running), or had it and never acknowledged it (running until its deadline:
+// retry, "deadline"; owner's hooks, another session or a launch take it); and,
+// when the channel keeps what it accepted (unproven: a queue), one still
+// leased or failed unproven (queued_stale).
+func (b *leaseBook) handedTo(key, owner string, unproven bool) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	l := b.m[key]
+	if l == nil || l.Owner != owner || !contentVia(l.Via) {
+		return false
+	}
+	switch l.State {
+	case LeaseRunning:
+		return true
+	case LeaseRetry:
+		return l.Reason == "deadline"
+	case LeaseLeased, LeaseFailed:
+		return unproven
+	}
+	return false
+}
+
 // leaseBackoff is the retry delay after attempts automatic leases.
 func leaseBackoff(attempts int) time.Duration {
 	d := leaseBackoffMin

@@ -72,10 +72,28 @@ const waiterWakeKeep = 24 * time.Hour
 
 // maxIdleWakes bounds the node's wakes of one idle period: the first, and one
 // retry after it lapsed untaken (inboxWakeGrace; its claim lapses with it and
-// the messages are unread again). A lapsed wake also frees the session's
+// the messages are unread again; an inbox post is retried with them, a queue
+// wake carries only what the queue does not hold). A lapsed wake also frees the session's
 // waiter (Claude, InboxWakes); a message goes to one of them only (claims).
 // After that the waiter or the session's next event takes them.
 const maxIdleWakes = 2
+
+// maxStaleWakes bounds the further wakes of one idle period of a WakeQueue
+// session (Codex: no waiter wakes it, and a closed app sends no hook event
+// that would end the idle period): once the last wake stayed unproven for
+// staleWakeWait, the session is woken again, for messages no wake of it
+// carried yet only. An unproven prompt itself is never queued again
+// (queued_stale). After maxIdleWakes+maxStaleWakes wakes nothing wakes the
+// session in this idle period any more, and the authors of what waits for it
+// then hear needs_human, once (Session.WakeCapped).
+const maxStaleWakes = 3
+
+// staleWakeWait is how long a WakeQueue session's last wake of wakes so far
+// must be unproven before the next stale wake: queuedOwnerMax (its leases
+// failed by then), doubled for each stale wake before it.
+func staleWakeWait(wakes int) time.Duration {
+	return queuedOwnerMax << min(max(wakes-maxIdleWakes, 0), maxStaleWakes)
+}
 
 // launchTries bounds the launches of one desktop launch's messages (a new
 // session each; launch.go).

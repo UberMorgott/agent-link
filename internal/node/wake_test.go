@@ -397,10 +397,12 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 	if page, _ := a.UnreadFor(dir, "s-q", "", 10); page.Total != 4 || len(page.Woken) != 2 {
 		t.Fatalf("after the lapse: %+v", page)
 	}
-	// Still idle, never took it: one retry in this idle period, then no more.
+	// Still idle, never took it: one more wake in this idle period, for the
+	// messages its queue does not hold yet (none is queued twice), then no more.
 	a.wakeIdle(context.Background())
-	if w.count() != 2 || !strings.Contains(w.calls[1], "m0 ") {
-		t.Fatalf("no retry after the lapse: %v", w.calls)
+	if w.count() != 2 || !strings.Contains(w.calls[1], "m2 ") || !strings.Contains(w.calls[1], "m3 ") ||
+		strings.Contains(w.calls[1], "m0 ") || strings.Contains(w.calls[1], "m1 ") {
+		t.Fatalf("no second wake after the lapse: %v", w.calls)
 	}
 	a.wakeIdle(context.Background())
 	lapse()
@@ -409,14 +411,22 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 	if w.count() != 2 {
 		t.Fatalf("more than %d wakes in one idle period: %d", maxIdleWakes, w.count())
 	}
-	// A new idle period may be woken again.
+	// A new idle period may be woken again, for what its queue does not hold.
+	if _, err := b.SendRequest(SendRequest{To: "a", Body: "m4 " + long, AuthorKind: AuthorAgent}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a has 5", func() bool { p, _ := a.Unread("", "", 10); return p.Total == 5 })
+	a.wakeIdle(context.Background())
+	if w.count() != 2 {
+		t.Fatalf("more than %d wakes in one idle period: %d", maxIdleWakes, w.count())
+	}
 	for _, idle := range []bool{false, true} {
 		if _, err := a.RegisterSession(SessionRequest{SessionID: "s-q", Provider: "codex", Folder: dir, Wake: WakeQueue, Idle: idle}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	a.wakeIdle(context.Background())
-	if w.count() != 3 {
+	if w.count() != 3 || !strings.Contains(w.calls[2], "m4 ") || strings.Contains(w.calls[2], "m0 ") {
 		t.Fatalf("new idle period not woken: %d", w.count())
 	}
 }
