@@ -136,6 +136,8 @@ type rolloutSeen struct {
 	found time.Time // when path was looked up
 	off   int64     // read up to here
 	turn  rolloutTurn
+	// settled is the turn end a queued prompt's wait was given for (settle).
+	settled time.Time
 }
 
 // turn is the turn of thread sid of the Codex home home; false when its
@@ -188,27 +190,61 @@ func (b *rolloutBook) turn(home, sid string, now time.Time) (rolloutTurn, bool) 
 	return e.turn, true
 }
 
+// settle reports whether a prompt of the node queued at woke still waits for
+// the turn end at end to be taken: only the first end after woke is waited
+// for, so a thread that keeps ending turns holds a newer message's wake once.
+func (b *rolloutBook) settle(home, sid string, woke, end time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	e := b.m[home+"\x00"+sid]
+	if e == nil || (e.settled.After(woke) && !e.settled.Equal(end)) {
+		return false
+	}
+	e.settled = end
+	return true
+}
+
+// codexHomeOf is the Codex home of session s.
+func codexHomeOf(s Session) string {
+	if s.CodexHome != "" {
+		return s.CodexHome
+	}
+	return agentHome("CODEX_HOME", ".codex")
+}
+
+// turnRunning reports whether the rollout of s shows a turn running now (a
+// start, no end, written to within rolloutTurnQuiet), and when the rollout was
+// last written to.
+func (n *Node) turnRunning(s Session, now time.Time) (time.Time, bool) {
+	t, ok := n.rollouts.turn(codexHomeOf(s), s.SessionID, now)
+	if !ok || t.state != turnRunning || now.Sub(t.mod) >= rolloutTurnQuiet {
+		return time.Time{}, false
+	}
+	return t.mod, true
+}
+
 // queueHeld reports whether no prompt may be queued in WakeQueue session s
-// now, by its thread's rollout:
+// now, by its thread's rollout (held), and whether that is for a running turn
+// (busy: the authors hear held:busy_turn, noteBusyTurn):
 //
 //   - it is in a turn the hooks did not report: the turn started after the
 //     last hook event that said idle (Session.IdleAt; a fresh hook wins) and
 //     its rollout was written to within rolloutTurnQuiet. Its messages wait
 //     for the turn's end, and one wake then carries them all;
 //   - a prompt of the node is still in its queue (Woken, unproven) and a turn
-//     ended after it was queued: the thread runs that prompt next, so the
-//     waits before another wake (wakeDue) count from that end, not from the
-//     wake. A thread that stays silent after it gets the stale wakes as ever.
+//     ended after it was queued: the thread runs that prompt next, so a wake
+//     for a newer message waits inboxWakeGrace from that end for its proof.
+//     Only the first end after the wake is waited for (rolloutBook.settle):
+//     past it the waits of wakeDue alone count, so a thread that ends turn
+//     after turn and never runs the prompt holds no wake for longer than
+//     wakeDue plus one inboxWakeGrace, and its stale wakes run out as ever.
 //
 // No rollout, or nothing in it that says so: false (the session is woken).
-func (n *Node) queueHeld(s Session, now time.Time) bool {
-	home := s.CodexHome
-	if home == "" {
-		home = agentHome("CODEX_HOME", ".codex")
-	}
+func (n *Node) queueHeld(s Session, now time.Time) (held, busy bool) {
+	home := codexHomeOf(s)
 	t, ok := n.rollouts.turn(home, s.SessionID, now)
 	if !ok {
-		return false
+		return false, false
 	}
 	switch t.state {
 	case turnRunning:
@@ -216,12 +252,12 @@ func (n *Node) queueHeld(s Session, now time.Time) bool {
 		if idleAt.IsZero() {
 			idleAt = s.LastActive // a record from before IdleAt
 		}
-		return t.at.After(idleAt) && now.Sub(t.mod) < rolloutTurnQuiet
+		busy = t.at.After(idleAt) && now.Sub(t.mod) < rolloutTurnQuiet
+		return busy, busy
 	case turnEnded:
-		if s.Woken && t.at.After(s.WokeAt) {
-			s.WokeAt = t.at
-			return !s.wakeDue(now)
+		if s.Woken && t.at.After(s.WokeAt) && now.Sub(t.at) < inboxWakeGrace {
+			return n.rollouts.settle(home, s.SessionID, s.WokeAt, t.at), false
 		}
 	}
-	return false
+	return false, false
 }

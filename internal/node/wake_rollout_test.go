@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,19 @@ func TestRolloutTurnHoldsQueueWake(t *testing.T) {
 			if q.w.count() != 0 {
 				t.Fatalf("queued behind a running turn after a wait: %v", q.w.calls)
 			}
+			// Their authors hear why they wait, once, also after a restart (the
+			// node's own memory of what it reported is gone, the session's is not).
+			for _, m := range sent {
+				waitAttempts(t, q.b, m, AttemptHeld+":"+HoldBusyTurn)
+			}
+			var saved []Session
+			if err := readJSON(q.a.sess.path, &saved); err != nil || len(saved) != 1 || len(saved[0].HeldNoted) != len(sent) {
+				t.Fatalf("the notice is not saved: %v %+v", err, saved)
+			}
+			q.a.deliv.mu.Lock()
+			clear(q.a.deliv.sent)
+			q.a.deliv.mu.Unlock()
+			q.pass()
 			q.wrote(path, turnLine(end, time.Now().Add(2*time.Second)))
 			q.pass()
 			text := q.lastWake()
@@ -81,6 +95,7 @@ func TestRolloutTurnHoldsQueueWake(t *testing.T) {
 				if v := leaseViewOf(t, q.a, sent[i].ID); v.State != LeaseLeased || v.Owner != "s-q" || v.Via != ViaQueue || v.Attempts != 1 {
 					t.Fatalf("lease of %q: %+v", body, v)
 				}
+				waitAttempts(t, q.b, sent[i], AttemptHeld+":"+HoldBusyTurn, AttemptWakeRequested)
 			}
 			q.pass()
 			if q.w.count() != 1 {
@@ -106,6 +121,141 @@ func TestQueuedPromptHoldsNextWake(t *testing.T) {
 	q.age(5 * time.Minute) // the wake is older than its grace, the turn's end is not
 	if q.w.count() != 1 {
 		t.Fatalf("a second prompt beside the unconsumed one: %v", q.w.calls)
+	}
+}
+
+// A thread that ends turn after turn and never runs the pending prompt holds
+// the wake of a newer message for one turn end only: the wake comes after the
+// waits of wakeDue and one grace, however many turns end meanwhile.
+func TestTurnEndsDoNotStarveNewerMessage(t *testing.T) {
+	q := newStaleQueue(t)
+	path := q.rollout("")
+	q.send("request the prompt carries")
+	q.pass()
+	if q.w.count() != 1 {
+		t.Fatalf("first wake: %v", q.w.calls)
+	}
+	q.send("request behind the prompt")
+	q.wrote(path, turnLine("task_complete", time.Now().Add(-90*time.Second)))
+	q.age(3 * time.Minute) // the first end after the wake: its grace is waited for
+	if q.w.count() != 1 {
+		t.Fatalf("a second prompt inside the grace of the turn's end: %v", q.w.calls)
+	}
+	q.wrote(path, turnLine("task_complete", time.Now().Add(-90*time.Second)))
+	q.age(3 * time.Minute) // a later end holds nothing
+	if s := q.session(); q.w.count() != 2 || s.Wakes != 2 || q.wakesWith("request behind the prompt") != 1 {
+		t.Fatalf("the newer message waits behind a second turn end: %v %+v", q.w.calls, s)
+	}
+	// The wakes of a thread that goes on like that run out as a silent one's.
+	limit := maxIdleWakes + maxStaleWakes
+	for i := 2; i < limit; i++ {
+		q.send(fmt.Sprintf("later request %d", i))
+		for range 3 {
+			q.wrote(path, turnLine("task_complete", time.Now().Add(-90*time.Second)))
+			q.age(staleWakeWait(i) + time.Second)
+		}
+		if s := q.session(); q.w.count() != i+1 || s.Wakes != i+1 {
+			t.Fatalf("wake %d of the thread: %d %+v", i+1, q.w.count(), s)
+		}
+	}
+}
+
+// A prompt queued behind a turn the hooks do not report is no silent session's:
+// while the rollout shows that turn running its lease stays, and it fails
+// (queued_stale) only queuedOwnerMax after the thread fell silent.
+func TestQueuedPromptBehindLiveTurnIsNotStale(t *testing.T) {
+	q := newStaleQueue(t)
+	path := q.rollout("")
+	m := q.send("request the prompt carries")
+	q.pass()
+	q.wrote(path, turnLine("task_started", time.Now().Add(time.Second)))
+	q.age(queuedOwnerMax + time.Second)
+	if v := leaseViewOf(t, q.a, m.ID); v.State != LeaseLeased {
+		t.Fatalf("lease behind a running turn: %+v", v)
+	}
+	old := time.Now().Add(-rolloutTurnQuiet - time.Minute)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	q.age(queuedOwnerMax + time.Second)
+	if v := leaseViewOf(t, q.a, m.ID); v.State != LeaseFailed || v.Reason != "queued_stale" {
+		t.Fatalf("lease of a thread silent inside its turn: %+v", v)
+	}
+}
+
+// A prompt whose lease failed unproven still starts once the thread gets to
+// it: while the rollout shows a turn, the wake is observed again, and its
+// prompt in the rollout starts and acknowledges its message.
+func TestLateStartOfStalePromptIsProven(t *testing.T) {
+	q := newStaleQueue(t)
+	path := q.rollout("")
+	m := q.send("request the prompt carries")
+	q.pass()
+	q.age(queuedOwnerMax + time.Second)
+	l, _ := q.a.leases.get(m.ID)
+	if l.State != LeaseFailed || l.Reason != "queued_stale" || l.Token == "" {
+		t.Fatalf("lease of the silent thread: %+v", l)
+	}
+	s := q.session()
+	if q.a.queueLateStart(s, l.Token, []string{m.ID}, time.Now()) {
+		t.Fatal("a late start expected of a thread in no turn")
+	}
+	q.wrote(path, turnLine("task_started", time.Now())+WakeMarker(l.Token)+"\n")
+	if !q.a.queueLateStart(s, l.Token, []string{m.ID}, time.Now()) {
+		t.Fatal("no late start expected of a thread in a turn")
+	}
+	q.a.observeLateStarts(t.Context(), time.Now())
+	eventually(t, "the late start acknowledged", func() bool {
+		got, _ := q.a.leases.get(m.ID)
+		p, _ := q.a.Unread("", "", 100)
+		return got.State == LeaseAcked && !slices.ContainsFunc(p.Messages, func(u UnreadMessage) bool { return u.ID == m.ID })
+	})
+	// The proof ends the wake count, and the observer with it.
+	eventually(t, "the observer ended", func() bool {
+		_, on := q.a.observed.Load("s-q\x00" + l.Token)
+		return !on && !q.session().Woken
+	})
+}
+
+// Only a hook event that says idle moves IdleAt: after a heartbeat and an
+// activity report later than the turn's start (which move LastSeen and
+// LastActive), the turn is still one the hooks did not report.
+func TestIdleAtIsTheLastIdleHookEvent(t *testing.T) {
+	q := newStaleQueue(t)
+	idleAt := q.session().IdleAt
+	if idleAt.IsZero() {
+		t.Fatal("no IdleAt after an idle registration")
+	}
+	m := q.send("request during the turn")
+	start := idleAt.Add(5 * time.Millisecond)
+	q.rollout(turnLine("task_started", start))
+	for !time.Now().After(start.Add(5 * time.Millisecond)) {
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := q.a.RegisterSession(SessionRequest{SessionID: "s-q", Provider: ProviderCodex, Folder: q.dir, Wake: WakeQueue,
+		Idle: true, Heartbeat: true, CodexHome: q.home, TTLSec: staleQueueTTL}); err != nil {
+		t.Fatal(err)
+	}
+	if s := q.session(); !s.IdleAt.Equal(idleAt) || !s.LastSeen.After(start) || s.LastActive.After(start) {
+		t.Fatalf("after a heartbeat: %+v", s)
+	}
+	if _, err := q.a.SessionActivity(m.ChatID, ActivityRequest{SessionID: "s-q", Type: "edit", Text: "Edit schema.sql"}); err != nil {
+		t.Fatal(err)
+	}
+	if s := q.session(); !s.IdleAt.Equal(idleAt) || !s.LastActive.After(start) || !s.Idle {
+		t.Fatalf("after an activity report inside the turn: %+v", s)
+	}
+	q.pass()
+	if q.w.count() != 0 {
+		t.Fatalf("queued behind a running turn: %v", q.w.calls)
+	}
+	q.reg(true) // its Stop hook
+	if s := q.session(); !s.IdleAt.After(start) {
+		t.Fatalf("after an idle hook event: %+v", s)
+	}
+	q.pass()
+	if q.w.count() != 1 {
+		t.Fatalf("not woken after its hook said idle: %v", q.w.calls)
 	}
 }
 
@@ -247,6 +397,24 @@ func TestRolloutBookContinues(t *testing.T) {
 	q.wrote(path, turnLine("token_count", at.Add(2*time.Minute))+turnLine("task_started", at.Add(3*time.Minute)))
 	if got, ok := b.turn(q.home, "s-q", now); !ok || got.state != turnRunning || !got.at.Equal(at.Add(3*time.Minute)) {
 		t.Fatalf("next start: %+v %v", got, ok)
+	}
+	// A start with no end before it (the turn before was killed): the newer one.
+	q.wrote(path, turnLine("task_started", at.Add(4*time.Minute)))
+	if got, ok := b.turn(q.home, "s-q", now); !ok || got.state != turnRunning || !got.at.Equal(at.Add(4*time.Minute)) {
+		t.Fatalf("start after a start: %+v %v", got, ok)
+	}
+	// A shorter file is not the one that was read: it is read from its start.
+	if err := os.WriteFile(path, []byte(turnLine("task_complete", at.Add(5*time.Minute))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := b.turn(q.home, "s-q", now); !ok || got.state != turnEnded || !got.at.Equal(at.Add(5*time.Minute)) {
+		t.Fatalf("a truncated rollout: %+v %v", got, ok)
+	}
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := b.turn(q.home, "s-q", now); !ok || got.state != turnNone {
+		t.Fatalf("a truncated rollout with no turn record keeps the old turn: %+v %v", got, ok)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)

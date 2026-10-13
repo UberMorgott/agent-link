@@ -125,6 +125,10 @@ type Session struct {
 	WokeAt     time.Time `json:"woke_at,omitzero"`
 	WakeCapped bool      `json:"wake_capped,omitempty"`
 	CapNoted   []string  `json:"cap_noted,omitempty"`
+	// HeldNoted: the messages whose authors heard held:busy_turn, as they wait
+	// for the session behind a turn its rollout shows (noteBusyTurn): once per
+	// message, at most capNotedMax ids.
+	HeldNoted []string `json:"held_noted,omitempty"`
 	// Inbox: the node holds a usable inbox of the session (InboxSocket) and
 	// wakes it there when idle. Not persisted: the address lives in memory.
 	Inbox bool `json:"inbox,omitempty"`

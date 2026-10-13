@@ -18,7 +18,8 @@ import (
 // Nor does it take such a thread for idle on its hooks' word alone: while its
 // rollout shows a turn running, or a queued prompt of the node about to run,
 // it queues nothing (queueHeld, rollout_turn.go), and the messages that came
-// meanwhile go into one wake after the turn.
+// meanwhile go into one wake after the turn; their authors hear why they wait
+// (held:busy_turn, noteBusyTurn).
 //
 //   - Codex (WakeQueue): it queues one prompt in the session's agent
 //     (`codex queue`, SessionWaker); the agent starts a turn with it. A session
@@ -101,6 +102,9 @@ func (n *Node) wakeLoop(ctx context.Context) {
 			n.keepPinned(time.Now())
 		}
 		n.leaseSweep(time.Now())
+		if n.waker != nil {
+			n.observeLateStarts(ctx, time.Now())
+		}
 		n.sess.noteAwake(time.Now())
 		if now := time.Now(); n.orphanDue.Swap(false) || now.Sub(n.orphanSwept) >= orphanSweepEvery {
 			n.orphanSwept = now
@@ -300,8 +304,14 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		// A thread its rollout shows in a turn, or about to run a prompt of the
 		// node still in its queue, gets no prompt now: what waits for it goes
 		// into one wake after the turn.
-		if !byInbox && n.queueHeld(s, turn) {
-			continue
+		// The authors hear of the running turn (held:busy_turn).
+		if !byInbox {
+			if held, busy := n.queueHeld(s, turn); held {
+				if busy {
+					n.noteBusyTurn(s, take)
+				}
+				continue
+			}
 		}
 		// A message in its backoff (or failed, or another owner's) is claimed
 		// by no wake.
@@ -390,12 +400,54 @@ func (n *Node) pickIdle(id string, cands []Session) string {
 	return best.SessionID
 }
 
-func (n *Node) observeQueueStart(ctx context.Context, s Session, token string, ids []string) {
-	home := s.CodexHome
-	if home == "" {
-		home = agentHome("CODEX_HOME", ".codex")
+// noteBusyTurn tells the authors of msgs, which wait for session s behind a
+// turn its rollout shows running (queueHeld), why nothing wakes it for them:
+// held:busy_turn, once per message (Session.HeldNoted, saved, so a restart
+// does not repeat it). Their wake follows the turn's end.
+func (n *Node) noteBusyTurn(s Session, msgs []UnreadMessage) {
+	r := n.sess
+	now := time.Now()
+	var fresh []string
+	r.mu.Lock()
+	if cur := r.sessions[s.SessionID]; cur != nil {
+		for _, m := range msgs {
+			if m.ForSeat == "" && !slices.Contains(cur.HeldNoted, m.ID) {
+				fresh = append(fresh, m.ID)
+			}
+		}
+		if len(fresh) > 0 {
+			cur.HeldNoted = append(cur.HeldNoted, fresh...)
+			if over := len(cur.HeldNoted) - capNotedMax; over > 0 {
+				cur.HeldNoted = slices.Clone(cur.HeldNoted[over:])
+			}
+			if err := r.saveLocked(now); err != nil {
+				n.log.Warn("save sessions", "err", err)
+			}
+		}
 	}
-	path := codexRollout(home, s.SessionID)
+	r.mu.Unlock()
+	if len(fresh) == 0 {
+		return
+	}
+	n.log.Info("messages wait behind a running turn of an idle session", "session", s.SessionID, "provider", s.Provider, "messages", len(fresh))
+	n.report(fresh, AttemptHeld+":"+HoldBusyTurn)
+	n.changed("sessions")
+}
+
+// observeQueueStart watches the rollout of session s for the prompt of the
+// queue wake token (one observer per wake, Node.observed) and, once it is
+// there, starts and acknowledges the wake's messages ids. It ends when no
+// lease of the wake is open any more, unless one failed unproven
+// (queued_stale) while the thread is in a turn: the prompt waits behind that
+// turn, and its late start is still proven (observeLateStarts runs it again
+// for a turn that begins later).
+func (n *Node) observeQueueStart(ctx context.Context, s Session, token string, ids []string) {
+	key := s.SessionID + "\x00" + token
+	if _, dup := n.observed.LoadOrStore(key, struct{}{}); dup {
+		return
+	}
+	defer n.observed.Delete(key)
+	path := codexRollout(codexHomeOf(s), s.SessionID)
 	if path == "" {
 		n.log.Warn("queued Codex turn has no rollout to observe", "session", s.SessionID)
 		return // missing proof is not evidence that the queued prompt was dropped
@@ -419,7 +471,7 @@ func (n *Node) observeQueueStart(ctx context.Context, s Session, token string, i
 		}
 		select {
 		case <-tick.C:
-			if !n.queueLeaseActive(s.SessionID, token, ids) {
+			if !n.queueLeaseActive(s.SessionID, token, ids) && !n.queueLateStart(s, token, ids, time.Now()) {
 				return
 			}
 		case <-ctx.Done():
@@ -456,6 +508,66 @@ func (n *Node) resumeQueueObservers(ctx context.Context) {
 		go n.observeQueueStart(ctx, s, w.token, list)
 	}
 	n.log.Info("queued wakes observed again", "wakes", len(byWake))
+}
+
+// queueLateStart reports whether the prompt of the queue wake token, whose
+// leases of ids failed unproven (queued_stale), may still start: the thread
+// of s is in a turn by its rollout.
+func (n *Node) queueLateStart(s Session, token string, ids []string, now time.Time) bool {
+	stale := false
+	for _, id := range ids {
+		l, ok := n.leases.get(id)
+		if ok && l.Owner == s.SessionID && l.Token == token && l.State == LeaseFailed && l.Reason == "queued_stale" {
+			stale = true
+			break
+		}
+	}
+	if !stale {
+		return false
+	}
+	_, running := n.turnRunning(s, now)
+	return running
+}
+
+// observeLateStarts watches the rollouts of the queue wakes that failed
+// unproven (queued_stale) again while their thread is in a turn by its
+// rollout: the prompt is still in the thread's queue and runs after that
+// turn, or is the turn, and nothing else would prove and acknowledge it where
+// the thread's hooks do not fire.
+func (n *Node) observeLateStarts(ctx context.Context, now time.Time) {
+	type wake struct{ owner, token string }
+	byWake := map[wake][]string{}
+	for _, l := range n.leases.all() {
+		if l.State == LeaseFailed && l.Reason == "queued_stale" && l.Via == ViaQueue && l.Token != "" && sessionOwner(l.Owner) {
+			w := wake{l.Owner, l.Token}
+			byWake[w] = append(byWake[w], l.ID)
+		}
+	}
+	running := map[string]bool{} // by owner: one rollout read each
+	r := n.sess
+	for w, list := range byWake {
+		if _, on := n.observed.Load(w.owner + "\x00" + w.token); on {
+			continue
+		}
+		r.mu.Lock()
+		cur := r.sessions[w.owner]
+		var s Session
+		if cur != nil {
+			s = *cur
+		}
+		r.mu.Unlock()
+		if cur == nil || !s.live(now) {
+			continue
+		}
+		on, seen := running[w.owner]
+		if !seen {
+			_, on = n.turnRunning(s, now)
+			running[w.owner] = on
+		}
+		if on {
+			go n.observeQueueStart(ctx, s, w.token, list)
+		}
+	}
 }
 
 // wakeProven ends the wake count of session's idle period on proof that it

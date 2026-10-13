@@ -136,13 +136,46 @@ const seatOwnerPrefix = "seat:"
 // seatOwner is the lease owner of seat's turns.
 func seatOwner(seat string) string { return seatOwnerPrefix + seat }
 
+// queuedTurns moves active (when each session was last active, activeAts) on
+// to the last write of its rollout for every owner of a queued wake
+// (leased, ViaQueue) whose thread is in a turn by its rollout (turnRunning):
+// a thread whose hooks are silent is no silent session while it works, and
+// the prompt queued behind that turn runs after it (queued_stale counts from
+// then).
+func (n *Node) queuedTurns(active map[string]time.Time, now time.Time) {
+	owners := map[string]bool{}
+	for _, l := range n.leases.all() {
+		if l.State == LeaseLeased && l.Via == ViaQueue && sessionOwner(l.Owner) {
+			owners[l.Owner] = true
+		}
+	}
+	r := n.sess
+	for id := range owners {
+		r.mu.Lock()
+		cur := r.sessions[id]
+		var s Session
+		if cur != nil {
+			s = *cur
+		}
+		r.mu.Unlock()
+		if cur == nil {
+			continue
+		}
+		if mod, ok := n.turnRunning(s, now); ok && mod.After(active[id]) {
+			active[id] = mod
+		}
+	}
+}
+
 // leaseSweep ends the leases that lost their owner (a session that is not
 // live any more) or passed their deadline without proof, fails the ones whose
 // session stayed silent on a queued wake for queuedOwnerMax (queued_stale: a
-// person decides), saves what is not saved and prunes the book.
+// person decides; a turn its rollout shows running is no silence,
+// queuedTurns), saves what is not saved and prunes the book.
 func (n *Node) leaseSweep(now time.Time) {
 	live := n.sess.liveIDs(now)
 	active := n.sess.activeAts()
+	n.queuedTurns(active, now) // before due: no rollout is read under the book's lock
 	// A desktop launch's session runs its first turn headless: not registered
 	// (yet), it is not gone (runDirect ends its leases).
 	n.deliv.mu.Lock()

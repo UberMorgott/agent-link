@@ -555,7 +555,8 @@ type leaseEnd struct {
 // due lists the leases that must end now: past their deadline, owned by a
 // session that is not live (gone(owner) true), or queued in a session that
 // did nothing for queuedOwnerMax since the lease or its last activity
-// (active(owner)).
+// (active(owner): its last hook event, or the last write of its rollout
+// inside a turn, leaseSweep).
 func (b *leaseBook) due(now time.Time, gone func(owner string) bool, active func(owner string) time.Time) []leaseEnd {
 	b.mu.Lock()
 	defer b.mu.Unlock()

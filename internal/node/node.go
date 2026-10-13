@@ -105,6 +105,7 @@ type Node struct {
 	// wakePoll); nil: none.
 	waker     SessionWaker
 	rollouts  rolloutBook // the turns of WakeQueue threads (queueHeld)
+	observed  sync.Map    // the queue wakes being observed, by owner and token (observeQueueStart)
 	wakeEvery time.Duration
 	// dormantEvery (0: wakeDormant) is the wake loop's period while the node
 	// is dormant; wakeKick (Node.changed) ends that wait at once; wakeTicks

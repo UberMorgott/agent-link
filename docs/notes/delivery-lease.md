@@ -59,10 +59,16 @@ Rules:
   `event_msg` records `task_started` / `task_complete` / `turn_aborted`). A
   start newer than the last hook event that said idle (`Session.IdleAt`), in
   a rollout written to within `rolloutTurnQuiet` (10 min), holds the wake; the
-  messages of the turn go into one wake at its end. A turn that ended after an
-  unproven prompt was queued restarts that prompt's waits (`wakeDue`) from the
-  end. No rollout or no such record: woken as before. `queued_stale` does not
-  read the rollout.
+  messages of the turn go into one wake at its end, and their authors hear
+  `held:busy_turn` meanwhile (once per message, `Session.HeldNoted`). The
+  first turn end after an unproven prompt was queued holds the next wake for
+  `inboxWakeGrace` from that end (the thread runs the prompt next); later ends
+  hold nothing, so the hold is bounded by `wakeDue` plus one grace. No rollout
+  or no such record: woken as before. `queued_stale` counts a running turn
+  (rollout written to within `rolloutTurnQuiet`) as the owner's activity
+  (`queuedTurns`), and a prompt that failed `queued_stale` is observed again
+  while the thread is in a turn (`observeLateStarts`): its late start is
+  proven and acknowledged.
 - `failed` is terminal for automatic paths (`Lease.Failed`): a hook may still
   show the message to a live session, and its lapse returns to `failed`.
 - `hook` leases (a session in a turn claiming) do not count as attempts and

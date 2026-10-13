@@ -416,6 +416,7 @@ var uiStrings = map[string]string{ //nolint:gosec // G101: UI sentences; keys li
 	"inbox.attempt.held.stopped":      "агенты остановлены — сообщение ждёт, пока их включат",
 	"inbox.attempt.held.autonomy_off": "живой сессии нет, автономия выключена — сообщение ждёт человека",
 	"inbox.attempt.held.next_event":   "сессия простаивает и её нельзя разбудить — прочитает при следующем событии",
+	"inbox.attempt.held.busy_turn":    "сессия занята своим ходом — будет разбужена, когда он закончится",
 	"inbox.reply_to":                  "ответ на сообщение от {name}: {text}",
 
 	// Inbox page: live activity of the participants' agents.

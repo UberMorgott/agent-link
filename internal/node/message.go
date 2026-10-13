@@ -80,7 +80,8 @@ const (
 	// AttemptHeld is the prefix of "held:<reason>": the owner's settings keep
 	// anything from being woken or opened for the message now (HoldStopped,
 	// HoldAutonomyOff), or no live session can be woken
-	// for it (HoldNextEvent); it waits unread.
+	// for it (HoldNextEvent), or its session is in a turn and is woken after
+	// it (HoldBusyTurn); it waits unread.
 	AttemptHeld = "held"
 )
 
@@ -93,6 +94,10 @@ const (
 	// HoldNextEvent: the area's live sessions are idle and none can be woken;
 	// one reads the message at its next event.
 	HoldNextEvent = "next_event"
+	// HoldBusyTurn: the session the message is for is inside a turn its hooks
+	// did not report (a Codex thread, by its rollout); it is woken for the
+	// message once that turn ends.
+	HoldBusyTurn = "busy_turn"
 )
 
 // Attempt limits: events per KindReceipt message, kept per recipient of one

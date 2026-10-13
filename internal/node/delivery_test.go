@@ -437,7 +437,7 @@ func TestAttemptEvents(t *testing.T) {
 		AttemptWakeRequested: true, AttemptNeedsHuman: true, "launch_failed:timeout": true, "launch_failed:no_agent": true,
 		"launch_failed:": false, "launch_failed:Bad Reason": false, "launch_failed": false, "other": false,
 		"launch_failed:" + strings.Repeat("x", maxAttemptReason+1): false,
-		"held:stopped": true, "held:paused_turns": true, "held:": false, "held": false, "held:Bad": false,
+		"held:stopped": true, "held:paused_turns": true, AttemptHeld + ":" + HoldBusyTurn: true, "held:": false, "held": false, "held:Bad": false,
 	} {
 		if validAttemptEvent(e) != ok {
 			t.Errorf("validAttemptEvent(%q) != %v", e, ok)
