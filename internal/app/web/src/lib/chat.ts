@@ -270,7 +270,7 @@ export function attemptText(d: Delivery): string {
 }
 const ATTEMPTS = ['wake_requested', 'woken_confirmed', 'launch_requested', 'launch_confirmed', 'needs_human']
 // HOLDS: the reasons of held:<reason> (node.Hold*) with a text of their own.
-const HOLDS = ['stopped', 'autonomy_off', 'next_event', 'busy_turn']
+const HOLDS = ['stopped', 'autonomy_off', 'next_event', 'busy_turn', 'wake_unfetched']
 
 // attemptFailed: the recipient's node gave up getting the message seen, or
 // holds it (it could not open a session, the chain is paused, or the owner's
