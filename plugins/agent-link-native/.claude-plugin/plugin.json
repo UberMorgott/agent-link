@@ -1,7 +1,0 @@
-{
-  "name": "agent-link-native",
-  "version": "0.0.1",
-  "description": "SPIKE: agent-link for Claude Code as an in-process hooks module (wakes an idle session, acks at a real turn, serves tools without the MCP process).",
-  "author": { "name": "UberMorgott" },
-  "types": "./types/index.d.ts"
-}

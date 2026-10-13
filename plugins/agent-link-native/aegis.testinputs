@@ -1,8 +1,0 @@
-.claude-plugin/plugin.json
-hooks/hooks.json
-hooks/register.ts
-types/index.d.ts
-tests/node.ts
-tests/ack.test.ts
-tests/append.test.ts
-tests/wake.test.ts
