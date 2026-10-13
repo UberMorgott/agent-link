@@ -331,18 +331,18 @@ func TestMCPCodexCallMetaIsSession(t *testing.T) {
 	call := func(name string, args map[string]any) {
 		t.Helper()
 		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args,
-			Meta: mcp.Meta{"threadId": "thr-sub", "sessionId": "thr-root"}})
+			Meta: mcp.Meta{"threadId": "thread-sub", "sessionId": "thread-root"}})
 		if err != nil || res.IsError {
 			t.Fatalf("%s: %v %+v", name, err, res)
 		}
 	}
 	call("send", map[string]any{"chat": "c1", "body": "hi"})
-	if f.send.SessionID != "thr-sub" {
+	if f.send.SessionID != "thread-sub" {
 		t.Fatalf("send session %q, want the calling thread", f.send.SessionID)
 	}
 	f.reqs = nil
 	call("unread", nil)
-	if len(f.reqs) != 1 || !strings.Contains(f.reqs[0], "session=thr-sub") {
+	if len(f.reqs) != 1 || !strings.Contains(f.reqs[0], "session=thread-sub") {
 		t.Fatalf("unread requests %q", f.reqs)
 	}
 	t.Setenv(envJobID, "job-1")
