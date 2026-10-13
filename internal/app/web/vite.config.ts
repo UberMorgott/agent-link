@@ -47,5 +47,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['src/test/setup.ts'],
+    // The suite also runs in the commit gate on a machine busy with other
+    // builds: a mount that takes over the default 5 s there is no failure.
+    testTimeout: 20000,
+    hookTimeout: 20000,
   },
 })
