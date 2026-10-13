@@ -19,8 +19,7 @@ import (
 // lives) hands it on, and that session then claims it in the local project.
 func TestOrphanedLocalSeatReplyOfNetworkSession(t *testing.T) {
 	p := newBinding(t, t.TempDir())
-	alice, _ := pairApps(t, p)
-	alice.Launcher = &seatRunner{}
+	alice, _ := pairAppsWith(t, func(a *App) { a.Launcher = &seatRunner{} }, p)
 	srv := httptest.NewServer(alice.Handler())
 	defer srv.Close()
 	register := func(sid string) {

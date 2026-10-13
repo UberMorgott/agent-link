@@ -35,9 +35,21 @@ func freeAddr(t *testing.T) string {
 // p; bob dials alice. Alice keeps p's folder, bob binds one of his own.
 func pairApps(t *testing.T, p settings.ProjectBinding, more ...settings.ProjectBinding) (alice, bob *App) {
 	t.Helper()
+	return pairAppsWith(t, nil, p, more...)
+}
+
+// pairAppsWith is pairApps with setup run on alice before she starts: what
+// her loops read from their first moment (the launcher) is set there, never
+// on the started app.
+func pairAppsWith(t *testing.T, setup func(*App), p settings.ProjectBinding, more ...settings.ProjectBinding) (alice, bob *App) {
+	t.Helper()
 	const code = "K7Q2-MXPA-4RTB"
 	addr := freeAddr(t)
-	alice = startApp(t, settings.Settings{Code: code, Listen: addr, Bindings: append([]settings.ProjectBinding{p}, more...)})
+	var pre []func(*App)
+	if setup != nil {
+		pre = append(pre, setup)
+	}
+	alice = startApp(t, settings.Settings{Code: code, Listen: addr, Bindings: append([]settings.ProjectBinding{p}, more...)}, pre...)
 	pb := p
 	pb.Dir, pb.Peers = t.TempDir(), []string{addr}
 	bob = startApp(t, settings.Settings{Node: "bob", Code: code, Peers: []config.Peer{{Addr: addr}}, Bindings: []settings.ProjectBinding{pb}})
@@ -51,8 +63,7 @@ func pairApps(t *testing.T, p settings.ProjectBinding, more ...settings.ProjectB
 
 func TestNetworkHookUnreadSurvivesLocalDiscussionInSameFolder(t *testing.T) {
 	p := newBinding(t, t.TempDir())
-	alice, bob := pairApps(t, p)
-	alice.Launcher = &seatRunner{}
+	alice, bob := pairAppsWith(t, func(a *App) { a.Launcher = &seatRunner{} }, p)
 	srv := httptest.NewServer(alice.Handler())
 	defer srv.Close()
 	session := node.SessionRequest{SessionID: "claude-interactive", Provider: node.ProviderClaude, Folder: p.Dir}
@@ -109,8 +120,7 @@ func TestNetworkHookUnreadSurvivesLocalDiscussionInSameFolder(t *testing.T) {
 // claimed and acknowledged once, in its own project.
 func TestOriginRoutingAcrossNetworkAndLocalProject(t *testing.T) {
 	p := newBinding(t, t.TempDir())
-	alice, bob := pairApps(t, p)
-	alice.Launcher = &seatRunner{}
+	alice, bob := pairAppsWith(t, func(a *App) { a.Launcher = &seatRunner{} }, p)
 	srv := httptest.NewServer(alice.Handler())
 	defer srv.Close()
 	sids := []string{"claude-one", "claude-two"}
