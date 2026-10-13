@@ -137,11 +137,6 @@ type ProjectBinding struct {
 	// request waits for a person. nil follows the mode (DefaultMaxAutoDepth,
 	// in full mode none); 0 is none.
 	MaxAutoDepth *int `json:"max_auto_depth,omitempty"`
-	// TurnsPerHour and MaxRunMinutes are the budgets of full mode: autonomous
-	// turns in any hour and minutes of continuous autonomous work before
-	// autonomous delivery pauses and waits for the owner. 0: the default.
-	TurnsPerHour  int `json:"turns_per_hour,omitempty"`
-	MaxRunMinutes int `json:"max_run_minutes,omitempty"`
 	// LaunchMode is where such a session opens (node.SetLaunchMode):
 	// "desktop" (the default, "") the agent's desktop app when installed,
 	// "terminal" Windows Terminal.
@@ -259,13 +254,8 @@ const (
 const (
 	// DefaultMaxAutoDepth is the hop limit of the off and asked modes
 	// (node.MaxAutoDepth).
-	DefaultMaxAutoDepth  = 8
-	MaxMaxAutoDepth      = 250
-	DefaultTurnsPerHour  = 30
-	MaxTurnsPerHour      = 600
-	DefaultMaxRunMinutes = 240
-	MinMaxRunMinutes     = 10
-	MaxMaxRunMinutes     = 24 * 60
+	DefaultMaxAutoDepth = 8
+	MaxMaxAutoDepth     = 250
 )
 
 // AutonomyOf is b's autonomy mode.
@@ -289,22 +279,6 @@ func (b ProjectBinding) MaxAutoDepthOf() int {
 	return DefaultMaxAutoDepth
 }
 
-// TurnsPerHourOf is b's budget of autonomous turns per hour.
-func (b ProjectBinding) TurnsPerHourOf() int {
-	if b.TurnsPerHour > 0 {
-		return b.TurnsPerHour
-	}
-	return DefaultTurnsPerHour
-}
-
-// MaxRunMinutesOf is b's budget of continuous autonomous work, in minutes.
-func (b ProjectBinding) MaxRunMinutesOf() int {
-	if b.MaxRunMinutes > 0 {
-		return b.MaxRunMinutes
-	}
-	return DefaultMaxRunMinutes
-}
-
 // validAutonomy reports valid autonomy fields.
 func (b ProjectBinding) validAutonomy() bool {
 	switch b.Autonomy {
@@ -312,9 +286,7 @@ func (b ProjectBinding) validAutonomy() bool {
 	default:
 		return false
 	}
-	return (b.MaxAutoDepth == nil || (*b.MaxAutoDepth >= 0 && *b.MaxAutoDepth <= MaxMaxAutoDepth)) &&
-		b.TurnsPerHour >= 0 && b.TurnsPerHour <= MaxTurnsPerHour &&
-		(b.MaxRunMinutes == 0 || (b.MaxRunMinutes >= MinMaxRunMinutes && b.MaxRunMinutes <= MaxMaxRunMinutes))
+	return b.MaxAutoDepth == nil || (*b.MaxAutoDepth >= 0 && *b.MaxAutoDepth <= MaxMaxAutoDepth)
 }
 
 // LaunchModeOf is b's launch mode: "terminal" or "desktop".

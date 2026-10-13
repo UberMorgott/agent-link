@@ -255,23 +255,11 @@ export function handle(b: Backend, method: string, fullPath: string, body: unkno
         a.max_auto_depth = req.max_auto_depth
       }
       if (a.max_auto_depth_default) a.max_auto_depth = a.mode === 'full' ? 0 : 8
-      if (typeof req.turns_per_hour === 'number') {
-        if (req.turns_per_hour < 0 || req.turns_per_hour > 600) throw apiError('autonomy')
-        a.turns_per_hour = req.turns_per_hour || 30
-      }
-      if (typeof req.max_run_minutes === 'number') {
-        if (req.max_run_minutes !== 0 && (req.max_run_minutes < 10 || req.max_run_minutes > 1440)) throw apiError('autonomy')
-        a.max_run_minutes = req.max_run_minutes || 240
-      }
       next.autonomy = a
     }
     next.display = next.alias || next.name
     next.state = stateOf(next)
     return setView(b, next)
-  }
-  if (method === 'POST' && rest.join('/') === 'autonomy/resume') {
-    if (!p.autonomy) throw apiError('not_found')
-    return setView(b, { ...p, autonomy: { ...p.autonomy, paused: false, pause_reason: undefined, turns_last_hour: 0, run_minutes: 0 } })
   }
   if (method === 'POST' && rest.join('/') === 'autonomy/stop') {
     if (!p.autonomy || typeof req.on !== 'boolean') throw apiError('not_found')

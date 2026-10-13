@@ -113,14 +113,8 @@ func writeInbox(w io.Writer, token, text string) error {
 // (so its background waiter must not wake it too): it holds the inbox, and
 // the session did not stay idle past inboxWakeGrace after the node's last
 // wake (a retry, maxIdleWakes, holds the waiter off again for its grace).
-// While a budget pauses autonomous delivery the node wakes nobody (wakeLoop),
-// so it does not hold the waiter off either: a live session still gets its
-// messages.
 func (n *Node) InboxWakes(sid string) bool {
 	if n.poster == nil {
-		return false
-	}
-	if paused, _ := n.autoPaused(time.Now()); paused {
 		return false
 	}
 	r := n.sess

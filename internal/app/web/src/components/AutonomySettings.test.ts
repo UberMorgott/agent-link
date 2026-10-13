@@ -66,8 +66,10 @@ describe('agent autonomy settings', () => {
     expect($('[data-autonomy="legacy"]')).toBeNull()
     expect($('[data-autonomy="' + JOINING + '"]')).toBeNull() // still connecting: no autonomy yet
     const text = card().textContent!
-    for (const key of ['autonomy.mode.off.hint', 'autonomy.mode.asked.hint', 'autonomy.mode.full.hint', 'autonomy.depth.hint',
-      'autonomy.turns.hint', 'autonomy.run.hint', 'autonomy.used']) expect(text).toContain(key)
+    for (const key of ['autonomy.mode.off.hint', 'autonomy.mode.asked.hint', 'autonomy.mode.full.hint', 'autonomy.depth.hint']) expect(text).toContain(key)
+    // No turn or run-time limits, no budget pause.
+    for (const key of ['autonomy.turns', 'autonomy.run.', 'autonomy.used', 'autonomy.paused']) expect(text).not.toContain(key)
+    expect(card().querySelector('.autonomy-turns, .autonomy-run, .autonomy-used, .autonomy-paused, .autonomy-resume')).toBeNull()
     expect(document.body.textContent).toContain('autonomy.stop.hint')
     const mode = card().querySelector<HTMLSelectElement>('select.autonomy-mode')!
     expect(mode.value).toBe('full')
@@ -76,33 +78,15 @@ describe('agent autonomy settings', () => {
     const binding = '/ui/api/projects/' + SITE + '/binding'
     expect(bodies(requests, binding)).toEqual([{ autonomy: 'asked' }])
     expect(useProjectsStore().byID(SITE)!.autonomy!.max_auto_depth).toBe(8)
-    expect(card().textContent).not.toContain('autonomy.used') // full mode only
 
     const depth = card().querySelector<HTMLInputElement>('.autonomy-depth input, input.autonomy-depth')!
     await change(depth, '12')
     await change(depth, '')
-    const turns = card().querySelector<HTMLInputElement>('.autonomy-turns input, input.autonomy-turns')!
-    await change(turns, '1.5')
+    await change(depth, '1.5')
     expect(card().textContent).toContain('error.autonomy')
-    await change(turns, '5')
-    expect(bodies(requests, binding).slice(1)).toEqual([{ max_auto_depth: 12 }, { max_auto_depth: -1 }, { turns_per_hour: 5 }])
+    expect(bodies(requests, binding).slice(1)).toEqual([{ max_auto_depth: 12 }, { max_auto_depth: -1 }])
     // Its own requests: the settings form is never saved by them.
     expect(requests.some((r) => r.url === '/ui/api/settings' && r.init.method === 'POST')).toBe(false)
-  })
-
-  it('shows a budget pause with «Продолжить», which resumes it', async () => {
-    const { backend, requests } = await open()
-    await openProjectAutonomy()
-    const projects = useProjectsStore()
-    backend.projects = backend.projects.map((p) => (p.id === SITE ? { ...p, autonomy: { ...p.autonomy!, paused: true, pause_reason: 'run' } } : p))
-    await projects.refreshList()
-    await settle()
-    expect(card().querySelector('.autonomy-paused')!.textContent).toContain('autonomy.paused')
-    card().querySelector<HTMLButtonElement>('.autonomy-resume')!.click()
-    await settle()
-    expect(requests.map((r) => r.url)).toContain('/ui/api/projects/' + SITE + '/autonomy/resume')
-    expect(projects.byID(SITE)!.autonomy!.paused).toBe(false)
-    expect(card().querySelector('.autonomy-paused')).toBeNull()
   })
 
   it('turns the emergency stop on and off', async () => {

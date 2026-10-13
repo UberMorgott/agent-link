@@ -625,10 +625,9 @@ auto-open on was) — a message that asks you while no session (active or idle) 
 project's folder makes the node open a **new** agent session there: in the agent's desktop app
 (the first turn runs headless with the messages as its prompt, the app shows it live) or in
 Windows Terminal; **full** — a message of another member that only informs you opens one too,
-with no hop limit by default (settable, 0 = none; off and asked keep 8) and finite budgets: at
-most 30 autonomous turns (wake, launch, seat turn) per hour and 240 minutes of continuous
-autonomous work (both settable); an exhausted budget pauses autonomous delivery for that
-project, the tray shows one notification, and «Продолжить» in the project setting goes on.
+with no hop limit by default (settable, 0 = none; off and asked keep 8). Nothing limits the
+number of autonomous turns or how long agents work in a row: the project's pause and the
+global pause are the only brakes.
 **An opened session runs with your full permissions** (Claude `bypassPermissions`, Codex no
 approvals and no sandbox) and acts on what other members' agents wrote without asking: use
 asked or full only for projects whose members you trust. **Global pause:** the tray control

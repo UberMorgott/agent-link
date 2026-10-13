@@ -16,9 +16,8 @@ import (
 // session. When an area of this node has eligible unread messages and no live
 // session at all, the node opens a visible session in the area's folder
 // (SessionLauncher), as the project's autonomy allows (SetAutonomy: not off;
-// a message that only informs this node only in full mode). Every launch is
-// an autonomous turn (autoTake): none while the node is stopped or its
-// budgets paused it.
+// a message that only informs this node only in full mode). No launch starts
+// while the node is stopped.
 //
 // In the agent's desktop app (DirectLauncher, launch mode LaunchDesktop, the
 // app installed): the node claims the messages for the launch first
@@ -431,14 +430,11 @@ func (n *Node) launchDue(ctx context.Context, now time.Time) {
 	}
 }
 
-// holdReason is why no autonomous turn may start now (HoldStopped,
-// HoldPaused+<budget>); "" when one may.
+// holdReason is why no autonomous turn may start now (HoldStopped); "" when
+// one may.
 func (n *Node) holdReason() string {
 	if n.Stopped() {
 		return HoldStopped
-	}
-	if paused, reason := n.autoPaused(time.Now()); paused {
-		return HoldPaused + reason
 	}
 	return ""
 }
@@ -577,13 +573,12 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 // messages themselves (WakePrompt, as many as fit). A headless turn runs no
 // agent-link hooks, so nothing else delivers them to it.
 func (n *Node) startDirect(ctx context.Context, dl DirectLauncher, area string, spec LaunchSpec, eligible []UnreadMessage, now time.Time) {
-	if !n.autoTake(now) {
+	if n.Stopped() {
 		return
 	}
 	msgs := n.launchClaim(area, eligible[:FitUnread(eligible)])
 	if len(msgs) == 0 {
-		n.autoRefund(now) // nothing to open a session for: no turn spent
-		return
+		return // nothing to open a session for
 	}
 	spec.Prompt = WakePrompt(msgs, len(eligible)-len(msgs), spec.Folder, randomHex(8))
 	ctx, cancel := context.WithCancel(ctx)
@@ -776,7 +771,7 @@ func (n *Node) launchSeen(area string, p *pendingLaunch, session string) {
 
 // startLaunch opens spec for msgs (try number tries) and records it pending.
 func (n *Node) startLaunch(ctx context.Context, area string, spec LaunchSpec, msgs []UnreadMessage, tries int, now time.Time) {
-	if !n.autoTake(now) {
+	if n.Stopped() {
 		return
 	}
 	d := n.deliv

@@ -154,7 +154,6 @@ func (a *App) newNodeOf(pid string, cfg config.Config, key []byte) (*node.Node, 
 	// So is this member's chat color, which its record carries to the members.
 	n.SetChatColor(a.s.ChatColor)
 	n.SetDisplay(a.s.Nickname, a.s.NicknameAliases)
-	n.SetAutonomyPauseHook(func(reason string) { go a.autonomyPaused(pid, reason) })
 	// The event only says something changed: reconcileSession reads the
 	// session's current state, so late or reordered events do no harm.
 	// A session starting or ending also changes which local chats are live

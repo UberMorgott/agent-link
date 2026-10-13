@@ -316,8 +316,8 @@ func New(cfg config.Config, secret []byte, log *slog.Logger) (*Node, error) {
 	}
 	n.MigrateProjectChats()
 	n.auto = newAutonomy(cfg.DataDir)
-	if err := n.auto.load(); err != nil {
-		n.log.Warn("autonomy state unreadable; starting over", "err", err)
+	if err := n.auto.dropBudgetState(); err != nil {
+		n.log.Warn("stale autonomy budget state not removed", "err", err)
 	}
 	n.leases = newLeaseBook(cfg.DataDir)
 	if err := n.leases.load(); err != nil {

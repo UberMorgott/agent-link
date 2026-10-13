@@ -346,7 +346,7 @@ func writeDiscussHeld(w http.ResponseWriter, st node.SeatAskState) {
 }
 
 func discussQueued(n *node.Node, seat string) bool {
-	if n.Stopped() || n.AutonomyStatus().Paused {
+	if n.Stopped() {
 		return true
 	}
 	for _, s := range n.Seats() {

@@ -79,7 +79,7 @@ const (
 	AttemptNeedsHuman = "needs_human"
 	// AttemptHeld is the prefix of "held:<reason>": the owner's settings keep
 	// anything from being woken or opened for the message now (HoldStopped,
-	// HoldAutonomyOff, HoldPaused+<budget>), or no live session can be woken
+	// HoldAutonomyOff), or no live session can be woken
 	// for it (HoldNextEvent); it waits unread.
 	AttemptHeld = "held"
 )
@@ -90,8 +90,6 @@ const (
 	HoldStopped = "stopped"
 	// HoldAutonomyOff: no session is live and the project's autonomy is off.
 	HoldAutonomyOff = "autonomy_off"
-	// HoldPaused is the prefix of a budget pause: paused_turns, paused_run.
-	HoldPaused = "paused_"
 	// HoldNextEvent: the area's live sessions are idle and none can be woken;
 	// one reads the message at its next event.
 	HoldNextEvent = "next_event"

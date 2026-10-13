@@ -242,13 +242,6 @@ export const useProjectsStore = defineStore('projects', () => {
     return view
   }
 
-  // resumeAutonomy ends a pause of a project's autonomous work (its budgets ran out).
-  async function resumeAutonomy(pid: string) {
-    const view = await api<ProjectView>('POST', projectPath(pid, 'autonomy/resume'))
-    upsert(view)
-    return view
-  }
-
   // stopAutonomy pauses delivery only to this member's agents in this project.
   async function stopAutonomy(pid: string, on: boolean) {
     const view = await api<ProjectView>('POST', projectPath(pid, 'autonomy/stop'), { on })
@@ -407,7 +400,7 @@ export const useProjectsStore = defineStore('projects', () => {
     list, chats, history, refreshHistory, colorOf, displayOf, seats, refreshSeats, seatAction, current, currentProject, hasLegacy, loaded, invite, inviteFor,
     joinStep, joinProject, joinCreated, joinProblem,
     byID, upsert, listSettled, refreshList, refreshProject, refreshChats, refreshAll, refreshScoped,
-    open, landing, create, rename, bind, resumeAutonomy, stopAutonomy, addMember, removeMember, leave, createChat, putChat, removeChat, replaceChat, revealInvite, hideInvite,
+    open, landing, create, rename, bind, stopAutonomy, addMember, removeMember, leave, createChat, putChat, removeChat, replaceChat, revealInvite, hideInvite,
     joinReset, join, joinProgress, joinCancel, dialog, dialogProject, openDialog, closeDialog,
   }
 })

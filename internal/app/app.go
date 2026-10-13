@@ -52,9 +52,6 @@ type App struct {
 	Launcher node.SessionLauncher
 	// QuitFunc ends the program; Quit calls it. Nil makes quitting unavailable.
 	QuitFunc func()
-	// Notify shows the owner a desktop notification (the tray's balloon);
-	// nil: none. It tells of a project's autonomy paused by its budgets.
-	Notify func(title, text string)
 	// StopAllChanged, if set, is told the emergency stop's new state after it
 	// changed (SetStopAll), so the tray checkbox follows the page.
 	StopAllChanged func(on bool)

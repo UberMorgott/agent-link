@@ -143,7 +143,7 @@ only live temporary chats grouped per project.
 - Design: same code path; Owner.Provider = `source`. Default `timeout` for Codex callers = min(10m,
   Codex tool timeout - 5 s), fall back to async + hook delivery when exceeded.
 - Risks: loop Claude<->Codex asking each other - bounded by existing chain/autonomy limits
-  (`seats.go:42-45`, autonomy budgets).
+  (`seats.go:42-45`, the autonomy budgets of that time, removed 2026-10-13).
 
 ## R6 - Temporary chats in the sidebar only while live
 

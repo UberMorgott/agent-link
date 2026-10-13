@@ -115,11 +115,6 @@ func runApp(args []string) error {
 	a.QuitFunc = systray.Quit
 	if *noTray {
 		a.QuitFunc = quit
-	} else {
-		// A project's agents paused by their budgets: one balloon, a click on it
-		// opens the settings page with «Продолжить».
-		a.Notify = systray.ShowNotification
-		systray.SetOnNotificationTapped(func() { openBrowser(a.URL("settings")) })
 	}
 	ln, err := listen(quitCtx, a.APIAddr(), *restarted)
 	if err != nil {

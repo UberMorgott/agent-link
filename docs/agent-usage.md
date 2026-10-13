@@ -474,12 +474,12 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   `POST /ui/api/projects/{pid}/binding {"autonomy": "off|asked|full"}`, settings key
   `project_bindings[].autonomy`) is `asked` or `full`; `full` also opens one for a chat message
   of another member that only informs this member, within the hop limit (`max_auto_depth`:
-  unset follows the mode, 8 for off/asked and none for full; 0 = none). In full mode every
-  autonomous turn (a wake, a launch, a seat's turn) counts against `turns_per_hour` (default
-  30) and `max_run_minutes` of continuous work (default 240; a quiet gap of 15 minutes starts a
-  new run); an exhausted budget pauses autonomous delivery of that project (kept in
-  `autonomy.json` across restarts), the tray shows one notification, and
-  `POST /ui/api/projects/{pid}/autonomy/resume` («Продолжить») goes on. Projects from before
+  unset follows the mode, 8 for off/asked and none for full; 0 = none). Autonomous turns (a
+  wake, a launch, a seat's turn) are not counted or limited, per hour or in a row (the
+  `turns_per_hour` / `max_run_minutes` budgets, their pause and `autonomy/resume` were removed
+  2026-10-13; old settings fields are ignored and a leftover `autonomy.json` is deleted at
+  start): only the project's pause (`POST /ui/api/projects/{pid}/autonomy/stop {"on": true}`)
+  and the global pause below stop the agents. Projects from before
   this setting keep their auto-open as `asked` (on) or `off`; new ones are off: the message then
   waits until a session of the folder appears and gets it the usual way.
 - **Global pause.** `POST /ui/api/autonomy/stop {"on": true}` (general settings page, tray

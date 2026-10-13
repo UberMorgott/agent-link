@@ -45,10 +45,10 @@ func TestAutoOpenMigratesToAutonomy(t *testing.T) {
 }
 
 // The hop limit follows the mode unless set: none in full mode, 8 otherwise;
-// the budgets have their defaults; out-of-range values are refused.
+// out-of-range values are refused.
 func TestAutonomyDefaultsAndLimits(t *testing.T) {
 	b := newBinding(t, "")
-	if b.AutonomyOf() != AutonomyOff || b.MaxAutoDepthOf() != 8 || b.TurnsPerHourOf() != 30 || b.MaxRunMinutesOf() != 240 {
+	if b.AutonomyOf() != AutonomyOff || b.MaxAutoDepthOf() != 8 {
 		t.Fatalf("defaults: %+v", b)
 	}
 	b.Autonomy = AutonomyFull
@@ -69,9 +69,6 @@ func TestAutonomyDefaultsAndLimits(t *testing.T) {
 		"mode":      func(b *ProjectBinding) { b.Autonomy = "always" },
 		"depth":     func(b *ProjectBinding) { b.MaxAutoDepth = &big },
 		"neg depth": func(b *ProjectBinding) { b.MaxAutoDepth = &neg },
-		"turns":     func(b *ProjectBinding) { b.TurnsPerHour = MaxTurnsPerHour + 1 },
-		"run short": func(b *ProjectBinding) { b.MaxRunMinutes = MinMaxRunMinutes - 1 },
-		"run long":  func(b *ProjectBinding) { b.MaxRunMinutes = MaxMaxRunMinutes + 1 },
 	} {
 		c := newBinding(t, "")
 		mod(&c)
@@ -81,8 +78,51 @@ func TestAutonomyDefaultsAndLimits(t *testing.T) {
 		}
 	}
 	ok := newBinding(t, "")
-	ok.Autonomy, ok.MaxAutoDepth, ok.TurnsPerHour, ok.MaxRunMinutes = AutonomyFull, &zero, MaxTurnsPerHour, MinMaxRunMinutes
+	ok.Autonomy, ok.MaxAutoDepth = AutonomyFull, &zero
 	if err := validateBindings([]ProjectBinding{ok}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The budget fields of an older file (turns_per_hour, max_run_minutes), even
+// out of their old range, are ignored on load and gone after the next save.
+func TestOldBudgetFieldsIgnored(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	b := newBinding(t, "")
+	b.Autonomy, b.StopAgents = AutonomyFull, true
+	data, err := json.Marshal(Settings{Version: Version, Node: "alice", Handler: worker.HandlerNone, Bindings: []ProjectBinding{b}}) //nolint:gosec // G117: a test file with made-up project secrets
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	var old []map[string]any
+	if err := json.Unmarshal(raw["project_bindings"], &old); err != nil || len(old) != 1 {
+		t.Fatalf("bindings %s: %v", raw["project_bindings"], err)
+	}
+	old[0]["turns_per_hour"], old[0]["max_run_minutes"] = 100000, 1
+	if raw["project_bindings"], err = json.Marshal(old); err != nil {
+		t.Fatal(err)
+	}
+	if data, err = json.Marshal(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, _, err := Load(path)
+	if err != nil {
+		t.Fatalf("an old file with budgets does not load: %v", err)
+	}
+	if got := s.Bindings[0]; got.AutonomyOf() != AutonomyFull || !got.StopAgents {
+		t.Fatalf("binding %+v", got)
+	}
+	if err := Save(path, s); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Clean(path)); bytes.Contains(got, []byte("turns_per_hour")) || bytes.Contains(got, []byte("max_run_minutes")) {
+		t.Fatalf("saved = %s", got)
 	}
 }

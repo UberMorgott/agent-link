@@ -1,25 +1,23 @@
 package app
 
 import (
-	"cmp"
 	"encoding/json"
 	"net/http"
 	"slices"
-	"time"
 
 	"github.com/UberMorgott/agent-link/internal/node"
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
 
-// Agent autonomy (node/autonomy.go): a project's mode, hop limit and budgets
+// Agent autonomy (node/autonomy.go): a project's mode and hop limit
 // live in its binding and apply to its running node at once; the emergency
 // stop (settings.Settings.StopAll) applies to every context.
 
 // AutonomyView is a project's autonomy as the web UI shows it.
 type AutonomyView struct {
 	Mode string `json:"mode"` // settings.Autonomy*
-	// Stopped is this project's manual agent pause; the global stop and
-	// budget pause have separate switches.
+	// Stopped is this project's manual agent pause; the global stop has its
+	// own switch.
 	Stopped bool `json:"stopped"`
 	// Halted: no agent of this project works by itself now (the global stop
 	// or this project's pause is on).
@@ -28,31 +26,21 @@ type AutonomyView struct {
 	// it follows the mode (none set).
 	MaxAutoDepth        int  `json:"max_auto_depth"`
 	MaxAutoDepthDefault bool `json:"max_auto_depth_default"`
-	TurnsPerHour        int  `json:"turns_per_hour"`
-	MaxRunMinutes       int  `json:"max_run_minutes"`
-	// Paused: a budget of full mode ran out (PauseReason "turns" or "run");
-	// autonomous delivery waits for the owner (autonomy/resume).
-	Paused      bool   `json:"paused,omitempty"`
-	PauseReason string `json:"pause_reason,omitempty"`
-	// TurnsLastHour and RunMinutes are the budgets used, in full mode.
-	TurnsLastHour int `json:"turns_last_hour"`
-	RunMinutes    int `json:"run_minutes"`
 }
 
 // autonomyOf is the node autonomy of binding b.
 func autonomyOf(b settings.ProjectBinding) node.Autonomy {
-	return node.Autonomy{Mode: b.AutonomyOf(), MaxDepth: b.MaxAutoDepthOf(), TurnsPerHour: b.TurnsPerHourOf(),
-		MaxRun: time.Duration(b.MaxRunMinutesOf()) * time.Minute}
+	return node.Autonomy{Mode: b.AutonomyOf(), MaxDepth: b.MaxAutoDepthOf()}
 }
 
 // ownAutonomy reports whether b sets any autonomy field of its own.
 func ownAutonomy(b settings.ProjectBinding) bool {
-	return b.Autonomy != "" || b.MaxAutoDepth != nil || b.TurnsPerHour != 0 || b.MaxRunMinutes != 0
+	return b.Autonomy != "" || b.MaxAutoDepth != nil
 }
 
 // withAutonomy is b with the autonomy fields of src.
 func withAutonomy(b, src settings.ProjectBinding) settings.ProjectBinding {
-	b.Autonomy, b.MaxAutoDepth, b.TurnsPerHour, b.MaxRunMinutes = src.Autonomy, src.MaxAutoDepth, src.TurnsPerHour, src.MaxRunMinutes
+	b.Autonomy, b.MaxAutoDepth = src.Autonomy, src.MaxAutoDepth
 	return b
 }
 
@@ -109,15 +97,12 @@ func (a *App) reapplyAutonomyLocked() {
 	}
 }
 
-// autonomyViewOf is the view of b's autonomy, with the budget state of its
+// autonomyViewOf is the view of b's autonomy, with the stop in effect on its
 // running node c (nil: none).
 func autonomyViewOf(b settings.ProjectBinding, c *appContext) *AutonomyView {
-	v := &AutonomyView{Mode: b.AutonomyOf(), Stopped: b.StopAgents, MaxAutoDepth: b.MaxAutoDepthOf(), MaxAutoDepthDefault: b.MaxAutoDepth == nil,
-		TurnsPerHour: b.TurnsPerHourOf(), MaxRunMinutes: b.MaxRunMinutesOf()}
+	v := &AutonomyView{Mode: b.AutonomyOf(), Stopped: b.StopAgents, MaxAutoDepth: b.MaxAutoDepthOf(), MaxAutoDepthDefault: b.MaxAutoDepth == nil}
 	if c != nil {
-		st := c.n.AutonomyStatus()
-		v.Halted, v.Paused, v.PauseReason = st.Stopped, st.Paused, st.Reason
-		v.TurnsLastHour, v.RunMinutes = st.TurnsLastHour, int(st.Run/time.Minute)
+		v.Halted = c.n.Stopped()
 	}
 	return v
 }
@@ -125,14 +110,12 @@ func autonomyViewOf(b settings.ProjectBinding, c *appContext) *AutonomyView {
 // autonomyRequest is the autonomy part of POST projects/{pid}/binding
 // (absent: kept). A negative max_auto_depth follows the mode again.
 type autonomyRequest struct {
-	Autonomy      *string `json:"autonomy"`
-	MaxAutoDepth  *int    `json:"max_auto_depth"`
-	TurnsPerHour  *int    `json:"turns_per_hour"`
-	MaxRunMinutes *int    `json:"max_run_minutes"`
+	Autonomy     *string `json:"autonomy"`
+	MaxAutoDepth *int    `json:"max_auto_depth"`
 }
 
 func (r autonomyRequest) empty() bool {
-	return r.Autonomy == nil && r.MaxAutoDepth == nil && r.TurnsPerHour == nil && r.MaxRunMinutes == nil
+	return r.Autonomy == nil && r.MaxAutoDepth == nil
 }
 
 // withAutonomyRequestLocked is binding b with req's autonomy: a local project
@@ -152,46 +135,7 @@ func (a *App) withAutonomyRequestLocked(b settings.ProjectBinding, req autonomyR
 			b.MaxAutoDepth = &d
 		}
 	}
-	if req.TurnsPerHour != nil {
-		b.TurnsPerHour = *req.TurnsPerHour
-	}
-	if req.MaxRunMinutes != nil {
-		b.MaxRunMinutes = *req.MaxRunMinutes
-	}
 	return b
-}
-
-// resumeAutonomy ends a budget pause of a project: POST projects/{pid}/autonomy/resume.
-func (a *App) resumeAutonomy(w http.ResponseWriter, r *http.Request) {
-	pid := r.PathValue("pid")
-	a.mu.Lock()
-	c := a.projects[pid]
-	a.mu.Unlock()
-	if c == nil {
-		writeCodedError(w, http.StatusNotFound, "not_found")
-		return
-	}
-	c.n.ResumeAutonomy()
-	a.log.Info("autonomous delivery resumed by the owner", "project", pid)
-	a.changed(pid)
-	a.writeView(w, pid)
-}
-
-// autonomyPaused tells the owner once that a project's budget paused its
-// autonomous delivery: a tray notification (Notify) and the page.
-func (a *App) autonomyPaused(pid, reason string) {
-	a.mu.Lock()
-	name := pid
-	if v, ok := a.projectViewLocked(pid); ok {
-		name = cmp.Or(v.Display, pid)
-	}
-	notify := a.Notify
-	a.mu.Unlock()
-	a.log.Warn("project autonomy paused", "project", pid, "reason", reason)
-	a.changed(pid)
-	if notify != nil {
-		notify(msg("autonomy.paused.title", nil), msg("autonomy.paused."+reason, map[string]string{"project": name}))
-	}
 }
 
 // StopAll reports whether every project's agents are stopped.
@@ -237,8 +181,7 @@ func (a *App) SetStopAll(on bool) error {
 }
 
 // stopProjectAgents serves POST projects/{pid}/autonomy/stop {"on"}.
-// This is a local member preference, independent of the global and budget
-// pauses; the legacy network has no project-specific switch.
+// This is a local member preference, independent of the global pause; the legacy network has no project-specific switch.
 func (a *App) stopProjectAgents(w http.ResponseWriter, r *http.Request) {
 	pid := r.PathValue("pid")
 	var req struct {

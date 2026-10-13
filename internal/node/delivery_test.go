@@ -378,7 +378,7 @@ func TestLaunchLadderEligibility(t *testing.T) {
 	waitAttempts(t, b, m2, AttemptHeld+":"+HoldAutonomyOff, AttemptLaunchRequested, AttemptLaunchFailed+":no_agent")
 }
 
-// A delivered message that the owner's stop or a budget pause keeps from
+// A delivered message that the owner's stop keeps from
 // waking or opening anything tells its author why (held:<reason>) instead of
 // staying a silent "delivered"; once free, the ladder goes on (issue #25).
 func TestLaunchHeldReasons(t *testing.T) {
@@ -394,17 +394,8 @@ func TestLaunchHeldReasons(t *testing.T) {
 	waitAttempts(t, b, m, AttemptHeld+":"+HoldStopped)
 
 	a.SetStopped(false)
-	a.auto.mu.Lock()
-	// A full hour: a turns pause with room in it ends by itself (autoPaused).
-	a.auto.st = autonomyState{Paused: true, Reason: PauseTurns, PausedAt: time.Now(),
-		Turns: slices.Repeat([]time.Time{time.Now()}, DefaultTurnsPerHour)}
-	a.auto.mu.Unlock()
 	a.launchDue(ctx, time.Now().Add(launchGrace+time.Second))
-	waitAttempts(t, b, m, AttemptHeld+":"+HoldStopped, AttemptHeld+":"+HoldPaused+PauseTurns)
-
-	a.ResumeAutonomy()
-	a.launchDue(ctx, time.Now().Add(launchGrace+time.Second))
-	waitAttempts(t, b, m, AttemptHeld+":"+HoldStopped, AttemptHeld+":"+HoldPaused+PauseTurns, AttemptLaunchRequested)
+	waitAttempts(t, b, m, AttemptHeld+":"+HoldStopped, AttemptLaunchRequested)
 }
 
 // Autonomy off with no live session: a message past the hop limit needs a

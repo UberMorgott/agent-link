@@ -3,16 +3,15 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -47,9 +46,6 @@ func TestAutonomyFullLaunchesForInformation(t *testing.T) {
 		t.Fatalf("full mode without a hop limit did not launch for the fyi: %+v", got)
 	}
 	waitAttempts(t, b, fyi, AttemptLaunchRequested)
-	if st := a.AutonomyStatus(); st.TurnsLastHour != 1 {
-		t.Fatalf("the launch was not counted: %+v", st)
-	}
 }
 
 // A member's request for its own seat and that seat's answer are visible in
@@ -143,62 +139,87 @@ func TestAutonomyHopLimit(t *testing.T) {
 	}
 }
 
-// Full mode's budgets: the turns of any hour and the minutes of continuous
-// work. An exhausted one pauses autonomous delivery, tells the hook once and
-// survives a restart; ResumeAutonomy starts over. Other modes count nothing.
-func TestAutonomyBudgets(t *testing.T) {
-	a, _ := deliveryPair(t, t.TempDir(), nil, nil)
-	var told atomic.Int32
-	a.SetAutonomyPauseHook(func(reason string) {
-		if reason == PauseTurns || reason == PauseRun {
-			told.Add(1)
+// Full mode has no budget of autonomous turns: more wakes in one hour than the
+// removed limit allowed (30) all run, and nothing pauses the project or writes
+// budget state. The owner's stop is the only brake: while it is on a message
+// waits (held:stopped) and no session is woken; off, the wakes go on.
+func TestAutonomyManyTurnsNeverPause(t *testing.T) {
+	p := &fakePoster{}
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, p, nil)
+	a.SetAutonomy(Autonomy{Mode: AutonomyFull})
+	ctx := context.Background()
+	turn := func(body string) Message {
+		t.Helper()
+		regClaude(t, a, dir, "s-c", testSocket, false) // the session's turn ...
+		regClaude(t, a, dir, "s-c", testSocket, true)  // ... ended: idle again
+		m := ask(t, a, b, body)
+		a.wakeIdle(ctx)
+		return m
+	}
+	done := func(m Message) {
+		t.Helper()
+		if _, err := a.Ack("", AckRequest{IDs: []string{m.ID}, SessionID: "s-c"}); err != nil {
+			t.Fatal(err)
 		}
-	})
-	t0 := time.Now()
-	for i := range 50 {
-		if !a.autoTake(t0.Add(time.Duration(i) * time.Second)) {
-			t.Fatal("asked mode is budgeted")
+	}
+	const turns = 45
+	for i := range turns {
+		m := turn(fmt.Sprintf("turn %d", i))
+		if p.count() != i+1 || a.holdReason() != "" {
+			t.Fatalf("turn %d: %d wakes, hold %q", i, p.count(), a.holdReason())
 		}
+		done(m)
 	}
-	a.SetAutonomy(Autonomy{Mode: AutonomyFull, TurnsPerHour: 3, MaxRun: time.Hour})
-	for i := range 3 {
-		if !a.autoTake(t0.Add(time.Duration(i) * time.Minute)) {
-			t.Fatalf("turn %d refused", i)
-		}
-	}
-	if a.autoTake(t0.Add(3*time.Minute)) || a.autoTake(t0.Add(4*time.Minute)) || a.autoOK() {
-		t.Fatal("a 4th turn in the hour was taken")
-	}
-	if st := a.AutonomyStatus(); !st.Paused || st.Reason != PauseTurns || told.Load() != 1 {
-		t.Fatalf("status %+v, told %d", st, told.Load())
-	}
-	restarted := newAutonomy(a.cfg.DataDir)
-	if err := restarted.load(); err != nil || !restarted.st.Paused || restarted.st.Reason != PauseTurns {
-		t.Fatalf("pause not kept: %+v %v", restarted.st, err)
+	if _, err := os.Stat(filepath.Join(a.cfg.DataDir, autonomyFile)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the turns wrote %s: %v", autonomyFile, err)
 	}
 
-	a.ResumeAutonomy()
-	if !a.autoOK() || a.AutonomyStatus().TurnsLastHour != 0 {
-		t.Fatal("resume did not start over")
+	a.SetStopped(true)
+	held := turn("while stopped")
+	if p.count() != turns || a.holdReason() != HoldStopped {
+		t.Fatalf("stopped: %d wakes, hold %q", p.count(), a.holdReason())
 	}
-	// Continuous work: turns 10 minutes apart run on; past 30 minutes it pauses.
-	a.SetAutonomy(Autonomy{Mode: AutonomyFull, TurnsPerHour: 100, MaxRun: 30 * time.Minute})
-	t1 := t0.Add(2 * time.Hour)
-	for _, m := range []int{0, 10, 20, 29} {
-		if !a.autoTake(t1.Add(time.Duration(m) * time.Minute)) {
-			t.Fatalf("turn at +%dm refused", m)
-		}
+	if page, err := a.UnreadFor(dir, "s-c", "", 10); err != nil || page.Total != 0 {
+		t.Fatalf("a stopped node delivered to its session: %+v %v", page, err)
 	}
-	if a.autoTake(t1.Add(31*time.Minute)) || a.AutonomyStatus().Reason != PauseRun || told.Load() != 2 {
-		t.Fatalf("work past its minutes went on: %+v", a.AutonomyStatus())
+	if page, _ := a.Unread("", "", 10); page.Total != 1 || page.Messages[0].ID != held.ID {
+		t.Fatalf("the held message is not kept unread: %+v", page)
 	}
-	a.ResumeAutonomy()
-	// A quiet gap starts a new run.
-	t2 := t1.Add(time.Hour)
-	for _, m := range []int{0, 20, 40, 60} {
-		if !a.autoTake(t2.Add(time.Duration(m) * time.Minute)) {
-			t.Fatalf("turn after a quiet gap at +%dm refused", m)
-		}
+	a.SetStopped(false)
+	a.wakeIdle(ctx)
+	if p.count() != turns+1 || !strings.Contains(p.calls[turns], "while stopped") {
+		t.Fatalf("after the stop: %d wakes", p.count())
+	}
+}
+
+// An autonomy.json of a version with budgets (paused by "turns" or "run", old
+// counters, unknown fields, or not JSON at all) holds nothing: the node starts
+// free and drops the file. The owner's stop is not kept in it and stays.
+func TestStaleBudgetPauseDropped(t *testing.T) {
+	for name, content := range map[string]string{
+		"turns": `{"paused":true,"reason":"turns","paused_at":"2026-09-30T10:00:00Z","turns":["2026-09-30T09:59:00Z"],"run_start":"2026-09-30T09:00:00Z","last_turn":"2026-09-30T09:59:00Z","told_at":"2026-09-30T10:00:00Z"}`,
+		"run":   `{"paused":true,"reason":"run","paused_at":"2026-09-30T10:00:00Z","turns_per_hour":30,"max_run":14400000000000}`,
+		"junk":  `{"paused":`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := t.TempDir()
+			path := filepath.Join(data, autonomyFile)
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			n := newTestNode(t, "a", testSecret, nil, data, listen(t), nil)
+			if n.holdReason() != "" || n.Stopped() || n.AutonomyStatus().Stopped {
+				t.Fatalf("held by a stale budget pause: %q", n.holdReason())
+			}
+			if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("%s kept: %v", autonomyFile, err)
+			}
+			n.SetStopped(true)
+			if n.holdReason() != HoldStopped {
+				t.Fatal("the owner's stop does not hold")
+			}
+		})
 	}
 }
 
@@ -216,7 +237,7 @@ func TestStopReleasesAndBlocks(t *testing.T) {
 		t.Fatalf("take = %v %v", took, err)
 	}
 	a.SetStopped(true)
-	if !a.Stopped() || a.autoOK() || a.autoTake(now) || !a.AutoHeld(m) {
+	if !a.Stopped() || a.holdReason() != HoldStopped || !a.AutoHeld(m) {
 		t.Fatal("not stopped")
 	}
 	le, _ := a.leases.get(m.ID)
@@ -325,179 +346,5 @@ func TestSeatAddedDuringStopStartsAfterResume(t *testing.T) {
 	})
 	if len(l.all()) != 1 {
 		t.Fatalf("resumed seat runs = %d", len(l.all()))
-	}
-}
-
-// A turn is spent only by work: a wake whose claim comes back empty (the
-// message's lease is in its backoff, another handler has it) gives its turn
-// back, so a loop that finds nothing to hand over never pauses the project.
-func TestAutonomyEmptyClaimCostsNoTurn(t *testing.T) {
-	p := &fakePoster{}
-	dir := t.TempDir()
-	a, b := deliveryPair(t, dir, p, nil)
-	a.SetAutonomy(Autonomy{Mode: AutonomyFull, TurnsPerHour: 3})
-	regClaude(t, a, dir, "s-c", testSocket, true)
-	m := ask(t, a, b, "in its backoff")
-	now := time.Now()
-	if took, err := a.leases.take(m.ID, "", "s-c", ViaInbox, "tok12345", now.Add(time.Minute), now); err != nil || !took {
-		t.Fatalf("take = %v %v", took, err)
-	}
-	if _, err := a.leases.revoke("s-c", []string{m.ID}, "wake_failed", now); err != nil {
-		t.Fatal(err)
-	}
-	for range 10 {
-		a.wakeIdle(context.Background())
-	}
-	if st := a.AutonomyStatus(); st.Paused || st.TurnsLastHour != 0 || st.Run != 0 || len(p.calls) != 0 {
-		t.Fatalf("empty claims spent turns: %+v, posts %v", st, p.calls)
-	}
-	// Nor does a pass over a message in its backoff write the budget state.
-	if _, err := os.Stat(filepath.Join(a.cfg.DataDir, autonomyFile)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("passes with nothing to claim wrote %s: %v", autonomyFile, err)
-	}
-	backoffOver(a, m.ID)
-	a.wakeIdle(context.Background())
-	if st := a.AutonomyStatus(); st.TurnsLastHour != 1 || len(p.calls) != 1 {
-		t.Fatalf("the wake was not counted once: %+v, posts %v", st, p.calls)
-	}
-
-	// The refund takes back exactly its own turn and the run it started.
-	a.ResumeAutonomy()
-	t0 := time.Now().Add(-10 * time.Minute)
-	if !a.autoTake(t0) || !a.autoTake(t0.Add(time.Minute)) {
-		t.Fatal("turns refused")
-	}
-	a.autoRefund(t0.Add(time.Minute))
-	a.autoRefund(t0.Add(time.Minute)) // twice: nothing more to give back
-	a.auto.mu.Lock()
-	st := a.auto.st
-	a.auto.mu.Unlock()
-	if len(st.Turns) != 1 || !st.LastTurn.Equal(t0) || !st.RunStart.Equal(t0) {
-		t.Fatalf("after the refund: %+v", st)
-	}
-	a.autoRefund(t0)
-	a.auto.mu.Lock()
-	st = a.auto.st
-	a.auto.mu.Unlock()
-	if len(st.Turns) != 0 || !st.LastTurn.IsZero() || !st.RunStart.IsZero() {
-		t.Fatalf("after the last refund: %+v", st)
-	}
-}
-
-// Two turns counted at one instant (seatsDue takes every seat's with one now):
-// the refund of one leaves the other, its LastTurn and the run it started, so
-// the next turn does not pause for a run without a start.
-func TestAutonomyRefundKeepsTurnOfSameInstant(t *testing.T) {
-	a, _ := deliveryPair(t, t.TempDir(), nil, nil)
-	a.SetAutonomy(Autonomy{Mode: AutonomyFull, TurnsPerHour: 30})
-	now := time.Now()
-	for range 2 {
-		if !a.autoTake(now) {
-			t.Fatal("turn refused")
-		}
-	}
-	a.autoRefund(now) // one seat's claim came back empty
-	a.auto.mu.Lock()
-	st := a.auto.st
-	a.auto.mu.Unlock()
-	if len(st.Turns) != 1 || !st.LastTurn.Equal(now) || !st.RunStart.Equal(now) {
-		t.Fatalf("after the refund of one of two: %+v", st)
-	}
-	if !a.autoTake(now.Add(time.Minute)) {
-		t.Fatalf("the next turn paused: %+v", a.AutonomyStatus())
-	}
-	if s := a.AutonomyStatus(); s.Paused || s.TurnsLastHour != 2 {
-		t.Fatalf("status %+v", s)
-	}
-}
-
-// A turns pause is a rate limit: it ends by itself once the hour has room for
-// a turn again and pauses again when it fills up, which at the budget is every
-// freed turn: the owner is told of it once an hour, not each time. A run pause
-// waits for the owner.
-func TestAutonomyTurnsPauseEndsByItself(t *testing.T) {
-	a, _ := deliveryPair(t, t.TempDir(), nil, nil)
-	var told atomic.Int32
-	a.SetAutonomyPauseHook(func(string) { told.Add(1) })
-	a.SetAutonomy(Autonomy{Mode: AutonomyFull, TurnsPerHour: 3})
-	now := time.Now()
-	for _, ago := range []time.Duration{58 * time.Minute, 30 * time.Minute, 10 * time.Minute} {
-		if !a.autoTake(now.Add(-ago)) {
-			t.Fatalf("turn %v ago refused", ago)
-		}
-	}
-	if a.autoTake(now) || a.autoOK() || a.holdReason() != HoldPaused+PauseTurns || told.Load() != 1 {
-		t.Fatalf("not paused at the budget: %+v", a.AutonomyStatus())
-	}
-	// Three minutes on the oldest turn left the hour: room for one.
-	later := now.Add(3 * time.Minute)
-	if paused, _ := a.autoPaused(later); paused {
-		t.Fatal("still paused with room in the hour")
-	}
-	if st := a.AutonomyStatus(); st.Paused || st.Reason != "" || !st.PausedAt.IsZero() || !a.autoOK() || a.holdReason() != "" {
-		t.Fatalf("after the pause ran out: %+v", st)
-	}
-	restarted := newAutonomy(a.cfg.DataDir)
-	if err := restarted.load(); err != nil || restarted.st.Paused {
-		t.Fatalf("the ended pause was kept: %+v %v", restarted.st, err)
-	}
-	if !a.autoTake(later) || a.autoTake(later.Add(time.Minute)) || !a.AutonomyStatus().Paused || told.Load() != 1 {
-		t.Fatalf("the budget does not hold after the pause, or it was told again within the hour: %+v, told %d", a.AutonomyStatus(), told.Load())
-	}
-	// When it was told survives a restart, and an hour after it a pause is told again.
-	if restarted = newAutonomy(a.cfg.DataDir); restarted.load() != nil || !restarted.st.ToldAt.Equal(now) {
-		t.Fatalf("told at %v, want %v", restarted.st.ToldAt, now)
-	}
-	hour := now.Add(pauseToldEvery + 2*time.Minute)
-	if !a.autoTake(hour) || !a.autoTake(hour.Add(time.Second)) || a.autoTake(hour.Add(2*time.Second)) || told.Load() != 2 {
-		t.Fatalf("a pause an hour after the last one told: %+v, told %d", a.AutonomyStatus(), told.Load())
-	}
-	// A pause for continuous work stays until the owner resumes.
-	a.ResumeAutonomy()
-	a.SetAutonomy(Autonomy{Mode: AutonomyFull, TurnsPerHour: 100, MaxRun: 20 * time.Minute})
-	for _, m := range []int{0, 10, 19} {
-		if !a.autoTake(now.Add(time.Duration(m) * time.Minute)) {
-			t.Fatalf("turn at +%dm refused", m)
-		}
-	}
-	if a.autoTake(now.Add(21 * time.Minute)) {
-		t.Fatal("work past its minutes went on")
-	}
-	if paused, reason := a.autoPaused(now.Add(10 * time.Hour)); !paused || reason != PauseRun {
-		t.Fatalf("a run pause ended by itself: %v %q", paused, reason)
-	}
-}
-
-// While a budget pauses autonomous delivery the node wakes nobody, so it does
-// not hold a live Claude session's waiter off: the waiter sees the message and
-// wakes the session with it.
-func TestPausedAutonomyLeavesWakeToWaiter(t *testing.T) {
-	p := &fakePoster{}
-	dir := t.TempDir()
-	a, b := deliveryPair(t, dir, p, nil)
-	a.SetAutonomy(Autonomy{Mode: AutonomyFull, TurnsPerHour: 100, MaxRun: time.Minute})
-	regClaude(t, a, dir, "s-c", testSocket, true)
-	m := ask(t, a, b, "while paused")
-	q := url.Values{"waiter": {"1"}, "session": {"s-c"}, "folder": {dir}, "actionable": {"1"}}
-	if page, err := a.UnreadQuery(q); err != nil || len(page.Messages) != 0 || !a.InboxWakes("s-c") {
-		t.Fatalf("the waiter is not held off while the node wakes: %+v %v", page, err)
-	}
-	// A run pause: it never ends by itself.
-	t0 := time.Now().Add(-10 * time.Minute)
-	if !a.autoTake(t0) || a.autoTake(t0.Add(5*time.Minute)) || a.autoOK() || a.AutonomyStatus().Reason != PauseRun {
-		t.Fatalf("not paused: %+v", a.AutonomyStatus())
-	}
-	if a.InboxWakes("s-c") {
-		t.Fatal("the node holds the inbox while it wakes nobody")
-	}
-	page, err := a.UnreadQuery(q)
-	if err != nil || len(page.Messages) != 1 || page.Messages[0].ID != m.ID {
-		t.Fatalf("the waiter sees nothing while paused: %+v %v", page, err)
-	}
-	if g, err := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-c", WakeToken: "0123456789abcdef"}); err != nil || !slices.Equal(g, []string{m.ID}) {
-		t.Fatalf("the waiter's claim while paused: %v %v", g, err)
-	}
-	if v := leaseViewOf(t, a, m.ID); v.Owner != "s-c" || v.Via != ViaWaiter || p.count() != 0 {
-		t.Fatalf("lease %+v, posts %v", v, p.calls)
 	}
 }

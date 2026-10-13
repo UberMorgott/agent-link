@@ -70,7 +70,7 @@ const sent: unknown[] = []
 
 function serve() {
   return fakeApi((method, path, body) => {
-    const project = () => ({ id: P, legacy: false, name: 'Сайт', alias: '', display: 'Сайт', dir: 'W:/work', state: 'ready', problem: '', online: 2, total: 2, can_rename: true, has_invite: true, busy: false, autonomy: { mode: 'asked' as const, max_auto_depth: 8, max_auto_depth_default: true, turns_per_hour: 30, max_run_minutes: 240, turns_last_hour: 0, run_minutes: 0, stopped: autonomyStopped }, members: [{ name: 'local', self: true, online: true }, { name: 'bob', online: true }, { name: 'карл & sons', online: true }, { name: 'alice', online: false }] })
+    const project = () => ({ id: P, legacy: false, name: 'Сайт', alias: '', display: 'Сайт', dir: 'W:/work', state: 'ready', problem: '', online: 2, total: 2, can_rename: true, has_invite: true, busy: false, autonomy: { mode: 'asked' as const, max_auto_depth: 8, max_auto_depth_default: true, stopped: autonomyStopped }, members: [{ name: 'local', self: true, online: true }, { name: 'bob', online: true }, { name: 'карл & sons', online: true }, { name: 'alice', online: false }] })
     if (path === 'projects') return [project()]
     if (!path.startsWith(prefix)) throw new Error('unexpected call ' + method + ' ' + path)
     path = path.slice(prefix.length)

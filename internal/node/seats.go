@@ -1241,8 +1241,8 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 		due = append(due, c)
 	}
 	st.mu.Unlock()
-	if !n.autoOK() {
-		return // stopped, or paused by the budgets (autonomy.go)
+	if n.Stopped() {
+		return // the owner's stop (autonomy.go)
 	}
 	for _, s := range due {
 		ready := s.SessionID == "" && len(s.Pending) == 0
@@ -1281,15 +1281,11 @@ func (n *Node) seatsDue(ctx context.Context, now time.Time) {
 		if busy {
 			continue
 		}
-		if !n.autoTake(now) {
+		if n.Stopped() {
 			return
 		}
 		id, intro := s.ID, s.SessionID == ""
-		n.wg.Go(func() {
-			if !n.seatTurn(ctx, dl, id, intro, false) {
-				n.autoRefund(now) // no turn ran (nothing claimed): none spent
-			}
-		})
+		n.wg.Go(func() { n.seatTurn(ctx, dl, id, intro, false) })
 	}
 }
 

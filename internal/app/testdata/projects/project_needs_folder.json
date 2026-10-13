@@ -52,11 +52,7 @@
     "mode": "full",
     "stopped": false,
     "max_auto_depth": 0,
-    "max_auto_depth_default": true,
-    "turns_per_hour": 30,
-    "max_run_minutes": 240,
-    "turns_last_hour": 4,
-    "run_minutes": 25
+    "max_auto_depth_default": true
   },
   "launch_mode": "desktop"
 }

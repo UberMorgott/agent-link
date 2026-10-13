@@ -102,10 +102,10 @@ func (n *Node) wakeLoop(ctx context.Context) {
 			n.orphanSwept = now
 			n.orphanSweep(now)
 		}
-		// Stopped (SetStopped) or paused by the budgets (autonomy.go): no
+		// Stopped (SetStopped, autonomy.go): no
 		// wake, seat turn or launch starts; messages wait unread, and
 		// launchDue tells their authors why (held:<reason>).
-		if n.autoOK() {
+		if !n.Stopped() {
 			n.wakeIdle(ctx)
 		}
 		n.seatsDue(ctx, time.Now())
@@ -294,19 +294,18 @@ func (n *Node) wakeIdle(ctx context.Context) {
 			continue
 		}
 		// A message in its backoff (or failed, or another owner's) is claimed
-		// by no wake: no turn is taken, and no budget state written, for it.
+		// by no wake.
 		fit := take[:FitUnread(take)]
 		if !slices.ContainsFunc(fit, func(m UnreadMessage) bool {
 			return !n.leases.blocked(leaseKey(m.ForSeat, m.ID), s.SessionID, via, turn)
 		}) {
 			continue
 		}
-		if !n.autoTake(turn) {
-			return // stopped, or a budget just paused autonomous delivery
+		if n.Stopped() {
+			return
 		}
 		msgs, token := n.wakeClaim(s.SessionID, via, fit)
 		if len(msgs) == 0 {
-			n.autoRefund(turn) // nothing to wake with: no turn spent
 			continue
 		}
 		text := WakePrompt(msgs, skipped+len(take)-len(msgs)+page.Total-len(page.Messages), s.Folder, token)

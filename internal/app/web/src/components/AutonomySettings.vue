@@ -10,8 +10,7 @@ import { useProjectsStore } from '@/stores/projects'
 import type { AutonomyMode, AutonomyRequest, ProjectView, Status } from '@/types'
 
 // «Автономия агентов»: the emergency stop of every project's agents and, per
-// project, how far its agents work by themselves (mode, hop limit, budgets of
-// full mode) with what of the budgets is used and «Продолжить» after a pause.
+// project, how far its agents work by themselves (mode, hop limit).
 // Every change saves itself through its own request, not the settings form.
 const props = defineProps<{ project?: string }>()
 const app = useAppStore()
@@ -21,11 +20,11 @@ const MODES: AutonomyMode[] = ['off', 'asked', 'full']
 
 // A project's menu shows its own project; the settings page shows the local
 // folders' chats of «Мои нейросети» (read-only there, so set here), and a
-// temporary or topic chat only while paused or stopped, to resume it: else it
+// temporary or topic chat only while stopped, to resume it: else it
 // follows its folder's.
 const list = computed(() => (projects.list || []).filter((p) => !p.legacy && p.autonomy &&
   (props.project ? p.id === props.project
-    : p.scope === 'local' && (!p.local_chat || !!p.autonomy.paused || p.autonomy.stopped))))
+    : p.scope === 'local' && (!p.local_chat || !!p.autonomy.stopped))))
 
 // The pause of a local chat's agents: its chat has no composer, so it is here.
 async function setStopped(p: ProjectView, on: boolean) {
@@ -84,26 +83,14 @@ function setMode(p: ProjectView, ev: Event) {
   void save(p, { autonomy: (ev.target as HTMLSelectElement).value as AutonomyMode })
 }
 
-function setLimit(p: ProjectView, field: 'max_auto_depth' | 'turns_per_hour' | 'max_run_minutes', ev: Event) {
-  // An empty hop limit follows the mode again (-1); an empty budget is its default (0).
-  const value = number(ev, field === 'max_auto_depth' ? -1 : 0)
+function setLimit(p: ProjectView, field: 'max_auto_depth', ev: Event) {
+  // An empty hop limit follows the mode again (-1).
+  const value = number(ev, -1)
   if (Number.isNaN(value)) {
     notes[p.id] = t("error.autonomy")
     return
   }
   void save(p, { [field]: value })
-}
-
-async function resume(p: ProjectView) {
-  busy[p.id] = true
-  try {
-    await projects.resumeAutonomy(p.id)
-    notes[p.id] = ''
-  } catch (e) {
-    notes[p.id] = (e as Error).message
-  } finally {
-    busy[p.id] = false
-  }
 }
 
 const depthShown = (p: ProjectView) => (p.autonomy!.max_auto_depth_default ? '' : String(p.autonomy!.max_auto_depth))
@@ -203,21 +190,6 @@ const depthDefault = (p: ProjectView) => fmt("autonomy.depth.default", {
             @click="setStopped(p, !p.autonomy!.stopped)"
           />
         </p>
-        <p
-          v-if="p.autonomy!.paused"
-          class="autonomy-paused hint warn flex flex-wrap items-center gap-2"
-          role="status"
-        >
-          <span>{{ fmt("autonomy.paused", { reason: t("autonomy.reason." + (p.autonomy!.pause_reason || 'turns')) }) }}</span>
-          <UButton
-            class="autonomy-resume"
-            type="button"
-            size="sm"
-            :label="t('autonomy.resume')"
-            :disabled="busy[p.id]"
-            @click="resume(p)"
-          />
-        </p>
         <label class="field"><span>{{ t("autonomy.mode.label") }}</span>
           <select
             class="native-select autonomy-mode"
@@ -255,41 +227,6 @@ const depthDefault = (p: ProjectView) => fmt("autonomy.depth.default", {
         /></label>
         <p class="hint">
           {{ depthDefault(p) }}. {{ t("autonomy.depth.hint") }}
-        </p>
-        <label class="field"><span>{{ t("autonomy.turns.label") }}</span><UInput
-          class="autonomy-turns"
-          type="number"
-          min="1"
-          max="600"
-          step="1"
-          :model-value="String(p.autonomy!.turns_per_hour)"
-          :disabled="busy[p.id]"
-          @change="setLimit(p, 'turns_per_hour', $event)"
-        /></label>
-        <p class="hint">
-          {{ t("autonomy.turns.hint") }}
-        </p>
-        <label class="field"><span>{{ t("autonomy.run.label") }}</span><UInput
-          class="autonomy-run"
-          type="number"
-          min="10"
-          max="1440"
-          step="1"
-          :model-value="String(p.autonomy!.max_run_minutes)"
-          :disabled="busy[p.id]"
-          @change="setLimit(p, 'max_run_minutes', $event)"
-        /></label>
-        <p class="hint">
-          {{ t("autonomy.run.hint") }}
-        </p>
-        <p
-          v-if="p.autonomy!.mode === 'full'"
-          class="autonomy-used hint"
-        >
-          {{ fmt("autonomy.used", {
-            turns: String(p.autonomy!.turns_last_hour), limit: String(p.autonomy!.turns_per_hour),
-            minutes: String(p.autonomy!.run_minutes), max: String(p.autonomy!.max_run_minutes),
-          }) }}
         </p>
         <p
           v-if="notes[p.id]"

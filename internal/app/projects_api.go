@@ -40,7 +40,6 @@ func (a *App) projectRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET "+p+"/{pid}", func(w http.ResponseWriter, r *http.Request) { a.writeView(w, r.PathValue("pid")) })
 	api.HandleFunc("POST "+p+"/{pid}/name", a.renameProject)
 	api.HandleFunc("POST "+p+"/{pid}/binding", a.bindProject)
-	api.HandleFunc("POST "+p+"/{pid}/autonomy/resume", a.resumeAutonomy)
 	api.HandleFunc("POST "+p+"/{pid}/autonomy/stop", a.stopProjectAgents)
 	api.HandleFunc("POST "+p+"/{pid}/invite", a.revealInvite)
 	api.HandleFunc("POST "+p+"/{pid}/members/add", a.addProjectMember)
@@ -712,7 +711,7 @@ func (a *App) bindLocked(pid string, req bindRequest) (changed bool, err error) 
 		c.n.SetLaunchMode(b.LaunchModeOf())
 	}
 	a.log.Info("project binding", "project", pid, "alias", b.Alias, "launch_mode", b.LaunchModeOf(), "autonomy", b.AutonomyOf(),
-		"max_auto_depth", b.MaxAutoDepthOf(), "turns_per_hour", b.TurnsPerHourOf(), "max_run_minutes", b.MaxRunMinutesOf())
+		"max_auto_depth", b.MaxAutoDepthOf())
 	return true, nil
 }
 

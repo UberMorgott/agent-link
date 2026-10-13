@@ -47,8 +47,7 @@ func contractValues() map[string]any {
 	selfAgent.Agent, bobAgent.Agent = true, true
 	ready := ProjectView{ID: pid, Scope: settings.ProjectScopeNetwork, Name: "Сайт", Alias: "", Display: "Сайт", Dir: `C:\work\site`, State: ProjectReady,
 		Online: 1, Total: 2, Agents: 2, Members: []node.MemberInfo{selfAgent, bobAgent, carol}, CanRename: true, HasInvite: true, LaunchMode: node.LaunchDesktop,
-		Autonomy: &AutonomyView{Mode: settings.AutonomyFull, MaxAutoDepth: 0, MaxAutoDepthDefault: true, TurnsPerHour: 30, MaxRunMinutes: 240,
-			TurnsLastHour: 4, RunMinutes: 25}}
+		Autonomy: &AutonomyView{Mode: settings.AutonomyFull, MaxAutoDepth: 0, MaxAutoDepthDefault: true}}
 	busy := ready
 	busy.Busy = true
 	aliased := ready
