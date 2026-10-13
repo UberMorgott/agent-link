@@ -15,7 +15,9 @@ import (
 // for the session then, no message has two pointers in the queue at once
 // (leaseBook.handedTo), and no thread has two pointers its rollout has not
 // shown (pointerPending): a wake that is due meanwhile leases its messages to
-// the session under the pointer already queued. The node does not depend on
+// the session under the pointer already queued, unless that one is lost
+// (unproven for queuedOwnerMax, or not run by a turn the thread took since:
+// pointer.go), when a new one is queued. The node does not depend on
 // the thread's hooks: the prompt in its rollout ends the wake count and starts
 // the fetch's grace (observeQueueStart), its fetch or activity it reports ends
 // the count too (Deliver, SessionActivity), and a wake that stays unproven
@@ -336,9 +338,15 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		// pointer's turn fetches everything that waits then, so these messages
 		// are leased to the session under its token (pointerPending); the
 		// wake's schedule, count and bounds are those of a wake queued anew.
+		// A pointer queued before a turn that just ended may run next: nothing
+		// for the thread until that is settled (pointerLostWait); one it did
+		// not run by then is lost, and the wake queues a new one.
 		pending := ""
 		if !byInbox {
-			pending = n.pointerPending(s)
+			var settling bool
+			if pending, settling = n.pointerPending(s, turn); settling {
+				continue
+			}
 		}
 		msgs, token := n.wakeClaim(s.SessionID, via, fit, pending)
 		if len(msgs) == 0 {
@@ -352,7 +360,7 @@ func (n *Node) wakeIdle(ctx context.Context) {
 			// Covered by the pointer in its queue: no prompt.
 		default:
 			// No message, no image of one: the turn fetches them (pointer.go).
-			err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, PointerPrompt(len(msgs), s.SessionID, token, cliExecutable()))
+			err = n.waker.Wake(ctx, s.CodexHome, s.SessionID, PointerPrompt(s.SessionID, token, cliExecutable()))
 		}
 		if err != nil {
 			// Its hooks, another session or a launch deliver them instead.

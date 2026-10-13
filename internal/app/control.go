@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -621,22 +622,59 @@ func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 		}
 		return out, nil
 	}, changed...)
-	if err == nil && fetch {
-		err = deliverUnread(ctxs, session, &out)
-	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if fetch {
+		into := make([]fetchCtx, 0, len(ctxs))
+		for _, c := range ctxs {
+			into = append(into, fetchCtx{id: c.id, deliver: c.n.Deliver})
+		}
+		// A context that failed hides nothing another one acknowledged: the
+		// answer is what was delivered, the rest stays unread for the next call.
+		// With nothing delivered there is nothing to hide: the call failed, and
+		// an empty answer would tell the session that nothing waits for it.
+		err := deliverUnread(into, session, &out)
+		if fetchFailed(out, err) {
+			a.log.Warn("a session's fetch delivered nothing", "session", session, "err", err)
+			http.Error(w, "the messages could not be delivered; they stay unread: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err != nil {
+			a.log.Warn("a session's fetch was delivered in part", "session", session, "delivered", len(out.Messages), "err", err)
+		}
+	}
 	writeJSON(w, out)
+}
+
+// fetchFailed reports whether a fetch whose delivery ended with err
+// (deliverUnread) is an error for its caller: no context delivered anything of
+// page. One that delivered a part answers with that part.
+func fetchFailed(page node.UnreadPage, err error) bool {
+	return err != nil && len(page.Messages) == 0
+}
+
+// fetchCtx is one context of a session's fetch: its id (UnreadMessage.Project)
+// and its delivery (node.Deliver).
+type fetchCtx struct {
+	id      string
+	deliver func(session string, ids []string) ([]string, error)
 }
 
 // deliverUnread makes page, the merged listing of ctxs a session asked for as
 // its delivery, that delivery: what one answer carries of it (node.FetchCut),
 // each message delivered in its own context (UnreadMessage.Project).
-func deliverUnread(ctxs []routeCtx, session string, page *node.UnreadPage) error {
+//
+// A context whose delivery fails ends nothing: an earlier one acknowledged its
+// messages already, and an answer without them would hide what the session can
+// never list again. The others are delivered all the same, page is the part
+// that was (the failed context's messages stay unread behind it: Next, Note),
+// and the errors are returned for the log.
+func deliverUnread(ctxs []fetchCtx, session string, page *node.UnreadPage) error {
 	more := node.FetchCut(page)
 	var granted []string
+	var errs []error
 	for _, c := range ctxs {
 		var ids []string
 		for _, m := range page.Messages {
@@ -646,14 +684,16 @@ func deliverUnread(ctxs []routeCtx, session string, page *node.UnreadPage) error
 		}
 		// With nothing of this context too: the call proves the session takes
 		// its wakes there.
-		got, err := c.n.Deliver(session, ids)
+		got, err := c.deliver(session, ids)
 		if err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("context %s: %w", c.id, err))
+			more = more || len(ids) > 0
+			continue
 		}
 		granted = append(granted, got...)
 	}
 	node.FetchDone(page, granted, more)
-	return nil
+	return errors.Join(errs...)
 }
 
 // controlRelease serves POST /release: every context the session is

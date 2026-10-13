@@ -201,7 +201,7 @@ func TestChatCommands(t *testing.T) {
 func TestChatUnreadAsSession(t *testing.T) {
 	f := newFakeAPI(t)
 	dir := t.TempDir()
-	prompt := node.PointerPrompt(1, "thread-1", "p-0123456789abcdef", "agentlink.exe")
+	prompt := node.PointerPrompt("thread-1", "p-0123456789abcdef", "agentlink.exe")
 	_, line, ok := strings.Cut(prompt, `"agentlink.exe" `)
 	if !ok {
 		t.Fatalf("the pointer names no CLI command: %s", prompt)

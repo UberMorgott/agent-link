@@ -111,7 +111,11 @@ type Session struct {
 	// IdleAt is the last hook event that said the session is idle (a
 	// registration that is no Heartbeat): a turn its rollout shows started
 	// after it is one the hooks did not report (queueHeld).
-	IdleAt    time.Time `json:"idle_at,omitzero"`
+	IdleAt time.Time `json:"idle_at,omitzero"`
+	// TurnAt is the last hook event that said the session is in a turn (a
+	// registration that is no Heartbeat): a pointer queued before it that the
+	// turn did not show is lost (pointerTurned).
+	TurnAt    time.Time `json:"turn_at,omitzero"`
 	CodexHome string    `json:"codex_home,omitempty"`
 	// Woken: the node queued a wake in this idle period; Wakes of them (at
 	// most maxIdleWakes), the last at WokeAt. A wake the session never took
@@ -592,8 +596,12 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 		}
 	}
 	s.Asked, s.Idle, s.CodexHome, s.Native = asked, req.Idle, req.CodexHome, req.Native
-	if req.Idle && !req.Heartbeat {
+	switch {
+	case req.Heartbeat:
+	case req.Idle:
 		s.IdleAt = now
+	default:
+		s.TurnAt = now
 	}
 	if req.Native {
 		s.NativeSeen = now

@@ -252,7 +252,7 @@ func TestWakeIdleQueueSession(t *testing.T) {
 	reg(true)
 	first, _ := a.Unread("", "", 10)
 	// The prompt is a pointer: where to fetch, no message of its own.
-	if s := wake(); !s.Woken || w.count() != 1 || !strings.HasPrefix(w.calls[0], home+"|s-q|agent-link: для этой сессии есть новые сообщения (1); их текста здесь нет. [agent-link wake p-") ||
+	if s := wake(); !s.Woken || w.count() != 1 || !strings.HasPrefix(w.calls[0], home+"|s-q|agent-link: для этой сессии есть новые сообщения; их текста здесь нет. [agent-link wake p-") ||
 		!strings.Contains(w.calls[0], "[pointer for] wake up") || strings.Contains(w.texts[0], "wake up") || strings.Contains(w.texts[0], first.Messages[0].ID) ||
 		!strings.Contains(w.texts[0], "инструмент unread MCP-сервера agentlink") || !strings.Contains(w.texts[0], " chat unread --session s-q\n") || strings.Contains(w.texts[0], dir) {
 		t.Fatalf("idle session: %+v %v", s, w.calls)
@@ -262,9 +262,10 @@ func TestWakeIdleQueueSession(t *testing.T) {
 	if w.count() != 1 {
 		t.Fatalf("woken twice in one idle period: %v", w.calls)
 	}
-	// Its next turn did not acknowledge it yet, and a new message came: the
-	// next idle period's wake is for the new one only, and no second prompt:
-	// the pointer in the queue, not shown yet, covers it (one at a time).
+	// Its next turn was not the pointer's and did not acknowledge it, and a new
+	// message came: nothing is queued while the thread may still run the
+	// pointer (pointerLostWait); then it is lost, and the idle period's wake is
+	// a new pointer, for the new message only (none is named by two).
 	if _, err := b.SendRequest(SendRequest{To: "a", Body: "second one", AuthorKind: AuthorAgent}); err != nil {
 		t.Fatal(err)
 	}
@@ -273,9 +274,15 @@ func TestWakeIdleQueueSession(t *testing.T) {
 	reg(true)
 	wake()
 	both, _ := a.Unread("", "", 10)
+	if _, ok := a.leases.get(both.Messages[1].ID); ok || w.count() != 1 {
+		t.Fatalf("queued while the first pointer may still run: %v", w.calls)
+	}
+	hookSilence(a.Node, "s-q", pointerLostWait+time.Second)
+	wake()
 	l1, _ := a.leases.get(both.Messages[0].ID)
 	l2, _ := a.leases.get(both.Messages[1].ID)
-	if w.count() != 1 || l2.State != LeaseLeased || l2.Token != wakeTokenOf(w.texts[0]) || l2.Attempts != 1 || l1.Attempts != 1 {
+	if w.count() != 2 || l2.State != LeaseLeased || l2.Token != wakeTokenOf(w.texts[1]) || l2.Token == wakeTokenOf(w.texts[0]) || l2.Attempts != 1 ||
+		l1.State != LeaseRetry || l1.Reason != reasonLost || l1.Attempts != 1 || strings.Contains(w.calls[1], "[pointer for] wake up") {
 		t.Fatalf("new idle period: %v %+v %+v", w.calls, l1, l2)
 	}
 	// A pointer carried none of them: they are the session's hooks' to deliver
@@ -425,7 +432,7 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 		t.Fatalf("wakes %v", w.calls)
 	}
 	text := w.calls[0]
-	if !strings.Contains(text, "новые сообщения (4)") || strings.Contains(w.texts[0], long) {
+	if !strings.Contains(text, "новые сообщения;") || strings.Contains(w.texts[0], long) {
 		t.Fatalf("text %q", text)
 	}
 	for i := range 4 {
@@ -524,9 +531,21 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The thread took a turn and did not run the pointer: nothing more while
+	// it may still run it, then it is lost and the new idle period's wake is a
+	// new pointer, for what no pointer was queued for.
 	a.wakeIdle(context.Background())
-	if l := leasedTo("m5 "); w.count() != 1 || l.State != LeaseLeased || l.Token != token || l.Attempts != 1 {
+	if l := leasedTo("m5 "); w.count() != 1 || l.State != "" {
+		t.Fatalf("queued while the pointer may still run: %d %+v", w.count(), l)
+	}
+	hookSilence(a.Node, "s-q", pointerLostWait+time.Second)
+	a.wakeIdle(context.Background())
+	if l := leasedTo("m5 "); w.count() != 2 || l.State != LeaseLeased || l.Token == token || l.Token != wakeTokenOf(w.texts[1]) || l.Attempts != 1 ||
+		!strings.Contains(w.calls[1], "новые сообщения;") {
 		t.Fatalf("new idle period not woken: %d %+v", w.count(), l)
+	}
+	if l := leasedTo("m0 "); l.State != LeaseRetry || l.Reason != reasonLost || l.Attempts != 1 {
+		t.Fatalf("lease of the lost pointer's message: %+v", l)
 	}
 	// Its own hooks deliver what a pointer was queued for.
 	page, _ = a.UnreadFor(dir, "s-q", "", 10)

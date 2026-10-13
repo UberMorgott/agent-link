@@ -183,6 +183,9 @@ func (n *Node) leaseSweep(now time.Time) {
 		live[id] = true
 	}
 	n.deliv.mu.Unlock()
+	// Before due: what is leased under a pointer that is lost now goes back to
+	// retry with it, not on to queued_stale.
+	n.orphanPointers(now)
 	ends := n.leases.due(now, func(owner string) bool { return sessionOwner(owner) && !live[owner] },
 		func(owner string) time.Time { return active[owner] })
 	type group struct{ owner, reason string }
@@ -216,6 +219,7 @@ func (n *Node) leaseSweep(now time.Time) {
 			n.report(n.unfailed(list), AttemptHeld+":"+HoldUnfetched)
 		}
 	}
+	n.lostPointers(now)
 	for _, e := range n.leases.staleHolds(now) {
 		n.releaseHold(e.owner, []string{e.id}, now)
 	}

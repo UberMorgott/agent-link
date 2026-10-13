@@ -26,13 +26,20 @@ import (
 // mcpClient connects an in-memory MCP client to the agentlink MCP server on api.
 func mcpClient(t *testing.T, api string) *mcp.ClientSession {
 	t.Helper()
+	return mcpClientNamed(t, api, "test")
+}
+
+// mcpClientNamed is mcpClient whose client names itself name in its
+// initialize (clientInfo.name).
+func mcpClientNamed(t *testing.T, api, name string) *mcp.ClientSession {
+	t.Helper()
 	ctx := context.Background()
 	st, ct := mcp.NewInMemoryTransports()
 	ss, err := newMCPTools(config.Config{API: api}, nil).s.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "v0"}, nil).Connect(ctx, ct, nil)
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: name, Version: "v0"}, nil).Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,13 +390,67 @@ func TestMCPUnreadSessionArgument(t *testing.T) {
 			t.Fatalf("unread %v asked %q, want %q", c.args, f.reqs, c.want)
 		}
 	}
+	// A Codex process that knows its thread from its environment (an older
+	// build) still takes the id the pointer names.
+	t.Setenv(envCodexThread, "thread-env")
+	f.reqs = nil
+	if text, isErr := callTool(t, cs, "unread", map[string]any{"session": "019f-thread"}); isErr || len(f.reqs) != 1 || !strings.Contains(f.reqs[0], "session=019f-thread") {
+		t.Fatalf("a Codex thread's unread: %s %q", text, f.reqs)
+	}
+	t.Setenv(envCodexThread, "")
+	// A Claude Code session is no thread a pointer wakes: the argument cannot
+	// make its listing another session's delivery (a queue session's own
+	// listing reads what it returns), it stays its own.
+	t.Setenv(envClaudeSession, "session-claude")
+	f.reqs = nil
+	if text, isErr := callTool(t, cs, "unread", map[string]any{"session": "019f-thread"}); isErr || len(f.reqs) != 1 ||
+		!strings.Contains(f.reqs[0], "session=session-claude") || strings.Contains(f.reqs[0], "019f-thread") {
+		t.Fatalf("a Claude session's unread asked as another session: %s %q", text, f.reqs)
+	}
+	// Whose the server is, its client says (initialize's clientInfo), not an
+	// inherited variable: a Codex server started from inside a Claude Code
+	// session carries that session's id in its environment and names no thread
+	// in its calls. The pointer's argument is honoured, and without one the
+	// Claude session is not its own.
+	codex := mcpClientNamed(t, f.api, "codex-mcp-client")
+	f.reqs = nil
+	if text, isErr := callTool(t, codex, "unread", map[string]any{"session": "019f-thread"}); isErr || len(f.reqs) != 1 ||
+		!strings.Contains(f.reqs[0], "session=019f-thread") || strings.Contains(f.reqs[0], "session-claude") {
+		t.Fatalf("a Codex client's unread with a stray Claude session id: %s %q", text, f.reqs)
+	}
+	f.reqs = nil
+	if text, isErr := callTool(t, codex, "unread", nil); isErr || len(f.reqs) != 1 || strings.Contains(f.reqs[0], "session=") {
+		t.Fatalf("a Codex client's unread spoke as the inherited Claude session: %s %q", text, f.reqs)
+	}
+	// The executable a call is handed to (delegateMCP) hears it by its
+	// environment.
+	t.Setenv(envMCPClient, hookCodex)
+	if got := unreadSession(context.Background(), "019f-thread"); got != "019f-thread" {
+		t.Fatalf("a handed-on Codex call asked as %q", got)
+	}
+	t.Setenv(envMCPClient, "")
+	// A Claude Code client: the argument is ignored, with its session id and
+	// without one (a stray Codex thread id is not its session either).
+	claude := mcpClientNamed(t, f.api, "claude-code")
+	f.reqs = nil
+	if text, isErr := callTool(t, claude, "unread", map[string]any{"session": "019f-thread"}); isErr || len(f.reqs) != 1 ||
+		!strings.Contains(f.reqs[0], "session=session-claude") || strings.Contains(f.reqs[0], "019f-thread") {
+		t.Fatalf("a Claude client's unread asked as another session: %s %q", text, f.reqs)
+	}
+	t.Setenv(envClaudeSession, "")
+	t.Setenv(envCodexThread, "thread-stray")
+	f.reqs = nil
+	if text, isErr := callTool(t, claude, "unread", map[string]any{"session": "019f-thread"}); isErr || len(f.reqs) != 1 || strings.Contains(f.reqs[0], "session=") {
+		t.Fatalf("a Claude client's unread without a session id: %s %q", text, f.reqs)
+	}
+	t.Setenv(envCodexThread, "")
 	t.Setenv(envJobID, "job-1")
 	f.reqs = nil
 	if text, isErr := callTool(t, cs, "unread", map[string]any{"session": "019f-thread"}); isErr || len(f.reqs) != 1 || strings.Contains(f.reqs[0], "session=") {
 		t.Fatalf("a job's unread: %s %q", text, f.reqs)
 	}
 	// The prompt's own words name the argument and its value.
-	if p := node.PointerPrompt(2, "019f-thread", "p-0123456789abcdef", ""); !strings.Contains(p, `session: "019f-thread"`) {
+	if p := node.PointerPrompt("019f-thread", "p-0123456789abcdef", ""); !strings.Contains(p, `session: "019f-thread"`) {
 		t.Fatalf("the pointer names no session argument: %s", p)
 	}
 }

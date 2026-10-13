@@ -37,6 +37,13 @@ func (q *staleQueue) consumed(path, token string, ids ...string) {
 	eventually(q.t, "the pointer's observer ended", func() bool { _, on := q.a.observed.Load("s-q\x00" + token); return !on })
 }
 
+// pending is the token of the pointer the node still waits for in the thread's
+// queue ("" for none).
+func (q *staleQueue) pending() string {
+	token, _ := q.a.leases.pendingPointer("s-q")
+	return token
+}
+
 // state is what a pointer that finds nothing must leave as it is: the lease
 // book, the session and what is unread.
 func (q *staleQueue) state() (map[string]Lease, Session, []string) {
@@ -99,15 +106,16 @@ func TestPointerAfterEarlierFetchChangesNothing(t *testing.T) {
 }
 
 // A pointer consumed late fetches what waits for the session then: a message
-// that came after it was queued too (leased to it, no pointer of its own),
-// never one read meanwhile, though its own lease failed unproven long before.
+// that came after it was queued too, never one read meanwhile, though its own
+// lease failed unproven long before (and the newer message got a pointer of
+// its own by then, which finds nothing left).
 func TestPointerConsumedLateFetchesCurrent(t *testing.T) {
 	q := newStaleQueue(t)
 	path := q.rollout("")
 	answered, kept := q.send("request answered meanwhile"), q.send("request still open")
 	q.pass()
 	first := wakeTokenOf(q.lastWake())
-	if q.w.count() != 1 || !strings.Contains(q.lastWake(), "новые сообщения (2)") {
+	if q.w.count() != 1 || !strings.Contains(q.lastWake(), "новые сообщения;") {
 		t.Fatalf("first pointer: %v", q.w.calls)
 	}
 	// A person read and answered one of them in the app.
@@ -119,8 +127,9 @@ func TestPointerConsumedLateFetchesCurrent(t *testing.T) {
 	if l, _ := q.a.leases.get(kept.ID); l.State != LeaseFailed || l.Reason != "queued_stale" {
 		t.Fatalf("lease of the unconsumed pointer's message: %+v", l)
 	}
-	if l, _ := q.a.leases.get(newer.ID); q.w.count() != 1 || l.State != LeaseLeased || l.Token != first {
-		t.Fatalf("the newer message is not the queued pointer's: %v %+v", q.w.calls, l)
+	// Unproven for queuedOwnerMax, the first pointer keeps no other out.
+	if l, _ := q.a.leases.get(newer.ID); q.w.count() != 2 || l.State != LeaseLeased || l.Token == first || l.Token != wakeTokenOf(q.lastWake()) {
+		t.Fatalf("the newer message got no pointer of its own: %v %+v", q.w.calls, l)
 	}
 
 	q.consumed(path, first)
@@ -146,7 +155,7 @@ func TestPointerConsumedLateFetchesCurrent(t *testing.T) {
 		t.Fatalf("a fetch of nothing changed state: %+v -> %+v, %+v -> %+v", leases, l2, sess, s2)
 	}
 	q.pass()
-	if q.w.count() != 1 {
+	if q.w.count() != 2 {
 		t.Fatalf("queued again with nothing unread: %v", q.w.calls)
 	}
 }
@@ -377,8 +386,8 @@ func TestFetchOnlyForQueueSessions(t *testing.T) {
 // exact CLI command with the node's own executable and that id. No folder: a
 // path would be text the agent's shell expands.
 func TestPointerPromptText(t *testing.T) {
-	got := PointerPrompt(3, "019f-thread", "p-0123456789abcdef", `C:\Program Files\agentlink\agentlink.exe`)
-	want := "agent-link: для этой сессии есть новые сообщения (3); их текста здесь нет. [agent-link wake p-0123456789abcdef]\n" +
+	got := PointerPrompt("019f-thread", "p-0123456789abcdef", `C:\Program Files\agentlink\agentlink.exe`)
+	want := "agent-link: для этой сессии есть новые сообщения; их текста здесь нет. [agent-link wake p-0123456789abcdef]\n" +
 		"Получите их сейчас: вызовите инструмент unread MCP-сервера agentlink с одним аргументом session: \"019f-thread\". " +
 		"Если такого инструмента нет, выполните команду (в PowerShell начните её с &): " +
 		`"C:\Program Files\agentlink\agentlink.exe" chat unread --session 019f-thread` + "\n" +
@@ -391,7 +400,7 @@ func TestPointerPromptText(t *testing.T) {
 	if !validWakeToken("p-0123456789abcdef") || pointerToken(randomHex(8)) || !pointerToken(pointerTokenPrefix+randomHex(8)) {
 		t.Fatal("pointer tokens are not told from the others")
 	}
-	if got := PointerPrompt(1, "s", "p-0123456789abcdef", ""); !strings.Contains(got, "&): agentlink chat unread --session s\n") {
+	if got := PointerPrompt("s", "p-0123456789abcdef", ""); !strings.Contains(got, "&): agentlink chat unread --session s\n") {
 		t.Fatalf("without an executable: %s", got)
 	}
 	// The node queues it with its own executable (cliExecutable, as Render's CLI line).
@@ -501,7 +510,7 @@ func TestOnePointerAtATime(t *testing.T) {
 	first := q.send("first request")
 	q.pass()
 	token := wakeTokenOf(q.lastWake())
-	if q.w.count() != 1 || !pointerToken(token) || q.a.leases.pendingPointer("s-q") != token {
+	if q.w.count() != 1 || !pointerToken(token) || q.pending() != token {
 		t.Fatalf("first pointer: %v", q.w.calls)
 	}
 	second := q.send("second request")
@@ -532,7 +541,7 @@ func TestOnePointerAtATime(t *testing.T) {
 			t.Fatalf("lease of %q after the pointer's prompt: %+v", m.Body, l)
 		}
 	}
-	if q.a.leases.pendingPointer("s-q") != "" {
+	if q.pending() != "" {
 		t.Fatal("a pointer the rollout shows still keeps the queue closed")
 	}
 	page := q.fetch()
@@ -556,8 +565,10 @@ func TestOnePointerAtATime(t *testing.T) {
 // A pointer that stays unconsumed keeps the bounds of every queue wake: what
 // was leased to it fails unproven after queuedOwnerMax (needs_human), the
 // wakes of the idle period are spent on the same schedule, and what waits
-// past them is reported once. Nothing more was queued meanwhile, and a
-// pointer the rollout shows though no observer saw it opens the queue again.
+// past them is reported once. While it is inside queuedOwnerMax nothing more
+// is queued; unproven past it, it is lost for the node, and the stale wake
+// that is due then queues one new pointer. A pointer the rollout shows though
+// no observer saw it opens the queue again too.
 func TestUnconsumedPointerKeepsBounds(t *testing.T) {
 	q := newStaleQueue(t)
 	path := q.rollout("")
@@ -568,22 +579,33 @@ func TestUnconsumedPointerKeepsBounds(t *testing.T) {
 	for i := maxIdleWakes; i < limit; i++ {
 		covered = append(covered, q.send(fmt.Sprintf("stale request %d", i)))
 		q.age(staleWakeWait(i) + time.Second)
+		if want := stalePrompts(i); q.w.count() != want {
+			t.Fatalf("stale wake %d: %d prompts, want %d", i+1, q.w.count(), want)
+		}
+	}
+	second := wakeTokenOf(q.lastWake())
+	if second == token || !pointerToken(second) {
+		t.Fatalf("no new pointer once the first was unproven for queuedOwnerMax: %v", q.w.calls)
 	}
 	waiting := q.send("request past the cap")
 	q.age(queuedOwnerMax + time.Second)
-	if s := q.session(); q.w.count() != 1 || s.Wakes != limit || !s.WakeCapped {
+	if s := q.session(); q.w.count() != 2 || s.Wakes != limit || !s.WakeCapped {
 		t.Fatalf("past the cap: prompts %d %+v", q.w.count(), s)
 	}
-	for _, m := range append([]Message{first}, covered...) {
+	for i, m := range append([]Message{first}, covered...) {
+		want := token
+		if i == len(covered) {
+			want = second // the wake that found the first pointer lost
+		}
 		l, _ := q.a.leases.get(m.ID)
-		if l.State != LeaseFailed || l.Reason != "queued_stale" || l.Token != token {
-			t.Fatalf("lease of %q: %+v", m.Body, l)
+		if l.State != LeaseFailed || l.Reason != "queued_stale" || l.Token != want || l.Attempts != 1 {
+			t.Fatalf("lease of %q: %+v, want token %s", m.Body, l, want)
 		}
 		waitAttempts(t, q.b, m, AttemptWakeRequested, AttemptNeedsHuman)
 	}
 	waitAttempts(t, q.b, waiting, AttemptNeedsHuman)
-	if q.a.leases.pendingPointer("s-q") != token {
-		t.Fatal("the unconsumed pointer is forgotten with its leases' failure")
+	if q.pending() != "" {
+		t.Fatal("a pointer whose leases failed unproven still keeps the queue closed")
 	}
 
 	// The thread runs it at last, with no observer of the node watching: a
@@ -593,8 +615,209 @@ func TestUnconsumedPointerKeepsBounds(t *testing.T) {
 	q.reg(true)
 	late := q.send("request after the pointer ran")
 	q.pass()
-	if next := wakeTokenOf(q.lastWake()); q.w.count() != 2 || next == token || !strings.Contains(q.lastWake(), "[pointer for] "+late.Body) {
+	if next := wakeTokenOf(q.lastWake()); q.w.count() != 3 || next == token || next == second || !strings.Contains(q.lastWake(), "[pointer for] "+late.Body) {
 		t.Fatalf("no new pointer after the old one ran: %v", q.w.calls)
+	}
+}
+
+// stalePrompts is how many prompts a thread that proves nothing has in its
+// queue after wake i+1 of its idle period, each wake aged by its own wait
+// (staleQueue.age makes every open lease as old): the one pointer while that
+// is inside queuedOwnerMax, a second one from the wake that finds it unproven
+// past it (lost).
+func stalePrompts(i int) int {
+	if i >= maxIdleWakes && staleWakeWait(i) >= queuedOwnerMax {
+		return 2
+	}
+	return 1
+}
+
+// idleFor lets d pass in which the thread did nothing (see hookSilence).
+func (q *staleQueue) idleFor(d time.Duration) {
+	q.t.Helper()
+	hookSilence(q.a.Node, "s-q", d)
+}
+
+// hookSilence makes session's last hook events (the turn it took, its end)
+// and its leases d older: d passed in which it reported and proved nothing.
+func hookSilence(n *Node, session string, d time.Duration) {
+	n.sess.mu.Lock()
+	if s := n.sess.sessions[session]; s != nil {
+		if !s.TurnAt.IsZero() {
+			s.TurnAt = s.TurnAt.Add(-d)
+		}
+		s.IdleAt = s.IdleAt.Add(-d)
+	}
+	n.sess.mu.Unlock()
+	n.leases.mu.Lock()
+	for _, l := range n.leases.m {
+		if l.Owner == session {
+			l.At = l.At.Add(-d)
+		}
+	}
+	n.leases.mu.Unlock()
+}
+
+// The field case of a pointer Codex lost (it is never in the rollout): its
+// message fails unproven after queuedOwnerMax, and from then on it keeps no
+// other pointer out. Every later idle period's request gets a pointer of its
+// own, days on, whatever the book still holds of the lost ones.
+func TestLostPointerDoesNotBlockLaterPointers(t *testing.T) {
+	q := newStaleQueue(t)
+	q.rollout("")
+	first := q.send("first request")
+	q.pass()
+	lost := wakeTokenOf(q.lastWake())
+	q.age(queuedOwnerMax + time.Second)
+	if l, _ := q.a.leases.get(first.ID); l.State != LeaseFailed || l.Reason != "queued_stale" || q.pending() != "" {
+		t.Fatalf("the lost pointer's message: %+v, pending %q", l, q.pending())
+	}
+	seen := map[string]bool{lost: true}
+	const days = 10
+	for day := 1; day <= days; day++ {
+		// The thread took a turn, is idle again, and a new request comes.
+		q.reg(false)
+		q.reg(true)
+		m := q.send(fmt.Sprintf("request of day %d", day))
+		q.pass()
+		token := wakeTokenOf(q.lastWake())
+		if l, _ := q.a.leases.get(m.ID); q.w.count() != day+1 || seen[token] || l.State != LeaseLeased || l.Token != token || q.pending() != token {
+			t.Fatalf("day %d: prompts %d, token %s (seen %v), lease %+v", day, q.w.count(), token, seen[token], l)
+		}
+		seen[token] = true
+		// It is lost as well: failed unproven, reported, and a day passes, in
+		// which the book is pruned.
+		q.age(queuedOwnerMax + time.Second)
+		waitAttempts(t, q.b, m, AttemptWakeRequested, AttemptNeedsHuman)
+		q.a.deliv.mu.Lock()
+		q.a.deliv.leasePruned = time.Time{}
+		q.a.deliv.mu.Unlock()
+		q.a.leases.mu.Lock()
+		for _, l := range q.a.leases.m {
+			l.At = l.At.Add(-24 * time.Hour)
+		}
+		q.a.leases.mu.Unlock()
+		q.reg(true)
+		q.a.leaseSweep(time.Now())
+	}
+	// The lost pointers' messages are no wake's any more, and still unread for
+	// a person, a hook or a later pointer's fetch.
+	if l, _ := q.a.leases.get(first.ID); l.State != LeaseFailed || l.Attempts != 1 {
+		t.Fatalf("the first lost message: %+v", l)
+	}
+	if page := q.fetch(); !page.Delivered || len(page.Messages) != days+1 {
+		t.Fatalf("a fetch after the lost pointers: %d messages, delivered %v", len(page.Messages), page.Delivered)
+	}
+}
+
+// A pointer the thread did not run in a turn it took since: its hooks reported
+// a turn after the pointer was queued and that turn's end, and the rollout has
+// no marker of it. For pointerLostWait from that end nothing is queued or
+// leased (the thread may run the pointer next); then the pointer is lost, its
+// message goes back to retry (pointer_lost), and the next wake queues a new
+// pointer, for the newer message at once and for the lost one's after its
+// backoff, under that new pointer. One the thread did run in that time is
+// shown, not lost.
+func TestPointerNotRunByALaterTurnIsLost(t *testing.T) {
+	q := newStaleQueue(t)
+	path := q.rollout("")
+	old := q.send("request of the lost pointer")
+	q.pass()
+	lost := wakeTokenOf(q.lastWake())
+	// An idle event with no turn before it (the app was opened again) loses nothing.
+	q.reg(true)
+	q.idleFor(pointerLostWait + time.Second)
+	newer := q.send("request after the turn")
+	q.age(inboxWakeGrace + time.Second)
+	if q.w.count() != 1 || q.pending() != lost || !q.covers(lost, newer) {
+		t.Fatalf("an idle event alone lost the pointer: %v pending %q", q.w.calls, q.pending())
+	}
+	// The thread takes a turn of its own and ends it.
+	q.reg(false)
+	q.reg(true)
+	after := q.send("request after that turn")
+	q.pass()
+	if _, ok := q.a.leases.get(after.ID); ok || q.w.count() != 1 || q.pending() != lost {
+		t.Fatalf("queued or leased while the pointer may still run: %v", q.w.calls)
+	}
+	q.idleFor(pointerLostWait + time.Second)
+	q.pass()
+	next := wakeTokenOf(q.lastWake())
+	if q.w.count() != 2 || next == lost || !pointerToken(next) || q.pending() != next || !strings.Contains(q.lastWake(), "[pointer for] "+after.Body) {
+		t.Fatalf("no new pointer after the lost one: %v", q.w.calls)
+	}
+	for _, m := range []Message{old, newer} {
+		l, _ := q.a.leases.get(m.ID)
+		if l.State != LeaseRetry || l.Reason != reasonLost || l.Attempts != 1 || l.Failed {
+			t.Fatalf("lease of %q after its pointer was lost: %+v", m.Body, l)
+		}
+		if q.a.leases.handedTo(m.ID, "s-q", true) || strings.Contains(q.lastWake(), "[pointer for] "+m.Body) {
+			t.Fatalf("%q is handed still, or named by two pointers at once: %v", m.Body, q.w.calls)
+		}
+		backoffOver(q.a, m.ID)
+	}
+	// Their next wake is a lease under the new pointer: no third prompt.
+	q.age(inboxWakeGrace + time.Second)
+	for _, m := range []Message{old, newer} {
+		if l, _ := q.a.leases.get(m.ID); q.w.count() != 2 || l.State != LeaseLeased || l.Token != next || l.Attempts != 2 {
+			t.Fatalf("lease of %q under the new pointer: %d prompts %+v", m.Body, q.w.count(), l)
+		}
+	}
+	// The new pointer runs behind a further turn, inside the wait: shown, not
+	// lost, and its fetch delivers all three.
+	q.reg(false)
+	q.reg(true)
+	q.wrote(path, WakeMarker(next)+"\n")
+	q.idleFor(pointerLostWait + time.Second)
+	q.pass()
+	if l, _ := q.a.leases.get(after.ID); l.State != LeaseLeased || l.Shown.IsZero() || q.pending() != "" || q.w.count() != 2 {
+		t.Fatalf("a pointer the rollout shows was taken for lost: %+v %v", l, q.w.calls)
+	}
+	if page := q.fetch(); !page.Delivered || !slices.Equal(ids(page.Messages), []string{old.ID, newer.ID, after.ID}) {
+		t.Fatalf("the new pointer's fetch: %v", ids(page.Messages))
+	}
+}
+
+// The pointer ran and its turn fetched one page of several, then stopped: what
+// it left unread is released after the fetch grace and gets a new pointer once
+// its backoff is over.
+func TestPointerStoppedAfterFirstPage(t *testing.T) {
+	q := newStaleQueue(t)
+	path := q.rollout("")
+	var sent []Message
+	for i := range 6 {
+		sent = append(sent, q.send(strings.Repeat("я", 2400)+" "+string(rune('a'+i))))
+	}
+	q.pass()
+	token := wakeTokenOf(q.lastWake())
+	q.consumed(path, token)
+	page := q.fetch()
+	if n := len(page.Messages); n == 0 || n == len(sent) || page.Note == "" {
+		t.Fatalf("the first page: %d of %d messages, note %q", n, len(sent), page.Note)
+	}
+	rest := sent[len(page.Messages):]
+	q.pass()
+	if l, _ := q.a.leases.get(rest[0].ID); q.w.count() != 1 || l.State != LeaseLeased || l.Shown.IsZero() {
+		t.Fatalf("inside the fetch grace: %d prompts %+v", q.w.count(), l)
+	}
+	q.a.leases.mu.Lock()
+	for _, l := range q.a.leases.m {
+		if !l.Shown.IsZero() {
+			l.Shown = l.Shown.Add(-pointerFetchGrace - time.Second)
+		}
+	}
+	q.a.leases.mu.Unlock()
+	q.pass()
+	if l, _ := q.a.leases.get(rest[0].ID); q.w.count() != 1 || l.State != LeaseRetry || l.Reason != reasonUnfetched {
+		t.Fatalf("after the fetch grace: %d prompts %+v", q.w.count(), l)
+	}
+	for _, m := range rest {
+		backoffOver(q.a, m.ID)
+		waitAttempts(t, q.b, m, AttemptWakeRequested, AttemptHeld+":"+HoldUnfetched)
+	}
+	q.pass()
+	if l, _ := q.a.leases.get(rest[0].ID); q.w.count() != 2 || l.State != LeaseLeased || l.Token == token || l.Attempts != 2 {
+		t.Fatalf("no new pointer for the remainder: %d prompts %+v", q.w.count(), l)
 	}
 }
 

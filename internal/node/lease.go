@@ -138,16 +138,19 @@ func (b *leaseBook) queuedOwner(id string) string {
 // retry, "deadline"; owner's hooks, another session or a launch take it); and,
 // when the channel keeps what it accepted (unproven: a queue), one still
 // leased, failed unproven (queued_stale) or back in retry for any reason but
-// a hand-off that failed ("wake_failed": the queue never had it). The
+// a hand-off that failed ("wake_failed": the queue never had it) or a pointer
+// that ran unfetched or was lost (reasonUnfetched, reasonLost). The
 // emergency stop ("stopped") and the owner's registration lapsing
 // ("session_gone") take nothing out of its queue. key is the book key
 // (leaseKey: a seat's message has its own record).
 //
 // A queue prompt is a pointer (pointer.go): it names no message, and "handed"
-// means a pointer was queued for the message and is not known consumed, or
-// its fetch grace still runs (leased). So no message has two prompts in a
-// queue at once; one whose pointer ran and fetched nothing (reasonUnfetched)
-// is handed no more, and a new pointer may be queued for it.
+// means a pointer was queued for the message and is not known consumed or
+// lost, or its fetch grace still runs (leased). So no message is named by two
+// unconsumed pointers; one whose pointer ran and fetched nothing
+// (reasonUnfetched) or was lost (reasonLost) is handed no more, and a new
+// pointer may be queued for it. One that failed unproven (queued_stale) stays
+// handed: no wake is for it again, a later pointer's fetch still delivers it.
 func (b *leaseBook) handedTo(key, owner string, unproven bool) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -159,7 +162,7 @@ func (b *leaseBook) handedTo(key, owner string, unproven bool) bool {
 	case LeaseRunning:
 		return true
 	case LeaseRetry:
-		return l.Reason == "deadline" || (unproven && l.Reason != "wake_failed" && l.Reason != reasonUnfetched)
+		return l.Reason == "deadline" || (unproven && l.Reason != "wake_failed" && l.Reason != reasonUnfetched && l.Reason != reasonLost)
 	case LeaseLeased, LeaseFailed:
 		return unproven
 	}
@@ -341,10 +344,10 @@ func (b *leaseBook) take(id, seat, owner, via, token string, deadline, now time.
 
 // pointerQueued reports whether l is a message a pointer wake was queued for
 // that is not known shown: the pointer is in its owner's queue still, as far
-// as the node knows (leased; failed unproven; back in retry for a reason that
-// takes nothing out of a queue, handedTo). Not one whose pointer ran
-// (Shown, reasonUnfetched), was never queued (wake_failed), or that something
-// else delivered meanwhile (acked).
+// as the node knows (leased; back in retry for a reason that takes nothing out
+// of a queue, handedTo). Not one whose pointer ran (Shown, reasonUnfetched),
+// was never queued (wake_failed), was lost (pointerStale, reasonLost), or that
+// something else delivered meanwhile (acked).
 func (l *Lease) pointerQueued() bool {
 	if l.Via != ViaQueue || !pointerToken(l.Token) || !l.Shown.IsZero() {
 		return false
@@ -352,28 +355,94 @@ func (l *Lease) pointerQueued() bool {
 	switch l.State {
 	case LeaseLeased:
 		return true
-	case LeaseFailed:
-		return l.Reason == "queued_stale"
 	case LeaseRetry:
 		return l.Reason == "stopped" || l.Reason == "session_gone"
 	}
 	return false
 }
 
+// pointerStale reports whether l is a pointer wake's lease that failed
+// unproven (queued_stale): its owner showed no activity for queuedOwnerMax
+// with that pointer in its queue. Such a pointer counts as lost: it keeps no
+// new one out of the queue (pendingPointer).
+func (l *Lease) pointerStale() bool {
+	return l.Via == ViaQueue && pointerToken(l.Token) && l.State == LeaseFailed && l.Reason == "queued_stale"
+}
+
 // pendingPointer is the wake token of the pointer in owner's queue that is
-// not known shown ("" when none is): the latest one a message is still held
-// by (pointerQueued). While there is one the node queues no other for owner
-// (wakeIdle): that pointer's turn fetches everything that waits then.
-func (b *leaseBook) pendingPointer(owner string) string {
+// not known shown or lost ("" when none is), and when it took the lease
+// picked: the latest one a message is still held by (pointerQueued), none of
+// whose leases failed unproven (pointerStale). While there is one the node
+// queues no other for owner (wakeIdle): that pointer's turn fetches everything
+// that waits then.
+func (b *leaseBook) pendingPointer(owner string) (string, time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	stale := map[string]bool{}
+	for _, l := range b.m {
+		if l.Owner == owner && l.pointerStale() {
+			stale[l.Token] = true
+		}
+	}
 	token, at := "", time.Time{}
 	for _, l := range b.m {
-		if l.Owner == owner && l.pointerQueued() && (token == "" || l.At.After(at) || (l.At.Equal(at) && l.Token > token)) {
+		if l.Owner == owner && l.pointerQueued() && !stale[l.Token] && (token == "" || l.At.After(at) || (l.At.Equal(at) && l.Token > token)) {
 			token, at = l.Token, l.At
 		}
 	}
-	return token
+	return token, at
+}
+
+// lost ends owner's leases that wait for the lost pointer of the wake token
+// (pointerQueued): the leased ones go back to retry (revokeLocked: a failure
+// of owner, their backoff, failed after maxLeaseAttempts), the ones in retry
+// already are handed no more (handedTo). It returns the message ids released
+// and, of them, the ones now failed.
+func (b *leaseBook) lost(owner, token string, now time.Time) (released, failed []string, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, l := range b.m {
+		if l.Owner != owner || l.Token != token || !l.pointerQueued() {
+			continue
+		}
+		if l.State == LeaseLeased {
+			if b.revokeLocked(l, reasonLost, now) {
+				failed = append(failed, l.ID)
+			}
+		} else {
+			l.Reason = reasonLost
+		}
+		released = append(released, l.ID)
+	}
+	if len(released) == 0 {
+		return nil, nil, nil
+	}
+	return released, failed, b.saveLocked()
+}
+
+// pointerRef names one pointer wake: its session and wake token.
+type pointerRef struct {
+	owner, token string
+}
+
+// orphaned lists the pointers a lease went back to retry under without the
+// pointer leaving its owner's queue ("stopped", "session_gone": pointerQueued)
+// and has waited for so since queuedOwnerMax: nothing ends such a lease (due
+// looks at leased ones only), so past that bound its pointer counts as lost
+// (lost) as one whose lease failed unproven does.
+func (b *leaseBook) orphaned(now time.Time) []pointerRef {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []pointerRef
+	for _, l := range b.m {
+		if l.State != LeaseRetry || !l.pointerQueued() || now.Sub(l.At) < queuedOwnerMax {
+			continue
+		}
+		if p := (pointerRef{l.Owner, l.Token}); !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // withToken is the ids of owner's leases by the wake token.

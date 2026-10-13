@@ -2,10 +2,12 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/UberMorgott/agent-link/internal/node"
@@ -177,5 +179,62 @@ func TestFetchOverContextsWithoutFolder(t *testing.T) {
 	}
 	if page, again := f.fetch(url.Values{}); len(again) != 0 || page.Delivered {
 		t.Fatalf("a delivered message is listed again: %v", again)
+	}
+}
+
+// A context whose delivery fails after another one acknowledged its messages
+// does not turn the call into an error: the answer carries what was delivered
+// (read now, never listed again), the failed context's message stays unread
+// behind note and next, and a context after the failed one is delivered too.
+func TestFetchDeliversPartWhenAContextFails(t *testing.T) {
+	msg := func(id, project string) node.UnreadMessage {
+		m := node.UnreadMessage{Project: project, Cursor: "c-" + id}
+		m.ID, m.Body = id, "body "+id
+		return m
+	}
+	page := node.UnreadPage{Messages: []node.UnreadMessage{msg("m1", "A"), msg("m2", "B"), msg("m3", "C")}, Total: 3}
+	acked := map[string][]string{}
+	ok := func(project string) fetchCtx {
+		return fetchCtx{id: project, deliver: func(session string, ids []string) ([]string, error) {
+			acked[project] = append(acked[project], ids...)
+			return ids, nil
+		}}
+	}
+	boom := errors.New("boom")
+	failing := fetchCtx{id: "B", deliver: func(string, []string) ([]string, error) { return nil, boom }}
+	err := deliverUnread([]fetchCtx{ok("A"), failing, ok("C")}, "codex-one", &page)
+	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "context B") {
+		t.Fatalf("the failed context is not reported: %v", err)
+	}
+	var shown []string
+	for _, m := range page.Messages {
+		shown = append(shown, m.ID)
+	}
+	if !slices.Equal(shown, []string{"m1", "m3"}) || !page.Delivered || page.Total != 2 {
+		t.Fatalf("the answer: %v delivered=%v total=%d, want the delivered part [m1 m3]", shown, page.Delivered, page.Total)
+	}
+	if !slices.Equal(acked["A"], []string{"m1"}) || !slices.Equal(acked["C"], []string{"m3"}) {
+		t.Fatalf("acknowledged: %v", acked)
+	}
+	if page.Next == "" || page.Note == "" {
+		t.Fatalf("nothing says the failed context's message still waits: next=%q note=%q", page.Next, page.Note)
+	}
+	if fetchFailed(page, err) {
+		t.Fatal("a fetch delivered in part is answered as an error")
+	}
+	// Every context failed: nothing was delivered, and the call is an error,
+	// not an empty answer that says nothing waits.
+	page = node.UnreadPage{Messages: []node.UnreadMessage{msg("m2", "B")}, Total: 1}
+	err = deliverUnread([]fetchCtx{failing}, "codex-one", &page)
+	if !errors.Is(err, boom) || len(page.Messages) != 0 || page.Delivered || page.Note != "" {
+		t.Fatalf("a fetch whose only context failed: %v %+v", err, page)
+	}
+	if !fetchFailed(page, err) {
+		t.Fatal("a fetch that delivered nothing is answered as an empty page")
+	}
+	// Nothing waited and nothing failed: an empty answer.
+	page = node.UnreadPage{}
+	if err := deliverUnread([]fetchCtx{ok("A")}, "codex-one", &page); fetchFailed(page, err) {
+		t.Fatalf("an empty fetch is an error: %v", err)
 	}
 }

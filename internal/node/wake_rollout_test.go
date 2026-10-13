@@ -156,7 +156,8 @@ func TestTurnEndsDoNotStarveNewerMessage(t *testing.T) {
 			q.wrote(path, turnLine("task_complete", time.Now().Add(-90*time.Second)))
 			q.age(staleWakeWait(i) + time.Second)
 		}
-		if s := q.session(); q.w.count() != 1 || s.Wakes != i+1 {
+		// One pointer, until it was unproven for queuedOwnerMax (lost).
+		if s := q.session(); q.w.count() != stalePrompts(i) || s.Wakes != i+1 {
 			t.Fatalf("wake %d of the thread: %d %+v", i+1, q.w.count(), s)
 		}
 	}
@@ -394,13 +395,14 @@ func TestDeadTurnReachesNeedsHuman(t *testing.T) {
 			wait = staleWakeWait(i)
 		}
 		q.age(wait + time.Second)
-		if s := q.session(); q.w.count() != 1 || s.Wakes != i+1 {
+		// One pointer, until it was unproven for queuedOwnerMax (lost).
+		if s := q.session(); q.w.count() != stalePrompts(i) || s.Wakes != i+1 {
 			t.Fatalf("wake %d of the dead thread: %d %+v", i+1, q.w.count(), s)
 		}
 	}
 	waiting := q.send("request past the cap")
 	q.age(queuedOwnerMax + time.Second)
-	if s := q.session(); q.w.count() != 1 || s.Wakes != limit || !s.WakeCapped {
+	if s := q.session(); q.w.count() != 2 || s.Wakes != limit || !s.WakeCapped {
 		t.Fatalf("past the cap: prompts %d %+v", q.w.count(), s)
 	}
 	waitAttempts(t, q.b, waiting, AttemptNeedsHuman)

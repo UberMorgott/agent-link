@@ -85,9 +85,10 @@ Rules:
   messages stay `woken` for the hooks.
 - One pointer at a time (owner decision, issue #40). While a pointer is in a
   session's queue and its rollout has not shown it (`pendingPointer`: a lease
-  of the session by a `p-` token, not `shown`, that is `leased`, `failed`
-  `queued_stale`, or `retry` `stopped`/`session_gone`; `pointerPending` also
-  reads the rollout for the marker when no observer ran), `wakeIdle` queues
+  of the session by a `p-` token, not `shown`, that is `leased`, or `retry`
+  `stopped`/`session_gone`, and no lease of that token `failed`
+  `queued_stale`; `pointerPending` also reads the rollout for the marker when
+  no observer ran), `wakeIdle` queues
   nothing more for it: the messages a wake is due for are leased under that
   pointer's token (`wakeClaim` with `pending`), counted as a wake of the idle
   period, reported `wake_requested`. Bounds are those of a queued wake: each
@@ -96,16 +97,67 @@ Rules:
   The marker covers every lease of the token (`leaseBook.shown`), whenever it
   was taken. A pointer whose messages were all delivered some other way
   (acked) is not pending: a later message gets a new pointer, and the old one
-  costs a trivial turn when the thread gets to it. A pointer lost by Codex
-  (never run) keeps its unread messages `needs_human` and new ones leased to
-  it until a person or a hook reads them.
+  costs a trivial turn when the thread gets to it.
+- A lost pointer blocks nothing (second review of issue #40; before, a pointer
+  Codex never ran kept every later message of the thread leased to it, so no
+  prompt was queued for that thread again). A pointer is pending only while
+  the node may still expect it to run. It counts as lost:
+  - once a lease of it `failed` `queued_stale` (the session silent for
+    `queuedOwnerMax` with it queued; a turn its rollout shows running is no
+    silence). Its messages stay `failed` (`needs_human`, no wake is for them
+    again, as in v0.6.76), and `pendingPointer` passes over its token;
+  - once the session's hooks reported a turn after it was queued
+    (`Session.TurnAt`), that turn's end (`Session.IdleAt`), and
+    `pointerLostWait` (2 min: the thread runs a queued prompt right after the
+    turn it waited behind, and nothing is queued or leased for it meanwhile)
+    later its rollout still has no marker of it (`pointerTurned`,
+    `pointerPending`, `lostPointers` in the sweep). Its leases go back to
+    `retry` with reason `pointer_lost` (a failure of the owner, their backoff,
+    `failed` at `maxLeaseAttempts`), which `handedTo` does not count as handed.
+    An idle event alone (the app opened again) loses nothing, and neither
+    does the wait while the rollout shows a turn running that the hooks did
+    not report (`turnRunning`): the pointer is late behind that turn;
+  - once a lease of it that went back to `retry` with the pointer still in
+    the queue (`stopped`: the emergency stop; `session_gone`: the registration
+    lapsed) stayed so for `queuedOwnerMax` (`leaseBook.orphaned`,
+    `orphanPointers`, first in the sweep). Nothing else ends such a lease
+    (third review: with silent hooks the message stayed handed for ever, was
+    never woken for again and never reached `needs_human`, and a later one
+    was leased under the dead pointer until `queued_stale`). Its reason
+    becomes `pointer_lost`, and what is leased under the token goes back to
+    `retry` with it.
+
+  The next wake that is due then queues a new pointer under a new token, on
+  the schedule and caps of every wake (`wakeDue`, `staleWakeWait`,
+  `maxIdleWakes` + `maxStaleWakes`, `noteWakeCap`): for the newer messages,
+  for a `pointer_lost` one after its backoff, and its fetch delivers whatever
+  is unread for the session then, a `queued_stale` message too. The invariant
+  is: a message id is never named by two unconsumed pointers (a lost one does
+  not count; if the thread runs it after all, its fetch takes what waits then
+  or nothing, as any late pointer).
 - The fetch (`UnreadListing` + `Deliver`, `pointerFetch`; over several
   contexts `controlUnread` → `deliverUnread`) lists, cuts to one answer
   (`FetchCut`: the page limit, then `FitUnread`/`FormatBudget`, as a hook's
   batch) and only then claims and acks what it returns; `UnreadPage.Note`
   tells the agent that more wait. In a context the session is not registered
   in, `Claim` grants the replies to its own messages, so the fetch reads
-  those too and they are not listed again.
+  those too and they are not listed again. A context whose `Deliver` fails
+  does not fail the call: an earlier context acknowledged its part already,
+  so the others are delivered all the same, the answer is the delivered part
+  (the failed context's messages stay unread behind `next`/`note`) and the
+  error is logged. Only when no context delivered anything is the call an
+  error (500, `fetchFailed`): an empty page would say nothing waits. The MCP
+  tool's `session` argument names the session only for a client that knows
+  none or is a Codex thread without `_meta`: a Claude Code session always
+  asks as itself, so its listing never becomes a queue session's delivery
+  (`unreadSession`). Whose the MCP server is, its client says (`clientInfo`
+  of the initialize: `claude-code`, `codex-mcp-client`; `callClient`,
+  handed to a delegated call as `AGENTLINK_MCP_CLIENT`), and only for an
+  unknown client the environment: a Codex server that inherited
+  `CLAUDE_CODE_SESSION_ID` still honours the argument.
+- The pointer's prompt names no number of messages: the fetch returns what
+  is unread for the session when it runs (newly claimed, stale ones, what
+  came later), not what the wake was queued for.
 - Accepted, not changed (review of issue #40):
   - The ack precedes the transport: the fetch marks read before the HTTP
     answer, the MCP result or the CLI's stdout reached the agent, so an

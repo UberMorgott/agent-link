@@ -158,7 +158,9 @@ func (q *staleQueue) spend() Message {
 // is closed: no turn, no hook event) is not latched for the rest of its
 // registration: once the wake is stale its unproven message fails (a person
 // decides, it is never queued again) and a newer message gets its wake: no
-// prompt of its own (one pointer is in the queue), a lease under that pointer.
+// prompt of its own while the one pointer in the queue is inside
+// queuedOwnerMax (a lease under that pointer), a new pointer once that one is
+// lost (its lease failed unproven).
 func TestStaleQueueWakeReleasesNewerMessages(t *testing.T) {
 	q := newStaleQueue(t)
 	old := q.spend()
@@ -197,7 +199,9 @@ func TestStaleQueueWakeReleasesNewerMessages(t *testing.T) {
 		t.Fatal("woken inside the backoff")
 	}
 	q.age(staleWakeWait(maxIdleWakes+1) + time.Second)
-	if s := q.session(); q.w.count() != 1 || s.Wakes != maxIdleWakes+2 || !q.covers(token, late) {
+	// The first pointer is lost (unproven for queuedOwnerMax): a new one.
+	next := wakeTokenOf(q.lastWake())
+	if s := q.session(); q.w.count() != 2 || s.Wakes != maxIdleWakes+2 || next == token || !q.covers(next, late) {
 		t.Fatalf("stale wake: %v %+v", q.w.calls, s)
 	}
 	// No message was leased twice, and the unproven one stays failed.
@@ -426,15 +430,17 @@ func TestWakeFitSkipsFailedMessages(t *testing.T) {
 	q.reg(true)
 	q.pass()
 	if text := q.lastWake(); q.w.count() != 2 || !strings.Contains(text, "[pointer for] m2 ") || strings.Contains(text, "m0 ") || strings.Contains(text, "m1 ") ||
-		!strings.Contains(text, "новые сообщения (1)") {
+		!strings.Contains(text, "новые сообщения;") {
 		t.Fatalf("the failed messages kept the newer one out: %v", q.w.calls)
 	}
 }
 
 // The stale wakes are bounded, each for its own messages after a growing
-// wait; then nothing is queued into the dead thread any more and the authors
-// of what waits for it hear needs_human once, which a restart does not repeat
-// (saved with the session). A new idle period starts over.
+// wait (no prompt beside the pointer in the queue; one new pointer once that
+// one was unproven for queuedOwnerMax); then nothing is queued into the dead
+// thread any more and the authors of what waits for it hear needs_human once,
+// which a restart does not repeat (saved with the session). A new idle period
+// starts over.
 func TestStaleQueueWakeCap(t *testing.T) {
 	q := newStaleQueue(t)
 	q.spend()
@@ -446,7 +452,7 @@ func TestStaleQueueWakeCap(t *testing.T) {
 			t.Fatalf("wake %d inside its backoff: %+v", i+1, s)
 		}
 		q.age(staleWakeWait(i) + time.Second)
-		if s := q.session(); q.w.count() != 1 || s.Wakes != i+1 || s.WakeCapped {
+		if s := q.session(); q.w.count() != stalePrompts(i) || s.Wakes != i+1 || s.WakeCapped {
 			t.Fatalf("stale wake %d: %d %+v", i+1, q.w.count(), s)
 		}
 	}
@@ -462,7 +468,7 @@ func TestStaleQueueWakeCap(t *testing.T) {
 		t.Fatalf("needs_human before the last wake was stale: %+v", s)
 	}
 	q.age(queuedOwnerMax + time.Second)
-	if s := q.session(); q.w.count() != 1 || s.Wakes != limit || !s.WakeCapped {
+	if s := q.session(); q.w.count() != 2 || s.Wakes != limit || !s.WakeCapped {
 		t.Fatalf("past the cap: prompts %d %+v", q.w.count(), s)
 	}
 	waitAttempts(t, q.b, waiting, AttemptNeedsHuman)
@@ -487,24 +493,26 @@ func TestStaleQueueWakeCap(t *testing.T) {
 	q.pass()
 	time.Sleep(200 * time.Millisecond)
 	for _, m := range []Message{waiting, later} {
-		if got := attemptsOf(q.b, m); !slices.Equal(got, []string{AttemptNeedsHuman}) || q.w.count() != 1 {
+		if got := attemptsOf(q.b, m); !slices.Equal(got, []string{AttemptNeedsHuman}) || q.w.count() != 2 {
 			t.Fatalf("after the notice: %v prompts %d", got, q.w.count())
 		}
 	}
 
 	// Its wakes spent, the thread is left to its TTL.
 	q.age(24 * time.Hour)
-	if _, ok := q.a.SessionLive("s-q"); ok || q.w.count() != 1 {
+	if _, ok := q.a.SessionLive("s-q"); ok || q.w.count() != 2 {
 		t.Fatalf("a thread past its wake cap is kept registered: prompts %d", q.w.count())
 	}
 
 	// A new idle period (the thread took a turn) is woken again: for what no
-	// pointer was queued for, under the one its queue still has.
-	token := wakeTokenOf(q.lastWake())
+	// pointer was queued for, by a new one (the earlier ones are lost: their
+	// leases failed unproven).
+	lost := wakeTokenOf(q.lastWake())
 	q.reg(false)
 	q.reg(true)
 	q.pass()
-	if s := q.session(); q.w.count() != 1 || s.Wakes != 1 || s.WakeCapped || !q.covers(token, waiting) || !q.covers(token, later) {
+	token := wakeTokenOf(q.lastWake())
+	if s := q.session(); q.w.count() != 3 || token == lost || s.Wakes != 1 || s.WakeCapped || !q.covers(token, waiting) || !q.covers(token, later) {
 		t.Fatalf("new idle period: %d %+v", q.w.count(), s)
 	}
 }
@@ -548,12 +556,28 @@ func TestQueueWakeNotRepeatedAfterStop(t *testing.T) {
 	}
 	// A request that comes later is still woken for: by that pointer, which
 	// the stop took out of no queue.
+	token := wakeTokenOf(q.lastWake())
 	later := q.send("request after the stop")
+	q.reg(true)
+	q.age(inboxWakeGrace + time.Second)
+	if q.w.count() != 1 || !q.covers(token, later) {
+		t.Fatalf("wake after the stop: %v", q.w.calls)
+	}
+	// A turn the thread took since, without running the pointer: it is lost
+	// once that is settled (pointerLostWait), and a new one is queued for what
+	// it was for, the stopped message too.
+	last := q.send("request after a turn")
 	q.reg(false)
 	q.reg(true)
 	q.pass()
-	if q.w.count() != 1 || !q.covers(wakeTokenOf(q.lastWake()), later) {
-		t.Fatalf("wake after the stop: %v", q.w.calls)
+	if _, ok := q.a.leases.get(last.ID); ok || q.w.count() != 1 {
+		t.Fatalf("queued while the pointer may still run: %v", q.w.calls)
+	}
+	q.idleFor(pointerLostWait + time.Second)
+	q.pass()
+	next := wakeTokenOf(q.lastWake())
+	if l, _ := q.a.leases.get(m.ID); q.w.count() != 2 || next == token || !q.covers(next, last) || q.wakesWith("only request") != 2 || l.Token != next || l.State != LeaseLeased {
+		t.Fatalf("no new pointer after the lost one: %v %+v", q.w.calls, l)
 	}
 }
 

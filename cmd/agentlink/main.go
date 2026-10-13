@@ -637,14 +637,61 @@ func callSession(ctx context.Context) string {
 	return id
 }
 
+// envMCPClient names the client an MCP server's tool call came from
+// (hookClaude, hookCodex) to the executable that runs the call for it
+// (delegateMCP): that process sees no initialize.
+const envMCPClient = "AGENTLINK_MCP_CLIENT"
+
+// callClientKey is the context key of the client an MCP server serves
+// (withCallClient).
+type callClientKey struct{}
+
+// withCallClient is ctx carrying the hook client (hookClaude, hookCodex) the
+// MCP server's own client is (mcpClientKind); ctx itself when it is unknown.
+func withCallClient(ctx context.Context, client string) context.Context {
+	if client == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, callClientKey{}, client)
+}
+
+// callClient is the client whose MCP server makes the call in ctx
+// (withCallClient; $AGENTLINK_MCP_CLIENT in the executable a call was handed
+// to), or "" when nothing says: the environment decides then (agentSession).
+func callClient(ctx context.Context) string {
+	if c, _ := ctx.Value(callClientKey{}).(string); c != "" {
+		return c
+	}
+	if c := os.Getenv(envMCPClient); c == hookClaude || c == hookCodex {
+		return c
+	}
+	return ""
+}
+
 // agentSessionCtx is agentSession for a call in ctx: the Codex thread an MCP
 // tool call names comes first (Codex gives its MCP servers no CODEX_THREAD_ID).
+// An MCP server that knows its client (callClient) takes only that client's
+// session from its environment: a Codex server started from inside a Claude
+// Code session inherits $CLAUDE_CODE_SESSION_ID, which is not its session (and
+// the other way round).
 func agentSessionCtx(ctx context.Context) (id, client string) {
 	if os.Getenv(envJobID) != "" {
 		return "", ""
 	}
 	if id := callSession(ctx); id != "" {
 		return id, hookCodex
+	}
+	switch callClient(ctx) {
+	case hookCodex:
+		if id := cmp.Or(os.Getenv(envCodexThread), os.Getenv(envCodexSession)); id != "" {
+			return id, hookCodex
+		}
+		return "", ""
+	case hookClaude:
+		if id := os.Getenv(envClaudeSession); id != "" {
+			return id, hookClaude
+		}
+		return "", ""
 	}
 	return agentSession()
 }

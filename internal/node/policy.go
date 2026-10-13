@@ -44,6 +44,12 @@ const (
 	// are released (pointer_unfetched; held:wake_unfetched to their authors)
 	// and a hook, another session or a new pointer takes them.
 	pointerFetchGrace = 2 * time.Minute
+	// pointerLostWait is how long after the end of a turn its hooks reported a
+	// WakeQueue session may still show the pointer queued before that turn (the
+	// thread runs a queued prompt right after the turn it waited behind):
+	// nothing is queued or leased for it meanwhile. Past it without the
+	// pointer's marker in the rollout the pointer is lost (pointer_lost).
+	pointerLostWait = inboxWakeGrace
 )
 
 // Lease budgets (lease.go).

@@ -243,6 +243,9 @@ func delegateMCP(ctx context.Context, exe, api, tool string, args json.RawMessag
 	if id := callSession(ctx); id != "" {
 		cmd.Env = append(cmd.Env, envCodexThread+"="+id) // the calling Codex thread (mcpCallSession)
 	}
+	if c := callClient(ctx); c != "" {
+		cmd.Env = append(cmd.Env, envMCPClient+"="+c) // whose server this is (sessionClient)
+	}
 	var out bytes.Buffer
 	var stderr tailWriter
 	cmd.Stdout, cmd.Stderr = &out, &stderr
@@ -436,14 +439,48 @@ func sessionArg(id string) string {
 // gives it, node.PointerPrompt: a client that sends no thread id would
 // otherwise list without taking, and the pointer would repeat), else the
 // process's own (agentSession). A worker's job is no session.
+//
+// The argument never speaks for a session the process knows to be another
+// client's: a Claude Code session is no thread a pointer wakes, and a queue
+// session's own listing is its delivery, so a call of it that named one would
+// read that thread's messages away. Whose the process is, its MCP client says
+// (callClient: the initialize's clientInfo), and only where that says nothing
+// its environment: a Codex server that inherited $CLAUDE_CODE_SESSION_ID (it
+// was started from inside a Claude Code session) is still Codex's, and the
+// pointer's argument is its only way to name its thread.
 func unreadSession(ctx context.Context, named string) string {
-	if callSession(ctx) == "" && os.Getenv(envJobID) == "" {
+	own, client := agentSessionCtx(ctx)
+	if callSession(ctx) == "" && client != hookClaude && callClient(ctx) != hookClaude && os.Getenv(envJobID) == "" {
 		if id := sessionArg(named); id != "" {
 			return id
 		}
 	}
-	id, _ := agentSessionCtx(ctx)
-	return id
+	return own
+}
+
+// mcpClientKind is the hook client an MCP client that named itself name in
+// its initialize (clientInfo.name) is: Claude Code calls itself "claude-code",
+// Codex "codex-mcp-client". "" for any other (the environment decides,
+// agentSession).
+func mcpClientKind(name string) string {
+	switch name = strings.ToLower(name); {
+	case strings.Contains(name, "codex"):
+		return hookCodex
+	case strings.Contains(name, "claude"):
+		return hookClaude
+	}
+	return ""
+}
+
+// sessionClient is the hook client of the MCP client ss serves (mcpClientKind).
+func sessionClient(ss *mcp.ServerSession) string {
+	if ss == nil {
+		return ""
+	}
+	if p := ss.InitializeParams(); p != nil && p.ClientInfo != nil {
+		return mcpClientKind(p.ClientInfo.Name)
+	}
+	return ""
 }
 
 // addTool registers a tool whose answer is the JSON of f's value as text.
@@ -470,6 +507,9 @@ func addToolArgs[In any](s *mcpTools, name, desc string, f func(context.Context,
 		if req != nil && req.Params != nil {
 			args = req.Params.Arguments
 			ctx = withCallSession(ctx, mcpCallSession(req.Params.Meta))
+		}
+		if req != nil {
+			ctx = withCallClient(ctx, sessionClient(req.Session))
 		}
 		if s.fresh != nil {
 			if exe := s.fresh(); exe != "" {
