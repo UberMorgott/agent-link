@@ -53,6 +53,16 @@ Rules:
   `retry`: the prompt was accepted and never proven, and `codex queue` has no
   idempotency key, so queuing it again may run it twice. A hook still shows
   the message at a session's next event.
+- A `queue` wake is not queued behind a running turn: a Codex thread whose
+  hooks are silent stays `idle` for the node, so before a prompt is queued
+  its rollout is read (`queueHeld`, `rollout_turn.go`: the last of the
+  `event_msg` records `task_started` / `task_complete` / `turn_aborted`). A
+  start newer than the last hook event that said idle (`Session.IdleAt`), in
+  a rollout written to within `rolloutTurnQuiet` (10 min), holds the wake; the
+  messages of the turn go into one wake at its end. A turn that ended after an
+  unproven prompt was queued restarts that prompt's waits (`wakeDue`) from the
+  end. No rollout or no such record: woken as before. `queued_stale` does not
+  read the rollout.
 - `failed` is terminal for automatic paths (`Lease.Failed`): a hook may still
   show the message to a live session, and its lapse returns to `failed`.
 - `hook` leases (a session in a turn claiming) do not count as attempts and

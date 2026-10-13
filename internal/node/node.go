@@ -104,6 +104,7 @@ type Node struct {
 	// waker wakes idle WakeQueue sessions (wake.go) every wakeEvery (0:
 	// wakePoll); nil: none.
 	waker     SessionWaker
+	rollouts  rolloutBook // the turns of WakeQueue threads (queueHeld)
 	wakeEvery time.Duration
 	// dormantEvery (0: wakeDormant) is the wake loop's period while the node
 	// is dormant; wakeKick (Node.changed) ends that wait at once; wakeTicks

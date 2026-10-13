@@ -106,9 +106,13 @@ type Session struct {
 	Primary bool `json:"primary"`
 	// Asked is the wake mode the session asked for; Wake is what the node
 	// gives it (WakeQueue only while it can queue, else WakeNextEvent).
-	Asked     string `json:"asked_wake,omitempty"`
-	Idle      bool   `json:"idle,omitempty"`
-	CodexHome string `json:"codex_home,omitempty"`
+	Asked string `json:"asked_wake,omitempty"`
+	Idle  bool   `json:"idle,omitempty"`
+	// IdleAt is the last hook event that said the session is idle (a
+	// registration that is no Heartbeat): a turn its rollout shows started
+	// after it is one the hooks did not report (queueHeld).
+	IdleAt    time.Time `json:"idle_at,omitzero"`
+	CodexHome string    `json:"codex_home,omitempty"`
 	// Woken: the node queued a wake in this idle period; Wakes of them (at
 	// most maxIdleWakes), the last at WokeAt. A wake the session never took
 	// is retried once its claim lapses (wakeIdle); a WakeQueue session is
@@ -584,6 +588,9 @@ func (n *Node) RegisterSession(req SessionRequest) (Session, error) {
 		}
 	}
 	s.Asked, s.Idle, s.CodexHome, s.Native = asked, req.Idle, req.CodexHome, req.Native
+	if req.Idle && !req.Heartbeat {
+		s.IdleAt = now
+	}
 	if req.Native {
 		s.NativeSeen = now
 	}

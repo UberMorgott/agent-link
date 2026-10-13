@@ -15,6 +15,10 @@ import (
 // wake's messages and ends the wake count (observeQueueStart), activity it
 // reports ends it too (SessionActivity), and a wake that stays unproven lets
 // newer messages wake it later, bounded (maxStaleWakes, then needs_human).
+// Nor does it take such a thread for idle on its hooks' word alone: while its
+// rollout shows a turn running, or a queued prompt of the node about to run,
+// it queues nothing (queueHeld, rollout_turn.go), and the messages that came
+// meanwhile go into one wake after the turn.
 //
 //   - Codex (WakeQueue): it queues one prompt in the session's agent
 //     (`codex queue`, SessionWaker); the agent starts a turn with it. A session
@@ -291,6 +295,12 @@ func (n *Node) wakeIdle(ctx context.Context) {
 			take = append(take, m)
 		}
 		if len(take) == 0 {
+			continue
+		}
+		// A thread its rollout shows in a turn, or about to run a prompt of the
+		// node still in its queue, gets no prompt now: what waits for it goes
+		// into one wake after the turn.
+		if !byInbox && n.queueHeld(s, turn) {
 			continue
 		}
 		// A message in its backoff (or failed, or another owner's) is claimed

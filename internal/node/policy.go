@@ -88,6 +88,13 @@ const maxIdleWakes = 2
 // then hear needs_human, once (Session.WakeCapped).
 const maxStaleWakes = 3
 
+// rolloutTurnQuiet: a turn a Codex thread's rollout shows started and not
+// ended counts as running only while the rollout was written to within it
+// (queueHeld). A thread killed inside a turn writes no end; a turn silent for
+// longer (one long tool call) is woken like an idle thread, and its prompt
+// waits behind the turn.
+const rolloutTurnQuiet = 10 * time.Minute
+
 // capNotedMax bounds the message ids a session remembers as reported at its
 // wake cap (Session.CapNoted); an older one may then be reported again.
 const capNotedMax = 200
