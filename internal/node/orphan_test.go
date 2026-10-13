@@ -264,11 +264,11 @@ func TestStrandedRequestReopened(t *testing.T) {
 	reg("s-1")
 	m := ask(t, a, b, "do this")
 	done := ask(t, a, b, "and this")
-	take(m.ID, "s-1")
 	take(done.ID, "s-1")
 	if _, err := a.SendRequest(SendRequest{ChatID: done.ChatID, ReplyTo: done.ID, Body: "done", AuthorKind: AuthorAgent, SessionID: "s-1"}); err != nil {
 		t.Fatal(err)
 	}
+	take(m.ID, "s-1") // read after that reply: nothing answers it
 	// Its session lives: the sweep leaves it, however long ago it was read.
 	a.orphanSweep(time.Now().Add(30 * time.Minute))
 	if cm := chatMsg(t, a, m.ChatID, m.ID); cm.Unread || cm.NeedsHuman {
@@ -326,6 +326,42 @@ func TestStrandedRequestReopened(t *testing.T) {
 	a.orphanSweep(time.Now().Add(strandedMax + time.Minute))
 	if cm := chatMsg(t, a, old.ChatID, old.ID); cm.Unread {
 		t.Fatalf("a request read long ago handed back: %+v", cm)
+	}
+}
+
+// A request its session read, took and answered in the chat without reply_to
+// (a plain message later than its read, or a reply to a later ask), or that
+// another session of this node took up there, is answered: its session's end
+// does not hand it back for a second answer (v0.6.70 reopened requests
+// answered 13 hours before, and a launched session answered them again).
+func TestAnsweredWithoutReplyToNotReopened(t *testing.T) {
+	for _, by := range []string{"s-1", "s-2"} {
+		t.Run(by, func(t *testing.T) {
+			dir := t.TempDir()
+			a, b := deliveryPair(t, dir, nil, nil)
+			for _, sid := range []string{"s-1", "s-2"} {
+				if _, err := a.RegisterSession(SessionRequest{SessionID: sid, Provider: ProviderClaude, Folder: dir}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m := ask(t, a, b, "do this")
+			if g, err := a.Claim(ClaimRequest{IDs: []string{m.ID}, SessionID: "s-1"}); err != nil || !slices.Equal(g, []string{m.ID}) {
+				t.Fatalf("claim: %v %v", g, err)
+			}
+			if _, err := a.Ack("", AckRequest{IDs: []string{m.ID}, SessionID: "s-1"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.SendRequest(SendRequest{ChatID: m.ChatID, Body: "done, see the branch", AuthorKind: AuthorAgent, SessionID: by}); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.EndSession("s-1"); err != nil {
+				t.Fatal(err)
+			}
+			a.orphanSweep(time.Now().Add(sessionGoneAfter + time.Minute))
+			if cm := chatMsg(t, a, m.ChatID, m.ID); cm.Unread || cm.NeedsHuman {
+				t.Fatalf("a request answered with no reply_to was handed back: unread=%v needs_human=%v orphaned=%q", cm.Unread, cm.NeedsHuman, cm.OrphanedSession)
+			}
+		})
 	}
 }
 

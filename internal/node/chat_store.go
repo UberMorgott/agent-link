@@ -441,14 +441,24 @@ func (cs *chatStore) markOrphaned(ids []string, sid string) ([]string, error) {
 
 // strandedLocked reports whether r is a request to self that a session read
 // and took (Ack: Assigned "session:<id>") since since and nobody of self
-// answered, not handed back before (Reopened). The caller holds cs.mu.
-func (cs *chatStore) strandedLocked(r chatRecord, self string, since time.Time) bool {
+// answered, not handed back before (Reopened). Answered is a reply to it
+// (reply_to) or any message self wrote in its chat st once it was read: its
+// session answering without reply_to or under a later ask, another session or
+// the person taking it up. The caller holds cs.mu.
+func (cs *chatStore) strandedLocked(st *chatState, r chatRecord, self string, since time.Time) bool {
 	if !r.Unread || r.ReadAt.Before(since) || r.Reopened != "" || r.Orphaned != "" || r.Message.Kind != "" || r.Message.From == self ||
 		assignedSession(r) == "" || !r.Message.Asks(self) {
 		return false
 	}
-	_, answered := cs.replies[r.Message.ID][self]
-	return !answered
+	if _, answered := cs.replies[r.Message.ID][self]; answered {
+		return false
+	}
+	for i := len(st.msgs) - 1; i >= 0 && st.msgs[i].Seq > r.Seq; i-- {
+		if o := st.msgs[i]; o.Message.From == self && o.Message.Kind == "" && !o.ReceivedAt.Before(r.ReadAt) {
+			return false
+		}
+	}
+	return true
 }
 
 // stranded lists the sessions that hold a stranded request (strandedLocked)
@@ -459,7 +469,7 @@ func (cs *chatStore) stranded(self string, since, until time.Time) map[string]ti
 	out := map[string]time.Time{}
 	for _, st := range cs.chats {
 		for _, r := range st.msgs {
-			if !cs.strandedLocked(r, self, since) || !r.ReadAt.Before(until) {
+			if !cs.strandedLocked(st, r, self, since) || !r.ReadAt.Before(until) {
 				continue
 			}
 			if at, ok := out[assignedSession(r)]; !ok || r.ReadAt.Before(at) {
@@ -483,7 +493,7 @@ func (cs *chatStore) reopenStranded(sid, self string, since time.Time, gone func
 	var ids []string
 	for _, st := range cs.chats {
 		for _, r := range st.msgs {
-			if assignedSession(r) == sid && cs.strandedLocked(r, self, since) && gone(r.ReadAt) {
+			if assignedSession(r) == sid && cs.strandedLocked(st, r, self, since) && gone(r.ReadAt) {
 				ids = append(ids, r.Message.ID)
 			}
 		}
