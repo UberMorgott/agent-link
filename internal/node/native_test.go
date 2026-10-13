@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/UberMorgott/agent-link/internal/config"
 )
 
 // unreadOf is a chat message for Render's tests.
@@ -459,5 +461,44 @@ func TestActivityAndDoingFromTool(t *testing.T) {
 	}
 	if err := b.SessionDoing("s-n", SessionDoingRequest{}); !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("neither a state nor a tool: %v", err)
+	}
+}
+
+// GET /native tells the in-process module whether it may deliver: the node's
+// native_claude, off by default, unless the node's environment overrides it.
+func TestNativeSwitchEndpoint(t *testing.T) {
+	t.Setenv(config.EnvNativeClaude, "")
+	a, _ := deliveryPair(t, t.TempDir(), nil, nil)
+	srv := httptest.NewServer(a.APIHandler())
+	t.Cleanup(srv.Close)
+	get := func() bool {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/native", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		var v config.NativeView
+		if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&v) != nil {
+			t.Fatalf("GET /native: %d", resp.StatusCode)
+		}
+		return v.Claude
+	}
+	if get() {
+		t.Fatal("on by default")
+	}
+	a.cfg.NativeClaude = true
+	if !get() {
+		t.Fatal("native_claude: true is not served")
+	}
+	t.Setenv(config.EnvNativeClaude, "0")
+	if get() {
+		t.Fatal("the environment's 0 does not override the setting")
+	}
+	a.cfg.NativeClaude = false
+	t.Setenv(config.EnvNativeClaude, "1")
+	if !get() {
+		t.Fatal("the environment's 1 does not override the setting")
 	}
 }

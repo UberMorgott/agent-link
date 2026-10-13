@@ -168,3 +168,110 @@ test('the end of the session ends it at the node and stops the loop', async ($, 
   await w.clock.advance(120_000)
   expect(w.calls).toHaveLength(before)
 })
+
+// The switch. The node is asked only when the session's own environment says nothing.
+const ASK = { AGENTLINK_NATIVE_CLAUDE: '' }
+
+/** A session the module leaves alone: whatever happens in it, the node hears nothing more and every event passes. */
+async function inert($: Parameters<typeof start>[0], w: ReturnType<typeof world>, asked: number): Promise<void> {
+  await start($, w)
+  await w.clock.advance(120_000)
+  expect(w.tools).toEqual([])
+  expect(w.of('POST', '/sessions')).toEqual([])
+  expect(w.of('GET', '/unread')).toEqual([])
+  expect(w.status()).toBeUndefined()
+  // The person's prompt enters as it was typed; a turn, a tool call, a subagent and the end pass.
+  const res = await $.prompt.submit({ text: 'do the thing', wait: false, origin: { kind: 'composer' } })
+  expect(res.drop).toBeUndefined()
+  expect(w.prompts).toEqual(['do the thing'])
+  await $.classic.SessionStart({ source: 'startup', session_id: SESSION })
+  await $.classic.SubagentStart({ agent_id: 'a-1', agent_type: 'Explore' })
+  await $.turn.start({ text: 'do the thing', turnId: 't-1' })
+  await step($, 't-1', 0)
+  expect((await $.tool.call({ tool: 'Bash', command: 'go test ./...' })).result).toBe('done')
+  await $.classic.SubagentStop({ agent_id: 'a-1', agent_type: 'Explore', stop_hook_active: false, agent_transcript_path: '' })
+  await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't-1', reason: 'answer' })
+  await $.session.attach({ surface: 'desktop', clientId: 'desktop:default' })
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: SESSION, resume: { id: SESSION } })
+  await w.clock.advance(120_000)
+  expect(w.session.appended()).toEqual([])
+  expect(w.prompts).toEqual(['do the thing'])
+  expect(w.calls.map(c => `${c.method} ${c.path}`)).toEqual(Array.from({ length: asked }, () => 'GET /native'))
+}
+
+test('the node\'s switch off: no tool, no native registration, no loop, and the prompt passes through', async ($, on) => {
+  await inert($, world(on, [PEER], ASK), 1)
+})
+
+test('a node older than the switch (404) is a node with the switch off', async ($, on) => {
+  const w = world(on, [PEER], ASK)
+  w.isNative = true
+  w.answer.set('/native', () => ({ status: 404 }))
+  await inert($, w, 1)
+})
+
+test('a node that does not answer is a node with the switch off', async ($, on) => {
+  const w = world(on, [PEER], ASK)
+  w.isDown = true
+  await inert($, w, 0)
+})
+
+test('the session\'s own AGENTLINK_NATIVE_CLAUDE=0 wins over the node\'s switch, and the node is not asked', async ($, on) => {
+  const w = world(on, [PEER], { AGENTLINK_NATIVE_CLAUDE: '0' })
+  w.isNative = true
+  await inert($, w, 0)
+})
+
+test('the node\'s switch on: the module registers the session native, its tools, and delivers', async ($, on) => {
+  const w = world(on, [PEER], ASK)
+  w.isNative = true
+  await start($, w)
+  expect(w.calls[0]).toMatchObject({ method: 'GET', path: '/native' })
+  expect(w.of('GET', '/native')).toHaveLength(1)
+  expect(w.tools).toHaveLength(9)
+  expect(w.of('POST', '/sessions')[0]?.body).toMatchObject({ session_id: SESSION, native: true })
+  expect(w.prompts).toHaveLength(1)
+  // Asked once per session: not again while it lives.
+  await w.clock.advance(300_000)
+  expect(w.of('GET', '/native')).toHaveLength(1)
+})
+
+test('a flip of the switch waits for the next session: off to on after a /clear', async ($, on) => {
+  const w = world(on, [PEER], ASK)
+  await start($, w)
+  w.isNative = true
+  await w.clock.advance(60_000)
+  await $.classic.SessionStart({ source: 'startup', session_id: SESSION })
+  expect(w.of('GET', '/native')).toHaveLength(1)
+  expect(w.of('POST', '/sessions')).toEqual([])
+  w.sessionId = 'sess-2'
+  await $.classic.SessionStart({ source: 'clear', session_id: 'sess-2' })
+  await w.clock.settle()
+  expect(w.of('GET', '/native')).toHaveLength(2)
+  expect(w.tools).toHaveLength(9)
+  expect(w.last('POST', '/sessions')?.body).toMatchObject({ session_id: 'sess-2', folder: FOLDER, native: true })
+  expect(w.prompts).toHaveLength(1)
+})
+
+test('a flip of the switch waits for the next session: on to off after a /clear', async ($, on) => {
+  const w = world(on, [], ASK)
+  w.isNative = true
+  await start($, w)
+  await turn($, w, 't-1', 'work')
+  w.isNative = false
+  await w.clock.advance(60_000)
+  expect(w.last('POST', '/sessions')?.body).toMatchObject({ session_id: SESSION, native: true })
+  await $.session.end({ reason: 'clear', sessionId: SESSION, resume: { id: SESSION } })
+  w.sessionId = 'sess-2'
+  await $.classic.SessionStart({ source: 'clear', session_id: 'sess-2' })
+  const before = w.calls.length
+  w.unread.push(PEER)
+  await w.clock.advance(120_000)
+  // The session that follows is the shell hooks': nothing registered, asked or handed over.
+  expect(w.calls).toHaveLength(before)
+  expect(w.of('POST', '/sessions').every(c => c.body.session_id === SESSION)).toBeTruthy()
+  expect(w.prompts).toEqual([])
+  expect(w.status()).toBeUndefined()
+  // The tools the first session registered are still served.
+  expect((await $.tool.call({ tool: `${TOOL}chats` })).result).toBe('[{"id":"c-1"}]')
+})

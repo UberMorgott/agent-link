@@ -157,6 +157,34 @@ type Config struct {
 	// HistoryDays 0 keeps everything.
 	HistoryDays int `json:"history_days,omitempty"`
 	HistoryKeep int `json:"history_keep,omitempty"`
+	// NativeClaude lets Claude Code's in-process hooks module
+	// (plugins/agent-link/hooks/register.ts) deliver to its sessions in place
+	// of the shell hooks and `agentlink mcp`; off by default. The module
+	// asks at a session's start (GET /native, NativeClaudeOn).
+	NativeClaude bool `json:"native_claude,omitempty"`
+}
+
+// EnvNativeClaude overrides the native_claude setting for one process: "1"
+// on, "0" off, anything else leaves the setting. Read by the node (GET
+// /native) and, from its session's environment, by the module itself.
+const EnvNativeClaude = "AGENTLINK_NATIVE_CLAUDE"
+
+// NativeView is the answer of GET /native: which in-process modules may
+// deliver in place of the shell hooks.
+type NativeView struct {
+	Claude bool `json:"claude"`
+}
+
+// NativeClaudeOn is the native_claude switch as a module is told it: set (the
+// stored setting) unless this process's EnvNativeClaude says otherwise.
+func NativeClaudeOn(set bool) bool {
+	switch os.Getenv(EnvNativeClaude) {
+	case "1":
+		return true
+	case "0":
+		return false
+	}
+	return set
 }
 
 var namePattern = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_-]{0,63}$`)

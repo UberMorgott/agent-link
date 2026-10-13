@@ -98,6 +98,11 @@ type Settings struct {
 	// handler keeps AgentPath for compatibility with earlier settings.
 	ClaudePath string `json:"claude_path,omitempty"`
 	CodexPath  string `json:"codex_path,omitempty"`
+	// NativeClaude turns on Claude Code's in-process hooks module in place of
+	// the shell hooks and `agentlink mcp` (config.Config.NativeClaude); off
+	// by default. It has no control on the page and is kept when the form is
+	// saved; a session asks at its start.
+	NativeClaude bool `json:"native_claude,omitempty"`
 	// HandlerCommand replaces the built-in agent command (argv, used by tests)
 	// and wins over AgentPath.
 	HandlerCommand []string `json:"handler_command,omitempty"`
@@ -643,13 +648,14 @@ func (s Settings) Key() []byte {
 // settings file.
 func (s Settings) NodeConfig(path, listen string) config.Config {
 	c := config.Config{
-		Node:      s.Node,
-		Listen:    listen,
-		API:       s.APIAddr(),
-		DataDir:   filepath.Join(filepath.Dir(path), "data"),
-		SecretEnv: "-", // the key comes from the settings file, not the environment
-		Areas:     s.Areas,
-		Discovery: s.DiscoveryOn(),
+		Node:         s.Node,
+		Listen:       listen,
+		API:          s.APIAddr(),
+		DataDir:      filepath.Join(filepath.Dir(path), "data"),
+		SecretEnv:    "-", // the key comes from the settings file, not the environment
+		Areas:        s.Areas,
+		Discovery:    s.DiscoveryOn(),
+		NativeClaude: s.NativeClaude,
 	}
 	for _, p := range s.migrated().Peers {
 		if a, err := config.WithDefaultPort(p.Addr); err == nil {

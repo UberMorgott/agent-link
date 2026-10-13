@@ -139,7 +139,7 @@ func (a *App) Handler() http.Handler {
 	})
 	control := a.controlAPI()
 	root.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if len(a.routeContexts()) == 0 && r.URL.Path != "/discuss" {
+		if len(a.routeContexts()) == 0 && r.URL.Path != "/discuss" && r.URL.Path != "/native" {
 			http.Error(w, "node is not running: create or join a project in the app", http.StatusServiceUnavailable)
 			return
 		}

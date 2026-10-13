@@ -271,6 +271,10 @@ func (n *Node) APIHandler() http.Handler {
 	n.AttachmentRoutes(mux, "", func(w http.ResponseWriter, code int, err error) { http.Error(w, err.Error(), code) })
 	mux.HandleFunc("GET /members", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Members()) })
 	mux.HandleFunc("GET /seats", func(w http.ResponseWriter, _ *http.Request) { writeJSONResponse(w, n.Seats()) })
+	// Whether Claude Code's in-process module may deliver (asked at a session's start).
+	mux.HandleFunc("GET /native", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResponse(w, config.NativeView{Claude: config.NativeClaudeOn(n.cfg.NativeClaude)})
+	})
 	mux.HandleFunc("POST /members", n.handleAddMember)
 	mux.HandleFunc("POST /members/remove", n.handleRemoveMember)
 	return localOnly(mux)

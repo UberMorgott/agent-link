@@ -153,3 +153,38 @@ func TestNamelessPeerValid(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// native_claude is off unless the file sets it, and AGENTLINK_NATIVE_CLAUDE
+// (1 or 0, nothing else) overrides it for the process.
+func TestNativeClaude(t *testing.T) {
+	t.Setenv(EnvNativeClaude, "")
+	dir := t.TempDir()
+	load := func(extra string) Config {
+		t.Helper()
+		path := filepath.Join(dir, "node.json")
+		raw := `{"node":"a","listen":"127.0.0.1:7420","api":"127.0.0.1:7520","data_dir":"data","secret_env":"S"` + extra + `}`
+		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	if c := load(""); c.NativeClaude || NativeClaudeOn(c.NativeClaude) {
+		t.Fatal("native_claude is on by default")
+	}
+	if c := load(`,"native_claude":true`); !c.NativeClaude || !NativeClaudeOn(c.NativeClaude) {
+		t.Fatal("native_claude: true is not read")
+	}
+	for _, tc := range []struct {
+		env       string
+		set, want bool
+	}{{"1", false, true}, {"0", true, false}, {"yes", false, false}, {"true", true, true}} {
+		t.Setenv(EnvNativeClaude, tc.env)
+		if got := NativeClaudeOn(tc.set); got != tc.want {
+			t.Fatalf("%s=%q over %v: %v", EnvNativeClaude, tc.env, tc.set, got)
+		}
+	}
+}

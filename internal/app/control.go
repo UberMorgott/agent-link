@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/UberMorgott/agent-link/internal/config"
 	"github.com/UberMorgott/agent-link/internal/node"
 	"github.com/UberMorgott/agent-link/internal/settings"
 )
@@ -320,6 +321,14 @@ func (a *App) controlAPI() http.Handler {
 	}
 	mux.HandleFunc("GET /chats", a.controlChats)
 	mux.HandleFunc("GET /projects", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, a.Projects()) })
+	// Whether Claude Code's in-process module may deliver (asked at a session's
+	// start): the app's setting, the same for every context.
+	mux.HandleFunc("GET /native", func(w http.ResponseWriter, _ *http.Request) {
+		a.mu.Lock()
+		set := a.s.NativeClaude
+		a.mu.Unlock()
+		writeJSON(w, config.NativeView{Claude: config.NativeClaudeOn(set)})
+	})
 	// The rest names only a project: that context, else the one of the
 	// caller's folder, else the legacy network (route).
 	byProject := func(w http.ResponseWriter, r *http.Request) {

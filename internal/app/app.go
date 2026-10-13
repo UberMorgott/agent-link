@@ -401,6 +401,8 @@ func (a *App) apply(ctx context.Context, s settings.Settings) (found settings.Fo
 	s.StopAll = a.s.StopAll
 	// So have the nickname and the chat color (SetProfile).
 	s.ChatColor, s.Nickname, s.NicknameAliases = a.s.ChatColor, a.s.Nickname, a.s.NicknameAliases
+	// The in-process module's switch has no control on the page.
+	s.NativeClaude = a.s.NativeClaude
 	if s.Handler != worker.HandlerNone && len(s.HandlerCommand) == 0 && a.Agents.LookPath != nil && !a.agentPresent(s.ProgramPath(s.Handler)) {
 		if f, ok := a.Agents.Discover(s.Handler); ok {
 			s.AgentPath, found = "", f

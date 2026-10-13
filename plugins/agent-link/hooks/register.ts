@@ -25,6 +25,13 @@
 //     words no message.
 //   - Tool calls tell the node what the session does (POST /sessions/{id}/doing,
 //     POST /chats/{id}/activity), named by the tool and worded by the node.
+//
+// All of it only when the node's switch says so (GET /native, the node's
+// `native_claude`; $AGENTLINK_NATIVE_CLAUDE of the session overrides it), asked
+// once per session, at its start. Off, or a node that does not answer or does
+// not know the question: the module registers no tool and no session, asks for
+// nothing and passes every event on, and the shell hooks and `agentlink mcp`
+// serve the session as they do without it.
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Delivery, Link, LiveAgent, Turn } from '../types'
@@ -137,6 +144,14 @@ let lastActivity = { key: '', at: Number.NEGATIVE_INFINITY }
 const lastAgentActivity = new Map<string, { key: string; at: number }>()
 let job = ''
 let seat = ''
+/**
+ * The switch, as it was told for session `askedId`: off until a session.start
+ * of this copy of the module heard it on. Asked again only for another session.
+ */
+let isOn = false
+let askedId = ''
+/** What session.start said of the process's session: a session that follows a /clear is the same. */
+const seen = { cwd: '', isInteractive: false, hasSurface: false }
 
 /** settings.DefaultAPI: the desktop app's local API when nothing says else. */
 const DEFAULT_API = '127.0.0.1:7520'
@@ -185,6 +200,18 @@ async function call(
   } catch {
     return { isOk: false, status: 0, text: '' }
   }
+}
+
+/**
+ * Whether the module runs for the session that starts: the session's own
+ * $AGENTLINK_NATIVE_CLAUDE (1 or 0), else the node's word (GET /native). A node
+ * that is down, or older than the question (404), says no.
+ */
+async function switchedOn($: Engine, api: string): Promise<boolean> {
+  const own = ((await $.env.get('AGENTLINK_NATIVE_CLAUDE')) ?? '').trim()
+  if (own === '1') return true
+  if (own === '0') return false
+  return parse<{ claude?: unknown }>(await call($, api, 'GET', '/native', {}))?.claude === true
 }
 
 /** The node, for the helpers outside this file (which never hold $). */
@@ -702,6 +729,96 @@ async function rebind($: Engine, sessionId: string): Promise<void> {
   if (mem.link.isAttended) await registerSession($, false)
 }
 
+/**
+ * The switch went off for the session that follows: the module leaves the
+ * node. The tools it registered stay the session's (nothing takes them back)
+ * and are served on, as a headless run's are.
+ */
+async function standDown($: Engine): Promise<void> {
+  timer?.cancel()
+  timer = undefined
+  const link = mem.link
+  if (link === undefined) return
+  if (link.sessionId !== '') await call($, link.api, 'DELETE', `/sessions/${seg(link.sessionId)}`, withProject(link))
+  mem.link = { ...link, sessionId: '', isRegistered: false, isAttended: false, isGreeted: false }
+  mem.deliveries = []
+  mem.turn = { id: '', step: -1 }
+  mem.agents = {}
+  mem.active = {}
+  mem.agentChats = {}
+  mem.notes = []
+  lastDoing = ''
+  await saveLink($)
+  await saveDeliveries($)
+  await saveTurn($)
+  await saveAgents($)
+  await saveActive($)
+  await saveAgentChats($)
+  await saveNotes($)
+  $.ui.status(undefined)
+}
+
+/** The module takes up session `sessionId` of the node at `api`: its tools, its registration, its loop. */
+async function begin($: Engine, api: string, sessionId: string): Promise<void> {
+  await hydrate($)
+  job = ((await $.env.get('AGENTLINK_JOB_ID')) ?? '').trim()
+  seat = ((await $.env.get('AGENTLINK_SEAT')) ?? '').trim()
+  const before = mem.link
+  // The engine replaced this copy of the module mid-session: the session,
+  // its turn and what it was handed go on as `$.state` kept them.
+  const isSame = before !== undefined && before.sessionId === sessionId
+  mem.link = {
+    api,
+    project: ((await $.env.get('AGENTLINK_PROJECT_ID')) ?? '').trim(),
+    sessionId,
+    folder: seen.cwd,
+    isRegistered: false,
+    isAttended: await attended($, seen.isInteractive, seen.hasSurface),
+    isGreeted: isSame && before.isGreeted,
+  }
+  if (!isSame) {
+    mem.deliveries = []
+    mem.turn = { id: '', step: -1 }
+    mem.agents = {}
+    mem.active = {}
+    mem.agentChats = {}
+    mem.notes = []
+    await saveDeliveries($)
+    await saveTurn($)
+    await saveAgents($)
+    await saveActive($)
+    await saveAgentChats($)
+    await saveNotes($)
+  }
+  await saveLink($)
+  for (const tool of TOOLS) {
+    await $.tool.register({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })
+  }
+  if (mem.link.isAttended) {
+    await registerSession($, false)
+    startLoop($)
+  }
+}
+
+/**
+ * The process goes on under another session id (/clear, a resume): a session
+ * of its own, so the switch is asked again for it.
+ */
+async function turnover($: Engine, sessionId: string): Promise<void> {
+  const wasOn = isOn
+  const api = mem.link?.api ?? (await findApi($))
+  isOn = await switchedOn($, api)
+  askedId = sessionId
+  if (wasOn && isOn) {
+    await rebind($, sessionId)
+    if (mem.link?.isAttended === true && timer === undefined) startLoop($)
+  } else if (wasOn) {
+    await standDown($)
+  } else if (isOn) {
+    await begin($, api, sessionId)
+  }
+}
+
 /** One pass: keep the session live, hand over what is new. True when the node held the request. */
 async function poll($: Engine): Promise<boolean> {
   await hydrate($)
@@ -710,9 +827,9 @@ async function poll($: Engine): Promise<boolean> {
   const started = await $.clock.now()
   const sessionId = await $.session.id()
   if (sessionId !== link.sessionId && sessionId !== endedId) {
-    await rebind($, sessionId)
+    await turnover($, sessionId)
     link = mem.link
-    if (link === undefined) return false
+    if (!isOn || link === undefined) return false
   }
   if (link.sessionId === '') return false
   if (link.isRegistered ? started - lastBeat >= HEARTBEAT_MS : started - lastTry >= RETRY_MS) {
@@ -823,50 +940,23 @@ function caller(link: Link, agentId: string): Caller {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await hydrate($)
-    job = ((await $.env.get('AGENTLINK_JOB_ID')) ?? '').trim()
-    seat = ((await $.env.get('AGENTLINK_SEAT')) ?? '').trim()
-    const sessionId = await $.session.id()
-    const before = mem.link
-    // The engine replaced this copy of the module mid-session: the session,
-    // its turn and what it was handed go on as `$.state` kept them.
-    const isSame = before !== undefined && before.sessionId === sessionId
-    mem.link = {
-      api: await findApi($),
-      project: ((await $.env.get('AGENTLINK_PROJECT_ID')) ?? '').trim(),
-      sessionId,
-      folder: e.cwd,
-      isRegistered: false,
-      isAttended: await attended($, e.isInteractive, e.surface !== null),
-      isGreeted: isSame && before.isGreeted,
-    }
-    if (!isSame) {
-      mem.deliveries = []
-      mem.turn = { id: '', step: -1 }
-      mem.agents = {}
-      mem.active = {}
-      mem.agentChats = {}
-      mem.notes = []
-      await saveDeliveries($)
-      await saveTurn($)
-      await saveAgents($)
-      await saveActive($)
-      await saveAgentChats($)
-      await saveNotes($)
-    }
-    await saveLink($)
-    for (const tool of TOOLS) {
-      await $.tool.register({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })
-    }
-    if (mem.link.isAttended) {
-      await registerSession($, false)
-      startLoop($)
-    }
+    seen.cwd = e.cwd
+    seen.isInteractive = e.isInteractive
+    seen.hasSurface = e.surface !== null
+    const wasOn = isOn
+    const api = await findApi($)
+    isOn = await switchedOn($, api)
+    askedId = await $.session.id()
+    if (isOn) await begin($, api, askedId)
+    else if (wasOn) await standDown($)
     return next(e)
   })
 
   // A client drew the session after it started (the desktop app): attended.
   on('session.attach', async ($, e, next) => {
+    seen.isInteractive = true
+    seen.hasSurface = true
+    if (!isOn) return next(e)
     await hydrate($)
     const link = mem.link
     if (link !== undefined && !link.isAttended && (await attended($, true, true))) await attend($)
@@ -876,17 +966,20 @@ export const register: Register = on => {
   // A /clear ends the session and raises no session.start: the classic
   // SessionStart event names the id the process goes on under.
   on('classic.SessionStart', async ($, e, next) => {
-    await hydrate($)
-    const link = mem.link
-    if (link !== undefined && e.session_id !== '' && e.session_id !== link.sessionId) {
-      await rebind($, e.session_id)
-      if (mem.link?.isAttended === true && timer === undefined) startLoop($)
+    if (e.session_id === '') return next(e)
+    if (isOn) {
+      await hydrate($)
+      if (mem.link !== undefined && e.session_id !== mem.link.sessionId) await turnover($, e.session_id)
+    } else if (seen.cwd !== '' && e.session_id !== askedId) {
+      // Off for the session before: asked again for this one.
+      await turnover($, e.session_id)
     }
     return next(e)
   }).catch((_$, e, next) => next(e)) // this hook failing never holds a session's start back
 
   // The person's own prompt carries what waits for the session.
   on('prompt.submit', async ($, e, next) => {
+    if (!isOn) return next(e)
     await hydrate($)
     const link = mem.link
     if (link === undefined || !link.isAttended || !link.isRegistered || e.turnId !== undefined || mem.turn.id !== '') {
@@ -959,6 +1052,7 @@ export const register: Register = on => {
   }).catch((_$, e, next) => next(e)) // this hook failing never holds the person's prompt back
 
   on('turn.start', async ($, e, next) => {
+    if (!isOn) return next(e)
     await hydrate($)
     mem.turn = { id: e.turnId, step: -1 }
     await saveTurn($)
@@ -991,7 +1085,7 @@ export const register: Register = on => {
 
   on('turn.step', async function* ($, e, next) {
     const stream = next(e)
-    if (e.agentId !== undefined) return yield* stream
+    if (!isOn || e.agentId !== undefined) return yield* stream
     await hydrate($)
     if (mem.turn.id === e.turnId && mem.turn.step !== e.index) {
       mem.turn = { id: e.turnId, step: e.index }
@@ -1014,7 +1108,7 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId !== undefined) return next(e)
+    if (!isOn || e.agentId !== undefined) return next(e)
     await hydrate($)
     mem.turn = { id: '', step: -1 }
     await saveTurn($)
@@ -1047,6 +1141,7 @@ export const register: Register = on => {
   })
 
   on('classic.SubagentStart', async ($, e, next) => {
+    if (!isOn) return next(e)
     await hydrate($)
     const link = mem.link
     if (link?.isAttended === true && link.isRegistered) {
@@ -1061,6 +1156,7 @@ export const register: Register = on => {
   }).catch((_$, e, next) => next(e)) // this hook failing never holds a subagent's start back
 
   on('classic.SubagentStop', async ($, e, next) => {
+    if (!isOn) return next(e)
     await hydrate($)
     const link = mem.link
     if (link?.isAttended === true && link.isRegistered) {
@@ -1079,6 +1175,9 @@ export const register: Register = on => {
   }).catch((_$, e, next) => next(e)) // this hook failing never holds a subagent's end back
 
   on('tool.call', async ($, e, next) => {
+    // Off: no tool of this module exists, unless the switch went off after a
+    // session of this process registered them (standDown).
+    if (!isOn && mem.link === undefined) return next(e)
     await hydrate($)
     const link = mem.link
     const tool = String(e.tool)
@@ -1145,6 +1244,7 @@ export const register: Register = on => {
   }).catch((_$, e, next) => next(e)) // this hook failing never holds a tool call back
 
   on('session.end', async ($, e, next) => {
+    if (!isOn) return next(e)
     await hydrate($)
     const link = mem.link
     endedId = e.sessionId

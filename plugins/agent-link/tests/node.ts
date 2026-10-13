@@ -48,6 +48,8 @@ export type World = {
   fit: number
   /** The node does not answer. */
   isDown: boolean
+  /** The node's switch (GET /native), asked only by a test that clears $AGENTLINK_NATIVE_CLAUDE. */
+  isNative: boolean
   /** The id `$.session.id()` answers. */
   sessionId: string
   /** A test's own answer for a path, in place of the node's. */
@@ -89,8 +91,9 @@ export function world(on: On, unread: Message[] = [], env: Record<string, string
     return k !== undefined && clock.now() - k.at < WAKE_GRACE_MS
   }
   const session = mock.session(on)
-  // Attended as the interactive CLI is, unless a test says else.
-  mock.env(on, { AGENTLINK_API: API, CLAUDE_CODE_SESSION_ATTENDED: '1', ...env })
+  // Attended as the interactive CLI is, and switched on by the session's own
+  // environment (so the node is not asked), unless a test says else.
+  mock.env(on, { AGENTLINK_API: API, CLAUDE_CODE_SESSION_ATTENDED: '1', AGENTLINK_NATIVE_CLAUDE: '1', ...env })
   const of = (method: string, path: string): Call[] => calls.filter(c => c.method === method && c.path === path)
   const w: World = {
     clock,
@@ -105,6 +108,7 @@ export function world(on: On, unread: Message[] = [], env: Record<string, string
     worker: new Set(),
     fit: 20,
     isDown: false,
+    isNative: false,
     sessionId: SESSION,
     answer: new Map(),
     dropPrompts: undefined,
@@ -223,6 +227,7 @@ export function world(on: On, unread: Message[] = [], env: Record<string, string
         }
       }
     }
+    if (path === '/native') answer = { claude: w.isNative }
     if (path === '/send') answer = { id: 'm-out', chat_id: body.chat_id ?? 'c-new' }
     if (path === '/chats') answer = method === 'POST' ? { id: 'c-made' } : [{ id: 'c-1' }]
     const isEmpty = method === 'DELETE' || path === '/release' || path.endsWith('/doing')

@@ -637,3 +637,42 @@ func eventuallyLong(t *testing.T, what string, ok func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// GET /native is the app's native_claude setting (off by default, overridden
+// by the app's environment), and a save of the settings page keeps it.
+func TestControlNativeSwitch(t *testing.T) {
+	t.Setenv(config.EnvNativeClaude, "")
+	native := func(a *App) string {
+		t.Helper()
+		srv := httptest.NewServer(a.Handler())
+		defer srv.Close()
+		code, body := call(t, srv, http.MethodGet, "/native", "")
+		if code != http.StatusOK {
+			t.Fatalf("GET /native: %d %s", code, body)
+		}
+		return strings.TrimSpace(body)
+	}
+	if got := native(startApp(t, settings.Settings{})); got != `{"claude":false}` {
+		t.Fatalf("default: %s", got)
+	}
+	a := startApp(t, settings.Settings{NativeClaude: true})
+	if got := native(a); got != `{"claude":true}` {
+		t.Fatalf("native_claude: true: %s", got)
+	}
+	// The page's form does not carry the switch.
+	form := a.Settings()
+	form.NativeClaude = false
+	if _, err := a.Apply(t.Context(), form); err != nil {
+		t.Fatal(err)
+	}
+	if got := native(a); got != `{"claude":true}` || !a.Settings().NativeClaude {
+		t.Fatalf("after a save of the page: %s", got)
+	}
+	if a.Settings().NodeConfig("config.json", ":0").NativeClaude != true {
+		t.Fatal("the node's config does not carry the switch")
+	}
+	t.Setenv(config.EnvNativeClaude, "0")
+	if got := native(a); got != `{"claude":false}` {
+		t.Fatalf("the environment's 0: %s", got)
+	}
+}
