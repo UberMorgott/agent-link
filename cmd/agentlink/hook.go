@@ -838,7 +838,7 @@ func formatBatch(page node.UnreadPage, folder, sid string, stop bool) hookBatch 
 	if stop {
 		mode = node.RenderStop
 	}
-	r, err := node.Render(node.RenderRequest{Messages: page.Messages, Total: page.Total, Mode: mode, Folder: folder, SessionID: sid})
+	r, err := node.Render(node.RenderRequest{Messages: page.Messages, Total: page.Total, Mode: mode, Folder: folder, SessionID: sid, Kept: true})
 	if err != nil {
 		return b
 	}

@@ -50,6 +50,10 @@ type RenderRequest struct {
 	// CLI adds the line naming this node's agentlink executable (a session's
 	// first text: agentlink need not be on the agent's own PATH).
 	CLI bool `json:"cli,omitempty"`
+	// Kept: Messages are the run's own already, an ended subagent's reply
+	// marked (the shell hooks pick them themselves, hookSession.forMe): Agent
+	// and LiveAgents are not applied a second time. Never read from a request.
+	Kept bool `json:"-"`
 }
 
 // RenderedMessage names one message the rendered text carries.
@@ -94,7 +98,10 @@ func Render(req RenderRequest) (RenderResult, error) {
 			max(req.Total, len(req.Messages)), WakeMarker(req.Token))
 		return RenderResult{Text: WithNotes(req.Notes, text), Shown: []RenderedMessage{}}, nil
 	}
-	msgs := forAgentRun(req.Messages, req.Agent, req.LiveAgents)
+	msgs := req.Messages
+	if !req.Kept {
+		msgs = forAgentRun(msgs, req.Agent, req.LiveAgents)
+	}
 	total := max(req.Total, len(req.Messages)) - (len(req.Messages) - len(msgs))
 	res := RenderResult{Shown: []RenderedMessage{}, Chats: map[string]string{}}
 	shown := msgs[:FitUnread(msgs)]
