@@ -592,10 +592,18 @@ func (n *Node) UnreadQuery(q url.Values) (UnreadPage, error) {
 		return UnreadPage{Messages: []UnreadMessage{}}, nil
 	}
 	// A Claude session's background waiter asks with waiter=1: while the
-	// node wakes that session through its inbox, the waiter has nothing to do.
+	// node wakes that session through its inbox, the waiter has only the
+	// requests past the hop limit to wake it with (the node wakes nobody for
+	// them); else it has them too, as information.
 	waiter := q.Get("waiter") == "1"
-	if waiter && n.InboxWakes(q.Get("session")) {
-		return UnreadPage{Messages: []UnreadMessage{}}, nil
+	held := heldShown
+	switch {
+	case waiter && n.InboxWakes(q.Get("session")):
+		held = heldOnly
+	case waiter:
+		held = heldToo
+	case q.Get("actionable") == "1":
+		held = heldSkipped
 	}
 	if waiter {
 		limit = max(limit, hookBatchIDs) // what it may not wake with is dropped below
@@ -609,7 +617,7 @@ func (n *Node) UnreadQuery(q url.Values) (UnreadPage, error) {
 	if (af.Only != "" && !validSessionID(af.Only)) || len(af.Skip) > maxSessionAgents || slices.ContainsFunc(af.Skip, func(a string) bool { return !validSessionID(a) }) {
 		return UnreadPage{}, fmt.Errorf("%w: invalid for_agent or skip_agents", ErrBadRequest)
 	}
-	page, err := n.unreadFor(q.Get("folder"), q.Get("session"), q.Get("after"), limit, q.Get("actionable") == "1", q.Get("exact") == "1", af)
+	page, err := n.unreadHeld(q.Get("folder"), q.Get("session"), q.Get("after"), limit, held, q.Get("exact") == "1", af)
 	if err == nil && waiter {
 		n.waiterSpent(&page)
 	}

@@ -196,9 +196,7 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 			if _, done := f.acked[m.ID]; done {
 				continue
 			}
-			if q.Get("actionable") == "1" && m.Paused {
-				continue
-			}
+			hide := q.Get("actionable") == "1" && q.Get("waiter") != "1" && m.Paused
 			if only := q.Get("for_agent"); (only != "" && m.ForAgent != only) || (m.ForAgent != "" && slices.Contains(strings.Split(q.Get("skip_agents"), ","), m.ForAgent)) {
 				continue
 			}
@@ -212,6 +210,9 @@ func (f *fakeNode) serve(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				m.WakeToken = ""
+			}
+			if hide {
+				continue
 			}
 			page.Total++
 			if q.Get("after") != "" && m.Cursor <= q.Get("after") {
@@ -1148,7 +1149,10 @@ func TestHookStopAcksProvenWake(t *testing.T) {
 	}
 }
 
-func TestHookGuardedMessageDoesNotRewake(t *testing.T) {
+// A request past the hop limit does not continue a Stop, and the node wakes
+// nobody for it: the waiter wakes the idle session with it once, as
+// information, instead of leaving it unseen until an unrelated event.
+func TestHookGuardedMessageWakesIdleAsInformation(t *testing.T) {
 	c := newHookCase(t)
 	c.run(hookClaude, evSessionStart)
 	c.run(hookClaude, evStop)
@@ -1158,15 +1162,16 @@ func TestHookGuardedMessageDoesNotRewake(t *testing.T) {
 	if out := c.run(hookClaude, evStop); out != "" || len(c.f.ackedIDs()) != 0 {
 		t.Fatalf("guarded message continued Claude Stop: %q %v", out, c.f.ackedIDs())
 	}
-	if pendingUnread(c.env, c.folder, c.sid, nil) {
-		t.Fatal("guarded message looked actionable to the waiter")
+	if !pendingUnread(c.env, c.folder, c.sid, nil) {
+		t.Fatal("the waiter does not see the guarded message")
 	}
 	var stderr bytes.Buffer
-	if code, done := wakeWith(hookClaude, c.sid, c.folder, hookStatePath(c.env.dir, hookClaude, c.sid), &stderr, c.env, time.Hour); code != 0 || done || stderr.Len() != 0 || len(c.f.ackedIDs()) != 0 {
-		t.Fatalf("guarded message rewoke: code %d done %v stderr %q acked %v", code, done, stderr.String(), c.f.ackedIDs())
+	if code, done := wakeWith(hookClaude, c.sid, c.folder, hookStatePath(c.env.dir, hookClaude, c.sid), &stderr, c.env, time.Hour); code != 2 || !done ||
+		!strings.Contains(stderr.String(), "К сведению, ответ не требуется") || strings.Contains(stderr.String(), "Просит ответа") || len(c.f.ackedIDs()) != 0 {
+		t.Fatalf("guarded message did not wake as information: code %d done %v stderr %q acked %v", code, done, stderr.String(), c.f.ackedIDs())
 	}
-	if out := c.run(hookClaude, evPrompt); !strings.Contains(out, "К сведению, ответ не требуется") || len(c.f.ackedIDs()) != 1 {
-		t.Fatalf("next human turn did not read guarded message: %q %v", out, c.f.ackedIDs())
+	if out := c.run(hookClaude, evStop); strings.Contains(out, `"decision"`) {
+		t.Fatalf("guarded message continued Claude Stop after its wake: %q", out)
 	}
 }
 

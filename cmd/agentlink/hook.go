@@ -605,6 +605,9 @@ type hookSession struct {
 	client string
 	// wakeToken (the waiter's only) makes its claim a wake (node.ClaimRequest).
 	wakeToken string
+	// waiter: the waiter's run. It asks as the waiter (waiter=1), which the
+	// node also gives the requests past the hop limit it wakes nobody for.
+	waiter bool
 	// agent: a subagent's run (its PostToolUse), which takes only the replies
 	// for that subagent (forMe).
 	agent string
@@ -674,6 +677,9 @@ func (h *hookSession) collect(stop, actionable bool, proof func() string) (hookB
 	q = h.env.withProject(q)
 	if actionable {
 		q.Set("actionable", "1")
+	}
+	if h.waiter {
+		q.Set("waiter", "1")
 	}
 	h.agentQuery(q)
 	if err := hookCall(h.env.api, http.MethodGet, "/unread", q, nil, &page, hookHTTPTimeout); err != nil {

@@ -156,9 +156,10 @@ func waiterBusy(st hookState, now time.Time, busyFor time.Duration) bool {
 	return false
 }
 
-// pendingUnread reports whether actionable unread messages for session wait in folder
-// (not those for another session of the folder). It asks as the waiter: a
-// node that wakes the session through its inbox answers none.
+// pendingUnread reports whether unread messages to wake session with wait in
+// folder (not those for another session of the folder). It asks as the waiter:
+// a node that wakes the session through its inbox answers only the requests
+// past the hop limit, for which it wakes nobody.
 func pendingUnread(env hookEnv, folder, session string, st *hookState) bool {
 	var page node.UnreadPage
 	q := url.Values{"folder": {folder}, "session": {session}, "limit": {"1"}, "actionable": {"1"}, "waiter": {"1"}}
@@ -185,7 +186,7 @@ func wakeWith(client, sid, folder, path string, stderr io.Writer, env hookEnv, b
 	}
 	st.trackAgent("", "", "", env.clock()) // an idle parent has no events: silent subagents lapse here
 	token := randomToken()
-	h := &hookSession{env: env, st: &st, sid: sid, folder: folder, client: client, wakeToken: token}
+	h := &hookSession{env: env, st: &st, sid: sid, folder: folder, client: client, wakeToken: token, waiter: true}
 	b, err := h.collect(false, true, nil)
 	if err != nil || b.empty() {
 		return 0, false

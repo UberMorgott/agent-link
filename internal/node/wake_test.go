@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -290,6 +291,51 @@ func TestWakeIgnoresGuardedMessage(t *testing.T) {
 	}
 	if page, _ := a.Unread("", "", 10); page.Total != 1 {
 		t.Fatalf("guarded message disappeared: %+v", page)
+	}
+}
+
+// The node wakes nobody for a request past the hop limit, so it does not hold
+// a live idle session's waiter off it: the waiter gets it (and, while the node
+// wakes the session through its inbox, nothing else), wakes the session with
+// it as information, and the session's hook then finds it woken.
+func TestWaiterGetsGuardedMessage(t *testing.T) {
+	p := &fakePoster{}
+	dir := t.TempDir()
+	a, b := deliveryPair(t, dir, p, nil)
+	regClaude(t, a, dir, "s-c", testSocket, true)
+	m := ask(t, a, b, "within the limit")
+	deep, err := b.SendMessage(Message{ChatID: m.ChatID, Body: "guarded", Responders: []string{a.cfg.Node}, RootID: newID(), AutoDepth: MaxAutoDepth + 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "guarded message is unread", func() bool {
+		page, _ := a.Unread("", "", 10)
+		return slices.ContainsFunc(page.Messages, func(u UnreadMessage) bool { return u.ID == deep.ID && u.Paused })
+	})
+	if !a.InboxWakes("s-c") {
+		t.Fatal("the node does not wake the session through its inbox")
+	}
+	q := url.Values{"waiter": {"1"}, "session": {"s-c"}, "folder": {dir}, "actionable": {"1"}, "limit": {"1"}}
+	page, err := a.UnreadQuery(q)
+	if err != nil || page.Total != 1 || len(page.Messages) != 1 || page.Messages[0].ID != deep.ID || !page.Messages[0].Paused {
+		t.Fatalf("the waiter of a live idle session does not get the guarded message alone: %+v %v", page, err)
+	}
+	// A Stop, an automatic wake: still not theirs.
+	stop := url.Values{"session": {"s-c"}, "folder": {dir}, "actionable": {"1"}}
+	if page, err := a.UnreadQuery(stop); err != nil || slices.ContainsFunc(page.Messages, func(u UnreadMessage) bool { return u.ID == deep.ID }) || len(page.Woken) != 0 {
+		t.Fatalf("guarded message is actionable: %+v %v", page, err)
+	}
+	const token = "0123456789abcdef"
+	if g, err := a.Claim(ClaimRequest{IDs: []string{deep.ID}, SessionID: "s-c", WakeToken: token}); err != nil || !slices.Equal(g, []string{deep.ID}) {
+		t.Fatalf("the waiter's claim: %v %v", g, err)
+	}
+	if page, err := a.UnreadQuery(q); err != nil || len(page.Messages) != 0 || page.Total != 0 {
+		t.Fatalf("the waiter gets the message it woke with again: %+v %v", page, err)
+	}
+	page, err = a.UnreadQuery(stop)
+	if err != nil || len(page.Woken) != 1 || page.Woken[0].ID != deep.ID || page.Woken[0].WakeToken != token ||
+		slices.ContainsFunc(page.Messages, func(u UnreadMessage) bool { return u.ID == deep.ID }) {
+		t.Fatalf("the session's hook does not find the guarded message woken: %+v %v", page, err)
 	}
 }
 

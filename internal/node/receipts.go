@@ -162,6 +162,31 @@ func (n *Node) UnreadFor(folder, session, after string, limit int) (UnreadPage, 
 // process takes here only the replies to its own messages. af keeps the replies
 // of one subagent, or drops those of live ones, before the page is cut.
 func (n *Node) unreadFor(folder, session, after string, limit int, actionable, exact bool, af AgentFilter) (UnreadPage, error) {
+	held := heldShown
+	if actionable {
+		held = heldSkipped
+	}
+	return n.unreadHeld(folder, session, after, limit, held, exact, af)
+}
+
+// heldPick is what unreadHeld does with the requests past the hop limit
+// (UnreadMessage.Paused), for which the node wakes and launches nobody.
+type heldPick int
+
+const (
+	heldShown   heldPick = iota // listed with the rest
+	heldSkipped                 // left out: an automatic wake, a Stop
+	// heldToo: a session's waiter the node does not hold off. They are listed
+	// with the rest (a seat's excepted: they wait for a person), so an idle
+	// live session reads them as information instead of never.
+	heldToo
+	// heldOnly: a waiter held off while the node wakes its session through the
+	// inbox. The node wakes it with the rest; only they are left to the waiter.
+	heldOnly
+)
+
+// unreadHeld is unreadFor with the held requests picked by held.
+func (n *Node) unreadHeld(folder, session, after string, limit int, held heldPick, exact bool, af AgentFilter) (UnreadPage, error) {
 	if session != "" {
 		n.auto.stopMu.RLock()
 		defer n.auto.stopMu.RUnlock()
@@ -203,7 +228,9 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable, e
 	// wake's token), not delivered again while the wake holds; one whose wake
 	// lapsed is listed in both, so a hook that sees the session got it after
 	// all acknowledges it instead of delivering it twice.
-	add := func(um UnreadMessage) {
+	// A held request left out (listed false) is still Woken for the session a
+	// waiter woke with it, so its hook acknowledges it.
+	add := func(um UnreadMessage, listed bool) {
 		if session != "" {
 			if c, ok := n.sess.claims[um.ID]; ok && c.wake() && c.owner == session && c.token != "" {
 				w := um
@@ -213,6 +240,9 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable, e
 					return
 				}
 			}
+		}
+		if !listed {
+			return
 		}
 		all = append(all, um)
 	}
@@ -227,13 +257,16 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable, e
 		um.AsksYou = !um.OwnHuman && um.Asks(n.cfg.Node)
 		um.Paused = um.AsksYou && n.held(um.Message)
 		um.ForAgent, um.ForAgentType = n.originAgent(u.rec.Message)
-		if actionable && um.Paused {
+		if held == heldOnly && !um.Paused {
 			continue
 		}
 		n.materialize(&um.Message, u.chat.Area)
-		add(um)
+		add(um, held != heldSkipped || !um.Paused)
 	}
 	for _, r := range n.store.unreadPlain() {
+		if held == heldOnly {
+			break
+		}
 		if filter && n.localArea(r.Message.Area) != area {
 			continue
 		}
@@ -243,14 +276,14 @@ func (n *Node) unreadFor(folder, session, after string, limit int, actionable, e
 		um := UnreadMessage{Direction: "in", Unread: true, Message: r.Message,
 			ReceivedAt: r.ReceivedAt, AsksYou: r.Message.IsRequest()}
 		n.materialize(&um.Message, r.Message.Area)
-		add(um)
+		add(um, true)
 	}
-	if session != "" {
+	if session != "" && held != heldOnly {
 		seen := map[string]bool{}
 		for _, m := range all {
 			seen[m.ID] = true
 		}
-		msgs, w := n.seatUnread(session, filter, area, actionable)
+		msgs, w := n.seatUnread(session, filter, area, held != heldShown)
 		for _, m := range msgs {
 			if !seen[m.ID] {
 				all = append(all, m)
