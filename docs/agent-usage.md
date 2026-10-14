@@ -447,8 +447,9 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   pointer too, never one read or taken meanwhile) and a pointer that runs with nothing pending
   costs one trivial turn and changes nothing. One answer carries what a hook's batch does
   (4500 runes of formatted messages, at least one message): only those are read, the rest
-  stays unread behind `next`, and `note` says in plain words that more wait and the call is to
-  be repeated. Over several contexts of the folder (its network project, the local project,
+  stays unread, and `note` says in plain words that more wait and the call is to
+  be repeated: the same call, with no cursor (a delivery ignores `after` and its answer has
+  no `next`, as what it delivered is listed no more). Over several contexts of the folder (its network project, the local project,
   the session's local chats) the listings are merged and cut first and only the returned
   messages are delivered, each in its own context. Any other listing (no session, a session
   that is not a queue-woken one, another folder) reads nothing.

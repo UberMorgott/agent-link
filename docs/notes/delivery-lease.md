@@ -139,14 +139,23 @@ Rules:
   contexts `controlUnread` → `deliverUnread`) lists, cuts to one answer
   (`FetchCut`: the page limit, then `FitUnread`/`FormatBudget`, as a hook's
   batch) and only then claims and acks what it returns; `UnreadPage.Note`
-  tells the agent that more wait. In a context the session is not registered
+  tells the agent that more wait. A fetch has no cursor (issue #41, v0.6.78):
+  what it delivered is read and listed no more, so "call again" is the same
+  call, which lists from the start; `after` is ignored for a fetch (in every
+  context of it) and its answer never has `next` (the CLI's last line is then
+  `{"note","total"}`). A plain listing keeps `after`/`next` as before. Before,
+  `next` was the cursor of the last listed message, and a call that followed
+  it passed over a message listed before it and not delivered (a failed
+  context's). In a context the session is not registered
   in, `Claim` grants the replies to its own messages, so the fetch reads
   those too and they are not listed again. A context whose `Deliver` fails
   does not fail the call: an earlier context acknowledged its part already,
   so the others are delivered all the same, the answer is the delivered part
-  (the failed context's messages stay unread behind `next`/`note`) and the
-  error is logged. Only when no context delivered anything is the call an
-  error (500, `fetchFailed`): an empty page would say nothing waits. The MCP
+  (the failed context's messages stay unread; `note` is `FetchPartNote`: a
+  part could not be delivered, call again) and the error is logged. The call
+  made again lists them first and delivers them. Only when no context
+  delivered anything is the call an error (500, `fetchFailed`, the failed
+  context named): an empty page would say nothing waits. The MCP
   tool's `session` argument names the session only for a client that knows
   none or is a Codex thread without `_meta`: a Claude Code session always
   asks as itself, so its listing never becomes a queue session's delivery
@@ -155,6 +164,24 @@ Rules:
   handed to a delegated call as `AGENTLINK_MCP_CLIENT`), and only for an
   unknown client the environment: a Codex server that inherited
   `CLAUDE_CODE_SESSION_ID` still honours the argument.
+- Mixed install (v0.6.78): the plugin copy must be refreshed together with
+  the node for a pointer to fetch on the first try. An `agentlink mcp` server
+  of an older plugin copy that is still running (e.g. 0.6.69) advertises
+  `unread` without `session` and with `additionalProperties: false`, so the
+  call the pointer asks for (`session: "<id>"`) is refused before it reaches
+  the node. The prompt therefore gives three steps: `unread` with `session`;
+  if that is refused because of the argument, `unread` without arguments; if
+  the tool is absent, or its answer shows messages without `delivered: true`,
+  the CLI line. Without the argument a Codex call still delivers when the
+  client names its thread (`_meta.threadId` or
+  `x-codex-turn-metadata.thread_id`, `mcpCallSession`): an old server that
+  hands the call to the updated executable (`delegateMCP`, since before
+  0.6.69) passes that thread on as `CODEX_THREAD_ID`, so `_meta` is not lost.
+  It does not pass `AGENTLINK_MCP_CLIENT` (newer), so with an inherited
+  `CLAUDE_CODE_SESSION_ID` the handed-on call asks as that Claude session.
+  With neither argument nor thread id the call is a plain listing: it shows
+  the messages, reads nothing, and the pointer ends `pointer_unfetched`
+  (`held:wake_unfetched`) unless the CLI line is run.
 - The pointer's prompt names no number of messages: the fetch returns what
   is unread for the session when it runs (newly claimed, stale ones, what
   came later), not what the wake was queued for.

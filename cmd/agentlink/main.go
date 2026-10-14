@@ -881,8 +881,9 @@ func history(ctx context.Context, cfg config.Config, chat string, limit int, bef
 }
 
 // chatUnread prints this node's unread messages, one JSON line each, and a
-// last line {"next": cursor, "total": n} when more pages follow (with "note"
-// when the call delivered and left messages behind). With session
+// last line {"next": cursor, "total": n} when more pages follow, or
+// {"note": ..., "total": n} when the call delivered and left messages behind
+// (no cursor: the same command again takes them). With session
 // it asks as that agent session, like the MCP tool: the messages for it, which
 // a Codex session the node wakes by a pointer takes by this call
 // (node.PointerPrompt names this command).
@@ -894,12 +895,15 @@ func chatUnread(ctx context.Context, cfg config.Config, folder, after string, li
 	if err := encodeLines(stdout, page.Messages); err != nil {
 		return err
 	}
-	if page.Next == "" {
+	if page.Next == "" && page.Note == "" {
 		return nil
 	}
-	last := map[string]any{"next": page.Next, "total": page.Total}
+	last := map[string]any{"total": page.Total}
+	if page.Next != "" {
+		last["next"] = page.Next
+	}
 	if page.Note != "" {
-		last["note"] = page.Note // a delivery that left messages behind: call again
+		last["note"] = page.Note // a delivery that left messages behind: the same command again (it has no cursor)
 	}
 	return encodeLines(stdout, []map[string]any{last})
 }

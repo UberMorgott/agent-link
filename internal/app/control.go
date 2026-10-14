@@ -541,7 +541,8 @@ func (discardResponse) WriteHeader(int)             {}
 // its project when there are several.
 //
 // A session the node wakes by pointers takes its messages by this call
-// (node.UnreadListing's fetch). Over several contexts each lists only: the
+// (node.UnreadListing's fetch; it has no cursor: `after` is ignored and the
+// answer has no next). Over several contexts each lists only: the
 // listings are merged and cut to the one answer, and then exactly the
 // messages of that answer are delivered, each in its own context
 // (node.Deliver), also in one the session is not registered in (the replies
@@ -579,7 +580,7 @@ func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 		changed = append(changed, c.n.UnreadChanged)
 	}
 	fetch := false // the session's own listing is its delivery (in a context it is registered in)
-	out, err := node.WaitUnread(r.Context(), q, func() (node.UnreadPage, error) {
+	list := func() (node.UnreadPage, error) {
 		out := node.UnreadPage{Messages: []node.UnreadMessage{}}
 		more := false
 		fetch = false
@@ -621,6 +622,17 @@ func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		return out, nil
+	}
+	out, err := node.WaitUnread(r.Context(), q, func() (node.UnreadPage, error) {
+		out, err := list()
+		if err == nil && fetch && q.Get("after") != "" {
+			// A fetch has no cursor (node.FetchDone): every context lists from
+			// the start, the ones the session is not registered in too.
+			q.Del("after")
+			exact.Del("after")
+			out, err = list()
+		}
+		return out, err
 	}, changed...)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -669,10 +681,14 @@ type fetchCtx struct {
 // A context whose delivery fails ends nothing: an earlier one acknowledged its
 // messages already, and an answer without them would hide what the session can
 // never list again. The others are delivered all the same, page is the part
-// that was (the failed context's messages stay unread behind it: Next, Note),
-// and the errors are returned for the log.
+// that was, and the errors are returned for the log. The failed context's
+// messages stay unread and the answer says so (node.FetchPartNote): the same
+// call made again lists them first (a fetch has no cursor, issue #41) and
+// delivers them, or fails (fetchFailed) when that context is all that is left
+// and fails still.
 func deliverUnread(ctxs []fetchCtx, session string, page *node.UnreadPage) error {
 	more := node.FetchCut(page)
+	failed := false // a message of the answer was not delivered
 	var granted []string
 	var errs []error
 	for _, c := range ctxs {
@@ -687,12 +703,15 @@ func deliverUnread(ctxs []fetchCtx, session string, page *node.UnreadPage) error
 		got, err := c.deliver(session, ids)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("context %s: %w", c.id, err))
-			more = more || len(ids) > 0
+			failed = failed || len(ids) > 0
 			continue
 		}
 		granted = append(granted, got...)
 	}
-	node.FetchDone(page, granted, more)
+	node.FetchDone(page, granted, more || failed)
+	if failed && page.Delivered {
+		page.Note = node.FetchPartNote
+	}
 	return errors.Join(errs...)
 }
 

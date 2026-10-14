@@ -134,15 +134,18 @@ func (f *fetchSetup) consistent(page node.UnreadPage, shown []string) {
 // A queue session's fetch over two contexts delivers exactly what its answer
 // shows: the listings are merged and cut first, then only the messages that
 // are returned are claimed and acknowledged, each in its own context. What the
-// cut left out stays unread behind next, and the next call takes it.
+// cut left out stays unread, and the same call made again takes it: a fetch
+// has no cursor (no next; an `after` it is sent hides nothing, issue #41).
 func TestFetchOverContextsDeliversWhatItShows(t *testing.T) {
 	f := newFetchSetup(t)
 	page, first := f.fetch(url.Values{"folder": {f.dir}, "limit": {"1"}})
 	f.consistent(page, first)
-	if len(first) != 1 || !page.Delivered || page.Next == "" || page.Note == "" {
+	if len(first) != 1 || !page.Delivered || page.Next != "" || page.Note == "" {
 		t.Fatalf("first call: %v delivered=%v next=%q note=%q", first, page.Delivered, page.Next, page.Note)
 	}
-	page, second := f.fetch(url.Values{"folder": {f.dir}, "limit": {"1"}})
+	// With a cursor past every message, in the context the session is
+	// registered in and in the one it is not.
+	page, second := f.fetch(url.Values{"folder": {f.dir}, "limit": {"1"}, "after": {"~"}})
 	f.consistent(page, second)
 	if len(second) != 1 || second[0] == first[0] || !page.Delivered || page.Next != "" || page.Note != "" {
 		t.Fatalf("second call: %v after %v delivered=%v next=%q note=%q", second, first, page.Delivered, page.Next, page.Note)
@@ -182,10 +185,95 @@ func TestFetchOverContextsWithoutFolder(t *testing.T) {
 	}
 }
 
+// fetchStore is three contexts' unread messages in cursor order (A: m1, B: m2,
+// C: m3) behind deliverUnread, as controlUnread lists and delivers them;
+// context B's delivery fails the first fails times it has something to deliver.
+type fetchStore struct {
+	unread map[string]string // id: its context
+	fails  int
+}
+
+var errFetchBoom = errors.New("boom")
+
+func newFetchStore(fails int) *fetchStore {
+	return &fetchStore{unread: map[string]string{"m1": "A", "m2": "B", "m3": "C"}, fails: fails}
+}
+
+// call is one fetch: the merged listing after the cursor, delivered.
+func (s *fetchStore) call(after string) (node.UnreadPage, error) {
+	page := node.UnreadPage{Messages: []node.UnreadMessage{}}
+	for _, id := range []string{"m1", "m2", "m3"} {
+		if project, ok := s.unread[id]; ok && "c-"+id > after {
+			m := node.UnreadMessage{Project: project, Cursor: "c-" + id}
+			m.ID, m.Body = id, "body "+id
+			page.Messages = append(page.Messages, m)
+			page.Total++
+		}
+	}
+	var ctxs []fetchCtx
+	for _, project := range []string{"A", "B", "C"} {
+		ctxs = append(ctxs, fetchCtx{id: project, deliver: func(_ string, ids []string) ([]string, error) {
+			if project == "B" && len(ids) > 0 && s.fails > 0 {
+				s.fails--
+				return nil, errFetchBoom
+			}
+			for _, id := range ids {
+				delete(s.unread, id)
+			}
+			return ids, nil
+		}})
+	}
+	err := deliverUnread(ctxs, "codex-one", &page)
+	return page, err
+}
+
+// The call a partly delivered fetch asks for returns the failed context's
+// message (issue #41): following its answer (note: call again; a cursor when
+// it gives one) until nothing more is said to wait delivers every message
+// once. Before, next was the cursor of the last listed message, behind the
+// one that was not delivered, and the call after it skipped that one.
+func TestFetchFollowedAfterAContextFailed(t *testing.T) {
+	s := newFetchStore(1)
+	var got []string
+	after := ""
+	for call := 1; ; call++ {
+		page, err := s.call(after)
+		if fetchFailed(page, err) {
+			t.Fatalf("call %d (after %q) failed: %v", call, after, err)
+		}
+		for _, m := range page.Messages {
+			got = append(got, m.ID)
+		}
+		if page.Note == "" {
+			break
+		}
+		if after = page.Next; call > 5 {
+			t.Fatal("the fetch never ends")
+		}
+	}
+	if want := []string{"m1", "m3", "m2"}; !slices.Equal(got, want) || len(s.unread) != 0 {
+		t.Fatalf("delivered %v, want %v; still unread %v", got, want, s.unread)
+	}
+	// A context that keeps failing: the call the answer asks for is an error
+	// that names it, not an empty answer that says nothing waits.
+	s = newFetchStore(100)
+	page, err := s.call("")
+	if fetchFailed(page, err) || len(page.Messages) != 2 || page.Next != "" || !strings.Contains(page.Note, "не удалось") {
+		t.Fatalf("the partly delivered fetch: %+v %v", page, err)
+	}
+	page, err = s.call(page.Next)
+	if !fetchFailed(page, err) || !strings.Contains(err.Error(), "context B") {
+		t.Fatalf("the call after it, with the context still failing: %+v %v", page, err)
+	}
+	if _, waits := s.unread["m2"]; !waits || len(s.unread) != 1 {
+		t.Fatalf("unread after it: %v", s.unread)
+	}
+}
+
 // A context whose delivery fails after another one acknowledged its messages
 // does not turn the call into an error: the answer carries what was delivered
 // (read now, never listed again), the failed context's message stays unread
-// behind note and next, and a context after the failed one is delivered too.
+// behind note (no cursor), and a context after the failed one is delivered too.
 func TestFetchDeliversPartWhenAContextFails(t *testing.T) {
 	msg := func(id, project string) node.UnreadMessage {
 		m := node.UnreadMessage{Project: project, Cursor: "c-" + id}
@@ -216,7 +304,7 @@ func TestFetchDeliversPartWhenAContextFails(t *testing.T) {
 	if !slices.Equal(acked["A"], []string{"m1"}) || !slices.Equal(acked["C"], []string{"m3"}) {
 		t.Fatalf("acknowledged: %v", acked)
 	}
-	if page.Next == "" || page.Note == "" {
+	if page.Next != "" || page.Note != node.FetchPartNote {
 		t.Fatalf("nothing says the failed context's message still waits: next=%q note=%q", page.Next, page.Note)
 	}
 	if fetchFailed(page, err) {

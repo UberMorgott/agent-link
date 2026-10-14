@@ -25,8 +25,12 @@ import (
 //     never one that was acknowledged or taken meanwhile; a pointer that runs
 //     when nothing waits lists nothing and changes nothing.
 //   - One answer carries what a hook's batch does (FetchCut), and only what it
-//     carries is acknowledged: the rest stays unread behind Next, and the
-//     answer says so (UnreadPage.Note). The control API, which merges the
+//     carries is acknowledged: the rest stays unread, and the answer says so
+//     (UnreadPage.Note). A fetch has no cursor: what it delivered is read and
+//     listed no more, so the call for the rest is the same call, which lists
+//     from the start (`after` is ignored, Next never set; a cursor would pass
+//     over a message listed before it and not delivered, issue #41). The
+//     control API, which merges the
 //     listings of several contexts, cuts first and delivers what it returns,
 //     each message in its own context (UnreadListing, Deliver, FetchDone).
 //   - One pointer at a time (pointerPending): while one is in the session's
@@ -84,7 +88,11 @@ const reasonLost = "pointer_lost"
 // the session when it runs, which is not what the wake was queued for), only
 // where to get them (the MCP tool, called with the session's id, as a client's
 // call may not name its thread; else the CLI exe with that id) and the wake's
-// token (WakeMarker). The command names
+// token (WakeMarker). An MCP server of an older install, still running beside
+// this node, knows no session argument and refuses a call with it (its schema
+// allows no other property): the prompt says to call again without arguments
+// then (that server's call names the thread by its _meta), and to run the
+// command when an answer shows messages it did not deliver. The command names
 // no folder: the node takes the session's own (UnreadListing), and a path in
 // a prompt would be text the agent's shell expands.
 func PointerPrompt(session, token, exe string) string {
@@ -95,9 +103,10 @@ func PointerPrompt(session, token, exe string) string {
 	cmd += " chat unread --session " + session
 	return fmt.Sprintf("agent-link: для этой сессии есть новые сообщения; их текста здесь нет. %s\n"+
 		"Получите их сейчас: вызовите инструмент unread MCP-сервера agentlink с одним аргументом session: \"%s\". "+
-		"Если такого инструмента нет, выполните команду (в PowerShell начните её с &): %s\n"+
+		"Если вызов отклонён из-за этого аргумента (инструмент его не принимает), вызовите unread ещё раз без аргументов. "+
+		"Если такого инструмента нет или в его ответе есть сообщения, но нет delivered: true, выполните команду (в PowerShell начните её с &): %s\n"+
 		"Вызов выдаёт сообщения, которые ждут эту сессию сейчас, и сразу отмечает их прочитанными: прочитайте их и, где просят ответа, ответьте. "+
-		"Если в ответе есть note, выдана только часть: повторяйте тот же вызов, пока note не исчезнет. "+
+		"Если в ответе есть note, выдана только часть: повторяйте тот же вызов с теми же аргументами (без after), пока note не исчезнет. "+
 		"Если он ничего не вернул и сообщений agent-link нет в контексте этого хода, делать нечего: ответьте одной короткой строкой и завершите ход.",
 		WakeMarker(token), session, cmd)
 }
@@ -177,29 +186,27 @@ func (n *Node) Deliver(session string, ids []string) ([]string, error) {
 }
 
 // fetchMore is UnreadPage.Note of a fetch that left messages behind; with
-// their number when it is known.
+// their number when it is known. FetchPartNote is the one of a fetch a part
+// of which could not be delivered (a context's Deliver failed).
 const (
+	FetchPartNote  = "Это не все сообщения: часть не удалось выдать (ошибка узла), они не отмечены прочитанными. Повторите этот же вызов: он выдаст их или сообщит об ошибке."
 	fetchMore      = "Это не все сообщения: остальные ждут эту сессию и не отмечены прочитанными. Повторите этот же вызов, чтобы получить следующие."
 	fetchMoreCount = "Это не все сообщения: ещё %d ждут эту сессию и не отмечены прочитанными. Повторите этот же вызов, чтобы получить следующие."
 )
 
 // FetchDone makes page, the listing a fetch asked Deliver for, its answer:
 // the messages granted (read now, Delivered), the others left out, and, when
-// more wait behind them, Next and the plain word to call again (Note).
+// more wait behind them, the plain word to call again (Note). Never Next: the
+// call for the rest is the same call (a fetch's listing starts anew, the
+// delivered messages are in it no more), and a cursor of this listing would
+// pass over a message it listed and did not deliver.
 func FetchDone(page *UnreadPage, granted []string, more bool) {
-	listed, last := len(page.Messages), ""
-	if listed > 0 {
-		last = page.Messages[listed-1].Cursor
-	}
+	listed := len(page.Messages)
 	page.Messages = slices.DeleteFunc(page.Messages, func(m UnreadMessage) bool { return !slices.Contains(granted, m.ID) })
 	page.Total -= listed - len(page.Messages)
 	page.Delivered = len(page.Messages) > 0
 	page.Next, page.Note = "", ""
-	if !more {
-		return
-	}
-	page.Next = last
-	if page.Delivered {
+	if more && page.Delivered {
 		// An answer with nothing in it asks for no further call: what is left
 		// is not this session's to take.
 		page.Note = fetchMore

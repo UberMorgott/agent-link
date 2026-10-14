@@ -672,7 +672,13 @@ func (n *Node) UnreadListing(q url.Values) (page UnreadPage, fetch bool, err err
 			fetch = bound && area == own
 		}
 	}
-	page, err = n.unreadHeld(folder, q.Get("session"), q.Get("after"), limit, held, q.Get("exact") == "1", af)
+	// A fetch has no cursor: what it delivered is listed no more, and the call
+	// for the rest lists from the start (FetchDone).
+	after := q.Get("after")
+	if fetch {
+		after = ""
+	}
+	page, err = n.unreadHeld(folder, q.Get("session"), after, limit, held, q.Get("exact") == "1", af)
 	if err == nil && waiter {
 		n.waiterSpent(&page)
 	}

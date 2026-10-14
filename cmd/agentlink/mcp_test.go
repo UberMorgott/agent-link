@@ -397,6 +397,13 @@ func TestMCPUnreadSessionArgument(t *testing.T) {
 	if text, isErr := callTool(t, cs, "unread", map[string]any{"session": "019f-thread"}); isErr || len(f.reqs) != 1 || !strings.Contains(f.reqs[0], "session=019f-thread") {
 		t.Fatalf("a Codex thread's unread: %s %q", text, f.reqs)
 	}
+	// Without the argument (a server of an older install refused it, and the
+	// prompt says to call again without): the thread that server's call named
+	// in its _meta, handed on as CODEX_THREAD_ID (delegateMCP), still asks.
+	f.reqs = nil
+	if text, isErr := callTool(t, cs, "unread", nil); isErr || len(f.reqs) != 1 || !strings.Contains(f.reqs[0], "session=thread-env") {
+		t.Fatalf("a handed-on Codex thread's unread without the argument: %s %q", text, f.reqs)
+	}
 	t.Setenv(envCodexThread, "")
 	// A Claude Code session is no thread a pointer wakes: the argument cannot
 	// make its listing another session's delivery (a queue session's own
@@ -450,7 +457,7 @@ func TestMCPUnreadSessionArgument(t *testing.T) {
 		t.Fatalf("a job's unread: %s %q", text, f.reqs)
 	}
 	// The prompt's own words name the argument and its value.
-	if p := node.PointerPrompt("019f-thread", "p-0123456789abcdef", ""); !strings.Contains(p, `session: "019f-thread"`) {
+	if p := node.PointerPrompt("019f-thread", "p-0123456789abcdef", ""); !strings.Contains(p, `session: "019f-thread"`) || !strings.Contains(p, "ещё раз без аргументов") {
 		t.Fatalf("the pointer names no session argument: %s", p)
 	}
 }

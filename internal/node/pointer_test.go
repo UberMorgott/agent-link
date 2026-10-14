@@ -389,10 +389,11 @@ func TestPointerPromptText(t *testing.T) {
 	got := PointerPrompt("019f-thread", "p-0123456789abcdef", `C:\Program Files\agentlink\agentlink.exe`)
 	want := "agent-link: для этой сессии есть новые сообщения; их текста здесь нет. [agent-link wake p-0123456789abcdef]\n" +
 		"Получите их сейчас: вызовите инструмент unread MCP-сервера agentlink с одним аргументом session: \"019f-thread\". " +
-		"Если такого инструмента нет, выполните команду (в PowerShell начните её с &): " +
+		"Если вызов отклонён из-за этого аргумента (инструмент его не принимает), вызовите unread ещё раз без аргументов. " +
+		"Если такого инструмента нет или в его ответе есть сообщения, но нет delivered: true, выполните команду (в PowerShell начните её с &): " +
 		`"C:\Program Files\agentlink\agentlink.exe" chat unread --session 019f-thread` + "\n" +
 		"Вызов выдаёт сообщения, которые ждут эту сессию сейчас, и сразу отмечает их прочитанными: прочитайте их и, где просят ответа, ответьте. " +
-		"Если в ответе есть note, выдана только часть: повторяйте тот же вызов, пока note не исчезнет. " +
+		"Если в ответе есть note, выдана только часть: повторяйте тот же вызов с теми же аргументами (без after), пока note не исчезнет. " +
 		"Если он ничего не вернул и сообщений agent-link нет в контексте этого хода, делать нечего: ответьте одной короткой строкой и завершите ход."
 	if got != want {
 		t.Fatalf("pointer prompt:\n%s\nwant:\n%s", got, want)
@@ -450,8 +451,9 @@ func TestPointerPromptHasNoFolder(t *testing.T) {
 }
 
 // One answer of a fetch carries what a hook's batch does (FitUnread), and only
-// that is acknowledged: the rest stays unread behind next, the answer says so
-// in plain words, and the calls that follow take it, each message once.
+// that is acknowledged: the rest stays unread, the answer says so in plain
+// words (and names no cursor), and the same call made again takes it, each
+// message once; a cursor the caller sends all the same is ignored.
 func TestFetchFitsBudget(t *testing.T) {
 	q := newStaleQueue(t)
 	q.rollout("")
@@ -481,7 +483,7 @@ func TestFetchFitsBudget(t *testing.T) {
 			}
 		}
 		more := len(got) < total
-		if (page.Next != "") != more || (page.Note != "") != more {
+		if page.Next != "" || (page.Note != "") != more {
 			t.Fatalf("call %d: next %q note %q with %d left", call, page.Next, page.Note, total-len(got))
 		}
 		if more && !strings.Contains(page.Note, fmt.Sprintf("ещё %d ждут", total-len(got))) {
@@ -496,6 +498,21 @@ func TestFetchFitsBudget(t *testing.T) {
 	}
 	if page := q.fetch(); page.Delivered || len(page.Messages) != 0 || page.Note != "" || page.Next != "" {
 		t.Fatalf("a fetch with nothing left: %+v", page)
+	}
+	// A cursor past everything hides nothing from a fetch (issue #41): a plain
+	// listing with it is empty, the session's own call delivers.
+	late := q.send("after a stale cursor")
+	listed, err := q.a.Unread("", "", 100)
+	if err != nil || len(listed.Messages) != 1 {
+		t.Fatalf("the listing: %+v %v", listed, err)
+	}
+	past := listed.Messages[0].Cursor
+	if plain, err := q.a.UnreadQuery(url.Values{"after": {past}}); err != nil || len(plain.Messages) != 0 || plain.Delivered {
+		t.Fatalf("a plain listing after the last cursor: %+v %v", plain, err)
+	}
+	page, err := q.a.UnreadQuery(url.Values{"agent": {"1"}, "session": {"s-q"}, "after": {past}})
+	if err != nil || !page.Delivered || len(page.Messages) != 1 || page.Messages[0].ID != late.ID || page.Next != "" {
+		t.Fatalf("a fetch with a stale cursor: %+v %v", page, err)
 	}
 }
 

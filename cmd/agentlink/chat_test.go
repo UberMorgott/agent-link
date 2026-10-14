@@ -79,7 +79,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		case r.URL.Path == "/unread":
 			page := node.UnreadPage{Messages: []node.UnreadMessage{{Cursor: "1-m1"}}, Total: 3, Next: "1-m1"}
 			if r.URL.Query().Get("session") == "thread-cut" { // a delivery that left messages behind
-				page.Delivered, page.Note = true, "call again"
+				page.Delivered, page.Note, page.Next = true, "call again", ""
 			}
 			_ = json.NewEncoder(w).Encode(page)
 		case strings.HasSuffix(r.URL.Path, "/messages"):
@@ -226,10 +226,11 @@ func TestChatUnreadAsSession(t *testing.T) {
 	if len(f.reqs) != 1 || f.reqs[0] != want {
 		t.Fatalf("requests %q, want %q", f.reqs, want)
 	}
-	// A delivery that left messages behind says so in the last line.
+	// A delivery that left messages behind says so in the last line, which
+	// names no cursor: the same command again takes them.
 	lines := strings.Split(strings.TrimSpace(f.run("chat", "unread", "--session", "thread-cut")), "\n")
 	var last map[string]any
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &last); err != nil || len(lines) != 2 || last["note"] != "call again" || last["next"] != "1-m1" {
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &last); err != nil || len(lines) != 2 || last["note"] != "call again" || last["total"] != float64(3) || len(last) != 2 {
 		t.Fatalf("the last line of a cut delivery: %q (%v)", lines, err)
 	}
 }
