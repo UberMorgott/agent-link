@@ -50,6 +50,10 @@ type App struct {
 	// asks this member and no session is live there (the project's auto-open);
 	// nil: none is opened.
 	Launcher node.SessionLauncher
+	// fetchListed runs between the listing of a session's fetch over several
+	// contexts and its delivery (controlUnread; tests: what another owner does
+	// exactly there); nil: nothing.
+	fetchListed func()
 	// QuitFunc ends the program; Quit calls it. Nil makes quitting unavailable.
 	QuitFunc func()
 	// StopAllChanged, if set, is told the emergency stop's new state after it

@@ -580,17 +580,27 @@ func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 		changed = append(changed, c.n.UnreadChanged)
 	}
 	fetch := false // the session's own listing is its delivery (in a context it is registered in)
-	list := func() (node.UnreadPage, error) {
+	// after: the page of a fetch's listing behind that cursor (node.FetchListing).
+	listFrom := func(after *string) (node.UnreadPage, error) {
 		out := node.UnreadPage{Messages: []node.UnreadMessage{}}
 		more := false
-		fetch = false
+		if after == nil {
+			fetch = false
+		}
 		for i, c := range ctxs {
 			query := q
 			if i >= from {
 				query = exact
 			}
-			page, own, err := c.n.UnreadListing(query)
-			fetch = fetch || own
+			var page node.UnreadPage
+			var err error
+			if after != nil {
+				page, err = c.n.FetchListing(query, *after)
+			} else {
+				var own bool
+				page, own, err = c.n.UnreadListing(query)
+				fetch = fetch || own
+			}
 			if err != nil {
 				if i < from {
 					return out, err
@@ -623,10 +633,11 @@ func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 		}
 		return out, nil
 	}
+	list := func() (node.UnreadPage, error) { return listFrom(nil) }
 	out, err := node.WaitUnread(r.Context(), q, func() (node.UnreadPage, error) {
 		out, err := list()
 		if err == nil && fetch && q.Get("after") != "" {
-			// A fetch has no cursor (node.FetchDone): every context lists from
+			// A fetch has no cursor (node.FetchFill): every context lists from
 			// the start, the ones the session is not registered in too.
 			q.Del("after")
 			exact.Del("after")
@@ -647,7 +658,10 @@ func (a *App) controlUnread(w http.ResponseWriter, r *http.Request) {
 		// answer is what was delivered, the rest stays unread for the next call.
 		// With nothing delivered there is nothing to hide: the call failed, and
 		// an empty answer would tell the session that nothing waits for it.
-		err := deliverUnread(into, session, &out)
+		if a.fetchListed != nil {
+			a.fetchListed()
+		}
+		err := deliverUnread(into, session, &out, node.FetchLimit(q), func(after string) (node.UnreadPage, error) { return listFrom(&after) })
 		if fetchFailed(out, err) {
 			a.log.Warn("a session's fetch delivered nothing", "session", session, "err", err)
 			http.Error(w, "the messages could not be delivered; they stay unread: "+err.Error(), http.StatusInternalServerError)
@@ -675,8 +689,11 @@ type fetchCtx struct {
 }
 
 // deliverUnread makes page, the merged listing of ctxs a session asked for as
-// its delivery, that delivery: what one answer carries of it (node.FetchCut),
-// each message delivered in its own context (UnreadMessage.Project).
+// its delivery, that delivery: what one answer carries of it (node.FetchFill:
+// at most limit messages; a message its context does not grant is passed over
+// and the next listed ones take its room, those of the merged listing's later
+// pages too, which next lists), each message delivered in its own context
+// (UnreadMessage.Project).
 //
 // A context whose delivery fails ends nothing: an earlier one acknowledged its
 // messages already, and an answer without them would hide what the session can
@@ -686,31 +703,40 @@ type fetchCtx struct {
 // call made again lists them first (a fetch has no cursor, issue #41) and
 // delivers them, or fails (fetchFailed) when that context is all that is left
 // and fails still.
-func deliverUnread(ctxs []fetchCtx, session string, page *node.UnreadPage) error {
-	more := node.FetchCut(page)
-	failed := false // a message of the answer was not delivered
-	var granted []string
+func deliverUnread(ctxs []fetchCtx, session string, page *node.UnreadPage, limit int, next func(after string) (node.UnreadPage, error)) error {
 	var errs []error
-	for _, c := range ctxs {
-		var ids []string
-		for _, m := range page.Messages {
-			if m.Project == c.id {
-				ids = append(ids, m.ID)
+	down := map[string]bool{} // contexts whose delivery failed: not asked again in this call
+	first := true
+	err := node.FetchFill(page, limit, func(batch []node.UnreadMessage) ([]string, int) {
+		var granted []string
+		failed := 0 // messages of the batch that were not delivered
+		for _, c := range ctxs {
+			var ids []string
+			for _, m := range batch {
+				if m.Project == c.id {
+					ids = append(ids, m.ID)
+				}
 			}
+			// The first round with nothing of this context too: the call
+			// proves the session takes its wakes there.
+			if down[c.id] || (len(ids) == 0 && !first) {
+				failed += len(ids)
+				continue
+			}
+			got, err := c.deliver(session, ids)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("context %s: %w", c.id, err))
+				down[c.id] = true
+				failed += len(ids)
+				continue
+			}
+			granted = append(granted, got...)
 		}
-		// With nothing of this context too: the call proves the session takes
-		// its wakes there.
-		got, err := c.deliver(session, ids)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("context %s: %w", c.id, err))
-			failed = failed || len(ids) > 0
-			continue
-		}
-		granted = append(granted, got...)
-	}
-	node.FetchDone(page, granted, more || failed)
-	if failed && page.Delivered {
-		page.Note = node.FetchPartNote
+		first = false
+		return granted, failed
+	}, next)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("the listing's next page: %w", err))
 	}
 	return errors.Join(errs...)
 }

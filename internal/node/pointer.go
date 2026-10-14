@@ -1,8 +1,11 @@
 package node
 
 import (
+	"errors"
 	"fmt"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -24,15 +27,18 @@ import (
 //     that moment, a message that came after the prompt was queued too, and
 //     never one that was acknowledged or taken meanwhile; a pointer that runs
 //     when nothing waits lists nothing and changes nothing.
-//   - One answer carries what a hook's batch does (FetchCut), and only what it
-//     carries is acknowledged: the rest stays unread, and the answer says so
-//     (UnreadPage.Note). A fetch has no cursor: what it delivered is read and
+//   - One answer carries what a hook's batch does, and only what it carries is
+//     acknowledged: the rest stays unread, and the answer says so
+//     (UnreadPage.Note). A listed message another owner took meanwhile is
+//     passed over within the call and the ones behind it take its room
+//     (FetchFill, issue #42): an empty answer means nothing is the session's to
+//     take now. A fetch has no cursor: what it delivered is read and
 //     listed no more, so the call for the rest is the same call, which lists
 //     from the start (`after` is ignored, Next never set; a cursor would pass
 //     over a message listed before it and not delivered, issue #41). The
 //     control API, which merges the
-//     listings of several contexts, cuts first and delivers what it returns,
-//     each message in its own context (UnreadListing, Deliver, FetchDone).
+//     listings of several contexts, delivers what it returns the same way,
+//     each message in its own context (UnreadListing, Deliver, FetchFill).
 //   - One pointer at a time (pointerPending): while one is in the session's
 //     queue and its rollout has not shown it, the node queues no other. What a
 //     wake is due for meanwhile is leased to the session under that pointer's
@@ -137,29 +143,111 @@ func (n *Node) FetchFolder(session string) (string, bool) {
 }
 
 // pointerFetch delivers page, the unread listing a WakeQueue session asked for
-// itself, to that session: as much of it as one answer carries (FetchCut), of
-// which the messages the node grants it are acknowledged and stay listed
-// (Deliver, FetchDone).
-func (n *Node) pointerFetch(session string, page UnreadPage) (UnreadPage, error) {
-	more := FetchCut(&page)
-	granted, err := n.Deliver(session, ids(page.Messages))
-	if err != nil {
-		return UnreadPage{}, err
+// itself with query q, to that session: all of it the node grants the session
+// now that one answer carries (FetchFill), acknowledged at once (Deliver). A
+// delivery that failed after a part was acknowledged is no error: the answer is
+// that part (FetchPartNote).
+func (n *Node) pointerFetch(q url.Values, page UnreadPage) (UnreadPage, error) {
+	session := q.Get("session")
+	var failed error
+	err := FetchFill(&page, FetchLimit(q), func(batch []UnreadMessage) ([]string, int) {
+		if failed != nil {
+			return nil, len(batch)
+		}
+		granted, err := n.Deliver(session, ids(batch))
+		if err != nil {
+			failed = err
+			return nil, len(batch)
+		}
+		return granted, 0
+	}, func(after string) (UnreadPage, error) { return n.FetchListing(q, after) })
+	if err = errors.Join(failed, err); err != nil {
+		if len(page.Messages) == 0 {
+			return UnreadPage{}, err
+		}
+		n.log.Warn("a session's fetch was delivered in part", "session", session, "delivered", len(page.Messages), "err", err)
 	}
-	FetchDone(&page, granted, more)
 	return page, nil
 }
 
-// FetchCut cuts a fetch's listing to what one answer carries: what a hook's
-// batch does (FitUnread, FormatBudget), so one tool result is never a whole
-// page of full bodies, and nothing is acknowledged that the answer does not
-// show. It reports whether more wait behind it (a next page, or the cut).
-func FetchCut(page *UnreadPage) bool {
-	more := page.Next != ""
-	if fit := FitUnread(page.Messages); fit < len(page.Messages) {
-		page.Messages, more = page.Messages[:fit], true
+// FetchLimit is the most messages one answer of a fetch with query q carries
+// (its limit; 50 without a valid one).
+func FetchLimit(q url.Values) int {
+	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v >= 1 {
+		return v
 	}
-	return more
+	return 50
+}
+
+// FetchFill makes page, the listing of a fetch, its answer: every message of
+// it the session can take now, up to what one answer carries (a hook's batch:
+// FitUnread, FormatBudget; at most limit messages), so one tool result is
+// never a whole page of full bodies and nothing is acknowledged that the
+// answer does not show.
+//
+// A listed message may be another owner's by the time it is claimed (issue
+// #42: with the answer cut to it, the fetch returned nothing and said nothing
+// of the claimable ones behind it). So the cut is filled in rounds: deliver is
+// asked for the listed messages that still fit beside the granted ones; what
+// it does not grant is left out and counts for nothing, and the next listed
+// ones take its room, the ones of the listing's later pages too (next, called
+// with the cursor of the last listed message; nil: one page). Every listed
+// message is offered once, in the order listed, so the rounds end with the
+// listing or with the answer full. deliver is called at least once, with
+// nothing when nothing is listed (the call proves the session takes its
+// wakes); it returns the ids it delivered and how many of the batch an error
+// kept from being delivered.
+//
+// The answer: the messages granted (read now, Delivered) and, when listed
+// messages were not offered, the plain word to call again (Note); when an
+// error kept some back, FetchPartNote. An empty answer has no note: nothing of
+// the listing is the session's to take now, and a call made again would be
+// answered the same. Never Next: the call for the rest is the same call (a
+// fetch's listing starts anew, the delivered messages are in it no more), and
+// a cursor would pass over a message listed and not delivered (issue #41).
+// The error is next's: the later pages were not listed.
+func FetchFill(page *UnreadPage, limit int, deliver func(batch []UnreadMessage) (granted []string, failed int), next func(after string) (UnreadPage, error)) error {
+	listed, cursor := page.Messages, page.Next
+	kept := []UnreadMessage{}
+	offered, failed := 0, 0
+	var err error
+	for round := 0; ; round++ {
+		fit := min(FitUnread(slices.Concat(kept, listed)), max(limit, 1)) - len(kept)
+		if fit <= 0 && round > 0 {
+			break // the answer is full, or nothing is listed
+		}
+		batch := listed[:max(fit, 0)]
+		listed = listed[len(batch):]
+		granted, bad := deliver(batch)
+		offered, failed = offered+len(batch), failed+bad
+		for _, m := range batch {
+			if slices.Contains(granted, m.ID) {
+				kept = append(kept, m)
+			}
+		}
+		if len(listed) == 0 && cursor != "" && len(kept) < limit && next != nil {
+			var more UnreadPage
+			if more, err = next(cursor); err != nil {
+				break
+			}
+			listed, cursor = more.Messages, more.Next
+		}
+	}
+	page.Messages = kept
+	page.Total = max(page.Total-(offered-len(kept)), len(kept))
+	page.Delivered = len(kept) > 0
+	page.Next, page.Note = "", ""
+	switch {
+	case !page.Delivered:
+	case failed > 0 || err != nil:
+		page.Note = FetchPartNote
+	case len(listed) > 0 || cursor != "":
+		page.Note = fetchMore
+		if left := page.Total - len(kept); left > 0 {
+			page.Note = fmt.Sprintf(fetchMoreCount, left)
+		}
+	}
+	return err
 }
 
 // Deliver is the delivery of a fetch's messages ids to session: the ones the
@@ -193,28 +281,6 @@ const (
 	fetchMore      = "Это не все сообщения: остальные ждут эту сессию и не отмечены прочитанными. Повторите этот же вызов, чтобы получить следующие."
 	fetchMoreCount = "Это не все сообщения: ещё %d ждут эту сессию и не отмечены прочитанными. Повторите этот же вызов, чтобы получить следующие."
 )
-
-// FetchDone makes page, the listing a fetch asked Deliver for, its answer:
-// the messages granted (read now, Delivered), the others left out, and, when
-// more wait behind them, the plain word to call again (Note). Never Next: the
-// call for the rest is the same call (a fetch's listing starts anew, the
-// delivered messages are in it no more), and a cursor of this listing would
-// pass over a message it listed and did not deliver.
-func FetchDone(page *UnreadPage, granted []string, more bool) {
-	listed := len(page.Messages)
-	page.Messages = slices.DeleteFunc(page.Messages, func(m UnreadMessage) bool { return !slices.Contains(granted, m.ID) })
-	page.Total -= listed - len(page.Messages)
-	page.Delivered = len(page.Messages) > 0
-	page.Next, page.Note = "", ""
-	if more && page.Delivered {
-		// An answer with nothing in it asks for no further call: what is left
-		// is not this session's to take.
-		page.Note = fetchMore
-		if left := page.Total - len(page.Messages); left > 0 {
-			page.Note = fmt.Sprintf(fetchMoreCount, left)
-		}
-	}
-}
 
 // pointerShown records that session's rollout showed the prompt of the
 // pointer wake token: fetch grace starts on its leases (leaseBook.shown).

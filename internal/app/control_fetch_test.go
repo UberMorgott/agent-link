@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,6 +20,7 @@ import (
 // in the folder's local chat, where the session is not registered.
 type fetchSetup struct {
 	t              *testing.T
+	app            *App
 	srv            *httptest.Server
 	dir, sid       string
 	net, local     *node.Node
@@ -33,7 +35,7 @@ func newFetchSetup(t *testing.T) *fetchSetup {
 	alice, bob := pairAppsWith(t, func(a *App) { a.Launcher = &seatRunner{} }, p)
 	srv := httptest.NewServer(alice.Handler())
 	t.Cleanup(srv.Close)
-	f := &fetchSetup{t: t, srv: srv, dir: p.Dir, sid: "codex-one"}
+	f := &fetchSetup{t: t, srv: srv, dir: p.Dir, sid: "codex-one", app: alice}
 	session := node.SessionRequest{SessionID: f.sid, Provider: node.ProviderCodex, Folder: p.Dir, Wake: node.WakeQueue}
 	if code, body := call(t, srv, http.MethodPost, "/sessions", jsonOf(t, session)); code != http.StatusOK {
 		t.Fatalf("register: %d %s", code, body)
@@ -223,7 +225,7 @@ func (s *fetchStore) call(after string) (node.UnreadPage, error) {
 			return ids, nil
 		}})
 	}
-	err := deliverUnread(ctxs, "codex-one", &page)
+	err := deliverUnread(ctxs, "codex-one", &page, 50, nil)
 	return page, err
 }
 
@@ -290,7 +292,7 @@ func TestFetchDeliversPartWhenAContextFails(t *testing.T) {
 	}
 	boom := errors.New("boom")
 	failing := fetchCtx{id: "B", deliver: func(string, []string) ([]string, error) { return nil, boom }}
-	err := deliverUnread([]fetchCtx{ok("A"), failing, ok("C")}, "codex-one", &page)
+	err := deliverUnread([]fetchCtx{ok("A"), failing, ok("C")}, "codex-one", &page, 50, nil)
 	if !errors.Is(err, boom) || !strings.Contains(err.Error(), "context B") {
 		t.Fatalf("the failed context is not reported: %v", err)
 	}
@@ -313,7 +315,7 @@ func TestFetchDeliversPartWhenAContextFails(t *testing.T) {
 	// Every context failed: nothing was delivered, and the call is an error,
 	// not an empty answer that says nothing waits.
 	page = node.UnreadPage{Messages: []node.UnreadMessage{msg("m2", "B")}, Total: 1}
-	err = deliverUnread([]fetchCtx{failing}, "codex-one", &page)
+	err = deliverUnread([]fetchCtx{failing}, "codex-one", &page, 50, nil)
 	if !errors.Is(err, boom) || len(page.Messages) != 0 || page.Delivered || page.Note != "" {
 		t.Fatalf("a fetch whose only context failed: %v %+v", err, page)
 	}
@@ -322,7 +324,224 @@ func TestFetchDeliversPartWhenAContextFails(t *testing.T) {
 	}
 	// Nothing waited and nothing failed: an empty answer.
 	page = node.UnreadPage{}
-	if err := deliverUnread([]fetchCtx{ok("A")}, "codex-one", &page); fetchFailed(page, err) {
+	if err := deliverUnread([]fetchCtx{ok("A")}, "codex-one", &page, 50, nil); fetchFailed(page, err) {
 		t.Fatalf("an empty fetch is an error: %v", err)
+	}
+}
+
+// Issue #42 over two contexts, as controlUnread serves it: another session
+// takes the network project's request between the fetch's listing and its
+// delivery. The fetch passes over it and delivers the reply of the other
+// context; the request is not acknowledged, and no answer asks for a call
+// that would deliver nothing.
+func TestFetchOverContextsPassesOverWhatAnotherOwnerTook(t *testing.T) {
+	for _, limit := range []string{"", "1"} {
+		t.Run("limit="+limit, func(t *testing.T) {
+			f := newFetchSetup(t)
+			other := node.SessionRequest{SessionID: "claude-two", Provider: node.ProviderClaude, Folder: f.dir, Wake: node.WakeRewake}
+			if code, body := call(t, f.srv, http.MethodPost, "/sessions", jsonOf(t, other)); code != http.StatusOK {
+				t.Fatalf("register: %d %s", code, body)
+			}
+			f.app.fetchListed = func() {
+				f.app.fetchListed = nil
+				if granted, err := f.net.Claim(node.ClaimRequest{SessionID: other.SessionID, IDs: []string{f.network}}); err != nil || len(granted) != 1 {
+					t.Errorf("the other session's claim: %v %v", granted, err)
+				}
+			}
+			q := url.Values{"folder": {f.dir}}
+			if limit != "" {
+				q.Set("limit", limit)
+			}
+			var got []string
+			for n := 1; ; n++ {
+				page, shown := f.fetch(maps.Clone(q))
+				if page.Delivered != (len(shown) > 0) || page.Next != "" {
+					t.Fatalf("call %d: %v delivered=%v next=%q", n, shown, page.Delivered, page.Next)
+				}
+				if n == 1 && !slices.Equal(shown, []string{f.reply}) {
+					t.Fatalf("the first call: %v, want the reply %s (the request is another session's)", shown, f.reply)
+				}
+				got = append(got, shown...)
+				if page.Note == "" {
+					break
+				}
+				if limit == "" || n > 2 {
+					t.Fatalf("call %d asks for another: %q", n, page.Note)
+				}
+			}
+			if !slices.Equal(got, []string{f.reply}) {
+				t.Fatalf("delivered %v, want the reply once", got)
+			}
+			if !f.unread(f.network) || f.unread(f.reply) {
+				t.Fatalf("after the fetch: request unread=%v (want true), reply unread=%v (want false)", f.unread(f.network), f.unread(f.reply))
+			}
+		})
+	}
+}
+
+// fillMsg is a listed message of context project whose text is part/10 of one
+// answer's budget.
+func fillMsg(id, project string, part int) node.UnreadMessage {
+	m := node.UnreadMessage{Project: project, Cursor: "c-" + id}
+	m.ID, m.Body = id, strings.Repeat("я", node.FormatBudget*part/10)
+	return m
+}
+
+// fillCtxs are contexts A and B, which grant the ids of free and record what
+// they were asked for and what they acknowledged.
+func fillCtxs(free []string, asked, acked map[string][]string) []fetchCtx {
+	var ctxs []fetchCtx
+	for _, project := range []string{"A", "B"} {
+		ctxs = append(ctxs, fetchCtx{id: project, deliver: func(_ string, ids []string) ([]string, error) {
+			var granted []string
+			for _, id := range ids {
+				asked[project] = append(asked[project], id)
+				if slices.Contains(free, id) {
+					granted = append(granted, id)
+				}
+			}
+			acked[project] = append(acked[project], granted...)
+			return granted, nil
+		}})
+	}
+	return ctxs
+}
+
+// The merged listing is [large m1 of A, m2 of B] and one answer carries m1
+// alone; A grants it no more. The same call delivers m2 in B, acknowledges
+// nothing in A and has no note. With nothing granted anywhere: an empty answer,
+// no note, no error. A passed-over message takes no room of the answer.
+func TestFetchPassesOverAcrossContexts(t *testing.T) {
+	ids := func(p node.UnreadPage) []string {
+		out := []string{}
+		for _, m := range p.Messages {
+			out = append(out, m.ID)
+		}
+		return out
+	}
+	listing := []node.UnreadMessage{fillMsg("m1", "A", 7), fillMsg("m2", "B", 7)}
+	if node.FitUnread(listing) != 1 {
+		t.Fatalf("%d of the listing fit one answer, want 1", node.FitUnread(listing))
+	}
+	asked, acked := map[string][]string{}, map[string][]string{}
+	page := node.UnreadPage{Messages: slices.Clone(listing), Total: 2}
+	err := deliverUnread(fillCtxs([]string{"m2"}, asked, acked), "codex-one", &page, 50, nil)
+	if err != nil || !slices.Equal(ids(page), []string{"m2"}) || !page.Delivered || page.Note != "" || page.Next != "" || page.Total != 1 {
+		t.Fatalf("the fetch: %v delivered=%v note=%q total=%d err=%v; want [m2] and no note", ids(page), page.Delivered, page.Note, page.Total, err)
+	}
+	if len(acked["A"]) != 0 || !slices.Equal(acked["B"], []string{"m2"}) || !slices.Equal(asked["A"], []string{"m1"}) || !slices.Equal(asked["B"], []string{"m2"}) {
+		t.Fatalf("asked %v, acknowledged %v; want each id asked once and m2 alone acknowledged", asked, acked)
+	}
+
+	asked, acked = map[string][]string{}, map[string][]string{}
+	page = node.UnreadPage{Messages: slices.Clone(listing), Total: 2}
+	err = deliverUnread(fillCtxs(nil, asked, acked), "codex-one", &page, 50, nil)
+	if err != nil || fetchFailed(page, err) || len(page.Messages) != 0 || page.Delivered || page.Note != "" || page.Next != "" {
+		t.Fatalf("a fetch nothing of which is granted: %v note=%q %v; want an empty answer with no note", ids(page), page.Note, err)
+	}
+	if len(acked["A"])+len(acked["B"]) != 0 || !slices.Equal(asked["A"], []string{"m1"}) || !slices.Equal(asked["B"], []string{"m2"}) {
+		t.Fatalf("asked %v, acknowledged %v", asked, acked)
+	}
+
+	// [m1 A, m2 B] fit and m3 does not; without m1 it does.
+	listing = []node.UnreadMessage{fillMsg("m1", "A", 4), fillMsg("m2", "B", 4), fillMsg("m3", "A", 4)}
+	if node.FitUnread(listing) != 2 || node.FitUnread(listing[1:]) != 2 {
+		t.Fatalf("the listing fits %d, %d without the first; want 2 and 2", node.FitUnread(listing), node.FitUnread(listing[1:]))
+	}
+	asked, acked = map[string][]string{}, map[string][]string{}
+	page = node.UnreadPage{Messages: slices.Clone(listing), Total: 3}
+	err = deliverUnread(fillCtxs([]string{"m2", "m3"}, asked, acked), "codex-one", &page, 50, nil)
+	if err != nil || !slices.Equal(ids(page), []string{"m2", "m3"}) || page.Note != "" {
+		t.Fatalf("the fetch: %v note=%q err=%v; want [m2 m3] and no note", ids(page), page.Note, err)
+	}
+}
+
+// Following the answers of a fetch over a merged listing of several pages, a
+// part of which no context grants (the whole first page too): each claimable
+// message is delivered once, none is asked for twice in a call, an answer with
+// a note is never empty, and the last one has none. A context that fails
+// meanwhile is reported and its messages come with a later call (issue #41).
+func TestFetchFollowedOverAMixOfContexts(t *testing.T) {
+	order := []string{"m1", "m2", "m3", "m4", "m5", "m6", "m7"}
+	project := map[string]string{"m1": "A", "m2": "B", "m3": "A", "m4": "B", "m5": "B", "m6": "A", "m7": "B"}
+	taken := []string{"m1", "m2", "m4"} // another owner's, in both contexts
+	unread := slices.Clone(order)
+	fails := 1 // context B fails once, with something to deliver
+	const limit = 2
+	listing := func(after string) (node.UnreadPage, error) {
+		page := node.UnreadPage{Messages: []node.UnreadMessage{}, Total: len(unread)}
+		for _, id := range unread {
+			if "c-"+id <= after {
+				continue
+			}
+			if len(page.Messages) == limit {
+				page.Next = page.Messages[limit-1].Cursor
+				break
+			}
+			page.Messages = append(page.Messages, fillMsg(id, project[id], 1))
+		}
+		return page, nil
+	}
+	var got []string
+	failed := 0
+	for n := 1; ; n++ {
+		asked := map[string]int{}
+		var ctxs []fetchCtx
+		for _, p := range []string{"A", "B"} {
+			ctxs = append(ctxs, fetchCtx{id: p, deliver: func(_ string, ids []string) ([]string, error) {
+				for _, id := range ids {
+					asked[id]++
+				}
+				if p == "B" && fails > 0 && slices.ContainsFunc(ids, func(id string) bool { return !slices.Contains(taken, id) }) {
+					fails--
+					return nil, errFetchBoom
+				}
+				var granted []string
+				for _, id := range ids {
+					if !slices.Contains(taken, id) {
+						granted = append(granted, id)
+						unread = slices.DeleteFunc(unread, func(u string) bool { return u == id })
+					}
+				}
+				return granted, nil
+			}})
+		}
+		page, _ := listing("")
+		err := deliverUnread(ctxs, "codex-one", &page, limit, listing)
+		if err != nil {
+			if failed++; !errors.Is(err, errFetchBoom) || !strings.Contains(err.Error(), "context B") || failed > 1 {
+				t.Fatalf("call %d: %v", n, err)
+			}
+		}
+		if fetchFailed(page, err) {
+			t.Fatalf("call %d failed: %v", n, err)
+		}
+		for id, times := range asked {
+			if times != 1 {
+				t.Fatalf("call %d asked for %s %d times", n, id, times)
+			}
+		}
+		if len(page.Messages) > limit || page.Next != "" || page.Delivered != (len(page.Messages) > 0) {
+			t.Fatalf("call %d: %d messages, next=%q delivered=%v", n, len(page.Messages), page.Next, page.Delivered)
+		}
+		for _, m := range page.Messages {
+			got = append(got, m.ID)
+		}
+		if page.Note == "" {
+			break
+		}
+		if len(page.Messages) == 0 {
+			t.Fatalf("call %d: a note with nothing delivered: the caller would spin", n)
+		}
+		if n > 6 {
+			t.Fatal("the fetch never ends")
+		}
+	}
+	slices.Sort(got)
+	if want := []string{"m3", "m5", "m6", "m7"}; !slices.Equal(got, want) || failed != 1 {
+		t.Fatalf("delivered %v, want each of %v once; %d calls reported a failed context, want 1", got, want, failed)
+	}
+	if !slices.Equal(unread, taken) {
+		t.Fatalf("still unread: %v, want the taken ones %v", unread, taken)
 	}
 }

@@ -449,7 +449,9 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   (4500 runes of formatted messages, at least one message): only those are read, the rest
   stays unread, and `note` says in plain words that more wait and the call is to
   be repeated: the same call, with no cursor (a delivery ignores `after` and its answer has
-  no `next`, as what it delivered is listed no more). Over several contexts of the folder (its network project, the local project,
+  no `next`, as what it delivered is listed no more). A listed message another session took
+  meanwhile is passed over inside the same call and the next ones take its room, so an empty
+  answer means nothing is this session's to take now, and it never has a `note` (v0.6.79, issue #42). Over several contexts of the folder (its network project, the local project,
   the session's local chats) the listings are merged and cut first and only the returned
   messages are delivered, each in its own context. Any other listing (no session, a session
   that is not a queue-woken one, another folder) reads nothing.

@@ -607,7 +607,18 @@ func (n *Node) UnreadQuery(q url.Values) (UnreadPage, error) {
 	if err != nil || !fetch {
 		return page, err
 	}
-	return n.pointerFetch(q.Get("session"), page)
+	if n.fetchListed != nil {
+		n.fetchListed()
+	}
+	return n.pointerFetch(q, page)
+}
+
+// FetchListing is the page after cursor after of the listing a fetch with
+// query q delivers from (FetchFill): UnreadListing, which gives a fetch no
+// cursor of its caller's, with the fetch's own.
+func (n *Node) FetchListing(q url.Values, after string) (UnreadPage, error) {
+	page, _, err := n.unreadListing(q, &after)
+	return page, err
 }
 
 // UnreadListing is the listing of UnreadQuery, which reads nothing. fetch
@@ -615,6 +626,12 @@ func (n *Node) UnreadQuery(q url.Values) (UnreadPage, error) {
 // the caller delivers what it answers with (Deliver), and nothing it leaves
 // out.
 func (n *Node) UnreadListing(q url.Values) (page UnreadPage, fetch bool, err error) {
+	return n.unreadListing(q, nil)
+}
+
+// unreadListing is UnreadListing; from (FetchListing) is the cursor it lists
+// after instead of the query's.
+func (n *Node) unreadListing(q url.Values, from *string) (page UnreadPage, fetch bool, err error) {
 	limit := 50
 	if s := q.Get("limit"); s != "" {
 		v, err := strconv.Atoi(s)
@@ -673,10 +690,13 @@ func (n *Node) UnreadListing(q url.Values) (page UnreadPage, fetch bool, err err
 		}
 	}
 	// A fetch has no cursor: what it delivered is listed no more, and the call
-	// for the rest lists from the start (FetchDone).
+	// for the rest lists from the start (FetchFill).
 	after := q.Get("after")
 	if fetch {
 		after = ""
+	}
+	if from != nil {
+		after = *from
 	}
 	page, err = n.unreadHeld(folder, q.Get("session"), after, limit, held, q.Get("exact") == "1", af)
 	if err == nil && waiter {

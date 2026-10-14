@@ -142,7 +142,7 @@ type UnreadPage struct {
 	// Delivered: this listing was the delivery of Messages to the session that
 	// asked (a WakeQueue session's own listing, pointerFetch): they are read
 	// now and need no ack. One answer carries what a hook's batch does
-	// (FetchCut); the rest stays unread for the same call made again (Note),
+	// (FetchFill); the rest stays unread for the same call made again (Note),
 	// with no Next.
 	Delivered bool `json:"delivered,omitempty"`
 	// Note (a delivery that left messages behind): the plain word, for the

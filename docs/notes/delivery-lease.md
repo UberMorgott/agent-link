@@ -136,10 +136,21 @@ Rules:
   not count; if the thread runs it after all, its fetch takes what waits then
   or nothing, as any late pointer).
 - The fetch (`UnreadListing` + `Deliver`, `pointerFetch`; over several
-  contexts `controlUnread` → `deliverUnread`) lists, cuts to one answer
-  (`FetchCut`: the page limit, then `FitUnread`/`FormatBudget`, as a hook's
-  batch) and only then claims and acks what it returns; `UnreadPage.Note`
-  tells the agent that more wait. A fetch has no cursor (issue #41, v0.6.78):
+  contexts `controlUnread` → `deliverUnread`) lists and fills one answer
+  (`FetchFill`: at most the page limit, within `FitUnread`/`FormatBudget`, as
+  a hook's batch), claiming and acking only what it returns; `UnreadPage.Note`
+  tells the agent that more wait. The fill runs in rounds inside the one call
+  (issue #42, v0.6.79): the listed messages that fit beside the granted ones
+  are claimed; one `Claim` did not grant (another owner took it after the
+  listing) is left out, counts for nothing of the budget, and the next listed
+  ones take its room, those of the listing's later pages too
+  (`FetchListing`, the fetch's own cursor, never the caller's). Each listed id
+  is offered once per call, so the rounds end with the listing or the full
+  answer. An empty answer therefore means nothing listed is the session's to
+  take now and has no `note`; `note` is set only on an answer that delivered
+  something and left listed messages unoffered. Before, a cut to a message
+  taken meanwhile answered empty with no note and the claimable ones behind
+  it waited for `pointerFetchGrace` and a new wake. A fetch has no cursor (issue #41, v0.6.78):
   what it delivered is read and listed no more, so "call again" is the same
   call, which lists from the start; `after` is ignored for a fetch (in every
   context of it) and its answer never has `next` (the CLI's last line is then

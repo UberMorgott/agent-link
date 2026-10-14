@@ -138,6 +138,9 @@ type Node struct {
 	launchAck atomic.Pointer[func(req AckRequest) error]
 	// seatBusy replaces seatOccupied (tests); nil: the real one.
 	seatBusy func(s Seat, now time.Time) bool
+	// fetchListed runs between a fetch's listing and its delivery
+	// (UnreadQuery; tests: what another owner does exactly there); nil: nothing.
+	fetchListed func()
 
 	selfAddrs []string // this node's own peer addresses, set by Run
 
