@@ -281,8 +281,17 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 		// A settings save may restart the project node while this request waits.
 		// Read the current node, whose chat history is persisted across restarts.
 		a.mu.Lock()
-		current := a.projects[pid]
+		current, bound := a.projects[pid], a.bindingIndex(pid) >= 0
 		a.mu.Unlock()
+		if current == nil && bound {
+			// The app stops (a quit, an update's relaunch) or its restart
+			// failed: the question is kept with the project and its seat
+			// answers it once the project runs again, the reply reaching the
+			// caller's hooks. Pending, as a queued one: never a failure the
+			// caller would ask again for (#38).
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
 		if current == nil {
 			http.Error(w, "discuss project was removed", http.StatusGone)
 			return

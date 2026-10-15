@@ -385,6 +385,70 @@ func TestDiscussReplyWaitsForAskedSeat(t *testing.T) {
 	}
 }
 
+// A discuss whose app stops while it waits (a quit, an update's relaunch)
+// keeps its question pending (202), never "project was removed": the caller
+// would ask again and the seat answer twice (#38).
+func TestDiscussReplyPendingWhenAppStops(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
+	dir := repoDir(t)
+	code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
+		"folder": dir, "provider": node.ProviderCodex, "body": "What is the answer?",
+	}), nil)
+	if code != http.StatusOK {
+		t.Fatalf("discuss: %d %s", code, raw)
+	}
+	var ask discussResultAPI
+	if err := json.Unmarshal([]byte(raw), &ask); err != nil {
+		t.Fatal(err)
+	}
+	n := h.app.projects[ask.Project].n
+	eventuallyApp(t, "seat setup", func() bool {
+		for _, s := range n.Seats() {
+			if s.SessionID == "" || s.LastTurn.IsZero() || s.Status == node.SeatRunning {
+				return false
+			}
+		}
+		return true
+	})
+	path := "/discuss/reply?" + url.Values{"project": {ask.Project}, "chat": {ask.Chat},
+		"id": {ask.ID}, "seat": {ask.Seat}, "timeout": {"5s"}}.Encode()
+	type response struct {
+		code int
+		body string
+		err  error
+	}
+	done := make(chan response, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, h.srv.URL+path, nil)
+		if err != nil {
+			done <- response{err: err}
+			return
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			done <- response{err: err}
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		done <- response{code: resp.StatusCode, body: string(body), err: err}
+	}()
+	eventuallyApp(t, "reply waiter subscribed", func() bool {
+		h.app.events.mu.Lock()
+		defer h.app.events.mu.Unlock()
+		return len(h.app.events.subscribers) == 1
+	})
+	h.app.Stop()
+	select {
+	case got := <-done:
+		if got.err != nil || got.code != http.StatusAccepted {
+			t.Fatalf("wait across a stop: %+v", got)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("reply wait did not wake on the stop")
+	}
+}
+
 func TestConcurrentDiscussReusesSeat(t *testing.T) {
 	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
 	dir := repoDir(t)
