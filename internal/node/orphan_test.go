@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"sync/atomic"
@@ -326,6 +327,72 @@ func TestStrandedRequestReopened(t *testing.T) {
 	a.orphanSweep(time.Now().Add(strandedMax + time.Minute))
 	if cm := chatMsg(t, a, old.ChatID, old.ID); cm.Unread {
 		t.Fatalf("a request read long ago handed back: %+v", cm)
+	}
+}
+
+// A request handed back by a gone session opens no session at once
+// (v0.6.70 launched one 1.4 s after the hand-back while a desktop session was
+// starting in the folder): not within reopenGrace, then only when nobody took
+// it meanwhile and no session started that would take it (#37).
+func TestReopenedRequestLaunchWaitsGrace(t *testing.T) {
+	for _, tc := range []string{"none", "live", "claimed"} {
+		t.Run(tc, func(t *testing.T) {
+			dir := t.TempDir()
+			l := &fakeLauncher{}
+			a, b := deliveryPair(t, dir, nil, l)
+			reg := func(id string) {
+				t.Helper()
+				if _, err := a.RegisterSession(SessionRequest{SessionID: id, Provider: ProviderClaude, Folder: dir, TTLSec: 3600}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			take := func(id, sid string) {
+				t.Helper()
+				if g, err := a.Claim(ClaimRequest{IDs: []string{id}, SessionID: sid}); err != nil || !slices.Equal(g, []string{id}) {
+					t.Fatalf("claim of %s by %s: %v %v", id, sid, g, err)
+				}
+				if _, err := a.Ack("", AckRequest{IDs: []string{id}, SessionID: sid}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reg("s-1")
+			m := ask(t, a, b, "do this")
+			take(m.ID, "s-1")
+			if err := a.EndSession("s-1"); err != nil {
+				t.Fatal(err)
+			}
+			if cm := chatMsg(t, a, m.ChatID, m.ID); !cm.Unread || cm.OrphanedSession != "s-1" {
+				t.Fatalf("not handed back: %+v", cm)
+			}
+			ctx := context.Background()
+			now := time.Now()
+			a.launchDue(ctx, now.Add(launchGrace+time.Second))
+			a.launchDue(ctx, now.Add(reopenGrace-time.Second))
+			if got := l.all(); len(got) != 0 {
+				t.Fatalf("launched within the grace: %+v", got)
+			}
+			switch tc {
+			case "live":
+				reg("s-2") // a session starts in the folder during the grace
+			case "claimed":
+				reg("s-2")
+				take(m.ID, "s-2")
+				if err := a.EndSession("s-2"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			a.launchDue(ctx, now.Add(reopenGrace+time.Second))
+			got := l.all()
+			if tc == "none" {
+				if len(got) != 1 {
+					t.Fatalf("no launch after the grace with nobody to take it: %+v", got)
+				}
+				return
+			}
+			if len(got) != 0 {
+				t.Fatalf("launched although %s: %+v", tc, got)
+			}
+		})
 	}
 }
 

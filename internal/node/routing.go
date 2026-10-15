@@ -47,12 +47,15 @@ func launchOwner(area string) string { return "launch " + area }
 // launchClaim claims msgs for the first turn of a desktop launch in area,
 // atomically, like a wake (claimLocked): not the ones a session's hook or
 // another launch holds. Until runDirect acknowledges or drops them, no
-// session's hooks deliver them (routeOf names the launch). It returns the ones
-// granted, in order.
-func (n *Node) launchClaim(area string, msgs []UnreadMessage) []UnreadMessage {
+// session's hooks deliver them (routeOf names the launch). Nor a request a
+// gone session handed back once a session of area that is not one of seen (the
+// live ones at the launch decision) lives (dropReopened): that one takes it.
+// It returns the ones granted, in order.
+func (n *Node) launchClaim(area string, msgs []UnreadMessage, seen map[string]bool, now time.Time) []UnreadMessage {
 	r := n.sess
 	r.claimMu.Lock()
 	defer r.claimMu.Unlock()
+	msgs = n.dropReopened(area, msgs, seen, now)
 	live := r.liveIDs(time.Now())
 	owner := launchOwner(area)
 	var want []string

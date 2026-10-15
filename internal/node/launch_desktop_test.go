@@ -491,7 +491,7 @@ func TestLaunchDirectHoldsClaim(t *testing.T) {
 		}
 		var um UnreadMessage
 		um.Message = m
-		if msgs := a.launchClaim("", []UnreadMessage{um}); len(msgs) != 0 {
+		if msgs := a.launchClaim("", []UnreadMessage{um}, nil, time.Now()); len(msgs) != 0 {
 			t.Errorf("claimed twice: %v", msgs)
 		}
 	}

@@ -69,7 +69,34 @@ const (
 	launchGrace    = 10 * time.Second
 	launchConfirm  = 90 * time.Second
 	launchDebounce = 3 * time.Minute
+	// reopenGrace: a request handed back by a gone session (reopenStranded)
+	// opens no session for this long after it was handed back. A live session
+	// (woken, or at its next event) or one starting meanwhile takes it first.
+	reopenGrace = 2 * time.Minute
 )
+
+// reopenedAt reports when unread message id was handed back by a gone session
+// (reopenStranded) if it still waits for someone to take it (Orphaned).
+func (n *Node) reopenedAt(id string) (time.Time, bool) {
+	rec, ok := n.chats.message(id)
+	if !ok || rec.Reopened == "" || rec.Orphaned == "" || rec.OrphanedAt.IsZero() {
+		return time.Time{}, false
+	}
+	return rec.OrphanedAt, true
+}
+
+// dropReopened leaves out of msgs the requests handed back by a gone session
+// (reopenedAt) when a session of area that is not one of seen (the live ones
+// at the launch decision) lives now: it takes them, no launch does.
+func (n *Node) dropReopened(area string, msgs []UnreadMessage, seen map[string]bool, now time.Time) []UnreadMessage {
+	if !n.areaHasNew(area, seen, now) {
+		return msgs
+	}
+	return slices.DeleteFunc(slices.Clone(msgs), func(m UnreadMessage) bool {
+		_, ok := n.reopenedAt(m.ID)
+		return ok
+	})
+}
 
 // Launch failure reasons (launch_failed:<reason>).
 var (
@@ -385,6 +412,12 @@ func (n *Node) launchable(dir string, now time.Time) (eligible, paused []UnreadM
 	}
 	held := n.launchHeld()
 	book := n.leases.all()
+	reopened := map[string]bool{} // handed back within reopenGrace
+	for _, m := range page.Messages {
+		if at, ok := n.reopenedAt(m.ID); ok && now.Sub(at) < reopenGrace {
+			reopened[m.ID] = true
+		}
+	}
 	full := n.autoMode() == AutonomyFull
 	d := n.deliv
 	d.mu.Lock()
@@ -401,7 +434,7 @@ func (n *Node) launchable(dir string, now time.Time) (eligible, paused []UnreadM
 		case (!m.AsksYou && !fyi) || m.OwnHuman || m.Assigned != "" || held[m.ID] || leased:
 		case m.Paused:
 			paused = append(paused, m)
-		case d.isSpent(m.ID) || now.Sub(m.ReceivedAt) < launchGrace:
+		case d.isSpent(m.ID) || now.Sub(m.ReceivedAt) < launchGrace || reopened[m.ID]:
 		default:
 			eligible = append(eligible, m)
 		}
@@ -482,7 +515,8 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 	if p != nil && p.direct {
 		return // its first turn is running
 	}
-	live := n.areaLive(area, now)
+	seen := n.areaSessions(area, now)
+	live := seen != nil
 	if live {
 		// Sessions live but idle and none can be woken (WakeNextEvent): they
 		// read at their next event; the authors hear why nothing wakes.
@@ -531,6 +565,9 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 			d.mu.Unlock()
 			return
 		}
+		if eligible = n.dropReopened(area, eligible, seen, now); len(eligible) == 0 {
+			return
+		}
 		spec := p.spec
 		spec.ResumeID = "" // the resumed session did not start: a new one
 		spec.Prompt = launchPrompt(n, eligible)
@@ -562,21 +599,26 @@ func (n *Node) launchArea(ctx context.Context, area, dir string, now time.Time) 
 		spec.Provider = ls.Provider
 	}
 	if dl, ok := n.launcher.(DirectLauncher); ok && mode != LaunchTerminal && dl.Direct(spec.Provider) {
-		n.startDirect(ctx, dl, area, spec, eligible, now)
+		n.startDirect(ctx, dl, area, spec, eligible, seen, now)
 		return
 	}
+	if eligible = n.dropReopened(area, eligible, seen, now); len(eligible) == 0 {
+		return
+	}
+	spec.Prompt = launchPrompt(n, eligible)
 	n.startLaunch(ctx, area, spec, eligible, 1, now)
 }
 
 // startDirect opens spec in the desktop app (dl) for eligible: it claims them
 // for the launch (launchClaim), and its first turn's prompt is the claimed
 // messages themselves (WakePrompt, as many as fit). A headless turn runs no
-// agent-link hooks, so nothing else delivers them to it.
-func (n *Node) startDirect(ctx context.Context, dl DirectLauncher, area string, spec LaunchSpec, eligible []UnreadMessage, now time.Time) {
+// agent-link hooks, so nothing else delivers them to it. seen are the area's
+// live sessions at the decision (launchClaim).
+func (n *Node) startDirect(ctx context.Context, dl DirectLauncher, area string, spec LaunchSpec, eligible []UnreadMessage, seen map[string]bool, now time.Time) {
 	if n.Stopped() {
 		return
 	}
-	msgs := n.launchClaim(area, eligible[:FitUnread(eligible)])
+	msgs := n.launchClaim(area, eligible[:FitUnread(eligible)], seen, now)
 	if len(msgs) == 0 {
 		return // nothing to open a session for
 	}
