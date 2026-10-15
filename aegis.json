@@ -21,5 +21,12 @@
         ]
       }
     ]
+  },
+  "verify_env": {
+    "CLAUDE_CODE_MESSAGING_SOCKET": "absent",
+    "CLAUDE_CODE_MESSAGING_TOKEN": "absent",
+    "CLAUDE_CODE_SESSION_ATTENDED": "absent",
+    "CLAUDE_CODE_SESSION_ID": "absent",
+    "CODEX_CLI_PATH": "absent"
   }
 }

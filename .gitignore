@@ -15,3 +15,5 @@ bin/
 
 # Web UI dependencies; its build output internal/app/web/dist/ is committed
 node_modules/
+
+*.agentlink.bak
