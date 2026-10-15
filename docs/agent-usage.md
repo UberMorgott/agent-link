@@ -139,6 +139,10 @@ a silent acknowledgement: the request stays pending and the turn is retried. The
 behavior, compact by default (`full: true`: the whole result). A reply's `agent.model` and
 `agent.effort` (compact: `model`, `effort`) name what the seat's turn ran with, as its agent
 reported them (Codex: thread model and reasoning effort; Claude: the model only).
+The CLI's JSON on a pipe escapes every non-ASCII character as `\uXXXX`, so a shell that decodes
+pipes with a non-UTF-8 code page (PowerShell with cp866) reads it intact; `AGENTLINK_JSON_UTF8=1`
+prints raw UTF-8 instead (fewer bytes for non-English text) when the caller decodes UTF-8.
+MCP results are always raw UTF-8.
 
 Local chats of `discuss` (one of `--chat`, `--topic`, `--temporary`; none = the default). An agent
 session (Claude Code, Codex) asks in its **own** chat: one per (project, session, topic), so its

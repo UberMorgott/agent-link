@@ -12,6 +12,7 @@ import (
 // JSON for a pipe is ASCII: a shell decoding it with any code page (cp866)
 // reads it intact, and parsing gives the text back.
 func TestJSONOutputIsASCII(t *testing.T) {
+	t.Setenv(jsonUTF8Env, "") // the default, whatever the caller's environment
 	body := "ZEBRA-7731 — ответ «ok» 😀 <b>&"
 	var buf bytes.Buffer
 	if err := encodeLines(&buf, []node.Message{{ID: "m1", Body: body}}); err != nil {
@@ -30,6 +31,27 @@ func TestJSONOutputIsASCII(t *testing.T) {
 	var m node.Message
 	if err := json.Unmarshal(buf.Bytes(), &m); err != nil || m.Body != body {
 		t.Fatalf("round trip %q %v", m.Body, err)
+	}
+}
+
+// With AGENTLINK_JSON_UTF8=1 JSON for a pipe carries the text as raw UTF-8
+// (a compact discuss reply in Russian is not 3x its bytes) and stays valid.
+func TestJSONOutputUTF8OptIn(t *testing.T) {
+	t.Setenv(jsonUTF8Env, "1")
+	reply := "Ответ: всё «ok» — 😀"
+	var buf bytes.Buffer
+	if err := newJSONEncoder(&buf).Encode(discussBrief{Chat: "c1", Reply: reply}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte(reply)) {
+		t.Fatalf("raw UTF-8 missing: %q", buf.String())
+	}
+	if strings.Contains(buf.String(), "\\"+"u") {
+		t.Fatalf("escaped output: %q", buf.String())
+	}
+	var b discussBrief
+	if err := json.Unmarshal(buf.Bytes(), &b); err != nil || b.Reply != reply {
+		t.Fatalf("round trip %q %v", b.Reply, err)
 	}
 }
 

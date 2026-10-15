@@ -15,10 +15,18 @@ import (
 // built from it carries that. JSON escapes (—) are plain ASCII, the same
 // in every code page, and every JSON parser (ConvertFrom-Json too) restores
 // the text; a console gets the text itself (Go writes it as UTF-16 there).
+// An escape costs up to 6 bytes for a character of 2-3, so a caller whose
+// shell decodes pipes as UTF-8 sets AGENTLINK_JSON_UTF8=1 for the text itself.
+
+// jsonUTF8Env opts the CLI's JSON for a pipe into raw UTF-8.
+const jsonUTF8Env = "AGENTLINK_JSON_UTF8"
 
 // newJSONEncoder is a JSON encoder for w that escapes every non-ASCII
-// character unless w is a console.
+// character unless w is a console or AGENTLINK_JSON_UTF8 is 1.
 func newJSONEncoder(w io.Writer) *json.Encoder {
+	if os.Getenv(jsonUTF8Env) == "1" {
+		return json.NewEncoder(w)
+	}
 	if f, ok := w.(*os.File); !ok || !isConsole(f) {
 		w = asciiJSON{w}
 	}
