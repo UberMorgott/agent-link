@@ -51,6 +51,13 @@ func runApp(args []string) error {
 		fmt.Println(selfupdate.Version)
 		return nil
 	}
+	// Another instance runs on these settings: leave the app to it, before
+	// detaching from a console starts a copy (issue #32). Started from a shell
+	// (an agent trying the CLI without a command), say so and list the commands.
+	if alreadyRunning(*restarted, *cfgPath) {
+		_, _ = fmt.Fprintln(os.Stderr, "agentlink: the desktop app already runs (tray icon); give a command to use the CLI.\n\n"+usage)
+		return nil
+	}
 	// The tray app needs no console: leave the one Windows opened for a
 	// double-click, or let the terminal that started it go on.
 	if !*noTray && leaveConsole(args) {
@@ -124,6 +131,11 @@ func runApp(args []string) error {
 		return fmt.Errorf("agentlink is probably already running (%s is taken): %w", a.APIAddr(), err)
 	}
 	log.Info("start", "version", selfupdate.Version, "exe", exe)
+	if release, err := holdInstance(instanceName(*cfgPath)); err != nil {
+		log.Warn("instance marker", "err", err)
+	} else {
+		defer release()
+	}
 	// Plugin launchers find this executable through the marker; only the
 	// instance of the default settings, which they read, writes it.
 	if isDefault {
