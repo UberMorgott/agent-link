@@ -113,6 +113,9 @@ type UnreadMessage struct {
 	// agent's only after it ended.
 	ForAgent     string `json:"for_agent,omitempty"`
 	ForAgentType string `json:"for_agent_type,omitempty"`
+	// EndedAgent: shown to the main agent because ForAgent ended
+	// (EndedAgentReply): a one-line pointer to it in history, not its text.
+	EndedAgent bool `json:"-"`
 }
 
 // AgentFilter selects unread messages by the subagent they are for

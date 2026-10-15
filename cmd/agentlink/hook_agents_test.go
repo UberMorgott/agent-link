@@ -58,7 +58,8 @@ func TestHookRoutesRepliesToTheAskingSubagent(t *testing.T) {
 		t.Fatalf("not acknowledged: %v", c.f.ackedIDs())
 	}
 
-	// After the subagent ended its reply is the main agent's, marked.
+	// After the subagent ended the main agent gets its reply as a one-line
+	// pointer to the chat's history: not its text, no reply asked.
 	late := chatMsg("c1", "KPECTIK", "agent", "late answer", false)
 	late.ID, late.ForAgent, late.ForAgentType = "r2", "a1", "Explore"
 	c.f.add(late)
@@ -67,8 +68,14 @@ func TestHookRoutesRepliesToTheAskingSubagent(t *testing.T) {
 		t.Fatalf("node's live subagents after the stop: %v", got)
 	}
 	out = parseOut(t, c.run(hookClaude, evPostTool, `,"tool_name":"Read"`))
-	if ctx := out.HookSpecificOutput.AdditionalContext; !strings.Contains(ctx, "late answer") || !strings.Contains(ctx, "завершившегося субагента Explore/a1") {
-		t.Fatalf("the main agent did not get the ended subagent's reply: %q", ctx)
+	ctx := out.HookSpecificOutput.AdditionalContext
+	if strings.Contains(ctx, "late answer") || !strings.Contains(ctx, "завершившегося субагента Explore/a1") ||
+		!strings.Contains(ctx, "id r2") || !strings.Contains(ctx, "agentlink chat history --chat c1") ||
+		!strings.Contains(ctx, "отвечать не нужно") || strings.Contains(ctx, "--reply-to r2") {
+		t.Fatalf("the main agent did not get a pointer to the ended subagent's reply: %q", ctx)
+	}
+	if !slices.Contains(c.f.ackedIDs(), "r2") {
+		t.Fatalf("the pointer's reply not acknowledged: %v", c.f.ackedIDs())
 	}
 }
 

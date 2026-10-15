@@ -15,7 +15,10 @@ package main
 //     While that subagent lives (SubagentStart .. SubagentStop, hookState.Live)
 //     only its own PostToolUse delivers them; the main agent's hooks and wakes
 //     skip them (the node hears the live ones: SessionRequest.Agents). Once it
-//     ended they go to the main agent, marked as a reply for that subagent.
+//     ended they go to the main agent as one informational line pointing to
+//     the reply in the chat's history (node.EndedAgentReply), no reply asked.
+//     A reply to a question whose discuss wait timed out reaches no one
+//     (node.AbandonAsk).
 //
 // Codex tool hooks carry no agent id: Codex asks stay the session's.
 
@@ -311,7 +314,7 @@ func (h *hookSession) forMe(page node.UnreadPage) node.UnreadPage {
 			if h.st != nil && h.isLive(m.ForAgent) {
 				continue
 			}
-			m.Body = node.EndedAgentNote(m.ForAgentType, m.ForAgent) + "\n" + m.Body
+			m = node.EndedAgentReply(m)
 		}
 		kept = append(kept, m)
 	}

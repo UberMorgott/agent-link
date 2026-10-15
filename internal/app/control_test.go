@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -301,6 +302,77 @@ func TestDiscussReplyWaitReadsReplyForLegacyCaller(t *testing.T) {
 	}
 	if p, _ := n.UnreadFor("", "claude-ext", "", 10); p.Total != 0 {
 		t.Fatalf("legacy caller's reply delivered again: %+v", p)
+	}
+}
+
+// A subagent's discuss whose wait timed out (as discussMessage waits, CLI and
+// MCP alike) is abandoned by the node: the late reply stays in history, unread
+// for no session, so neither the subagent's nor its parent's hooks get it
+// (#34). A wait the caller cancelled abandons nothing.
+func TestDiscussTimeoutAbandonsLateReply(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &seatRunner{} })
+	dir := t.TempDir()
+	ask := func() discussResultAPI {
+		t.Helper()
+		code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]string{
+			"folder": dir, "provider": node.ProviderCodex, "source": node.ProviderClaude, "session_id": "claude-ext",
+			"agent_id": "a1", "agent_type": "Explore", "body": "question",
+		}), nil)
+		var res discussResultAPI
+		if code != http.StatusOK || json.Unmarshal([]byte(raw), &res) != nil {
+			t.Fatalf("discuss: %d %s", code, raw)
+		}
+		return res
+	}
+	wait := func(ctx context.Context, q discussResultAPI, timeout string) (int, error) {
+		path := "/discuss/reply?" + url.Values{"project": {q.Project}, "chat": {q.Chat}, "id": {q.ID}, "seat": {q.Seat},
+			"timeout": {timeout}, "client_ack": {"1"}}.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.srv.URL+path, nil)
+		if err != nil {
+			return 0, err
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode, nil
+	}
+	timedOut := ask()
+	n := h.app.projects[timedOut.Project].n
+	if code, err := wait(t.Context(), timedOut, "30ms"); err != nil || code != http.StatusNoContent {
+		t.Fatalf("timed-out wait: %d %v", code, err)
+	}
+	late, err := n.SendRequest(node.SendRequest{ChatID: timedOut.Chat, ReplyTo: timedOut.ID, Body: "late", Seat: timedOut.Seat, AuthorKind: node.AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := n.UnreadFor("", "claude-ext", "", 10); p.Total != 0 {
+		t.Fatalf("a timed-out discuss's late reply was pushed: %+v", p)
+	}
+	msgs, err := n.ChatMessages(timedOut.Chat, 0, 0, 100)
+	if err != nil || !slices.ContainsFunc(msgs, func(m node.ChatMessage) bool { return m.ID == late.ID && !m.Unread }) {
+		t.Fatalf("late reply not in history: %+v %v", msgs, err)
+	}
+
+	// Cancelled by the caller (no timeout): the reply is delivered.
+	cancelled := ask()
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = wait(ctx, cancelled, "10s") }()
+	eventuallyApp(t, "reply waiter subscribed", func() bool {
+		h.app.events.mu.Lock()
+		defer h.app.events.mu.Unlock()
+		return len(h.app.events.subscribers) == 1
+	})
+	cancel()
+	<-done
+	reply, err := n.SendRequest(node.SendRequest{ChatID: cancelled.Chat, ReplyTo: cancelled.ID, Body: "on time", Seat: cancelled.Seat, AuthorKind: node.AuthorAgent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := n.UnreadFor("", "claude-ext", "", 10); p.Total != 1 || p.Messages[0].ID != reply.ID || p.Messages[0].ForAgent != "a1" {
+		t.Fatalf("a cancelled wait's reply not delivered to its subagent: %+v", p)
 	}
 }
 

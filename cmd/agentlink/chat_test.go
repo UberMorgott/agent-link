@@ -121,11 +121,19 @@ func TestDiscussCLIWaitsAndReadsPromptFile(t *testing.T) {
 		t.Fatalf("async requests: %q, body %+v", f.reqs, f.discuss)
 	}
 	var stdout, stderr bytes.Buffer
+	f.reqs = nil
 	if code := run([]string{"discuss", "--with", "codex", "--body", "timeout", "--timeout", "20ms", "--config", f.cfg}, &stdout, &stderr); code != exitTimeout {
 		t.Fatalf("timeout exit: %d, out %q, err %q", code, stdout.String(), stderr.String())
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil || !got.TimedOut || got.ID != "m1" {
 		t.Fatalf("timeout result: %q: %v", stdout.String(), err)
+	}
+	// The node's own wait timed out (204), so the node abandoned the question
+	// itself (node.AbandonAsk): the caller sends nothing more, no ack, no
+	// abandon of its own that could race the reply.
+	if len(f.reqs) != 2 || f.reqs[0] != "POST /discuss" || !strings.HasPrefix(f.reqs[1], "GET /discuss/reply?") ||
+		!strings.Contains(f.reqs[1], "timeout=20ms") {
+		t.Fatalf("timed-out discuss requests: %q", f.reqs)
 	}
 	// A seat that cannot answer ends the wait with its reason, held: a script
 	// tells it from an answer by the exit code.

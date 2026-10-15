@@ -354,7 +354,15 @@ func (n *Node) wakeIdle(ctx context.Context) {
 		}
 		switch {
 		case byInbox:
-			text := WakePrompt(msgs, skipped+len(take)-len(msgs)+page.Total-len(page.Messages), s.Folder, token)
+			// A wake never carries a live subagent's reply (claimLocked): one
+			// for a subagent is for an ended one, a pointer to it only.
+			shown := slices.Clone(msgs)
+			for i, m := range shown {
+				if m.ForAgent != "" {
+					shown[i] = EndedAgentReply(m)
+				}
+			}
+			text := WakePrompt(shown, skipped+len(take)-len(msgs)+page.Total-len(page.Messages), s.Folder, token)
 			err = n.poster.Post(ctx, d.inbox.socket, d.inbox.token, text)
 		case pending != "":
 			// Covered by the pointer in its queue: no prompt.

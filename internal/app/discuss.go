@@ -264,6 +264,12 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "discuss request "+id+" does not ask seat "+seat+" (asked: "+strings.Join(ask.AskSeats, ", ")+")", http.StatusNotFound)
 		return
 	}
+	// Waiting again for a question an earlier wait gave up on: its reply is
+	// delivered as usual from now on (node.ResumeAsk).
+	if err := c.n.ResumeAsk(id); err != nil {
+		a.failed(w, "discuss resume", err)
+		return
+	}
 	a.discussWaiting(pid, 1)
 	defer a.discussWaiting(pid, -1)
 	if ask.Agent != nil {
@@ -320,12 +326,23 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-timer.C:
-			if reply, found, err := discussAnswer(c.n, chat, id, seat, &cursor); err == nil && found {
-				a.discussReplied(w, c.n, chat, reply, clientAck)
+			// The wait timed out: the asker moves on, so a later reply is
+			// pushed to no one (node.AbandonAsk). A reply stored first is
+			// handed over instead, atomically against the reply's storing.
+			// A cancelled request (above) or a failed one abandons nothing.
+			answered, err := c.n.AbandonAsk(chat, id, seat)
+			if err != nil {
+				a.failed(w, "discuss abandon", err)
 				return
-			} else if err != nil {
-				a.failed(w, "discuss reply", err)
-				return
+			}
+			if answered {
+				if reply, found, err := discussAnswer(c.n, chat, id, seat, &cursor); err == nil && found {
+					a.discussReplied(w, c.n, chat, reply, clientAck)
+					return
+				} else if err != nil {
+					a.failed(w, "discuss reply", err)
+					return
+				}
 			}
 			w.WriteHeader(http.StatusNoContent)
 			return

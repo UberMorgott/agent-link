@@ -113,6 +113,10 @@ type Node struct {
 	dormantEvery time.Duration
 	wakeKick     chan struct{}
 	wakeTicks    atomic.Int64
+	// askMu orders AbandonAsk against a peer's reply being received: its seat
+	// hand-over (seatsForIncoming) and storing happen as one step, so an
+	// abandoned question's reply is queued for no seat (abandon.go).
+	askMu sync.Mutex
 	// orphanDue asks the wake loop for an orphan sweep at its next pass (a
 	// reply arrived); orphanSwept is when it last ran one (sessions.go).
 	orphanDue   atomic.Bool

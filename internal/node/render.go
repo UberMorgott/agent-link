@@ -112,7 +112,7 @@ func Render(req RenderRequest) (RenderResult, error) {
 		res.Shown = append(res.Shown, RenderedMessage{ID: m.ID, Project: m.Project})
 		// Every chat the session reads from shows what it does next (its
 		// person's own messages and what it must not answer excepted).
-		if m.ChatID != "" && !m.OwnHuman && !m.Paused && m.Assigned != "worker" {
+		if m.ChatID != "" && !m.OwnHuman && !m.Paused && !m.EndedAgent && m.Assigned != "worker" {
 			res.Chats[m.ChatID] = m.ID
 		}
 	}
@@ -164,7 +164,7 @@ func forAgentRun(msgs []UnreadMessage, agent string, live []string) []UnreadMess
 			if slices.Contains(live, m.ForAgent) {
 				continue
 			}
-			m.Body = EndedAgentNote(m.ForAgentType, m.ForAgent) + "\n" + m.Body
+			m = EndedAgentReply(m)
 		}
 		kept = append(kept, m)
 	}
@@ -179,6 +179,22 @@ func EndedAgentNote(typ, id string) string {
 		name = typ + "/" + id
 	}
 	return "[ответ для завершившегося субагента " + name + "]"
+}
+
+// EndedAgentReply is m, a reply for subagent m.ForAgent that ended, as the
+// main agent gets it: FormatUnread words it as one informational line that
+// points to it in the chat's history (EndedAgentPointer), not its text, and
+// asks no reply. The hooks and Render share it.
+func EndedAgentReply(m UnreadMessage) UnreadMessage {
+	m.EndedAgent = true
+	return m
+}
+
+// EndedAgentPointer is the line of reply m for an ended subagent
+// (EndedAgentReply): who, chat id, reply id, where to read it.
+func EndedAgentPointer(m UnreadMessage) string {
+	return fmt.Sprintf("%s От %s в чате %s, id %s — к сведению, отвечать не нужно; текст при необходимости: agentlink chat history --chat %s\n",
+		EndedAgentNote(m.ForAgentType, m.ForAgent), AuthorName(m.Message), m.ChatID, m.ID, m.ChatID)
 }
 
 // WithNotes is text led by notes, the lines for the model that wait for its

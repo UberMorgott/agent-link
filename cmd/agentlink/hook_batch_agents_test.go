@@ -69,8 +69,9 @@ func TestClassicBatchOfSubagentReplies(t *testing.T) {
 			if n := strings.Count(b.text, note); n != c.notes {
 				t.Errorf("%q is in the text %d times, want %d:\n%s", note, n, c.notes, b.text)
 			}
-			if !strings.Contains(b.text, "\nthe reply\n") {
-				t.Errorf("the reply is not in the text:\n%s", b.text)
+			// The subagent's own run reads the reply; the main run a pointer.
+			if got := strings.Contains(b.text, "\nthe reply\n"); got != (c.notes == 0) {
+				t.Errorf("the reply's text shown %v, want %v:\n%s", got, c.notes == 0, b.text)
 			}
 			if !slices.Equal(b.ids, c.ids) {
 				t.Errorf("ids %v, want %v", b.ids, c.ids)

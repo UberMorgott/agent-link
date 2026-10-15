@@ -1526,11 +1526,20 @@ func (n *Node) receiveChat(peer, peerID string, m Message) chatVerdict {
 		// A reply to a seat's message is its seat's, queued before it is
 		// stored so the worker never takes it first (ClaimRun); a failed store
 		// takes it back, so no seat keeps an id without its message.
+		// A reply is handed over and stored as one step against AbandonAsk: a
+		// question abandoned before it is queued for no seat (seatsForIncoming)
+		// and stored unread for no one (put).
+		if m.ReplyTo != "" {
+			n.askMu.Lock()
+		}
 		seat := ""
 		if _, known := n.chats.message(m.ID); !known {
 			seat = n.seatsForIncoming(m)
 		}
 		_, isNew, c, err := n.chats.put(m, true)
+		if m.ReplyTo != "" {
+			n.askMu.Unlock()
+		}
 		if err != nil {
 			n.log.Error("persist chat message", "chat", m.ChatID, "id", m.ID, "err", err)
 			n.unqueueSeat(seat, m.ID)

@@ -706,10 +706,17 @@ func TestMCPDiscussCompact(t *testing.T) {
 	if isErr || normJSON(t, text) != normJSON(t, cliOut) || !strings.Contains(text, `"project":"p1"`) {
 		t.Fatalf("full: %s, CLI %s", text, cliOut)
 	}
-	// Status only when there is no reply yet.
+	// Status only when there is no reply yet. The node's wait timed out and
+	// abandoned the question itself (node.AbandonAsk): the tool sends nothing
+	// more, as the CLI.
+	f.reqs = nil
 	text, _ = callTool(t, cs, "discuss", map[string]any{"with": "codex", "body": "q", "timeout": "20ms"})
 	if normJSON(t, text) != `{"chat":"c1","id":"m1","timed_out":true}` {
 		t.Fatalf("timed out: %s", text)
+	}
+	if len(f.reqs) != 2 || f.reqs[0] != "POST /discuss" || !strings.HasPrefix(f.reqs[1], "GET /discuss/reply?") ||
+		!strings.Contains(f.reqs[1], "timeout=20ms") {
+		t.Fatalf("timed-out discuss tool requests: %q", f.reqs)
 	}
 }
 

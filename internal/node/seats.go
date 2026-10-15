@@ -906,7 +906,10 @@ func (n *Node) deliverToSeats(m Message, sender string) error {
 	for _, id := range m.AskSeats {
 		list = append(list, seatTo{id, true})
 	}
-	if s := n.repliedSeat(m.ReplyTo); s != "" && s != sender && !slices.Contains(m.AskSeats, s) {
+	// A seat's reply to a question its asking seat stopped waiting for
+	// (AbandonAsk) stays in history only.
+	abandoned := m.Agent != nil && m.Agent.Seat != "" && n.chats.abandoned(m.ReplyTo)
+	if s := n.repliedSeat(m.ReplyTo); s != "" && s != sender && !slices.Contains(m.AskSeats, s) && !abandoned {
 		list = append(list, seatTo{s, false})
 	}
 	_, err := n.queueSeats(m.ID, list)
@@ -923,6 +926,9 @@ func (n *Node) seatsForIncoming(m Message) string {
 	seat := n.repliedSeat(m.ReplyTo)
 	if seat == "" || m.Kind != "" {
 		return ""
+	}
+	if isSeatReply(m, m.ReplyTo) && n.chats.abandoned(m.ReplyTo) {
+		return "" // the asking seat stopped waiting (AbandonAsk): history only
 	}
 	queued, err := n.queueSeats(m.ID, []seatTo{{seat, m.AuthorKind == AuthorHuman || m.Asks(n.cfg.Node)}})
 	if err != nil {

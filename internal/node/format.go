@@ -30,6 +30,9 @@ func FormatUnread(m UnreadMessage) string { return formatUnread(m, false) }
 // posts the turn's final answer as the reply to a message that asks it
 // (answerSeatAsks): the agent answers in plain text, no agentlink send.
 func formatUnread(m UnreadMessage, auto bool) string {
+	if m.EndedAgent {
+		return EndedAgentPointer(m)
+	}
 	var b strings.Builder
 	at := humantime.Format(m.CreatedAt)
 	from := AuthorName(m.Message)

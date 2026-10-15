@@ -90,6 +90,11 @@ type chatRecord struct {
 	// message to (Reassign): it waits for that session alone, live or not,
 	// like a reply for its asker (routeOf). Local only, never sent.
 	ReassignedTo string `json:"reassigned_to,omitempty"`
+	// AbandonedAt: on this node's own question, when its asker's direct
+	// discuss wait timed out with no reply (AbandonAsk). A seat's reply to it
+	// from then on stays in history only: unread for no session (no hook,
+	// wake or orphan hand-over) and pushed to no seat. Local only, never sent.
+	AbandonedAt time.Time `json:"abandoned_at,omitzero"`
 	// Receipts: on this node's own messages, the latest receipt per recipient.
 	Receipts map[string]Receipt `json:"receipts,omitempty"`
 	// Attempts: on this node's own messages, the latest delivery attempt
@@ -332,6 +337,9 @@ func (cs *chatStore) put(m Message, unread bool) (chatRecord, bool, bool, error)
 	if len(st.msgs) > 0 {
 		seq = st.msgs[len(st.msgs)-1].Seq + 1
 	}
+	if unread && cs.abandonedReplyLocked(m) {
+		unread = false // its asker stopped waiting (abandon): history only
+	}
 	r := chatRecord{Seq: seq, Message: m, ReceivedAt: time.Now().UTC(), Unread: unread && m.Kind == ""}
 	if err := writeJSON(filepath.Join(cs.chatDir(m.ChatID), "messages", m.ID+".json"), r); err != nil {
 		return chatRecord{}, false, false, err
@@ -409,6 +417,77 @@ func (cs *chatStore) setSession(id, session, agent, typ string) error {
 			return false
 		}
 		r.Session, r.Agent, r.AgentType = session, agent, typ
+		return true
+	})
+	return err
+}
+
+// isSeatReply reports whether m is a seat's reply to message ask.
+func isSeatReply(m Message, ask string) bool {
+	return m.Kind == "" && m.ReplyTo == ask && m.Agent != nil && m.Agent.Seat != ""
+}
+
+// abandonedReplyLocked reports whether m is a seat's reply to a question
+// whose asker stopped waiting (chatRecord.AbandonedAt). The caller holds cs.mu.
+func (cs *chatStore) abandonedReplyLocked(m Message) bool {
+	if m.ReplyTo == "" || !isSeatReply(m, m.ReplyTo) {
+		return false
+	}
+	st := cs.chats[cs.byMsg[m.ReplyTo]]
+	if st == nil {
+		return false
+	}
+	i, ok := st.index[m.ReplyTo]
+	return ok && !st.msgs[i].AbandonedAt.IsZero()
+}
+
+// abandoned reports whether question id was abandoned (chatRecord.AbandonedAt).
+func (cs *chatStore) abandoned(id string) bool {
+	if id == "" {
+		return false
+	}
+	r, ok := cs.message(id)
+	return ok && !r.AbandonedAt.IsZero()
+}
+
+// abandon marks question id of chat abandoned unless seat already replied to
+// it; answered reports that reply. Under cs.mu, like put, so a reply is
+// either stored before (answered) or stored unread for no one (put).
+func (cs *chatStore) abandon(chat, id, seat string) (answered bool, err error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	st := cs.chats[chat]
+	if st == nil || cs.byMsg[id] != chat {
+		return false, fmt.Errorf("%w %s in chat %s", ErrUnknownMessage, id, chat)
+	}
+	for _, r := range slices.Backward(st.msgs) {
+		if r.Message.ID == id {
+			break
+		}
+		if isSeatReply(r.Message, id) && r.Message.Agent.Seat == seat {
+			return true, nil
+		}
+	}
+	now := time.Now().UTC()
+	_, _, err = cs.updateLocked(id, func(r *chatRecord) bool {
+		if !r.AbandonedAt.IsZero() {
+			return false
+		}
+		r.AbandonedAt = now
+		return true
+	})
+	return false, err
+}
+
+// resume drops question id's abandon mark: its asker waits again.
+func (cs *chatStore) resume(id string) error {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	_, _, err := cs.updateLocked(id, func(r *chatRecord) bool {
+		if r.AbandonedAt.IsZero() {
+			return false
+		}
+		r.AbandonedAt = time.Time{}
 		return true
 	})
 	return err
