@@ -2,15 +2,16 @@
 //
 // Needs: npm i -D eslint @eslint/js typescript-eslint eslint-plugin-vue globals
 import js from '@eslint/js'
+import { defineConfig } from 'eslint/config'
 import pluginVue from 'eslint-plugin-vue'
 import globals from 'globals'
 import ts from 'typescript-eslint'
 
-export default ts.config(
+export default defineConfig(
   { ignores: ['dist/**', 'coverage/**', '.cache/**'] },
   js.configs.recommended,
-  ...ts.configs.recommended,
-  ...pluginVue.configs['flat/recommended'],
+  ts.configs.recommended,
+  pluginVue.configs['flat/recommended'],
   {
     // <script lang="ts"> inside .vue needs the TS parser handed to vue-eslint-parser.
     // typescript-eslint turns no-undef off only for .ts files, so .vue code runs it
