@@ -19,7 +19,8 @@ export default ts.config(
     files: ['*.vue', '**/*.vue'],
     languageOptions: {
       globals: globals.browser,
-      parserOptions: { parser: '@typescript-eslint/parser' },
+      // The parser object, not its package name: npm need not hoist @typescript-eslint/parser.
+      parserOptions: { parser: ts.parser },
     },
   },
 )
