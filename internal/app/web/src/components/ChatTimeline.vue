@@ -10,6 +10,7 @@ import UButton from '@nuxt/ui/components/Button.vue'
 import UChatMessage from '@nuxt/ui/components/ChatMessage.vue'
 import UChatMessages from '@nuxt/ui/components/ChatMessages.vue'
 import UIcon from '@nuxt/ui/components/Icon.vue'
+import USkeleton from '@nuxt/ui/components/Skeleton.vue'
 import { icon } from '@/lib/icons'
 import { useAppStore } from '@/stores/app'
 import { useInboxStore } from '@/stores/inbox'
@@ -144,8 +145,19 @@ watch(source, () => {
       class="conversation-timeline min-h-0 flex-1 overflow-y-auto py-4"
     >
       <div class="chat-column">
+        <!-- Until the chat answers, its shape; a failed load says so above
+             (ChatView #chat_error); only a loaded chat is called empty. -->
+        <div
+          v-if="!inbox.messages.length && !inbox.chat && !inbox.subtitleError && inbox.selectedChat"
+          class="chat-loading flex flex-col gap-4 py-6"
+          aria-busy="true"
+        >
+          <USkeleton class="h-14 w-3/5 rounded-2xl" />
+          <USkeleton class="ms-auto h-10 w-2/5 rounded-2xl" />
+          <USkeleton class="h-20 w-2/3 rounded-2xl" />
+        </div>
         <p
-          v-if="!inbox.messages.length"
+          v-else-if="!inbox.messages.length && inbox.chat"
           class="empty py-10 text-center text-sm text-muted"
         >
           {{ t("inbox.empty_conversation") }}
@@ -195,7 +207,7 @@ watch(source, () => {
               color="neutral"
               compact
               :class="b.cls"
-              :ui="{ content: 'msg-bubble px-3.5 py-2 rounded-2xl', container: b.cont ? 'pb-1.5' : 'pb-3' }"
+              :ui="{ content: 'msg-bubble px-3.5 py-2 rounded-2xl', container: (b.out ? 'max-w-[92%] sm:max-w-[75%] ' : '') + (b.cont ? 'pb-1.5' : 'pb-3') }"
               :style="{ '--who': b.who }"
               :data-message-id="b.m.id"
               tabindex="-1"

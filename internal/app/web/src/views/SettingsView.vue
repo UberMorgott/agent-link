@@ -321,14 +321,14 @@ watch(() => app.settings, (s) => { showSettings(s); void showHooks() }, { immedi
     data-view="settings"
     class="h-full overflow-y-auto"
   >
-    <div class="mx-auto flex max-w-3xl flex-col gap-8 px-4 py-10">
+    <div class="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-10">
       <header class="view-header">
         <h1>{{ t("settings.h1") }}</h1>
       </header>
       <form
         id="form"
         novalidate
-        class="flex flex-col gap-10"
+        class="flex flex-col gap-6"
         :aria-busy="busy ? 'true' : undefined"
         @input="onInput"
         @change="onChange"

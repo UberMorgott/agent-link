@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import UIcon from '@nuxt/ui/components/Icon.vue'
+import USkeleton from '@nuxt/ui/components/Skeleton.vue'
 import { when } from '@/lib/chat'
 import { icon } from '@/lib/icons'
 import { chatLabel, groupLocalChats, liveState, useGraceClock } from '@/lib/localChats'
@@ -57,10 +58,10 @@ function open(pid: string) {
 <template>
   <section
     data-view="agents"
-    class="h-full overflow-y-auto px-4 py-6"
+    class="h-full overflow-y-auto"
   >
-    <div class="chat-column flex flex-col gap-4">
-      <div class="flex flex-col gap-1">
+    <div class="chat-column flex flex-col gap-6 py-10">
+      <div class="flex flex-col gap-1.5">
         <h1>{{ t('nav.agents') }}</h1>
         <p class="hint">
           {{ t('agents.hint') }}
@@ -73,10 +74,18 @@ function open(pid: string) {
       >
         {{ loadError }}
       </p>
+      <div
+        v-if="!groups.length && !loadError && (pending || !projects.list)"
+        class="flex flex-col gap-2"
+        aria-busy="true"
+      >
+        <USkeleton class="h-16 w-full rounded-lg" />
+        <USkeleton class="h-16 w-full rounded-lg" />
+      </div>
       <p
-        v-if="!groups.length && !pending && projects.list"
+        v-else-if="!groups.length && !pending && projects.list"
         id="agents_empty"
-        class="hint"
+        class="rounded-lg border border-dashed border-default px-4 py-8 text-center text-sm text-muted"
       >
         {{ t('agents.empty') }}
       </p>

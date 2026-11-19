@@ -2,6 +2,7 @@
 import { nextTick, onUnmounted, ref } from 'vue'
 import UButton from '@nuxt/ui/components/Button.vue'
 import UInput from '@nuxt/ui/components/Input.vue'
+import USkeleton from '@nuxt/ui/components/Skeleton.vue'
 import { api } from '@/lib/api'
 import { navigate } from '@/lib/nav'
 import { confirmAction } from '@/lib/confirm'
@@ -13,6 +14,10 @@ import type { ParticipantView, Status } from '@/types'
 const app = useAppStore()
 const addr = ref('')
 const result = ref('')
+// failed: the line under the field is an error, not a confirmation;
+// invalid: that error is about the address typed.
+const failed = ref(false)
+const invalid = ref(false)
 const adding = ref(false)
 const removing = ref<string[]>([])
 const list = ref<HTMLElement | null>(null)
@@ -33,9 +38,11 @@ async function addParticipant() {
   const value = addr.value.trim()
   if (!value) {
     result.value = t("participants.add.empty")
+    failed.value = invalid.value = true
     return
   }
   adding.value = true
+  failed.value = invalid.value = false
   try {
     app.status = await api<Status>('POST', 'members/add', { addr: value })
     addr.value = ''
@@ -43,6 +50,7 @@ async function addParticipant() {
     await app.refreshSlice('participants')
   } catch (e) {
     result.value = (e as Error).message
+    failed.value = invalid.value = true
   } finally {
     adding.value = false
   }
@@ -52,6 +60,7 @@ async function removeParticipant(name: string, index: number) {
   if (removing.value.includes(name)) return
   if (!(await confirmAction(fmt("participants.confirm", { name }), t("participants.remove")))) return
   removing.value = [...removing.value, name]
+  failed.value = invalid.value = false
   try {
     app.status = await api<Status>('POST', 'members/remove', { name })
     result.value = fmt("participants.removed", { name })
@@ -62,6 +71,7 @@ async function removeParticipant(name: string, index: number) {
     else document.querySelector<HTMLInputElement>('#participant_addr')?.focus()
   } catch (e) {
     result.value = (e as Error).message
+    failed.value = true
   } finally {
     removing.value = removing.value.filter((n) => n !== name)
   }
@@ -73,54 +83,69 @@ async function removeParticipant(name: string, index: number) {
     data-view="participants"
     class="h-full overflow-y-auto"
   >
-    <div class="mx-auto flex max-w-3xl flex-col gap-8 px-4 py-10">
+    <div class="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-10">
       <header class="view-header">
         <h1>{{ t("participants.h1") }}</h1>
       </header>
       <form
         id="participant_add"
-        class="participant-add flex flex-col gap-2"
+        class="participant-add settings-card flex flex-col gap-2"
         novalidate
         :aria-busy="adding ? 'true' : undefined"
         @submit.prevent="addParticipant"
       >
         <h2>{{ t("participants.add.legend") }}</h2>
-        <label class="flex flex-col gap-1.5">
-          <span class="text-sm">{{ t("participants.add.label") }}</span>
-          <span class="flex gap-2">
-            <UInput
-              id="participant_addr"
-              v-model="addr"
-              name="participant_addr"
-              autocomplete="off"
-              spellcheck="false"
-              class="flex-1"
-              :placeholder="t('participants.add.placeholder')"
-              :disabled="adding"
-            />
-            <UButton
-              id="add_participant"
-              type="submit"
-              :label="t('participants.add.submit')"
-              :disabled="adding"
-            />
-          </span>
-        </label>
-        <p class="hint">
+        <label
+          for="participant_addr"
+          class="text-sm"
+        >{{ t("participants.add.label") }}</label>
+        <span class="flex gap-2">
+          <UInput
+            id="participant_addr"
+            v-model="addr"
+            name="participant_addr"
+            autocomplete="off"
+            spellcheck="false"
+            class="flex-1"
+            aria-describedby="participants_hint participants_result"
+            :aria-invalid="invalid ? 'true' : undefined"
+            :placeholder="t('participants.add.placeholder')"
+            :disabled="adding"
+          />
+          <UButton
+            id="add_participant"
+            type="submit"
+            :label="t('participants.add.submit')"
+            :loading="adding"
+          />
+        </span>
+        <p
+          id="participants_hint"
+          class="hint"
+        >
           {{ t("participants.add.hint") }}
         </p>
         <p
           id="participants_result"
           role="status"
           class="text-sm"
+          :class="{ 'text-error': failed }"
         >
           {{ result }}
         </p>
       </form>
+      <div
+        v-if="!app.participants && !app.banner"
+        class="flex flex-col gap-2"
+        aria-busy="true"
+      >
+        <USkeleton class="h-14 w-full rounded-lg" />
+        <USkeleton class="h-14 w-full rounded-lg" />
+      </div>
       <p
-        v-if="app.participants && !app.participants.length"
+        v-else-if="app.participants && !app.participants.length"
         id="participants_empty"
-        class="hint"
+        class="rounded-lg border border-dashed border-default px-4 py-8 text-center text-sm text-muted"
       >
         {{ t("participants.empty") }}
       </p>

@@ -8,7 +8,7 @@ import UPopover from '@nuxt/ui/components/Popover.vue'
 import AttachButton from '@/components/AttachButton.vue'
 import ChatTimeline from '@/components/ChatTimeline.vue'
 import ComposerAttachments from '@/components/ComposerAttachments.vue'
-import { isNarrow } from '@/layout/composables/layout'
+import { isNarrow, useLayout } from '@/layout/composables/layout'
 import { useClock } from '@/lib/clock'
 import { icon } from '@/lib/icons'
 import {
@@ -16,7 +16,7 @@ import {
   when, whoColor, type ActivityLine,
 } from '@/lib/chat'
 import { activityDot, agentDot, agentTime, countsText, duration, groupAgents, groupStateText, olderPeerNote, olderPeerRow, worstState } from '@/lib/agents'
-import { openProject } from '@/lib/nav'
+import { navigate, openProject } from '@/lib/nav'
 import { fmt, t } from '@/lib/runtime'
 import { pastedFiles } from '@/lib/attachments'
 import { useAppStore } from '@/stores/app'
@@ -233,8 +233,16 @@ function onDrop(event: DragEvent) {
 }
 
 
+// Back goes to the list the chat was picked from: the old network's chat
+// list, the local chats page, else the sidebar (a project's page would only
+// open this chat again).
+const { layoutState } = useLayout()
 function back() {
-  openProject(pid.value)
+  // By the project, not the chat: it holds while the chat loads or fails.
+  const p = projects.byID(pid.value)
+  if (pid.value === 'legacy' || !p || p.legacy) openProject(pid.value)
+  else if (p.scope === 'local') navigate('agents')
+  else layoutState.mobileMenuActive = true
 }
 </script>
 
@@ -276,6 +284,13 @@ function back() {
             size="sm"
             @click="back"
           />
+          <!-- On a phone the sidebar is hidden: the header names the chat
+               (the h1 above already does for screen readers). -->
+          <span
+            v-if="isNarrow"
+            class="min-w-0 flex-1 truncate text-sm font-semibold text-highlighted"
+            aria-hidden="true"
+          >{{ title }}</span>
           <span
             v-if="pinnedSession"
             id="chat_pinned_session"

@@ -57,9 +57,13 @@
   --text-author: 0.82rem;
   --text-body: 0.95rem;
   --text-meta: 0.72rem;
+  /* Field and outline-button edges one step stronger than Nuxt UI's default,
+     so an input reads as one on the page (the user's neutral scale). */
+  --ui-border-accented: var(--ui-color-neutral-300);
 }
 
 :root.dark {
+  --ui-border-accented: var(--ui-color-neutral-600);
   --app-side: var(--ui-color-neutral-950);
   --app-status-online: var(--ui-color-success-400);
   --app-status-paused: #f59e0b;
@@ -102,6 +106,24 @@
   .hint.failed { color: var(--app-danger); }
   .on { color: var(--app-on); }
   .off { color: var(--app-off); }
+
+  /* The connection line of the top bar: a quiet pill, its dot in the state's colour. */
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 0.4rem; min-width: 0; max-width: 100%;
+    padding: 0.15rem 0.6rem; border-radius: 999px; background: var(--app-soft);
+    font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .status-pill::before { content: ""; flex: none; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: currentColor; }
+
+  /* The settings and participants pages: one bordered card per group. */
+  .settings-card {
+    padding: 1.25rem; border-radius: 0.875rem; background: var(--app-bg);
+    box-shadow: inset 0 0 0 1px var(--app-line);
+  }
+  /* On a dark page a hairline alone hardly shows: the card is lifted a little too. */
+  :root.dark .settings-card { background: color-mix(in srgb, var(--ui-bg-muted) 45%, var(--app-bg)); }
+  .settings-card > h2 { margin-bottom: 0.25rem; }
+  @media (min-width: 640px) { .settings-card { padding: 1.5rem; } }
 
   /* The slim sidebar: brand, sections, the chat list on the inbox. */
   .nav-link {
@@ -203,7 +225,7 @@
   /* The composer: one row, its border in the accent (dimmer until focused). */
   .composer-box { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--app-accent) 40%, var(--app-line)); background: var(--app-bg); }
   .composer-box:focus-within { box-shadow: inset 0 0 0 2px var(--app-accent); }
-  .composer-hint { color: var(--app-muted); opacity: 0.75; white-space: nowrap; }
+  .composer-hint { color: var(--app-muted); white-space: nowrap; }
   /* The open chat: one centered column. */
   .chat-column { width: 100%; max-width: 48rem; margin: 0 auto; padding: 0 1rem; }
   /* The chat's thin header: back (narrow screens) and the pinned thread. */
@@ -275,19 +297,25 @@
   .msg-quote {
     display: block; max-width: 100%; margin: 0 0 0.3rem; padding: 0.1rem 0.6rem;
     border: 0; border-left: 2px solid var(--app-line); background: transparent;
-    color: var(--app-muted); font: inherit; font-size: 0.8rem; text-align: left; cursor: pointer;
+    color: var(--msg-meta); font: inherit; font-size: 0.8rem; text-align: left; cursor: pointer;
   }
-  .msg-foot { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.25rem; font-size: var(--text-meta); color: var(--app-muted); }
+  /* The small text inside a tinted bubble: one step darker in light mode to
+     keep 4.5:1 on the tint. */
+  .msg { --msg-meta: var(--ui-text-toned); }
+  :root.dark .msg { --msg-meta: var(--app-muted); }
+  .msg-foot { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.25rem; font-size: var(--text-meta); color: var(--msg-meta); }
   .msg.out .msg-foot { justify-content: flex-end; }
   .msg-ticks { display: inline-flex; }
   .msg-ticks .msg-tick-icon { width: 0.95rem; height: 0.95rem; }
   .msg-ticks.read { color: var(--app-accent); }
   .msg-ticks.held { color: var(--app-off); }
   .msg-reply {
-    border: 0; background: transparent; color: var(--app-muted); font: inherit; font-size: 0.75rem; cursor: pointer;
+    border: 0; background: transparent; color: var(--msg-meta); font: inherit; font-size: 0.75rem; cursor: pointer;
     padding: 0; opacity: 0; transition: opacity 0.15s;
   }
   .msg:hover .msg-reply, .msg:focus-within .msg-reply, .msg-reply:focus-visible { opacity: 1; }
+  /* No hover on a touch screen: the reply stays shown, with a finger-sized target. */
+  @media (hover: none) { .msg-reply { opacity: 1; padding: 0.5rem 0.6rem; margin: -0.5rem -0.6rem; } }
   .msg-event { display: flex; justify-content: center; gap: 0.5rem; margin: 0.75rem 0; font-size: 0.78rem; color: var(--app-notice); }
   .msg-event .msg-author { font-weight: 400; }
 
