@@ -78,7 +78,9 @@ func TestMCPCallCancellationReachesNode(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the node's request outlived the cancelled call")
 	}
-	<-done
+	if err := <-done; err == nil {
+		t.Error("a cancelled call returned no error")
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if acked {

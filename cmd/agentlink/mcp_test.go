@@ -111,7 +111,10 @@ func TestMCPServerEndsWhenHostDisconnects(t *testing.T) {
 	go func() { waitDone <- ss.Wait() }()
 	_ = host.Close() // the host goes away
 	select {
-	case <-waitDone:
+	case err := <-waitDone:
+		if err != nil {
+			t.Errorf("MCP server ended with %v after its host disconnected", err)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("MCP server kept running after its host disconnected")
 	}

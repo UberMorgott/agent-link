@@ -316,11 +316,17 @@ func runAppServer(ctx context.Context, cmd *exec.Cmd, fn func(r io.Reader, w io.
 		_, _ = io.Copy(io.Discard, out)
 		done <- cmd.Wait()
 	}()
+	var werr error
 	select {
-	case <-done:
+	case werr = <-done:
 	case <-time.After(10 * time.Second):
 		_ = killTree(context.WithoutCancel(ctx), cmd.Process)
-		<-done
+		werr = fmt.Errorf("killed 10 s after its input ended: %w", <-done)
+	}
+	// The exit tells why fn failed (a crash, a kill); after a completed turn
+	// the answer is in, so how the server ended changes nothing.
+	if ferr != nil && werr != nil {
+		ferr = fmt.Errorf("%w (app-server: %w)", ferr, werr)
 	}
 	if ferr != nil && stderr.Len() > 0 {
 		ferr = fmt.Errorf("%w: %s", ferr, stderr.String())
