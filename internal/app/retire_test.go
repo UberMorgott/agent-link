@@ -167,6 +167,23 @@ func TestRetiredChatKeepsUnreadReplyHidden(t *testing.T) {
 	}
 }
 
+// A chat whose owner's registration had already lapsed when it asked (never
+// seen live by the chat's watch) retires once the node knows the session gone
+// for good, not only after TempChatIdle.
+func TestRetireChatOfOwnerGoneBeforeItsWatch(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &threadRunner{} })
+	dir := repoDir(t)
+	discussIn(t, h, map[string]any{"folder": dir})
+	registerSession(t, h, "s1", dir)
+	endSession(t, h, "s1") // its end is known; it asks after it anyway
+	ask := discussIn(t, h, map[string]any{"folder": dir, "session_id": "s1"})
+	seatThread(t, h, ask.Project)
+	h.app.retireOwnedChats(time.Now())
+	if hasBinding(h, ask.Project) {
+		t.Fatal("chat of an ended, unwatched owner kept")
+	}
+}
+
 // A temporary chat of no owner never becomes its first session's (Unowned);
 // a retired chat continued by id becomes the caller's.
 func TestUnownedAndAdoptedChats(t *testing.T) {

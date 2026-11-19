@@ -289,6 +289,22 @@ func (a absence) goneFor(readAt, now time.Time) bool {
 	return a.ended || now.Sub(latest(a.seen, readAt)) >= sessionGoneAfter
 }
 
+// SessionGone reports whether this node knows session sid (registered here,
+// or left: ended or expired) and, then, whether it is gone for good at now as
+// far as activity at since goes: not live, and it ended or nothing was seen of
+// it for sessionGoneAfter while the node was awake.
+func (n *Node) SessionGone(sid string, since, now time.Time) (gone, known bool) {
+	r := n.sess
+	r.mu.Lock()
+	_, left := r.left[sid]
+	s := r.sessions[sid]
+	r.mu.Unlock()
+	if !left && s == nil {
+		return false, false
+	}
+	return (s == nil || !s.live(now)) && r.absence(sid).goneFor(since, now), true
+}
+
 // latest is the latest of ts.
 func latest(ts ...time.Time) time.Time {
 	var out time.Time

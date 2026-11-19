@@ -90,6 +90,38 @@ func (a *App) observeOwnerLocked(pid string, o settings.LocalChatOwner, live map
 
 func (a *App) forgetOwnerLocked(pid string) { delete(a.owners, pid) }
 
+// ownerAbsentLocked reports whether the owner o of idle local chat b, never
+// seen live by its watch (its registration lapsed before its discuss), is
+// known to a context and gone for good in every context that knows it
+// (node.Node.SessionGone since the chat's last activity). Without it such a
+// chat, its seats and their Codex threads stay until TempChatIdle. A session
+// registered nowhere is still never taken for gone.
+func (a *App) ownerAbsentLocked(b settings.ProjectBinding, o settings.LocalChatOwner, live map[string]map[string]bool, now time.Time) bool {
+	c := a.projects[b.ID]
+	if _, ok := live[o.Session]; ok || c == nil || a.owners[b.ID].session || a.discussWaiters[b.ID] > 0 {
+		return false
+	}
+	st := localChatState(c, b.Chat)
+	if st.waiting || st.running {
+		return false
+	}
+	known := false
+	gone := func(n *node.Node) bool {
+		g, k := n.SessionGone(o.Session, st.last, now)
+		known = known || k
+		return g || !k
+	}
+	if a.legacy != nil && !gone(a.legacy.n) {
+		return false
+	}
+	for _, pc := range a.projects {
+		if !gone(pc.n) {
+			return false
+		}
+	}
+	return known
+}
+
 // ownerGoneLocked reports whether the owner of owned local chat pid is gone
 // now (strictly: its session live in no context, or a subagent seen live and
 // no longer among its session's agents).
@@ -117,7 +149,7 @@ func (a *App) retireOwnedChats(now time.Time) {
 		if o == nil || !b.Chat.Retired.IsZero() {
 			continue
 		}
-		if a.observeOwnerLocked(b.ID, *o, live, now) {
+		if a.observeOwnerLocked(b.ID, *o, live, now) || a.ownerAbsentLocked(b, *o, live, now) {
 			due = append(due, b.ID)
 		}
 	}

@@ -188,7 +188,9 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 		// project folder outside git binds itself.
 		root := cmp.Or(tree.Main, dir)
 		if err := settings.CanAddBinding(a.s.Bindings, false); err != nil {
-			return "", false, err
+			if !a.retireIdleLocalProjectLocked() {
+				return "", false, err
+			}
 		}
 		if pid, err = a.addLocalLocked(ctx, root, nil, filepath.Base(root)); err != nil {
 			return "", false, err
@@ -287,6 +289,42 @@ func (a *App) addLocalLocked(ctx context.Context, dir string, lc *settings.Local
 	}
 	return pid, a.addProjectLocked(ctx, settings.ProjectBinding{ID: pid, Epoch: config.ProjectEpoch, Secret: secret,
 		Dir: dir, Scope: settings.ProjectScopeLocal, Chat: lc}, name)
+}
+
+// retireIdleLocalProjectLocked makes room for a new local project at the
+// MaxProjects cap: the least recently used idle local project (one a discuss
+// made: no chat of it, no seat, nothing unread, running or waiting) leaves,
+// its data to .left as the GC's. A network project never does. It reports
+// whether one left.
+func (a *App) retireIdleLocalProjectLocked() bool {
+	type cand struct {
+		pid  string
+		last time.Time
+	}
+	var cs []cand
+	for _, b := range a.s.Bindings {
+		c := a.projects[b.ID]
+		if b.Chat != nil || b.ScopeOf() != settings.ProjectScopeLocal || c == nil || a.retiring[b.ID] || a.discussWaiters[b.ID] > 0 ||
+			len(c.n.Seats()) > 0 || slices.ContainsFunc(a.s.Bindings, func(o settings.ProjectBinding) bool { return o.Chat != nil && o.Chat.Project == b.ID }) {
+			continue
+		}
+		if st := localChatState(c, nil); !st.waiting && !st.running && !st.unread {
+			cs = append(cs, cand{b.ID, st.last})
+		}
+	}
+	slices.SortFunc(cs, func(x, y cand) int { return x.last.Compare(y.last) })
+	for _, c := range cs {
+		if err := a.leaveProjectLocked(c.pid); err != nil {
+			a.log.Warn("retire idle local project", "project", c.pid, "err", err)
+			continue
+		}
+		a.forgetOwnerLocked(c.pid)
+		delete(a.chatLive, c.pid)
+		a.log.Info("idle local project retired to make room", "project", c.pid)
+		go a.events.publish("projects", projectTopic(c.pid), "status")
+		return true
+	}
+	return false
 }
 
 // localProjectOfLocked is the deepest local project holding folder dir, or "".

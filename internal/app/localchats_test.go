@@ -632,6 +632,39 @@ func TestAutoLocalProjectBindsGitRoot(t *testing.T) {
 	}
 }
 
+// At the project cap the least recently used idle local project leaves to
+// make room; one with a seat or a chat of it stays.
+func TestRetireIdleLocalProjectPicksLeastRecentlyUsed(t *testing.T) {
+	h := projectsHarness(t, "alice", "", func(a *App) { a.Launcher = &threadRunner{} })
+	project := func(dir string) localChatResult {
+		r := discussIn(t, h, map[string]any{"folder": dir})
+		seatThread(t, h, r.Project) // its turn ended: its last activity is now
+		time.Sleep(10 * time.Millisecond)
+		return r
+	}
+	old, newer, seated := project(repoDir(t)), project(repoDir(t)), project(repoDir(t))
+	chatDir := repoDir(t)
+	withChat := project(chatDir)
+	discussIn(t, h, map[string]any{"folder": chatDir, "topic": "t"})
+	for _, r := range []localChatResult{old, newer, withChat} {
+		removeSeats(t, h, r.Project)
+	}
+	retire := func() bool {
+		h.app.mu.Lock()
+		defer h.app.mu.Unlock()
+		return h.app.retireIdleLocalProjectLocked()
+	}
+	if !retire() || hasBinding(h, old.Project) || !hasBinding(h, newer.Project) {
+		t.Fatalf("first: old %v newer %v", hasBinding(h, old.Project), hasBinding(h, newer.Project))
+	}
+	if !retire() || hasBinding(h, newer.Project) {
+		t.Fatal("second: newer kept")
+	}
+	if retire() || !hasBinding(h, seated.Project) || !hasBinding(h, withChat.Project) {
+		t.Fatalf("third retired one: seated %v withChat %v", hasBinding(h, seated.Project), hasBinding(h, withChat.Project))
+	}
+}
+
 // A local project and chat whose folder was removed (an agent's git worktree)
 // are shown as folder_missing and collected once nothing waits in them; a
 // chat with an unread reply stays, and so does its project.
