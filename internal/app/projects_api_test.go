@@ -3,9 +3,11 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -321,6 +323,16 @@ func TestProjectsAPIRefusals(t *testing.T) {
 	secret, _ := config.NewProjectSecret()
 	full.wantError(t, http.MethodPost, "projects/join", map[string]any{"invite": config.FormatInvite(id2, config.ProjectEpoch, secret)},
 		http.StatusConflict, "too_many_projects")
+	// The text names both caps, which kinds count where, and what to do (#43).
+	text := uiStrings["error.too_many_projects"]
+	for _, want := range []string{"проектов (сетевых и локальных) не больше " + strconv.Itoa(settings.MaxProjects),
+		"временных и локальных чатов — не больше " + strconv.Itoa(settings.MaxLocalChats), "считаются отдельно",
+		fmt.Sprintf("%d из %d или %d из %d", settings.MaxProjects, settings.MaxProjects, settings.MaxLocalChats, settings.MaxLocalChats),
+		"Выйдите из ненужного проекта или закройте ненужный чат"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("too_many_projects text lacks %q: %s", want, text)
+		}
+	}
 }
 
 // Two apps on loopback through the web API: create, invite, join with the
