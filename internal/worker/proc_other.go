@@ -40,10 +40,9 @@ func procStart(pid int) (int64, error) {
 	if readErr != nil {
 		return 0, nil //nolint:nilerr // a missing /proc means "start time unknown", not "process gone"
 	}
-	s := string(data)
-	if i := strings.LastIndexByte(s, ')'); i >= 0 {
+	if _, rest, ok := strings.CutLast(string(data), ")"); ok {
 		// Fields after "(comm)": state is field 3, starttime field 22.
-		if f := strings.Fields(s[i+1:]); len(f) > 19 {
+		if f := strings.Fields(rest); len(f) > 19 {
 			v, _ := strconv.ParseInt(f[19], 10, 64)
 			return v, nil
 		}
