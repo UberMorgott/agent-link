@@ -905,7 +905,8 @@ func TestPointerFetchDeliversSeatMessage(t *testing.T) {
 }
 
 // What a Claude session's inbox wake, a seat's turn and the hooks render is
-// what v0.6.75 rendered, to the byte: pointers changed the queue prompt only.
+// what v0.6.75 rendered, to the byte, but for the CLI named by its full path
+// (v0.6.85): pointers changed the queue prompt only.
 func TestRenderUnchangedBesidePointers(t *testing.T) {
 	stubCLI(t)
 	at := time.Date(2026, 10, 1, 12, 30, 0, 0, time.UTC)
@@ -916,19 +917,20 @@ func TestRenderUnchangedBesidePointers(t *testing.T) {
 	msgs := []UnreadMessage{a, b}
 	const (
 		head1 = "От KPECTIK (агент) в чате c1 (участники: KPECTIK, me), id id1, {AT}:\nhello\n"
-		ask1  = "Просит ответа от вас. Ответить: agentlink send --chat c1 --reply-to id1 --body-file <файл>\n\n"
-		msg2  = "От peer (человек), id id2, {AT}:\nfyi\nК сведению, ответ не обязателен. Ответить: agentlink send --to peer --reply-to id2 --body-file <файл>"
+		ask1  = "Просит ответа от вас. Ответить: \"C:\\apps\\agentlink.exe\" send --chat c1 --reply-to id1 --body-file <файл>\n\n"
+		msg2  = "От peer (человек), id id2, {AT}:\nfyi\nК сведению, ответ не обязателен. Ответить: \"C:\\apps\\agentlink.exe\" send --to peer --reply-to id2 --body-file <файл>"
+		ps    = "\n\n(в PowerShell начинайте команды с &: & \"C:\\apps\\agentlink.exe\" <команда>)"
 		wake  = "agent-link: новые сообщения (2). Вся переписка остаётся в истории чата. [agent-link wake tok12345]\n\n"
-		rest  = "\n\nЕщё 3 непрочитанных придут со следующим событием. Прочитать сейчас: \"C:\\apps\\agentlink.exe\" chat unread --folder \"C:\\\\work\" --after 0002 ; прочитанные подтвердить: agentlink chat ack --ids <id,...> --session s"
+		rest  = "\n\nЕщё 3 непрочитанных придут со следующим событием. Прочитать сейчас: \"C:\\apps\\agentlink.exe\" chat unread --folder \"C:\\\\work\" --after 0002 ; прочитанные подтвердить: \"C:\\apps\\agentlink.exe\" chat ack --ids <id,...> --session s" + ps
 	)
 	golden := map[string]string{
-		"inbox": wake + head1 + ask1 + msg2 + "\n\nЕщё 2 непрочитанных: \"C:\\apps\\agentlink.exe\" chat unread --folder \"C:\\\\work\"",
+		"inbox": wake + head1 + ask1 + msg2 + "\n\nЕщё 2 непрочитанных: \"C:\\apps\\agentlink.exe\" chat unread --folder \"C:\\\\work\"" + ps,
 		"seat": wake + head1 + "Просит ответа от вас. Ответ — ваше итоговое сообщение в этом ходе: agent-link сам отправит его в чат ответом на это сообщение. " +
-			"Для ответа agentlink send не запускайте (иначе ответ уйдёт дважды); send — только чтобы спросить другого агента.\n\n" + msg2,
+			"Для ответа agentlink send не запускайте (иначе ответ уйдёт дважды); send — только чтобы спросить другого агента.\n\n" + msg2 + ps,
 		"render:": "agent-link: непрочитанные сообщения для этой папки (5). Вся переписка остаётся в истории чата.\n\n" + head1 + ask1 + msg2 + rest,
 		"render:stop": "Пока вы работали, пришли сообщения agent-link. Прочитайте их и, где просят ответа, ответьте; затем завершайте.\n\n" +
 			head1 + ask1 + msg2 + rest,
-		"render:wake": wake + head1 + ask1 + msg2 + "\n\nЕщё 3 непрочитанных: \"C:\\apps\\agentlink.exe\" chat unread --folder \"C:\\\\work\"",
+		"render:wake": wake + head1 + ask1 + msg2 + "\n\nЕщё 3 непрочитанных: \"C:\\apps\\agentlink.exe\" chat unread --folder \"C:\\\\work\"" + ps,
 		"render:nudge": "agent-link: выше в этом разговоре уже есть новые сообщения agent-link (5): они пришли под конец прошлого хода, их ещё никто не читал. " +
 			"Прочитайте их и, где просят ответа, ответьте. [agent-link wake tok12345]",
 	}
@@ -966,7 +968,7 @@ func TestUnreadCommandNamesProject(t *testing.T) {
 	if want := `"C:\apps\agentlink.exe" chat unread --project KNRK --after 0002 ;`; !strings.Contains(r.Text, want) {
 		t.Errorf("stop text lacks %q:\n%s", want, r.Text)
 	}
-	if got := WakePrompt([]UnreadMessage{a, b}, 2, `C:\work`, "tok12345"); !strings.HasSuffix(got, `"C:\apps\agentlink.exe" chat unread --project KNRK`) {
+	if got := WakePrompt([]UnreadMessage{a, b}, 2, `C:\work`, "tok12345"); !strings.Contains(got, `"C:\apps\agentlink.exe" chat unread --project KNRK`+"\n") {
 		t.Errorf("wake prompt: %q", got)
 	}
 	b.Project = "OTHER"

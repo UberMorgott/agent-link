@@ -134,8 +134,11 @@ func Render(req RenderRequest) (RenderResult, error) {
 			t.WriteString(FormatUnread(m))
 		}
 		if res.Rest > 0 {
-			fmt.Fprintf(&t, "\nЕщё %d непрочитанных придут со следующим событием. Прочитать сейчас: %s --after %s ; прочитанные подтвердить: agentlink chat ack --ids <id,...> --session %s\n",
-				res.Rest, UnreadCommand(req.Folder, shown), shown[len(shown)-1].Cursor, req.SessionID)
+			fmt.Fprintf(&t, "\nЕщё %d непрочитанных придут со следующим событием. Прочитать сейчас: %s --after %s ; прочитанные подтвердить: %s chat ack --ids <id,...> --session %s\n",
+				res.Rest, UnreadCommand(req.Folder, shown), shown[len(shown)-1].Cursor, cliCommand(cliExecutable()), req.SessionID)
+		}
+		if !req.CLI { // the CLI line says it then
+			t.WriteString(PowerShellNote(cliExecutable()))
 		}
 		text = strings.TrimRight(t.String(), "\n")
 	}
@@ -193,8 +196,8 @@ func EndedAgentReply(m UnreadMessage) UnreadMessage {
 // EndedAgentPointer is the line of reply m for an ended subagent
 // (EndedAgentReply): who, chat id, reply id, where to read it.
 func EndedAgentPointer(m UnreadMessage) string {
-	return fmt.Sprintf("%s От %s в чате %s, id %s — к сведению, отвечать не нужно; текст при необходимости: agentlink chat history --chat %s\n",
-		EndedAgentNote(m.ForAgentType, m.ForAgent), AuthorName(m.Message), m.ChatID, m.ID, m.ChatID)
+	return fmt.Sprintf("%s От %s в чате %s, id %s — к сведению, отвечать не нужно; текст при необходимости: %s chat history --chat %s\n",
+		EndedAgentNote(m.ForAgentType, m.ForAgent), AuthorName(m.Message), m.ChatID, m.ID, cliCommand(cliExecutable()), m.ChatID)
 }
 
 // WithNotes is text led by notes, the lines for the model that wait for its

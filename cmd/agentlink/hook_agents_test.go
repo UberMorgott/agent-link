@@ -70,7 +70,7 @@ func TestHookRoutesRepliesToTheAskingSubagent(t *testing.T) {
 	out = parseOut(t, c.run(hookClaude, evPostTool, `,"tool_name":"Read"`))
 	ctx := out.HookSpecificOutput.AdditionalContext
 	if strings.Contains(ctx, "late answer") || !strings.Contains(ctx, "завершившегося субагента Explore/a1") ||
-		!strings.Contains(ctx, "id r2") || !strings.Contains(ctx, "agentlink chat history --chat c1") ||
+		!strings.Contains(ctx, "id r2") || !strings.Contains(ctx, `" chat history --chat c1`) ||
 		!strings.Contains(ctx, "отвечать не нужно") || strings.Contains(ctx, "--reply-to r2") {
 		t.Fatalf("the main agent did not get a pointer to the ended subagent's reply: %q", ctx)
 	}

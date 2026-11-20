@@ -51,9 +51,10 @@ func formatUnread(m UnreadMessage, auto bool) string {
 	if m.OwnHuman {
 		return b.String()
 	}
-	reply := fmt.Sprintf("agentlink send --to %s --reply-to %s --body-file <файл>", m.From, m.ID)
+	cli := cliCommand(cliExecutable())
+	reply := fmt.Sprintf("%s send --to %s --reply-to %s --body-file <файл>", cli, m.From, m.ID)
 	if m.ChatID != "" {
-		reply = fmt.Sprintf("agentlink send --chat %s --reply-to %s --body-file <файл>", m.ChatID, m.ID)
+		reply = fmt.Sprintf("%s send --chat %s --reply-to %s --body-file <файл>", cli, m.ChatID, m.ID)
 	}
 	switch {
 	case m.Assigned == "worker":
@@ -106,6 +107,7 @@ func wakePrompt(msgs []UnreadMessage, rest int, folder, token string, auto bool)
 	if rest > 0 {
 		fmt.Fprintf(&t, "\nЕщё %d непрочитанных: %s\n", rest, UnreadCommand(folder, msgs))
 	}
+	t.WriteString(PowerShellNote(cliExecutable()))
 	return strings.TrimRight(t.String(), "\n")
 }
 
@@ -128,6 +130,16 @@ func cliCommand(exe string) string {
 		return "agentlink"
 	}
 	return `"` + exe + `"`
+}
+
+// PowerShellNote is the one line, once per text, that says how to run its
+// commands from PowerShell: a command led by a quoted path needs & there
+// (bash takes it as is). None when exe is unknown (bare agentlink runs).
+func PowerShellNote(exe string) string {
+	if exe == "" {
+		return ""
+	}
+	return "\n(в PowerShell начинайте команды с &: & " + cliCommand(exe) + " <команда>)\n"
 }
 
 // WakeMarker is the line part by which a wake prompt with token is known.
@@ -203,9 +215,9 @@ func capBody(m UnreadMessage) string {
 	if utf8.RuneCountInString(body) <= FormatMaxBody {
 		return body
 	}
-	full := "agentlink inbox"
+	full := cliCommand(cliExecutable()) + " inbox"
 	if m.ChatID != "" {
-		full = "agentlink chat history --chat " + m.ChatID
+		full = cliCommand(cliExecutable()) + " chat history --chat " + m.ChatID
 	}
 	r := []rune(body)
 	return string(r[:FormatMaxBody]) + fmt.Sprintf("\n[… обрезано, всего %d символов; полностью: %s]", len(r), full)

@@ -555,11 +555,12 @@ func TestWakePromptCapAndLapse(t *testing.T) {
 }
 
 func TestWakePromptFormat(t *testing.T) {
+	stubCLI(t)
 	m := UnreadMessage{AsksYou: true}
 	m.ID, m.ChatID, m.From, m.AuthorKind, m.Body, m.Participants = "id1", "c1", "KPECTIK", "agent", "hello", []string{"KPECTIK", "me"}
 	got := WakePrompt([]UnreadMessage{m}, 0, `C:\p`, "tok1")
-	want := "agent-link: новые сообщения (1). Вся переписка остаётся в истории чата. [agent-link wake tok1]\n\n" + FormatUnread(m)
-	if got != strings.TrimRight(want, "\n") || !strings.Contains(got, "agentlink send --chat c1 --reply-to id1") {
+	want := "agent-link: новые сообщения (1). Вся переписка остаётся в истории чата. [agent-link wake tok1]\n\n" + FormatUnread(m) + PowerShellNote(`C:\apps\agentlink.exe`)
+	if got != strings.TrimRight(want, "\n") || !strings.Contains(got, `"C:\apps\agentlink.exe" send --chat c1 --reply-to id1`) {
 		t.Fatalf("got %q", got)
 	}
 	// Only the prompt of that wake acknowledges the message.

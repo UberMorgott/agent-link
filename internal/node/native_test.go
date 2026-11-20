@@ -122,6 +122,7 @@ func TestRenderFitsBudget(t *testing.T) {
 // reads it, marked, once the subagent ended. Notes lead the text, the CLI's
 // path ends a session's first one, and both stand without any message.
 func TestRenderForAgentsNotesAndCLI(t *testing.T) {
+	stubCLI(t)
 	plain := unreadOf("m-1", "b", "chat-1", "for the session")
 	sub := unreadOf("m-2", "b", "chat-1", "for the subagent")
 	sub.ForAgent, sub.ForAgentType = "agent-1", "Explore"
@@ -139,14 +140,11 @@ func TestRenderForAgentsNotesAndCLI(t *testing.T) {
 	// An ended subagent's reply: a one-line pointer, no text, no reply asked,
 	// and its chat not one the session answers in (Chats).
 	if len(ended.Shown) != 2 || strings.Contains(ended.Text, "for the subagent") ||
-		!strings.Contains(ended.Text, EndedAgentNote("Explore", "agent-1")+" От b в чате chat-1, id m-2 — к сведению, отвечать не нужно; текст при необходимости: agentlink chat history --chat chat-1") ||
+		!strings.Contains(ended.Text, EndedAgentNote("Explore", "agent-1")+" От b в чате chat-1, id m-2 — к сведению, отвечать не нужно; текст при необходимости: \"C:\\apps\\agentlink.exe\" chat history --chat chat-1") ||
 		ended.Chats["chat-1"] != "m-1" {
 		t.Fatalf("an ended subagent's reply (chats %v):\n%s", ended.Chats, ended.Text)
 	}
 
-	old := cliExecutable
-	cliExecutable = func() string { return `C:\apps\agentlink.exe` }
-	t.Cleanup(func() { cliExecutable = old })
 	note := WorkerNote("m-9", "chat-9")
 	res, _ := Render(RenderRequest{Messages: msgs[:1], Notes: []string{note}, CLI: true})
 	if !strings.HasPrefix(res.Text, note+"\n\nagent-link: непрочитанные") || !strings.HasSuffix(res.Text, "\n\n"+CLIHint(`C:\apps\agentlink.exe`)) {

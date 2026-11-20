@@ -474,7 +474,7 @@ func TestHookDeliversUnreadOnceAndAcks(t *testing.T) {
 	v := parseOut(t, c.run(hookClaude, evSessionStart))
 	ctx := v.HookSpecificOutput.AdditionalContext
 	for _, want := range []string{"please review PR 12", "and the tests", "KPECTIK (человек)", "KPECTIK (агент)", "чате c1",
-		"agentlink send --chat c1 --reply-to m1", "Просит ответа от вас"} {
+		`" send --chat c1 --reply-to m1`, "Просит ответа от вас"} {
 		if !strings.Contains(ctx, want) {
 			t.Fatalf("context lacks %q:\n%s", want, ctx)
 		}
@@ -839,10 +839,10 @@ func TestHookPagesLargeBatches(t *testing.T) {
 	c := newHookCase(t)
 	c.f.add(chatMsg("c1", "KPECTIK", "agent", strings.Repeat("я", node.FormatMaxBody+100), true))
 	for range 3 {
-		c.f.add(chatMsg("c1", "KPECTIK", "agent", strings.Repeat("ы", 1500), true))
+		c.f.add(chatMsg("c1", "KPECTIK", "agent", strings.Repeat("ы", 1000), true)) // two fit FormatBudget beside the CLI's full path, of any length
 	}
 	ctx := parseOut(t, c.run(hookClaude, evSessionStart)).HookSpecificOutput.AdditionalContext
-	if !strings.Contains(ctx, "обрезано") || !strings.Contains(ctx, "agentlink chat history --chat c1") {
+	if !strings.Contains(ctx, "обрезано") || !strings.Contains(ctx, `" chat history --chat c1`) {
 		t.Fatalf("long body not capped:\n%.300s", ctx)
 	}
 	if !strings.Contains(ctx, "\" chat unread --folder") || !strings.Contains(ctx, "--after 00002-m2") || utf8Len(ctx) > 10000 {
@@ -1007,7 +1007,7 @@ func TestHookWaitWakesIdleSession(t *testing.T) {
 	if code := hookWait(hookClaude, strings.NewReader(c.input(evStop)), &errw, env, o); code != 2 {
 		t.Fatalf("code %d", code)
 	}
-	if !strings.Contains(errw.String(), "wake up") || !strings.Contains(errw.String(), "agentlink send --chat c1") {
+	if !strings.Contains(errw.String(), "wake up") || !strings.Contains(errw.String(), `" send --chat c1`) {
 		t.Fatalf("stderr %q", errw.String())
 	}
 	// Written is not delivered: no ack until the session shows it got the wake.
