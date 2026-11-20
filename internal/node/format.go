@@ -3,6 +3,7 @@ package node
 import (
 	"cmp"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -103,9 +104,19 @@ func wakePrompt(msgs []UnreadMessage, rest int, folder, token string, auto bool)
 		t.WriteString(formatUnread(m, auto))
 	}
 	if rest > 0 {
-		fmt.Fprintf(&t, "\nЕщё %d непрочитанных: agentlink chat unread --folder %q\n", rest, folder)
+		fmt.Fprintf(&t, "\nЕщё %d непрочитанных: %s\n", rest, UnreadCommand(folder, msgs))
 	}
 	return strings.TrimRight(t.String(), "\n")
+}
+
+// UnreadCommand is the CLI command that lists the rest of the unread after
+// msgs: by their project when they share one (a folder in no project, or in
+// several, does not route), else by folder.
+func UnreadCommand(folder string, msgs []UnreadMessage) string {
+	if len(msgs) > 0 && msgs[0].Project != "" && !slices.ContainsFunc(msgs, func(m UnreadMessage) bool { return m.Project != msgs[0].Project }) {
+		return "agentlink chat unread --project " + msgs[0].Project
+	}
+	return fmt.Sprintf("agentlink chat unread --folder %q", folder)
 }
 
 // WakeMarker is the line part by which a wake prompt with token is known.

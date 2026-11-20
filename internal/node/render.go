@@ -134,8 +134,8 @@ func Render(req RenderRequest) (RenderResult, error) {
 			t.WriteString(FormatUnread(m))
 		}
 		if res.Rest > 0 {
-			fmt.Fprintf(&t, "\nЕщё %d непрочитанных придут со следующим событием. Прочитать сейчас: agentlink chat unread --folder %q --after %s ; прочитанные подтвердить: agentlink chat ack --ids <id,...> --session %s\n",
-				res.Rest, req.Folder, shown[len(shown)-1].Cursor, req.SessionID)
+			fmt.Fprintf(&t, "\nЕщё %d непрочитанных придут со следующим событием. Прочитать сейчас: %s --after %s ; прочитанные подтвердить: agentlink chat ack --ids <id,...> --session %s\n",
+				res.Rest, UnreadCommand(req.Folder, shown), shown[len(shown)-1].Cursor, req.SessionID)
 		}
 		text = strings.TrimRight(t.String(), "\n")
 	}

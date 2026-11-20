@@ -951,3 +951,24 @@ func TestRenderUnchangedBesidePointers(t *testing.T) {
 		}
 	}
 }
+
+// The command for the rest of the unread names the messages' project: a
+// folder in no project (or in several) is refused by --folder alone.
+func TestUnreadCommandNamesProject(t *testing.T) {
+	a, b := UnreadMessage{Cursor: "0001"}, UnreadMessage{Cursor: "0002"}
+	a.ID, a.Project, b.ID, b.Project = "id1", "KNRK", "id2", "KNRK"
+	r, err := Render(RenderRequest{Messages: []UnreadMessage{a, b}, Total: 5, Mode: RenderStop, Folder: `C:\work`, SessionID: "s", Kept: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "agentlink chat unread --project KNRK --after 0002 ;"; !strings.Contains(r.Text, want) {
+		t.Errorf("stop text lacks %q:\n%s", want, r.Text)
+	}
+	if got := WakePrompt([]UnreadMessage{a, b}, 2, `C:\work`, "tok12345"); !strings.HasSuffix(got, "agentlink chat unread --project KNRK") {
+		t.Errorf("wake prompt: %q", got)
+	}
+	b.Project = "OTHER"
+	if got := UnreadCommand(`C:\work`, []UnreadMessage{a, b}); got != `agentlink chat unread --folder "C:\\work"` {
+		t.Errorf("mixed projects: %q", got)
+	}
+}
