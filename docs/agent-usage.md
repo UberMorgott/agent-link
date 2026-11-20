@@ -392,7 +392,7 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   (`own_human`) come as «Ваш человек написал всем …» — information, do not answer. A request
   the worker took (`assigned: "worker"`) says «не отвечайте»; one past the automatic chain
   limit (`paused`) is informational. A batch holds about 4500 characters; the rest stays unread and comes at the next
-  event (or now: the printed `agentlink chat unread --folder … --after …`, then `agentlink chat
+  event (or now: the printed `"<full path of agentlink.exe>" chat unread --folder … --after …`, then `agentlink chat
   ack --ids … --session …`).
 - **Read.** Right after printing a batch the hook acknowledges it (`POST /ack` with the
   `session_id`): the senders get «прочитано», the requests are assigned to this session, and
@@ -475,7 +475,7 @@ three per session: Claude Code runs plugin hooks and settings hooks side by side
   (its token has no `p-`) carried its messages and is still acknowledged by its marker.
   The Claude inbox prompt is the messages themselves, formatted
   as the hooks inject them (sender, chat, id, body, reply command), as many as fit 4500 runes,
-  then «Ещё N непрочитанных: agentlink chat unread --folder …». The node claims exactly those
+  then «Ещё N непрочитанных: "<full path of agentlink.exe>" chat unread --folder …». The node claims exactly those
   for the session first: its hooks leave them out (`GET /unread?session=` lists them under
   `woken`, each with the wake's random `wake_token`), and a hook event acknowledges only
   the ones whose wake marker `[agent-link wake <token>]` and id are in its prompt or the

@@ -907,6 +907,7 @@ func TestPointerFetchDeliversSeatMessage(t *testing.T) {
 // What a Claude session's inbox wake, a seat's turn and the hooks render is
 // what v0.6.75 rendered, to the byte: pointers changed the queue prompt only.
 func TestRenderUnchangedBesidePointers(t *testing.T) {
+	stubCLI(t)
 	at := time.Date(2026, 10, 1, 12, 30, 0, 0, time.UTC)
 	a := UnreadMessage{AsksYou: true, Cursor: "0001"}
 	a.ID, a.ChatID, a.From, a.AuthorKind, a.Body, a.Participants, a.CreatedAt = "id1", "c1", "KPECTIK", "agent", "hello", []string{"KPECTIK", "me"}, at
@@ -918,16 +919,16 @@ func TestRenderUnchangedBesidePointers(t *testing.T) {
 		ask1  = "Просит ответа от вас. Ответить: agentlink send --chat c1 --reply-to id1 --body-file <файл>\n\n"
 		msg2  = "От peer (человек), id id2, {AT}:\nfyi\nК сведению, ответ не обязателен. Ответить: agentlink send --to peer --reply-to id2 --body-file <файл>"
 		wake  = "agent-link: новые сообщения (2). Вся переписка остаётся в истории чата. [agent-link wake tok12345]\n\n"
-		rest  = "\n\nЕщё 3 непрочитанных придут со следующим событием. Прочитать сейчас: agentlink chat unread --folder \"C:\\\\work\" --after 0002 ; прочитанные подтвердить: agentlink chat ack --ids <id,...> --session s"
+		rest  = "\n\nЕщё 3 непрочитанных придут со следующим событием. Прочитать сейчас: \"C:\\apps\\agentlink.exe\" chat unread --folder \"C:\\\\work\" --after 0002 ; прочитанные подтвердить: agentlink chat ack --ids <id,...> --session s"
 	)
 	golden := map[string]string{
-		"inbox": wake + head1 + ask1 + msg2 + "\n\nЕщё 2 непрочитанных: agentlink chat unread --folder \"C:\\\\work\"",
+		"inbox": wake + head1 + ask1 + msg2 + "\n\nЕщё 2 непрочитанных: \"C:\\apps\\agentlink.exe\" chat unread --folder \"C:\\\\work\"",
 		"seat": wake + head1 + "Просит ответа от вас. Ответ — ваше итоговое сообщение в этом ходе: agent-link сам отправит его в чат ответом на это сообщение. " +
 			"Для ответа agentlink send не запускайте (иначе ответ уйдёт дважды); send — только чтобы спросить другого агента.\n\n" + msg2,
 		"render:": "agent-link: непрочитанные сообщения для этой папки (5). Вся переписка остаётся в истории чата.\n\n" + head1 + ask1 + msg2 + rest,
 		"render:stop": "Пока вы работали, пришли сообщения agent-link. Прочитайте их и, где просят ответа, ответьте; затем завершайте.\n\n" +
 			head1 + ask1 + msg2 + rest,
-		"render:wake": wake + head1 + ask1 + msg2 + "\n\nЕщё 3 непрочитанных: agentlink chat unread --folder \"C:\\\\work\"",
+		"render:wake": wake + head1 + ask1 + msg2 + "\n\nЕщё 3 непрочитанных: \"C:\\apps\\agentlink.exe\" chat unread --folder \"C:\\\\work\"",
 		"render:nudge": "agent-link: выше в этом разговоре уже есть новые сообщения agent-link (5): они пришли под конец прошлого хода, их ещё никто не читал. " +
 			"Прочитайте их и, где просят ответа, ответьте. [agent-link wake tok12345]",
 	}
@@ -955,20 +956,28 @@ func TestRenderUnchangedBesidePointers(t *testing.T) {
 // The command for the rest of the unread names the messages' project: a
 // folder in no project (or in several) is refused by --folder alone.
 func TestUnreadCommandNamesProject(t *testing.T) {
+	stubCLI(t)
 	a, b := UnreadMessage{Cursor: "0001"}, UnreadMessage{Cursor: "0002"}
 	a.ID, a.Project, b.ID, b.Project = "id1", "KNRK", "id2", "KNRK"
 	r, err := Render(RenderRequest{Messages: []UnreadMessage{a, b}, Total: 5, Mode: RenderStop, Folder: `C:\work`, SessionID: "s", Kept: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "agentlink chat unread --project KNRK --after 0002 ;"; !strings.Contains(r.Text, want) {
+	if want := `"C:\apps\agentlink.exe" chat unread --project KNRK --after 0002 ;`; !strings.Contains(r.Text, want) {
 		t.Errorf("stop text lacks %q:\n%s", want, r.Text)
 	}
-	if got := WakePrompt([]UnreadMessage{a, b}, 2, `C:\work`, "tok12345"); !strings.HasSuffix(got, "agentlink chat unread --project KNRK") {
+	if got := WakePrompt([]UnreadMessage{a, b}, 2, `C:\work`, "tok12345"); !strings.HasSuffix(got, `"C:\apps\agentlink.exe" chat unread --project KNRK`) {
 		t.Errorf("wake prompt: %q", got)
 	}
 	b.Project = "OTHER"
-	if got := UnreadCommand(`C:\work`, []UnreadMessage{a, b}); got != `agentlink chat unread --folder "C:\\work"` {
+	if got := UnreadCommand(`C:\work`, []UnreadMessage{a, b}); got != `"C:\apps\agentlink.exe" chat unread --folder "C:\\work"` {
 		t.Errorf("mixed projects: %q", got)
 	}
+}
+
+// stubCLI makes cliExecutable C:\apps\agentlink.exe for the test.
+func stubCLI(t *testing.T) {
+	old := cliExecutable
+	cliExecutable = func() string { return `C:\apps\agentlink.exe` }
+	t.Cleanup(func() { cliExecutable = old })
 }

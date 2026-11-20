@@ -102,11 +102,7 @@ const reasonLost = "pointer_lost"
 // no folder: the node takes the session's own (UnreadListing), and a path in
 // a prompt would be text the agent's shell expands.
 func PointerPrompt(session, token, exe string) string {
-	cmd := "agentlink"
-	if exe != "" {
-		cmd = `"` + exe + `"`
-	}
-	cmd += " chat unread --session " + session
+	cmd := cliCommand(exe) + " chat unread --session " + session
 	return fmt.Sprintf("agent-link: для этой сессии есть новые сообщения; их текста здесь нет. %s\n"+
 		"Получите их сейчас: вызовите инструмент unread MCP-сервера agentlink с одним аргументом session: \"%s\". "+
 		"Если вызов отклонён из-за этого аргумента (инструмент его не принимает), вызовите unread ещё раз без аргументов. "+

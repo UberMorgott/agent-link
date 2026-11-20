@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -33,8 +34,8 @@ func v0672Batch(kept []node.UnreadMessage, total int, folder, sid string, stop b
 		t.WriteString(node.FormatUnread(m))
 	}
 	if rest := total - len(kept); rest > 0 {
-		fmt.Fprintf(&t, "\nЕщё %d непрочитанных придут со следующим событием. Прочитать сейчас: agentlink chat unread --folder %q --after %s ; прочитанные подтвердить: agentlink chat ack --ids <id,...> --session %s\n",
-			rest, folder, kept[len(kept)-1].Cursor, sid)
+		fmt.Fprintf(&t, "\nЕщё %d непрочитанных придут со следующим событием. Прочитать сейчас: \"%s\" chat unread --folder %q --after %s ; прочитанные подтвердить: agentlink chat ack --ids <id,...> --session %s\n",
+			rest, selfExe(), folder, kept[len(kept)-1].Cursor, sid)
 	}
 	return strings.TrimRight(t.String(), "\n")
 }
@@ -83,8 +84,14 @@ func TestClassicBatchOfSubagentReplies(t *testing.T) {
 	page := (&hookSession{st: &hookState{}, agent: "a1"}).forMe(node.UnreadPage{Messages: classicBatchMsgs(), Total: total})
 	want := "agent-link: непрочитанные сообщения для этой папки (4). Вся переписка остаётся в истории чата.\n\n" +
 		node.FormatUnread(classicBatchMsgs()[0]) +
-		"\nЕщё 3 непрочитанных придут со следующим событием. Прочитать сейчас: agentlink chat unread --folder \"C:\\\\work\" --after 0001 ; прочитанные подтвердить: agentlink chat ack --ids <id,...> --session s"
+		"\nЕщё 3 непрочитанных придут со следующим событием. Прочитать сейчас: \"" + selfExe() + "\" chat unread --folder \"C:\\\\work\" --after 0001 ; прочитанные подтвердить: agentlink chat ack --ids <id,...> --session s"
 	if got := formatBatch(page, folder, sid, false).text; got != want {
 		t.Errorf("a live subagent's own reply:\n got %q\nwant %q", got, want)
 	}
+}
+
+// selfExe is this test binary, the CLI node.Render names in-process.
+func selfExe() string {
+	exe, _ := os.Executable()
+	return exe
 }

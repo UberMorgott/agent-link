@@ -845,7 +845,7 @@ func TestHookPagesLargeBatches(t *testing.T) {
 	if !strings.Contains(ctx, "обрезано") || !strings.Contains(ctx, "agentlink chat history --chat c1") {
 		t.Fatalf("long body not capped:\n%.300s", ctx)
 	}
-	if !strings.Contains(ctx, "agentlink chat unread --folder") || !strings.Contains(ctx, "--after 00002-m2") || utf8Len(ctx) > 10000 {
+	if !strings.Contains(ctx, "\" chat unread --folder") || !strings.Contains(ctx, "--after 00002-m2") || utf8Len(ctx) > 10000 {
 		t.Fatalf("paging (%d runes):\n%s", utf8Len(ctx), ctx[len(ctx)-400:])
 	}
 	if got := c.f.ackedIDs(); !slices.Equal(got, []string{"m1", "m2"}) {

@@ -111,12 +111,23 @@ func wakePrompt(msgs []UnreadMessage, rest int, folder, token string, auto bool)
 
 // UnreadCommand is the CLI command that lists the rest of the unread after
 // msgs: by their project when they share one (a folder in no project, or in
-// several, does not route), else by folder.
+// several, does not route), else by folder. It names this node's executable
+// (cliExecutable), since agentlink need not be in PATH.
 func UnreadCommand(folder string, msgs []UnreadMessage) string {
+	cmd := cliCommand(cliExecutable()) + " chat unread "
 	if len(msgs) > 0 && msgs[0].Project != "" && !slices.ContainsFunc(msgs, func(m UnreadMessage) bool { return m.Project != msgs[0].Project }) {
-		return "agentlink chat unread --project " + msgs[0].Project
+		return cmd + "--project " + msgs[0].Project
 	}
-	return fmt.Sprintf("agentlink chat unread --folder %q", folder)
+	return cmd + fmt.Sprintf("--folder %q", folder)
+}
+
+// cliCommand is the agentlink CLI as a command line starts it: exe quoted,
+// or bare agentlink when exe is unknown.
+func cliCommand(exe string) string {
+	if exe == "" {
+		return "agentlink"
+	}
+	return `"` + exe + `"`
 }
 
 // WakeMarker is the line part by which a wake prompt with token is known.
