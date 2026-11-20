@@ -89,6 +89,11 @@ func (w *Worker) agentEnv(chatID, jobID string) []string {
 	if chatID != "" {
 		env = append(env, envChatID+"="+chatID, envJobID+"="+jobID)
 	}
+	// The prompts name bare agentlink (command.go, chatHistoryCmd): this exe's
+	// folder leads PATH, as for seats (node.Node.seatEnv).
+	if exe := node.SelfExe(); exe != "" {
+		env = append(env, "PATH="+filepath.Dir(exe)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
 	return env
 }
 
