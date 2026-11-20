@@ -81,6 +81,10 @@ func TestPluginHookFilesPerClient(t *testing.T) {
 	for ev, groups := range codex.Hooks {
 		for _, g := range groups {
 			for _, h := range g.Hooks {
+				// PowerShell treats a bare quoted .cmd path as a string, not an invocation.
+				if want := `cmd.exe /d /c call "${PLUGIN_ROOT}/bin/agentlink.cmd" hook codex`; h.CommandWindows != want {
+					t.Errorf("codex %s: Windows command %q, want %q", ev, h.CommandWindows, want)
+				}
 				for _, line := range []string{h.Command, h.CommandWindows} {
 					if !strings.Contains(line, "${PLUGIN_ROOT}") || !strings.HasSuffix(line, " hook codex") {
 						t.Errorf("codex %s: %q does not run `hook codex` from ${PLUGIN_ROOT}", ev, line)
