@@ -277,6 +277,12 @@ func (a *App) newProjectContext(b settings.ProjectBinding) (*appContext, error) 
 		dir = "" // a local chat's folder is gone: it holds, like a project without one
 	}
 	n.SetFolders(dir, nil)
+	if b.Chat != nil {
+		// The app routes here only the chat's own sessions (sessionContexts,
+		// registerInChats) or an explicit --project: an asker whose folder is
+		// not the chat's still registers and reads its replies (issue #44).
+		n.AcceptAnyFolder()
+	}
 	n.SetStopped(a.s.StopAll || b.StopAgents)
 	n.SetAutonomy(autonomyOf(a.effectiveBindingLocked(b)))
 	if dir == "" {

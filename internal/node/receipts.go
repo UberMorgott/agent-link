@@ -34,7 +34,16 @@ var ErrNeedsFolder = errors.New("no project folder is bound")
 type folderMap struct {
 	work     string
 	projects map[string]string // area -> dir
+	// anyFolder: a session from any folder is the working folder's (a local
+	// chat's sessions work wherever they are; AcceptAnyFolder).
+	anyFolder bool
 }
+
+// AcceptAnyFolder makes every folder this node's working folder's (area ""),
+// as long as it has one (NeedsFolder): a local chat's own sessions ask from
+// whatever folder they work in. It must be set after SetFolders, before Serve
+// or Run.
+func (n *Node) AcceptAnyFolder() { n.folders.anyFolder = true }
 
 // NeedsFolder reports a project node without a bound folder: it has no
 // folder at all (FolderArea matches nothing), and requests that ask it are
@@ -63,7 +72,7 @@ func (n *Node) FolderArea(folder string) (area string, ok bool) {
 	if best >= 0 {
 		return area, true
 	}
-	if n.folders.work == "" || inFolder(n.folders.work, folder) {
+	if n.folders.work == "" || n.folders.anyFolder || inFolder(n.folders.work, folder) {
 		return "", true
 	}
 	return "", false
