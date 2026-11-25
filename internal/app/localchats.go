@@ -100,7 +100,7 @@ func (a *App) localChatViewLocked(b settings.ProjectBinding) *LocalChatView {
 	v := localChatViewOf(b.Chat)
 	st := a.localChatLiveLocked(b)
 	v.Live, v.LiveEndedAt, v.Waiting, v.LastActive = st.live, st.endedAt, st.waiting, st.last
-	if b.Chat.Temporary {
+	if b.Chat.Temporary && !b.Chat.UntilDone {
 		v.ExpiresAt = st.last.Add(TempChatIdle)
 	}
 	return &v
@@ -116,6 +116,13 @@ func (a *App) localActivityLocked(b settings.ProjectBinding) *LocalActivityView 
 // wait for a reply in binding pid; the project list shows the change.
 func (a *App) discussWaiting(pid string, delta int) {
 	a.mu.Lock()
+	a.discussWaitingLocked(pid, delta)
+	a.mu.Unlock()
+	a.changed(pid)
+	a.liveChanged()
+}
+
+func (a *App) discussWaitingLocked(pid string, delta int) {
 	if a.discussWaiters == nil {
 		a.discussWaiters = map[string]int{}
 	}
@@ -123,9 +130,6 @@ func (a *App) discussWaiting(pid string, delta int) {
 	if a.discussWaiters[pid] <= 0 {
 		delete(a.discussWaiters, pid)
 	}
-	a.mu.Unlock()
-	a.changed(pid)
-	a.liveChanged()
 }
 
 // localChatViewOf is lc's view; nil is a folder's project chat.
@@ -157,6 +161,9 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 	if req.Chat != "" {
 		for i, b := range a.s.Bindings {
 			if c := a.projects[b.ID]; c != nil && b.ScopeOf() == settings.ProjectScopeLocal && c.n.OwnsChat(req.Chat) {
+				if b.Chat != nil && b.Chat.FinishRequested {
+					return "", false, node.ErrChatClosed
+				}
 				if a.retiring[b.ID] {
 					return "", false, errUnknownLocalChat // closing: its seats go now
 				}
@@ -168,7 +175,8 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 		}
 		return "", false, errUnknownLocalChat
 	}
-	if req.Seat != "" && req.Topic == "" && !req.Temporary {
+	fresh := req.Temporary || req.UntilDone
+	if req.Seat != "" && req.Topic == "" && !fresh {
 		// A seat asks in its own chat, wherever its folder is.
 		for _, b := range a.s.Bindings {
 			if c := a.projects[b.ID]; c != nil && slices.ContainsFunc(c.n.Seats(), func(s node.SeatView) bool { return s.ID == req.Seat }) {
@@ -198,16 +206,16 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 		created = true
 	}
 	owner := discussOwner(req)
-	if owner == nil && req.Topic == "" && !req.Temporary && !folderless {
+	if owner == nil && req.Topic == "" && !fresh && !folderless {
 		return pid, created, nil
 	}
-	if !req.Temporary {
+	if !fresh {
 		// The routing key: (project, owner, topic) for an agent's own chat,
 		// (project, topic) for a shared one.
 		best := -1
 		for i, b := range a.s.Bindings {
 			lc := b.Chat
-			if lc == nil || lc.Project != pid || a.projects[b.ID] == nil || !strings.EqualFold(lc.Topic, req.Topic) ||
+			if lc == nil || lc.UntilDone || lc.Project != pid || a.projects[b.ID] == nil || !strings.EqualFold(lc.Topic, req.Topic) ||
 				!lc.Retired.IsZero() || a.retiring[b.ID] {
 				continue
 			}
@@ -232,7 +240,7 @@ func (a *App) discussContextLocked(ctx context.Context, req discussRequest, dir 
 	// A temporary chat of no owner says so, for an older build that takes
 	// its first session for one (settings.LocalChat.OwnerOf).
 	lc := &settings.LocalChat{Temporary: req.Topic == "" || owner != nil, Topic: req.Topic, Owner: owner, Project: pid, Folder: dir,
-		LastUsed: time.Now().UTC(), Unowned: owner == nil && req.Topic == ""}
+		LastUsed: time.Now().UTC(), Unowned: owner == nil && req.Topic == "", UntilDone: req.UntilDone}
 	if pid != "" {
 		lc.Folder = a.bindingDirLocked(pid)
 		if tree.Linked() && !within(tree.Top, lc.Folder) {
@@ -361,6 +369,10 @@ func (a *App) touchLocalChatLocked(i int, session string) error {
 	if len(lc.Sessions) > maxChatSessions {
 		lc.Sessions = slices.Delete(lc.Sessions, 1, len(lc.Sessions)-maxChatSessions+1)
 	}
+	return a.saveLocalChatLocked(i, lc)
+}
+
+func (a *App) saveLocalChatLocked(i int, lc settings.LocalChat) error {
 	s := a.s
 	s.Bindings = slices.Clone(s.Bindings)
 	s.Bindings[i].Chat = &lc
@@ -388,14 +400,10 @@ func (a *App) adoptRetiredLocked(i int, owner *settings.LocalChatOwner) error {
 	default:
 		lc.Temporary, lc.Unowned = true, true
 	}
-	s := a.s
-	s.Bindings = slices.Clone(s.Bindings)
-	s.Bindings[i].Chat = &lc
-	if err := settings.Save(a.path, s); err != nil {
+	if err := a.saveLocalChatLocked(i, lc); err != nil {
 		return err
 	}
-	a.s = s
-	a.forgetOwnerLocked(s.Bindings[i].ID)
+	a.forgetOwnerLocked(a.s.Bindings[i].ID)
 	return nil
 }
 
@@ -422,6 +430,7 @@ func (a *App) gcLoop(ctx context.Context) {
 // gcLocalChats removes, with nothing pending in it (a seat's queue or turn,
 // an unread message, a running job, a discuss caller waiting):
 //   - every retired chat: it stayed for an unread reply alone (retire.go);
+//   - an explicit-lifetime chat once its caller finished it and all work drained;
 //   - every temporary chat with no seat and no message EmptyChatGrace after
 //     its last use, even while its owner lives (a discuss that failed, or
 //     one whose seats went);
@@ -442,6 +451,9 @@ func (a *App) gcLocalChats(now time.Time) {
 	var drop []string
 	for _, b := range a.s.Bindings {
 		lc := b.Chat
+		if lc != nil && lc.UntilDone && !lc.FinishRequested {
+			continue
+		}
 		gone := b.ScopeOf() == settings.ProjectScopeLocal && folderGone(b.WorkDir())
 		if !gone && (lc == nil || !lc.Temporary && lc.Retired.IsZero()) || a.retiring[b.ID] || a.discussWaiters[b.ID] > 0 {
 			continue
@@ -452,7 +464,7 @@ func (a *App) gcLocalChats(now time.Time) {
 			continue
 		}
 		switch {
-		case gone:
+		case gone || lc != nil && lc.FinishRequested:
 			// Nothing is known of a context that is not running: keep it.
 			if c == nil || slices.ContainsFunc(c.n.Seats(), func(s node.SeatView) bool { return len(s.Pending) > 0 }) {
 				continue

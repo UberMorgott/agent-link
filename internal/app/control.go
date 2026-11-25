@@ -201,6 +201,8 @@ func folderScoped(c routeCtx, folder string) *routeError {
 func (a *App) controlAPI() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /discuss", a.discuss)
+	mux.HandleFunc("POST /discuss/until-done", a.discuss)
+	mux.HandleFunc("POST /discuss/finish", a.finishDiscuss)
 	mux.HandleFunc("GET /discuss/reply", a.discussReply)
 	mux.HandleFunc("POST /send", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {

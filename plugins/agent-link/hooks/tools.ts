@@ -191,7 +191,8 @@ async function discuss(n: NodeApi, c: Caller, e: Args): Promise<ToolAnswer> {
   if (wait === undefined || wait <= 0 || wait > DISCUSS_MAX_MS) {
     return { error: '--timeout must be greater than 0 and at most 15m0s' }
   }
-  const asked = await n.call('POST', '/discuss', {}, {
+  const untilDone = e.until_done === true
+  const asked = await n.call('POST', untilDone ? '/discuss/until-done' : '/discuss', {}, {
     folder: str(e.folder) === '' ? c.link.folder : abs(c, str(e.folder)),
     provider,
     body,
@@ -203,6 +204,7 @@ async function discuss(n: NodeApi, c: Caller, e: Args): Promise<ToolAnswer> {
     chat: str(e.chat),
     topic: str(e.topic),
     temporary: e.temporary === true,
+    ...(untilDone ? { until_done: true } : {}),
     shared: e.shared === true,
   })
   const r = parse<Discussed>(asked)
@@ -309,6 +311,11 @@ export async function serve(n: NodeApi, c: Caller, name: string, e: Args): Promi
       return send(n, c, e)
     case 'discuss':
       return discuss(n, c, e)
+    case 'finish_discussion': {
+      const chat = str(e.chat).trim()
+      if (chat === '') return { error: 'chat is required' }
+      return passed(await n.call('POST', '/discuss/finish', {}, { chat }), api)
+    }
     default:
       return { error: `unknown tool ${name}` }
   }

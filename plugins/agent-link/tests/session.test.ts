@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
+import { TOOLS } from '../hooks/tools.gen'
 import { FOLDER, SESSION, start, step, TOOL, turn, world } from './node'
 
 const PEER = { id: 'm-1', from: 'peer', body: 'ping', chat_id: 'c-1', asks_you: true }
@@ -37,7 +38,7 @@ test('a headless run registers nothing and takes no message, but has the tools',
   await w.clock.advance(10_000)
   expect(w.calls).toEqual([])
   expect(w.prompts).toEqual([])
-  expect(w.tools).toHaveLength(9)
+  expect(w.tools).toHaveLength(TOOLS.length)
   const listed = await $.tool.call({ tool: `${TOOL}chats` })
   expect(listed.result).toBe('[{"id":"c-1"}]')
 })
@@ -228,7 +229,7 @@ test('the node\'s switch on: the module registers the session native, its tools,
   await start($, w)
   expect(w.calls[0]).toMatchObject({ method: 'GET', path: '/native' })
   expect(w.of('GET', '/native')).toHaveLength(1)
-  expect(w.tools).toHaveLength(9)
+  expect(w.tools).toHaveLength(TOOLS.length)
   expect(w.of('POST', '/sessions')[0]?.body).toMatchObject({ session_id: SESSION, native: true })
   expect(w.prompts).toHaveLength(1)
   // Asked once per session: not again while it lives.
@@ -248,7 +249,7 @@ test('a flip of the switch waits for the next session: off to on after a /clear'
   await $.classic.SessionStart({ source: 'clear', session_id: 'sess-2' })
   await w.clock.settle()
   expect(w.of('GET', '/native')).toHaveLength(2)
-  expect(w.tools).toHaveLength(9)
+  expect(w.tools).toHaveLength(TOOLS.length)
   expect(w.last('POST', '/sessions')?.body).toMatchObject({ session_id: 'sess-2', folder: FOLDER, native: true })
   expect(w.prompts).toHaveLength(1)
 })

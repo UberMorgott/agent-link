@@ -10,7 +10,7 @@ async function call($: Engine, name: string, args: Record<string, unknown> = {})
   return res.deny === undefined ? String(res.result) : `ERROR ${res.deny}`
 }
 
-const NAMES = ['ack', 'chats', 'discuss', 'history', 'members', 'projects', 'seats', 'send', 'unread']
+const NAMES = ['ack', 'chats', 'discuss', 'finish_discussion', 'history', 'members', 'projects', 'seats', 'send', 'unread']
 
 /** The node answers a list for every listing a tool asks. */
 function lists(w: World): void {
@@ -19,7 +19,7 @@ function lists(w: World): void {
   }
 }
 
-test('the nine tools of agentlink mcp are registered, by their names and schemas', async ($, on) => {
+test('the tools of agentlink mcp are registered, by their names and schemas', async ($, on) => {
   const w = world(on)
   await start($, w)
   expect(w.tools.map(t => t.name)).toEqual(NAMES)
@@ -184,6 +184,22 @@ test('discuss asks a local agent and waits for its answer, as many held requests
   const full = JSON.parse(await call($, 'discuss', { with: 'codex', body: 'again', full: true })) as { reply: unknown; project: string }
   expect(full.project).toBe('p-local')
   expect(full.reply).toEqual(ANSWER)
+})
+
+test('an explicit discussion continues by chat ID until its caller finishes it', async ($, on) => {
+  const w = world(on)
+  await start($, w)
+  w.answer.set('/discuss/until-done', () => ({ status: 200, body: ASKED }))
+  w.answer.set('/discuss', () => ({ status: 200, body: ASKED }))
+  w.answer.set('/discuss/finish', () => ({ status: 200, body: { finished: true } }))
+  const { chat } = JSON.parse(await call($, 'discuss', { with: 'codex', body: 'first', async: true, until_done: true }))
+  expect(w.last('POST', '/discuss/until-done')?.body).toMatchObject({ until_done: true })
+  await call($, 'discuss', { with: 'codex', body: 'follow-up', async: true, chat })
+  expect(w.last('POST', '/discuss')?.body).toMatchObject({ chat: 'c-9' })
+  expect(w.of('POST', '/discuss/finish')).toHaveLength(0)
+  expect(await call($, 'finish_discussion', {})).toBe('ERROR chat is required')
+  expect(await call($, 'finish_discussion', { chat })).toBe('{"finished":true}')
+  expect(w.last('POST', '/discuss/finish')?.body).toEqual({ chat: 'c-9' })
 })
 
 test('discuss says when nothing will answer: async, queued, held, out of time', async ($, on) => {

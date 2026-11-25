@@ -723,6 +723,27 @@ func TestMCPDiscussCompact(t *testing.T) {
 	}
 }
 
+func TestExplicitDiscussionClients(t *testing.T) {
+	f := newFakeAPI(t)
+	cs := mcpClient(t, f.api)
+	f.run("discuss", "--with", "codex", "--body", "first question", "--async", "--until-done")
+	if len(f.reqs) != 1 || f.reqs[0] != "POST /discuss/until-done" || f.discuss["until_done"] != true {
+		t.Fatalf("CLI created %v, %v", f.reqs, f.discuss)
+	}
+	f.reqs = nil
+	_, isErr := callTool(t, cs, "discuss", map[string]any{"with": "codex", "body": "first question", "async": true, "until_done": true})
+	if isErr || len(f.reqs) != 1 || f.reqs[0] != "POST /discuss/until-done" || f.discuss["until_done"] != true {
+		t.Fatalf("MCP created %v, %v", f.reqs, f.discuss)
+	}
+	f.reqs = nil
+	got, isErr := callTool(t, cs, "finish_discussion", map[string]any{"chat": "c1"})
+	cli := f.run("discuss", "finish", "--chat", "c1")
+	if isErr || normJSON(t, got) != `{"finished":true}` || normJSON(t, cli) != normJSON(t, got) ||
+		!slices.Equal(f.reqs, []string{"POST /discuss/finish", "POST /discuss/finish"}) {
+		t.Fatalf("finish: MCP %q, CLI %q, calls %v", got, cli, f.reqs)
+	}
+}
+
 // An MCP tool error shows the API's human message, never only its code.
 func TestAPIErrorTextShowsMessage(t *testing.T) {
 	for body, want := range map[string]string{

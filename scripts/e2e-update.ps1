@@ -69,9 +69,7 @@ function Invoke-Ui([hashtable]$n, [string]$Method, [string]$Path, $Body) {
     Invoke-RestMethod @p
 }
 
-function Get-Inbox([hashtable]$n) { @((Invoke-Ui $n GET inbox) | ForEach-Object { $_ }) }
-
-function Get-Out([hashtable]$n, [string]$Id) { Get-Inbox $n | Where-Object { $_.direction -eq 'out' -and $_.id -eq $Id } }
+. (Join-Path $PSScriptRoot 'e2e-ui-chat.ps1')
 
 function Get-Trays { @(Get-CimInstance Win32_Process -Filter "Name='agentlink.exe'" | Where-Object { $_.ExecutablePath -like "$install*" }) }
 
@@ -136,9 +134,10 @@ try {
     $st = Invoke-Ui $b GET update
     if ($st.current -ne '0.0.1' -or -not $st.enabled -or $st.auto) { throw "node-b update state: $($st | ConvertTo-Json -Compress)" }
 
+    Open-TestChat $a $b
     Write-Host '== a slow job runs on node-b'
     $runlog = Join-Path $data 'runs.log'
-    $job = Invoke-Ui $a POST send @{ to = 'node-b'; body = "slow 8 $runlog job1" }
+    $job = Send-ChatMessage $a $b.name "slow 8 $runlog job1"
     Wait-Until { (Test-Path $runlog) -and (Get-Content $runlog) -contains 'job1' } 'job running' | Out-Null
     $agent = @(Get-CimInstance Win32_Process -Filter "Name='fakeagent.exe'" | Where-Object { $_.ExecutablePath -eq $fake })
     if ($agent.Count -ne 1) { throw "expected one agent, found $($agent.Count)" }
@@ -191,9 +190,8 @@ try {
     Write-Host "node-b now $($st.current), agent $($agent[0].ProcessId) still running"
 
     Write-Host '== the job completes once, answered by the new app'
-    Wait-Until { (Get-Out $a $job.id).PSObject.Properties['job_status']?.Value -eq 'completed' } 'job completed' | Out-Null
-    $e = Get-Out $a $job.id
-    if ($e.answer -ne "echo: slow 8 $runlog job1") { throw "wrong answer: $($e.answer)" }
+    $reply = Wait-Until { $r = Find-Reply $a $job.id; if (${r}?.job_status -eq 'completed') { $r } } 'job completed'
+    if ($reply.body -ne "echo: slow 8 $runlog job1") { throw "wrong answer: $($reply.body)" }
     $runs = (Get-Content $runlog) -join ','
     if ($runs -ne 'job1') { throw "agent runs: $runs" }
 

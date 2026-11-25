@@ -160,6 +160,9 @@ type LocalChat struct {
 	// only for an owned chat (a topic of one agent, removed with it).
 	Temporary bool   `json:"temporary,omitempty"`
 	Topic     string `json:"topic,omitempty"`
+	// UntilDone keeps a private discussion until its caller explicitly finishes it.
+	UntilDone       bool `json:"until_done,omitempty"`
+	FinishRequested bool `json:"finish_requested,omitempty"`
 	// Owner is the agent the chat belongs to: discuss routes its calls here
 	// by (Project, Owner, Topic), and the chat retires when it ends. nil for a
 	// shared chat (a person's, or one asked for with shared).
@@ -819,6 +822,7 @@ func validateBindings(bs []ProjectBinding) error {
 		switch {
 		case b.Chat != nil && (b.ScopeOf() != ProjectScopeLocal || b.Dir != "" || !filepath.IsAbs(b.Chat.Folder) ||
 			(!b.Chat.Temporary && b.Chat.Topic == "") || (b.Chat.Temporary && b.Chat.Topic != "" && b.Chat.Owner == nil) ||
+			(b.Chat.UntilDone && (!b.Chat.Temporary || b.Chat.Topic != "")) || (b.Chat.FinishRequested && !b.Chat.UntilDone) ||
 			(b.Chat.Owner != nil && !b.Chat.Owner.valid()) || !ValidAlias(b.Chat.Topic)):
 			return problem("project_binding")
 		case !config.ValidProjectID(b.ID) || b.Epoch != config.ProjectEpoch || !config.ValidProjectSecret(b.Secret) || ids[b.ID]:

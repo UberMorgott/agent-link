@@ -78,17 +78,17 @@ function Stop-Node([hashtable]$n) {
     Write-Host "$($n.name) exited with code $($n.proc.ExitCode)"
 }
 
-function Get-Inbox([hashtable]$n) { @((Invoke-Ui $n GET inbox) | ForEach-Object { $_ }) }
-
-# Find-Reply returns the inbound reply to id from n's inbox (entries omit empty reply_to).
-function Find-Reply([hashtable]$n, [string]$Id) {
-    Get-Inbox $n | Where-Object { $_.direction -eq 'in' -and $_.PSObject.Properties['reply_to']?.Value -eq $Id }
-}
+. (Join-Path $PSScriptRoot 'e2e-ui-chat.ps1')
 
 # Get-JobStatus returns the latest job status node-b reported for n's outbound request id.
 function Get-JobStatus([hashtable]$n, [string]$Id) {
-    $e = Get-Inbox $n | Where-Object { $_.direction -eq 'out' -and $_.id -eq $Id }
-    ${e}?.PSObject.Properties['job_status']?.Value
+    $chat = Invoke-Ui $n GET "projects/legacy/chats/$($n.chat)"
+    foreach ($member in $chat.members) {
+        foreach ($job in $member.PSObject.Properties['jobs']?.Value) {
+            if ($job.reply_to -eq $Id) { return $job.job_status }
+        }
+    }
+    (Find-Reply $n $Id)?.job_status
 }
 
 function Get-Leftovers([string]$Marker) {
@@ -148,12 +148,13 @@ try {
         Write-Host "$($n.name): $($st | ConvertTo-Json -Compress)"
     }
 
+    Open-TestChat $a $b
     Write-Host '== inbound after status load exposes exactly one new browser notification id'
     Invoke-Ui $a GET status | Out-Null
-    $knownInbound = @((Invoke-Ui $a GET threads) | Where-Object { $_.direction -eq 'in' } | ForEach-Object { $_.id })
-    $notice = Invoke-Ui $b POST send @{ to = 'node-a'; body = 'status notification' }
+    $knownInbound = @(Get-Inbox $a | Where-Object { $_.direction -eq 'in' } | ForEach-Object { $_.id })
+    $notice = Send-ChatMessage $b $a.name 'status notification'
     $newInbound = @(Wait-Until {
-        $ids = @((Invoke-Ui $a GET threads) | Where-Object { $_.direction -eq 'in' } | ForEach-Object { $_.id })
+        $ids = @(Get-Inbox $a | Where-Object { $_.direction -eq 'in' } | ForEach-Object { $_.id })
         $new = @($ids | Where-Object { $_ -notin $knownInbound })
         if ($new.Count -eq 1) { ,$new }
     } 'one new inbound notification id')
@@ -162,14 +163,14 @@ try {
     }
 
     Write-Host '== request node-a -> node-b, auto-reply in node-a inbox'
-    $req = Invoke-Ui $a POST send @{ to = 'node-b'; body = 'ping from node-a' }
+    $req = Send-ChatMessage $a $b.name 'ping from node-a'
     $reply = Wait-Until { Find-Reply $a $req.id } 'auto-reply'
     Write-Host "reply: $($reply.body)"
     if ($reply.from -ne 'node-b' -or $reply.body -ne 'echo: ping from node-a') { throw 'wrong auto-reply' }
 
     Write-Host '== quit node-b during job 1 of 3, restart: job 1 agent survives, all completed, each run once'
     $runlog = Join-Path $data 'runs.log'
-    $jobs = @(1..3 | ForEach-Object { Invoke-Ui $a POST send @{ to = 'node-b'; body = "slow 3 $runlog job$_" } })
+    $jobs = @(1..3 | ForEach-Object { Send-ChatMessage $a $b.name "slow 3 $runlog job$_" })
     Wait-Until { (Test-Path $runlog) -and (Get-Content $runlog) -contains 'job1' } 'job 1 running' | Out-Null
     $seen = Wait-Until {
         $st = @($jobs | ForEach-Object { Get-JobStatus $a $_.id })
@@ -184,15 +185,15 @@ try {
     Start-Node $b -NoApiFlag
     Wait-Until { @($jobs | Where-Object { (Get-JobStatus $a $_.id) -eq 'completed' }).Count -eq 3 } 'three completed replies' | Out-Null
     foreach ($i in 0..2) {
-        $e = Get-Inbox $a | Where-Object { $_.direction -eq 'out' -and $_.id -eq $jobs[$i].id }
-        if ($e.answer -ne "echo: slow 3 $runlog job$($i + 1)") { throw "wrong answer for job $($i + 1): $($e.answer)" }
+        $reply = Find-Reply $a $jobs[$i].id
+        if ($reply.body -ne "echo: slow 3 $runlog job$($i + 1)") { throw "wrong answer for job $($i + 1): $($reply.body)" }
     }
     $runs = (Get-Content $runlog) -join ','
     Write-Host "agent runs: $runs"
     if ($runs -ne 'job1,job2,job3') { throw "unexpected agent runs: $runs" }
 
     Write-Host '== save settings on node-b while its job runs: the agent keeps running'
-    $job = Invoke-Ui $a POST send @{ to = 'node-b'; body = "tree $marker" }
+    $job = Send-ChatMessage $a $b.name "tree $marker"
     $first = Wait-Until { $p = @(Get-Leftovers $marker); if ($p.Count -ge 2) { , $p.ProcessId } } 'attempt 1 and its child running'
     Save-Settings $b
     Wait-Until { (Invoke-Ui $b GET status).connected } 'node-b reconnected after the save' | Out-Null

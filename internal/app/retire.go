@@ -146,7 +146,7 @@ func (a *App) retireOwnedChats(now time.Time) {
 	var due []string
 	for _, b := range a.s.Bindings {
 		o := chatOwner(b.Chat)
-		if o == nil || !b.Chat.Retired.IsZero() {
+		if o == nil || b.Chat.UntilDone || !b.Chat.Retired.IsZero() {
 			continue
 		}
 		if a.observeOwnerLocked(b.ID, *o, live, now) || a.ownerAbsentLocked(b, *o, live, now) {

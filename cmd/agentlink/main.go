@@ -44,7 +44,8 @@ const usage = `usage:
   agentlink serve --config <path>
   agentlink send  --config <path> [--to <node|area:NAME>] [--area <name>] (--body-file <path|-> | --body <text>) [--reply-to <id>] [--ask <node,...>] [--project <id>]   (into the one open chat with them; no --to: the only peer; the area defaults to this folder's project)
   agentlink send  --config <path> --chat <id> (--body-file <path|-> | --body <text>) [--ask <node,...>] [--ask-seat <label>] [--reply-to <id>] [--project <id>]   (to every chat participant; --ask: who must answer; --ask-seat: a local agent of this node, repeatable)
-  agentlink discuss --with <claude|codex> (--body-file <path|-> | --body <text>) [--folder <path>] [--chat <id> | --topic <name> | --temporary] [--shared] [--timeout 10m] [--async] [--compact]   (message text: a file, never a shell argument with quotes; ask in this session's own local agent chat, separate from network chats; --shared: the folder's shared project chat; --async returns IDs immediately; exit 2 on timeout, 3 when held: no answer comes automatically)
+  agentlink discuss --with <claude|codex> (--body-file <path|-> | --body <text>) [--folder <path>] [--chat <id> | --topic <name> | --temporary | --until-done] [--shared] [--timeout 10m] [--async] [--compact]   (message text: a file, never a shell argument with quotes; ask in this session's own local agent chat, separate from network chats; --shared: the folder's shared project chat; --async returns IDs immediately; exit 2 on timeout, 3 when held: no answer comes automatically)
+  agentlink discuss finish --chat <id>   (release a private discussion created with --until-done once its task is finished)
   agentlink wait  --config <path> [--timeout 0] [--chat <id>] [--project <id>]   (seconds or duration; 0 = forever; exit 2 on timeout; --chat: only that chat)
   agentlink chat new     --config <path> --with <node,...> [--area <name>] [--project <id>]   (prints the chat id; you are added; in a project: its one active chat)
   agentlink chat archive --config <path> [--chat <id>] [--project <id>]   (the project's chat history goes to the archive; a fresh chat with the same members opens; prints its id)
@@ -60,7 +61,7 @@ const usage = `usage:
   agentlink members --config <path> [--project <id>]   (one JSON line per member, this node first)
   agentlink seats [--project <id>]   (one JSON line per local agent (seat) of this node in the project; send --ask-seat <label> asks one)
   agentlink projects [--config <path>]   (one JSON line per project of the desktop app; online/total count the other members, members lists this node too)
-  agentlink mcp [--config <path>]   (stdio MCP server "agentlink" for an agent session: tools projects, members, seats, chats, history, unread, send, discuss, ack)
+  agentlink mcp [--config <path>]   (stdio MCP server "agentlink" for an agent session: tools projects, members, seats, chats, history, unread, send, discuss, finish_discussion, ack)
   agentlink add    --config <path> --addr <ip[:port]> [--project <id>]   (dial a member's address; it spreads to all members)
   agentlink remove --config <path> --name <node> [--project <id>]   (remove a member from the whole network)
   agentlink hook <claude|codex> [--event auto]   (run by an agent's hooks: hands the session the new messages for it and reports what it does)
@@ -104,6 +105,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	name, rest := args[0], args[1:]
+	if name == "discuss" && len(rest) > 0 && rest[0] == "finish" {
+		name, rest = "discuss finish", rest[1:]
+	}
 	if name == "hook" {
 		return runHook(rest, os.Stdin, stdout, stderr)
 	}
@@ -170,6 +174,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 			}
 			return 0, send(ctx, c, sendArgs{to: *to, body: text, replyTo: *replyTo, chat: *chat, ask: *ask, area: *area, project: proj(), session: *session, files: attach, askSeats: askSeat, bodyFile: *bodyFile}, stdout, stderr)
 		}
+	case "discuss finish":
+		chat := fs.String("chat", "", "private discussion to finish")
+		cmd = func(c config.Config) (int, error) {
+			r, err := finishDiscussion(ctx, c, *chat)
+			if err != nil {
+				return 1, err
+			}
+			return 0, newJSONEncoder(stdout).Encode(r)
+		}
 	case "discuss":
 		with := fs.String("with", "", "local agent to ask: claude or codex")
 		body := fs.String("body", "", "message text (short, plain text only: a shell mangles quotes; prefer --body-file)")
@@ -181,6 +194,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		chat := fs.String("chat", "", "continue this local chat (id from an earlier discuss)")
 		topic := fs.String("topic", "", "named chat: this session's own thread of that name (with --shared the project's persistent chat)")
 		temporary := fs.Bool("temporary", false, "start a new temporary chat (removed when its session ends)")
+		untilDone := fs.Bool("until-done", false, "start a private discussion kept until its caller explicitly finishes the task")
 		shared := fs.Bool("shared", false, "ask in the folder's shared project chat (or the topic's shared chat) instead of this session's own")
 		compact := fs.Bool("compact", false, "print the compact result (chat, id, reply text, reply_id, from, model, effort, status) instead of the whole one")
 		cmd = func(c config.Config) (int, error) {
@@ -195,7 +209,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			if err != nil {
 				return 1, err
 			}
-			result, err := discussMessage(ctx, c, *with, prompt, *folder, *async, *timeout, discussPick{chat: *chat, topic: *topic, temporary: *temporary, shared: *shared, askKey: cliAskKey, bodyFile: cmp.Or(*bodyFile, *promptFile)})
+			result, err := discussMessage(ctx, c, *with, prompt, *folder, *async, *timeout, discussPick{chat: *chat, topic: *topic, temporary: *temporary, untilDone: *untilDone, shared: *shared, askKey: cliAskKey, bodyFile: cmp.Or(*bodyFile, *promptFile)})
 			if result.ID != "" {
 				var out any = result
 				if *compact {
@@ -488,10 +502,10 @@ type discussHeld struct {
 // chat; a person's is the folder's project chat). shared picks the
 // project's shared chat (of the topic) instead of the session's own.
 type discussPick struct {
-	chat, topic       string
-	temporary, shared bool
-	askKey            string // as sendArgs.askKey
-	bodyFile          string // as sendArgs.bodyFile
+	chat, topic                  string
+	temporary, untilDone, shared bool
+	askKey                       string // as sendArgs.askKey
+	bodyFile                     string // as sendArgs.bodyFile
 }
 
 // A discuss waits discussTimeout for its answer by default ("" asks for it),
@@ -529,11 +543,17 @@ func discussMessage(ctx context.Context, cfg config.Config, provider, body, fold
 	session, source := agentSessionCtx(ctx)
 	agent, agentType := askOrigin(pick.askKey, askNeedle(body, pick.bodyFile))
 	var result discussResult
-	err = apiJSON(ctx, http.MethodPost, apiURL(cfg, "/discuss", nil), map[string]any{
+	path := "/discuss"
+	req := map[string]any{
 		"folder": dir, "provider": provider, "body": body, "session_id": session,
 		"source": source, "seat": os.Getenv(envSeat), "agent_id": agent, "agent_type": agentType,
 		"chat": pick.chat, "topic": pick.topic, "temporary": pick.temporary, "shared": pick.shared,
-	}, &result)
+	}
+	if pick.untilDone {
+		path = "/discuss/until-done" // older apps must refuse before sending to a shared chat
+		req["until_done"] = true
+	}
+	err = apiJSON(ctx, http.MethodPost, apiURL(cfg, path, nil), req, &result)
 	if err == nil && result.HoldReason != "" {
 		result.Held, result.Note = true, node.HoldText(result.HoldReason)
 	}
@@ -574,6 +594,16 @@ func discussMessage(ctx context.Context, cfg config.Config, provider, body, fold
 	}
 	result.Reply = &reply
 	return result, nil
+}
+
+func finishDiscussion(ctx context.Context, cfg config.Config, chat string) (map[string]bool, error) {
+	chat = strings.TrimSpace(chat)
+	if chat == "" {
+		return nil, errors.New("chat is required")
+	}
+	var result map[string]bool
+	err := apiJSON(ctx, http.MethodPost, apiURL(cfg, "/discuss/finish", nil), map[string]string{"chat": chat}, &result)
+	return result, err
 }
 
 // ackDiscussReply marks the reply of a discuss read, for the asking session:

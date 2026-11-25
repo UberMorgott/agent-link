@@ -62,7 +62,7 @@ export const TOOLS: readonly ToolSpec[] = [
   },
   {
     "name": "discuss",
-    "description": "Ask a local Claude Code or Codex agent in this folder's private agent chat. Each session (and each subagent) has its own chat and thread with that agent, reused on every call and closed when the session ends; topic names another own thread, shared the folder's shared project chat, chat an earlier chat by id, temporary a new one. Local only, separate from any network project for the same folder, waits for the exact agent's reply (default 10m), and returns the reply compactly: chat, id (the question), reply (its text), reply_id, from, model and effort the agent ran with (full: the whole reply message and project). Use async to post without waiting; timed_out returns IDs for later history lookup; held with hold_reason seat_failed, seat_error and retry_at when the agent cannot answer (e.g. its usage limit), the question staying pending for it.",
+    "description": "Ask a local Claude Code or Codex agent in this folder's private agent chat. Each session (and each subagent) has its own chat and thread with that agent, reused on every call and closed when the session ends; topic names another own thread, shared the folder's shared project chat, chat an earlier chat by id, temporary a new one. For a caller whose lifecycle is unknown, start with until_done, reuse the returned chat across pauses, and call finish_discussion when the whole task ends. Local only, separate from any network project for the same folder, waits for the exact agent's reply (default 10m), and returns the reply compactly: chat, id (the question), reply (its text), reply_id, from, model and effort the agent ran with (full: the whole reply message and project). Use async to post without waiting; timed_out returns IDs for later history lookup; held with hold_reason seat_failed, seat_error and retry_at when the agent cannot answer (e.g. its usage limit), the question staying pending for it.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -102,6 +102,10 @@ export const TOOLS: readonly ToolSpec[] = [
           "description": "named chat: this session's own thread of that name (with shared: the project's persistent chat of that name)",
           "type": "string"
         },
+        "until_done": {
+          "description": "start a private task discussion that survives idle time and restarts; reuse chat for follow-ups and call finish_discussion when the entire task is done",
+          "type": "boolean"
+        },
         "with": {
           "description": "local agent to ask: claude or codex",
           "type": "string"
@@ -110,6 +114,23 @@ export const TOOLS: readonly ToolSpec[] = [
       "required": [
         "with",
         "body"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "finish_discussion",
+    "description": "Release a private discussion created with until_done after the caller's whole task has finished and no further questions are expected. Pending work and unread replies are preserved.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "chat": {
+          "description": "chat id returned when the private discussion was created",
+          "type": "string"
+        }
+      },
+      "required": [
+        "chat"
       ],
       "type": "object"
     }

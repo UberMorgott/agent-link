@@ -35,6 +35,7 @@ type discussRequest struct {
 	Chat      string `json:"chat"`
 	Topic     string `json:"topic"`
 	Temporary bool   `json:"temporary"`
+	UntilDone bool   `json:"until_done"`
 	// Shared: an agent asks in the project's shared chat (the folder's
 	// project chat, or the Topic's persistent chat) instead of its own.
 	Shared bool `json:"shared"`
@@ -49,10 +50,11 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	req.UntilDone = req.UntilDone || r.URL.Path == "/discuss/until-done"
 	req.Topic = strings.TrimSpace(req.Topic)
 	dir, err := filepath.Abs(strings.TrimSpace(req.Folder))
 	picks := 0
-	for _, set := range []bool{req.Chat != "", req.Topic != "", req.Temporary} {
+	for _, set := range []bool{req.Chat != "", req.Topic != "", req.Temporary, req.UntilDone} {
 		if set {
 			picks++
 		}
@@ -61,7 +63,7 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		(req.Provider != node.ProviderClaude && req.Provider != node.ProviderCodex) ||
 		(req.Source != "" && req.Source != node.ProviderClaude && req.Source != node.ProviderCodex) ||
 		(req.SessionID == "") != (req.Source == "") || picks > 1 || !settings.ValidAlias(req.Topic) ||
-		(req.Shared && (req.Chat != "" || req.Temporary)) || !validAgentRef(req.AgentID, req.AgentType) {
+		(req.Shared && (req.Chat != "" || req.Temporary || req.UntilDone)) || !validAgentRef(req.AgentID, req.AgentType) {
 		writeCodedError(w, http.StatusBadRequest, "bad_request")
 		return
 	}
@@ -76,10 +78,22 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	pid, created, err := a.discussContextLocked(r.Context(), req, dir, tree)
 	c := a.projects[pid]
+	posted := false
+	if created {
+		defer func() {
+			if !posted {
+				a.dropIfEmpty(pid)
+			}
+		}()
+	}
 	var lc *settings.LocalChat
 	if i := a.bindingIndex(pid); i >= 0 {
 		lc = a.s.Bindings[i].Chat
-		if o := chatOwner(lc); o != nil && err == nil {
+		if lc != nil && lc.UntilDone && err == nil {
+			// An accepted request must reach its seat before finish can collect it.
+			a.discussWaitingLocked(pid, 1)
+			defer a.discussWaiting(pid, -1)
+		} else if o := chatOwner(lc); o != nil && err == nil {
 			// The asking owner is live now: a short-lived subagent is seen
 			// before it ends, so its chat retires with it (retire.go).
 			a.observeOwnerLocked(pid, *o, a.liveAgentsLocked(), time.Now())
@@ -91,34 +105,16 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		if created {
-			a.dropIfEmpty(pid) // the project it made, when its chat hit the cap
-		}
 		a.failed(w, "discuss project", err)
 		return
 	}
-	// A failed call leaves nothing half made: no seat it added, and no
-	// binding it created that stayed empty.
-	var seat string
-	added := false
-	fail := func(respond func()) {
-		if added {
-			if err := c.n.RemoveSeat(seat); err != nil && !errors.Is(err, node.ErrUnknownSeat) {
-				a.log.Warn("discuss: remove the new seat", "seat", seat, "err", err)
-			}
-		}
-		if created {
-			a.dropIfEmpty(pid)
-		}
-		respond()
-	}
 	if c == nil {
-		fail(func() { writeCodedError(w, http.StatusServiceUnavailable, "not_running") })
+		writeCodedError(w, http.StatusServiceUnavailable, "not_running")
 		return
 	}
 	chat, err := c.n.NewProjectChat(nil)
 	if err != nil {
-		fail(func() { a.failed(w, "discuss chat", err) })
+		a.failed(w, "discuss chat", err)
 		return
 	}
 	// An external interactive session keeps its folder hook in the network
@@ -134,12 +130,13 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	// caller's chain (DiscussSeat): another seat of the provider is added.
 	mu := a.discussLock(pid)
 	mu.Lock()
-	seat, err = c.n.DiscussSeat(req.Provider, chat.ID, send)
+	seat, err := c.n.DiscussSeat(req.Provider, chat.ID, send)
 	if err != nil {
 		mu.Unlock()
-		fail(func() { a.failed(w, "discuss agent", err) })
+		a.failed(w, "discuss agent", err)
 		return
 	}
+	added := false
 	if seat == "" {
 		// The new seat starts only after the message is queued for it, so its
 		// first turn (with the introduction) carries the message.
@@ -149,22 +146,28 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 
 			if errors.Is(addErr, node.ErrSeatLimit) {
 				// Every seat of the provider is the caller or waits in its chain.
-				fail(func() { writeCodedError(w, http.StatusConflict, "discuss_no_seat") })
+				writeCodedError(w, http.StatusConflict, "discuss_no_seat")
 				return
 			}
-			fail(func() { a.failed(w, "discuss agent", addErr) })
+			a.failed(w, "discuss agent", addErr)
 			return
 		}
 		seat, added = view.ID, true
 	}
-	mu.Unlock()
-
 	send.AskSeats = []string{seat}
 	message, err := c.n.SendRequest(send)
 	if err != nil {
-		fail(func() { a.failed(w, "discuss message", err) })
+		if added {
+			if removeErr := c.n.RemoveSeat(seat); removeErr != nil && !errors.Is(removeErr, node.ErrUnknownSeat) {
+				a.log.Warn("discuss: remove the new seat", "seat", seat, "err", removeErr)
+			}
+		}
+		mu.Unlock()
+		a.failed(w, "discuss message", err)
 		return
 	}
+	mu.Unlock()
+	posted = true
 	if added {
 		if _, startErr := c.n.StartSeat(seat, false); startErr != nil { //nolint:contextcheck // the seat turn outlives the request and runs under the node's own context
 			a.log.Warn("start discuss seat", "seat", seat, "err", startErr)
@@ -172,7 +175,7 @@ func (a *App) discuss(w http.ResponseWriter, r *http.Request) {
 	}
 	a.changed(pid)
 	view := localChatViewOf(lc)
-	if lc != nil && lc.Temporary {
+	if lc != nil && lc.Temporary && !lc.UntilDone {
 		view.ExpiresAt = time.Now().UTC().Add(TempChatIdle) // counted from this message
 	}
 	writeJSON(w, struct {
@@ -229,6 +232,57 @@ func (a *App) bindingDirLocked(pid string) string {
 	return ""
 }
 
+// finishDiscuss persists the caller's decision. gcLocalChats waits for the
+// accepted questions, seat turns, readers and unread replies before leaving.
+func (a *App) finishDiscuss(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Chat string `json:"chat"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Chat) == "" {
+		writeCodedError(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, b := range a.s.Bindings {
+		c := a.projects[b.ID]
+		if c == nil || !c.n.OwnsChat(req.Chat) {
+			continue
+		}
+		if b.Chat == nil || !b.Chat.UntilDone {
+			writeCodedError(w, http.StatusConflict, "discuss_not_explicit")
+			return
+		}
+		info, err := c.n.Chat(req.Chat)
+		if err != nil {
+			a.failed(w, "finish discussion", err)
+			return
+		}
+		if info.Closed {
+			writeCodedError(w, http.StatusConflict, "chat_closed")
+			return
+		}
+		if !b.Chat.FinishRequested {
+			lc := *b.Chat
+			lc.FinishRequested = true
+			if err := a.saveLocalChatLocked(i, lc); err != nil {
+				a.failed(w, "finish discussion", err)
+				return
+			}
+		}
+		writeJSON(w, map[string]bool{"finished": true})
+		return
+	}
+	if a.legacy != nil && a.legacy.n.OwnsChat(req.Chat) {
+		writeCodedError(w, http.StatusConflict, "discuss_not_explicit")
+		return
+	}
+	writeCodedError(w, http.StatusNotFound, "not_found")
+}
+
 // discussReply waits for the asked seat's direct answer to one discuss message.
 // A subscription is installed before reading history, so a reply cannot fall
 // into a gap between the history check and the next event.
@@ -246,6 +300,10 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Lock()
 	c := a.projects[pid]
+	if c != nil {
+		a.discussWaitingLocked(pid, 1)
+		defer a.discussWaiting(pid, -1)
+	}
 	a.mu.Unlock()
 	if c == nil || !c.n.OwnsChat(chat) {
 		http.Error(w, "unknown discuss project or chat", http.StatusNotFound)
@@ -270,8 +328,8 @@ func (a *App) discussReply(w http.ResponseWriter, r *http.Request) {
 		a.failed(w, "discuss resume", err)
 		return
 	}
-	a.discussWaiting(pid, 1)
-	defer a.discussWaiting(pid, -1)
+	a.changed(pid)
+	a.liveChanged()
 	if ask.Agent != nil {
 		// The asking seat's turn waits here: its turn slot goes to the seats
 		// of its chain meanwhile (LendTurn).

@@ -501,6 +501,12 @@ and its chat for the working folder, even when that folder also has a network pr
 in this local chat stay on this computer and never appear in the network project's shared chat.
 Existing network messages are not moved into the local chat. It adds a seat for
 `--with claude` or `--with codex` if needed and writes the question into the local chat.
+For a task that may span days, start it with `--until-done` (MCP `until_done: true`) and
+save the returned `chat`. Send each follow-up with `--chat <id>`, including after a restart.
+When the caller has finished the whole task, run `agentlink discuss finish --chat <id>`
+(MCP `finish_discussion {chat}`). AgentLink waits for outstanding work and unread replies
+before retiring the discussion and archiving its Codex thread. This mode also works with
+clients that supply no session ID.
 `--folder <path>` selects another folder; `--body <text>` and `--prompt-file <path>` are
 alternatives. By default it waits up to 10 minutes
 for the asked seat's direct reply and prints JSON with `project`, `chat`, `id`, `seat` and

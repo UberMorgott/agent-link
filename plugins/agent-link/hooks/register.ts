@@ -5,7 +5,7 @@
 //
 //   - session.start registers the session with the local node (POST /sessions,
 //     native: the node keeps the shell hooks of the same session out) and the
-//     nine tools of `agentlink mcp` (tools.ts).
+//     tools of `agentlink mcp` (tools.ts).
 //   - One loop asks the node for the session's unread messages, the request
 //     held by the node until there are some (GET /unread?wait), and hands
 //     them over:

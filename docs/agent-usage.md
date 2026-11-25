@@ -135,7 +135,7 @@ final message (Claude's result, Codex's final agent message) as the reply to eac
 asked it, unless the agent already replied to it with `send --reply-to` in that turn. A turn that
 ends with neither is a failed turn (`seat_error`: the agent's turn ended without a reply), never
 a silent acknowledgement: the request stays pending and the turn is retried. The MCP
-`discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?, shared?, full?}` tool has the same
+`discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?, shared?, until_done?, full?}` tool has the same
 behavior, compact by default (`full: true`: the whole result). A reply's `agent.model` and
 `agent.effort` (compact: `model`, `effort`) name what the seat's turn ran with, as its agent
 reported them (Codex: thread model and reasoning effort; Claude: the model only).
@@ -144,7 +144,7 @@ pipes with a non-UTF-8 code page (PowerShell with cp866) reads it intact; `AGENT
 prints raw UTF-8 instead (fewer bytes for non-English text) when the caller decodes UTF-8.
 MCP results are always raw UTF-8.
 
-Local chats of `discuss` (one of `--chat`, `--topic`, `--temporary`; none = the default). An agent
+Local chats of `discuss` (choose at most one of `--chat`, `--topic`, `--temporary`, `--until-done`). An agent
 session (Claude Code, Codex) asks in its **own** chat: one per (project, session, topic), so its
 thread with the asked agent continues on every call and no other session shares it. A person
 (no session) and `--shared` use the project's shared chats instead.
@@ -156,7 +156,13 @@ thread with the asked agent continues on every call and no other session shares 
 | `folderless_temporary` | default outside any project folder: the session's own chat, reused from any folder (per topic likewise); no folder or project is bound | temporary (owned) |
 | `folderless` | `--topic <name> --shared` (a person: `--topic <name>`) outside project folders: a named shared chat of no project | until a person removes it |
 
-An own chat closes when its owner ends: about 90 s after its session ends (SessionEnd, or its
+For callers whose lifetime AgentLink cannot observe, start a private discussion with
+`--until-done` (MCP `until_done: true`). Save the returned `chat` ID with the task and use
+`--chat <id>` for every follow-up. This chat survives idle days and AgentLink restarts. When
+the whole task ends, call `agentlink discuss finish --chat <id>` or MCP `finish_discussion {chat}`.
+AgentLink waits for accepted work and unread replies to clear, then archives the Codex thread.
+
+By default an own chat closes when its owner ends: about 90 s after its session ends (SessionEnd, or its
 TTL lapses) or, for a subagent's chat, after the subagent stops, its seats are removed (a running
 agent turn is cancelled) and the chat leaves (data to `.left`); an unread reply keeps it, hidden
 (`retired`), until it is read. A session back within that grace (a resumed session) keeps its
@@ -164,7 +170,7 @@ chats. Headless agent turns of all local chats run at most 4 at once; the rest w
 (`turn_queued` on the seat).
 
 `--chat <id>` continues any local chat by the `chat` id an earlier call returned (the way to
-continue a temporary chat from another session). A temporary chat is removed (its data moves to
+continue a temporary chat from another session). A temporary chat using idle expiry is removed (its data moves to
 `.left`) once none of its sessions is live, nothing in it is pending (a queued request, a running
 turn, an unread reply) and it was idle for 24 hours; `expires_at` is the earliest such time. The
 project list (`GET /projects`) shows such chats as local projects with `local_chat {scope, topic,
@@ -314,7 +320,8 @@ error whose text is the API's message.
 | `history` | `chat`, `limit?` (50), `before_seq?`, `after_seq?` | `chat history` |
 | `unread` | `folder?`, `project?`, `limit?` (50), `after?` | `chat unread`, as one `{messages, total, next}` object; never marks read, but for a Codex session the node wakes (`wake: "queue"`): its own call is the delivery (`delivered: true`, read) |
 | `send` | exactly one of `chat` / `to` / `new_chat_with[]`, `body`, `ask?[]`, `ask_seats?[]`, `reply_to?` | `send` (`new_chat_with`: `chat new` first); `ask` addresses network members, `ask_seats` local agents; answers `{id, chat}` |
-| `discuss` | `with` (`claude` or `codex`), `body`, `folder?`, `timeout?`, `async?`, one of `chat?` / `topic?` / `temporary?`, `shared?` | uses or creates the calling session's own local chat (a person's or `shared`: the folder's project chat; or the named or temporary chat) and seat; returns IDs, `scope`, `expires_at?` and the direct reply, `queued`, or `timed_out` |
+| `discuss` | `with` (`claude` or `codex`), `body`, `folder?`, `timeout?`, `async?`, one of `chat?` / `topic?` / `temporary?` / `until_done?`, `shared?` | uses or creates the calling session's own local chat (a person's or `shared`: the folder's project chat; or the named or temporary chat) and seat; returns IDs, `scope`, `expires_at?` and the direct reply, `queued`, or `timed_out` |
+| `finish_discussion` | `chat` | `agentlink discuss finish --chat <id>` marks an `until_done` discussion complete |
 | `ack` | `ids[]`, `chat?`, `project?`, `session?` (default: this session) | `chat ack` |
 
 There is no wait tool: the hooks tell a live session about new messages.

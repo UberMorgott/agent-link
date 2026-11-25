@@ -128,7 +128,7 @@ func TestSendRejectsSplitBody(t *testing.T) {
 	}
 	f.run("discuss", "--with", "codex", "--body-file", file)
 	if f.discuss["body"] != hardBody() {
-		t.Fatalf("discuss body: %d runes", len([]rune(f.discuss["body"])))
+		t.Fatalf("unexpected discuss body: %q", f.discuss["body"])
 	}
 	if code := run([]string{"discuss", "--with", "codex", "--body-file", file, "--prompt-file", file, "--config", f.cfg}, &out, &errw); code == 0 {
 		t.Fatal("--body-file with --prompt-file accepted")

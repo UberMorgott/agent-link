@@ -1,6 +1,6 @@
 {
   "name": "agent-link",
-  "version": "0.6.49+codex.126f88fab98a",
+  "version": "0.6.49+codex.e8b83545ead9",
   "displayName": "Agent Link",
   "description": "Talk to other developers' coding agents over agent-link: project chats, unread messages and replies delivered to the session, MCP tools for the local node.",
   "author": {

@@ -572,16 +572,18 @@ func TestFailedDiscussLeavesNothing(t *testing.T) {
 	h.app.mu.Lock()
 	before := len(h.app.s.Bindings)
 	h.app.mu.Unlock()
-	code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]any{"folder": dir, "provider": node.ProviderCodex,
-		"body": "x", "temporary": true, "seat": "seat-00000000"}), nil)
-	if code == http.StatusOK {
-		t.Fatalf("discuss from an unknown seat: %d %s", code, raw)
-	}
-	h.app.mu.Lock()
-	after := len(h.app.s.Bindings)
-	h.app.mu.Unlock()
-	if after != before {
-		t.Fatalf("failed discuss left a binding: %d -> %d (%d %s)", before, after, code, raw)
+	for _, mode := range []string{"temporary", "until_done"} {
+		code, raw := h.do(t, http.MethodPost, "/discuss", jsonOf(t, map[string]any{"folder": dir, "provider": node.ProviderCodex,
+			"body": "x", mode: true, "seat": "seat-00000000"}), nil)
+		if code == http.StatusOK {
+			t.Fatalf("%s discuss from an unknown seat: %d %s", mode, code, raw)
+		}
+		h.app.mu.Lock()
+		after := len(h.app.s.Bindings)
+		h.app.mu.Unlock()
+		if after != before {
+			t.Fatalf("failed %s discuss left a binding: %d -> %d (%d %s)", mode, before, after, code, raw)
+		}
 	}
 }
 

@@ -42,6 +42,10 @@
     "vue-tsc": "3.3.14"
   },
   "overrides": {
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "js-beautify": {
+      "glob": "14.0.6",
+      "editorconfig": "4.0.1"
+    }
   }
 }

@@ -47,7 +47,7 @@ to start it.
   `send {chat: <local chat id>, ask_seats: ["Codex"]}` asks one of them (label or id; `all`).
   Its answer comes back to
   you by itself; a chain of agents alone pauses for a person after a few hops.
-- `discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?, shared?, full?}`: ask a local `claude` or `codex` seat in a
+- `discuss {with, body, folder?, timeout?, async?, chat?, topic?, temporary?, shared?, until_done?, full?}`: ask a local `claude` or `codex` seat in a
   local chat for the current working folder, separate from any network project for the folder,
   adding the target seat when missing. By default wait up
   to 10 minutes for that seat's direct reply. Returns compactly `{chat, id, reply, reply_id, from,
@@ -63,6 +63,13 @@ to start it.
   `chat: <id>` continues a chat an earlier discuss returned (e.g. one a parent hands to a
   subagent); `shared: true` the folder's shared project chat (with `topic`, the project's shared
   chat of that name) that other sessions see too. `scope` names the chat's kind.
+- For callers whose task end AgentLink cannot observe, including Antigravity, use `until_done: true`
+  on the first `discuss` call for a private task. Save the returned `chat` ID with that task and
+  pass `chat: <id>` on every follow-up, including after a pause of several days.
+- `finish_discussion {chat: <id>}`: the caller that opened the private discussion signals completion
+  once its whole task is finished and it expects no follow-up. Keep the ID while waiting for
+  tools, another agent, or user input. If an older tray lacks this mode, update it before starting
+  a discussion that needs an explicit finish.
 
 Results keep the node API's JSON field names. An MCP error is the API's error: fix the input from
 it (table below), do not retry with guessed ids. There is no `wait` tool: hooks deliver replies.
@@ -102,6 +109,9 @@ agentlink seats                                  # local agents of this machine 
 agentlink discuss --with codex --body-file q.md --compact # discuss here with local Codex in a separate local chat; wait up to 10m
 agentlink discuss --with claude --prompt-file question.md --async # post, return IDs without waiting
 agentlink discuss --with codex --temporary --body-file q.md # new temporary chat; later: --chat <id>; named: --topic <name>
+agentlink discuss --with codex --until-done --body-file q.md # private task; keep its chat ID
+agentlink discuss --with codex --chat <id> --body-file followup.md
+agentlink discuss finish --chat <id>              # when the caller has finished the whole task
 agentlink send --chat <local-chat-id> --ask-seat Codex --body-file q.md # ask a local agent in its local chat
 agentlink send --project <network-project-id> --to nikita --body-file q.md # network project chat (chat id on stderr)
 agentlink send --chat <id> --attach shot.png --body-file note.md   # with a file (--attach repeatable)

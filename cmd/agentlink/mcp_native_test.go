@@ -63,7 +63,7 @@ func TestNativeToolsMatchMCP(t *testing.T) {
 	if strings.ReplaceAll(string(got), "\r\n", "\n") != want {
 		t.Fatalf("%s is not the MCP server's tool list: run this test with %s=1", nativeToolsFile, updateNativeTools)
 	}
-	if len(specs) != 9 {
-		t.Fatalf("%d tools; the module's tests name nine", len(specs))
+	if len(specs) != 10 {
+		t.Fatalf("%d tools; the module's tests name ten", len(specs))
 	}
 }

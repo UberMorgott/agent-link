@@ -24,7 +24,7 @@ type fakeAPI struct {
 	send     node.SendRequest
 	reassign node.ReassignRequest
 	pin      node.PinSessionRequest
-	discuss  map[string]string
+	discuss  map[string]any
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -37,10 +37,18 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		f.reqs = append(f.reqs, r.Method+" "+r.URL.RequestURI())
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Path == "/discuss":
-			f.discuss = map[string]string{}
+		case r.URL.Path == "/discuss" || r.URL.Path == "/discuss/until-done":
+			f.discuss = map[string]any{}
 			_ = json.NewDecoder(r.Body).Decode(&f.discuss)
 			_ = json.NewEncoder(w).Encode(discussResult{Project: "p1", Chat: "c1", ID: "m1", Seat: "seat-codex"})
+		case r.URL.Path == "/discuss/finish":
+			var in struct {
+				Chat string `json:"chat"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Chat != "c1" {
+				t.Errorf("finish discussion: chat %q, err %v", in.Chat, err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]bool{"finished": true})
 		case r.URL.Path == "/discuss/reply":
 			// The caller acknowledges the reply itself: without the flag the
 			// server reads it (legacy callers) and a lost reply is gone.
